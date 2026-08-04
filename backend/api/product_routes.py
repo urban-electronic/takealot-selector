@@ -442,9 +442,13 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
         p.tsin = result["tsin"]
 
     # 重新计算利润
-    _apply_calculated_fields(db, p)
-    db.commit()
-    db.refresh(p)
+    try:
+        _apply_calculated_fields(db, p)
+        db.commit()
+        db.refresh(p)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"利润计算失败: {str(e)}")
 
     updated["profit_margin"] = p.profit_margin
     updated["profit_zar"] = p.profit_zar

@@ -88,9 +88,10 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         return result
 
     async with async_playwright() as p:
-        browser, page = await _launch_browser(p)
-
+        browser = None
         try:
+            browser, page = await _launch_browser(p)
+
             # 使用 networkidle 等待,确保动态内容加载完毕
             await page.goto(result["normalized_url"], timeout=60000, wait_until="networkidle")
 
@@ -262,6 +263,7 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         except Exception as e:
             result["warnings"].append(f"页面抓取失败: {str(e)}")
         finally:
-            await browser.close()
+            if browser is not None:
+                await browser.close()
 
     return result
