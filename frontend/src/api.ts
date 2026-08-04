@@ -1,6 +1,7 @@
 import type { Product, ScrapeResult, FeeCategory, FeeMappingRule, DashboardStats } from './types';
+import { API_BASE } from './config';
 
-const BASE = '/api';
+const BASE = `${API_BASE}/api`;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {
