@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { getProducts, deleteProduct, updateProduct, refreshPrice } from '../api';
+import { getProducts, deleteProduct, updateProduct, refreshPrice, IMAGE_PROXY_BASE } from '../api';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 
@@ -340,7 +340,7 @@ export default function ProductList() {
       case 'image':
         return p.product_image_url ? (
           <img
-            src={`/api/image-proxy?url=${encodeURIComponent(p.product_image_url)}`}
+            src={`${IMAGE_PROXY_BASE}?url=${encodeURIComponent(p.product_image_url)}`}
             alt=""
             referrerPolicy="no-referrer"
             style={{ width: 68, height: 68, objectFit: 'cover', borderRadius: 4 }}

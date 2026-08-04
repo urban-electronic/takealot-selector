@@ -2,6 +2,7 @@ import type { Product, ScrapeResult, FeeCategory, FeeMappingRule, DashboardStats
 
 const API_BASE = import.meta.env.DEV ? '' : 'https://takealot-selector-production.up.railway.app';
 const BASE = `${API_BASE}/api`;
+export const IMAGE_PROXY_BASE = `${API_BASE}/api/image-proxy`;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {

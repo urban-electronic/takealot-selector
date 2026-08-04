@@ -14,7 +14,7 @@ const navItems = [
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/takealot-selector">
       <header className="app-header">
         <h1>Takealot 选品测算</h1>
         <nav>
