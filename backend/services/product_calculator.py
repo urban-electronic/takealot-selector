@@ -49,10 +49,10 @@ def calculate_all(product: Dict[str, Any], exchange_rate: float = 0.41) -> Dict[
         result["volume_cbm"] = None
 
     # 7.3 体积重 & 实际计费重量
-    # 体积重(kg) = 长(cm) × 宽(cm) × 高(cm) ÷ 5000
-    # 因为输入为mm，等价于: (mm³) / 5_000_000 = cbm * 200
+    # 体积重(kg) = 长(cm) × 宽(cm) × 高(cm) ÷ 6000
+    # 因为输入为mm，等价于: (mm³) / 6_000_000 = cbm * (1000/6)
     if result["volume_cbm"] is not None:
-        result["volumetric_weight_kg"] = round(result["volume_cbm"] * 200, 3)
+        result["volumetric_weight_kg"] = round(result["volume_cbm"] * 1000 / 6, 3)
     else:
         result["volumetric_weight_kg"] = None
 
