@@ -8,12 +8,11 @@ import sys
 # 确保 backend 目录在 path 中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal
 from models import FeeCategory, FeeMappingRule, SystemSettings
 from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy
-from migrate import migrate_from_dump
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -70,7 +69,6 @@ DEFAULT_FEE_CATEGORIES = [
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
-    migrate_from_dump()
     _init_default_data()
 
 
@@ -135,6 +133,39 @@ def _init_default_data():
         db.commit()
     finally:
         db.close()
+
+
+from pydantic import BaseModel
+from typing import List, Dict, Any
+
+class MigrationPayload(BaseModel):
+    table: str
+    rows: List[Dict[str, Any]]
+
+@app.post("/api/migrate")
+def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
+    """将本地数据库数据批量迁移到 Railway"""
+    import sqlalchemy as sa
+    from database import engine as raw_engine
+    results = {}
+    with raw_engine.begin() as conn:
+        for payload in data:
+            if not payload.rows:
+                continue
+            table_name = payload.table
+            # 先清空
+            conn.execute(sa.text(f"DELETE FROM {table_name}"))
+            # 逐行插入
+            count = 0
+            for row in payload.rows:
+                columns = list(row.keys())
+                placeholders = ", ".join([f":{c}" for c in columns])
+                cols = ", ".join(columns)
+                sql = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})"
+                conn.execute(sa.text(sql), row)
+                count += 1
+            results[table_name] = count
+    return {"status": "ok", "imported": results}
 
 
 @app.get("/")
