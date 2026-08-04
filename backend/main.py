@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from database import engine, Base, SessionLocal
+from database import engine, Base, SessionLocal, get_db
 from models import FeeCategory, FeeMappingRule, SystemSettings
 from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy
 from migrate import migrate_from_dump
