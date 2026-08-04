@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal
 from models import FeeCategory, FeeMappingRule, SystemSettings
 from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy
+from migrate import migrate_from_dump
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -69,6 +70,7 @@ DEFAULT_FEE_CATEGORIES = [
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    migrate_from_dump()
     _init_default_data()
 
 

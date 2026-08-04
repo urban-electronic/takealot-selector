@@ -1,21 +1,18 @@
 """
-启动时从 dump.sql 迁移数据到 Railway 数据库
+启动时将内置数据迁移到 Railway 数据库
 """
-import os
 import sqlite3
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'takealot_selector.db')
-DUMP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dump.sql')
 
 
 def migrate_from_dump():
-    """如果数据库是空的，从 dump.sql 导入数据"""
-    if not os.path.exists(DUMP_PATH):
-        logger.info("dump.sql not found, skipping migration")
-        return
+    """如果数据库是空的，从内嵌数据导入"""
+    from migration_data import MIGRATION_DATA
 
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -24,27 +21,26 @@ def migrate_from_dump():
             logger.info(f"Database already has {count} products, skipping migration")
             return
 
-        logger.info("Importing data from dump.sql...")
-        with open(DUMP_PATH, 'r', encoding='utf-8') as f:
-            sql = f.read()
+        logger.info("Importing data from embedded dataset...")
+        for table_name, rows in MIGRATION_DATA.items():
+            if not rows:
+                continue
+            # 清空已建的空表
+            conn.execute(f"DELETE FROM {table_name}")
+            # 逐行插入
+            cols = list(rows[0].keys())
+            placeholders = ", ".join(["?" for _ in cols])
+            col_str = ", ".join(cols)
+            sql = f"INSERT INTO {table_name} ({col_str}) VALUES ({placeholders})"
+            conn.executemany(sql, [tuple(r[c] for c in cols) for r in rows])
 
-        # 删除已有的空表，用 dump 里的完整数据重建
-        conn.executescript("""
-            DROP TABLE IF EXISTS products;
-            DROP TABLE IF EXISTS fee_categories;
-            DROP TABLE IF EXISTS fee_mapping_rules;
-            DROP TABLE IF EXISTS scrape_logs;
-            DROP TABLE IF EXISTS system_settings;
-        """)
         conn.commit()
-
-        conn.executescript(sql)
-        conn.commit()
-
         new_count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
         logger.info(f"Migration complete: {new_count} products imported")
     except Exception as e:
         logger.error(f"Migration failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
     finally:
         conn.close()
