@@ -19,16 +19,25 @@ def migrate_from_dump():
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        # 检查是否已有数据（排除系统初始化的默认数据）
         count = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
         if count > 0:
             logger.info(f"Database already has {count} products, skipping migration")
             return
 
-        # 执行 dump
         logger.info("Importing data from dump.sql...")
         with open(DUMP_PATH, 'r', encoding='utf-8') as f:
             sql = f.read()
+
+        # 删除已有的空表，用 dump 里的完整数据重建
+        conn.executescript("""
+            DROP TABLE IF EXISTS products;
+            DROP TABLE IF EXISTS fee_categories;
+            DROP TABLE IF EXISTS fee_mapping_rules;
+            DROP TABLE IF EXISTS scrape_logs;
+            DROP TABLE IF EXISTS system_settings;
+        """)
+        conn.commit()
+
         conn.executescript(sql)
         conn.commit()
 
