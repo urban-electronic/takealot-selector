@@ -1,6 +1,6 @@
 import type { Product, ScrapeResult, FeeCategory, FeeMappingRule, DashboardStats } from './types';
-import { API_BASE } from './config';
 
+const API_BASE = import.meta.env.DEV ? '' : 'https://YOUR_RAILWAY_URL';
 const BASE = `${API_BASE}/api`;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
