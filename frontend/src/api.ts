@@ -1,6 +1,6 @@
 import type { Product, ScrapeResult, FeeCategory, FeeMappingRule, DashboardStats } from './types';
 
-const API_BASE = import.meta.env.DEV ? '' : 'https://YOUR_RAILWAY_URL';
+const API_BASE = import.meta.env.DEV ? '' : 'https://takealot-selector-production.up.railway.app';
 const BASE = `${API_BASE}/api`;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
