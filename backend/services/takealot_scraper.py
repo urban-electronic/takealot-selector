@@ -471,16 +471,20 @@ async def scrape_product(url: str) -> Dict[str, Any]:
     errors = []
 
     # 策略 0: curl_cffi (最快，模拟浏览器 TLS 指纹)
+    print(f"[scraper] Trying curl_cffi for {normalized_url}", flush=True)
     data, err = _scrape_with_curl_cffi(url, normalized_url)
     if data is not None:
+        print(f"[scraper] curl_cffi SUCCESS", flush=True)
         result.update(data)
         result["success"] = True
         return result
+    print(f"[scraper] curl_cffi FAILED: {err}", flush=True)
     if err:
         errors.append(err)
 
     async with async_playwright() as p:
         # 策略 1: Firefox
+        print(f"[scraper] Trying Firefox...", flush=True)
         data, err = await _try_scrape_with_browser(
             p, "Firefox", _launch_firefox, url, normalized_url
         )
