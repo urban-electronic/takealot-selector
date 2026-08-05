@@ -349,7 +349,7 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
     try:
         resp = curl_requests.get(
             normalized_url,
-            impersonate="chrome124",
+            impersonate="chrome131",
             timeout=30,
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
