@@ -36,6 +36,10 @@ async def _launch_browser(p):
             "--disable-dev-shm-usage",
             "--disable-web-security",
             "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-infobars",
+            "--disable-setuid-sandbox",
+            "--disable-accelerated-2d-canvas",
+            "--disable-gpu",
         ],
     )
     context = await browser.new_context(
@@ -47,15 +51,92 @@ async def _launch_browser(p):
         viewport={"width": 1440, "height": 900},
         locale="en-ZA",
         timezone_id="Africa/Johannesburg",
+        device_scale_factor=2,
+        is_mobile=False,
+        has_touch=False,
+        color_scheme="light",
+        reduced_motion="no-preference",
+        extra_http_headers={
+            "Accept-Language": "en-ZA,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        },
     )
     page = await context.new_page()
 
-    # 注入 stealth 风格的 JS,隐藏 webdriver 标记
+    # 注入 playwright-stealth 完整反检测
+    try:
+        from playwright_stealth import stealth_async
+        await stealth_async(page)
+    except ImportError:
+        pass
+
+    # 补充额外 stealth JS，覆盖 playwright-stealth 未覆盖的点
     await page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-ZA', 'en'] });
-        window.chrome = { runtime: {} };
+        // 覆盖 webdriver 属性
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        
+        // 伪造真实的 plugins 数组
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                const plugins = [1, 2, 3, 4, 5];
+                plugins.item = (i) => plugins[i];
+                plugins.namedItem = (name) => null;
+                plugins.refresh = () => {};
+                return plugins;
+            }
+        });
+        
+        // 伪造 languages
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-ZA', 'en', 'en-US'] });
+        
+        // 伪造 platform
+        Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+        
+        // 伪造 hardwareConcurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        
+        // 伪造 deviceMemory
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        
+        // 伪造 chrome runtime
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+        };
+        
+        // 覆盖 permissions.query
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+        
+        // 隐藏 PhantomJS / Headless 痕迹
+        delete window.phantom;
+        delete window.__nightmare;
+        delete window.callPhantom;
+        delete window._phantom;
+        delete window.Buffer;
+        delete window.emit;
+        delete window.spawn;
+        
+        // 覆盖 iframe contentWindow 检测
+        const originalAttachShadow = Element.prototype.attachShadow;
+        Element.prototype.attachShadow = function(init) {
+            if (init && init.mode === 'closed') {
+                init.mode = 'open';
+            }
+            return originalAttachShadow.call(this, init);
+        };
     """)
 
     return browser, page
