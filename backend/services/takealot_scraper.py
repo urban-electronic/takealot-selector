@@ -9,6 +9,7 @@ import json
 import random
 from typing import Optional, Dict, Any, Tuple
 from urllib.parse import urlparse, urlunparse
+from bs4 import BeautifulSoup
 
 
 def normalize_takealot_url(url: str) -> str:
@@ -338,10 +339,111 @@ async def _try_scrape_with_browser(p, launcher_name: str, launcher, url: str, no
             await browser.close()
 
 
+def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """使用 curl_cffi 模拟浏览器 TLS 指纹抓取（最快方案）"""
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError:
+        return None, "curl_cffi not installed"
+
+    try:
+        resp = curl_requests.get(
+            normalized_url,
+            impersonate="chrome124",
+            timeout=30,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-ZA,en;q=0.9",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+
+        if resp.status_code >= 400:
+            return None, f"curl_cffi HTTP {resp.status_code}"
+
+        text = resp.text
+        if "Just a moment" in text or "Checking your browser" in text:
+            return None, "curl_cffi Cloudflare blocked"
+
+        soup = BeautifulSoup(text, "lxml")
+
+        data = {
+            "normalized_url": normalized_url,
+            "tsin": None,
+            "product_name": None,
+            "product_image_url": None,
+            "actual_sale_price_zar": None,
+            "in_stock_price": None,
+            "takealot_category_path": None,
+        }
+
+        # TSIN
+        plid_match = re.search(r'PLID(\d+)', url, re.IGNORECASE)
+        if plid_match:
+            data["tsin"] = f"PLID{plid_match.group(1)}"
+
+        # 产品名称: <title>
+        title_tag = soup.find("title")
+        if title_tag and "takealot" in title_tag.text.lower():
+            parts = title_tag.text.split("|")
+            if parts:
+                data["product_name"] = parts[0].strip()
+
+        # 产品图片
+        img = soup.select_one('img[src*="media.takealot.com/covers_images"]')
+        if img and img.get("src"):
+            data["product_image_url"] = img["src"].replace("s-thumbnail", "s-pdpxl")
+
+        # 售价: [class*="price-buybox"]
+        price_el = soup.select_one('[class*="price-buybox"]')
+        if price_el:
+            price_match = re.search(r'[\d,]+\.?\d*', price_el.text.replace(" ", ""))
+            if price_match:
+                try:
+                    data["actual_sale_price_zar"] = float(price_match.group(0).replace(",", ""))
+                except (ValueError, TypeError):
+                    pass
+
+        # 分类路径
+        pdp = soup.select_one(".pdp")
+        if pdp:
+            cats = []
+            seen = set()
+            keywords = [
+                "computers", "electronics", "home", "kitchen", "sport",
+                "fashion", "baby", "toys", "garden", "automotive",
+                "camping", "beauty", "health", "office", "books",
+                "appliances", "gaming", "music", "pets", "liquor",
+                "stationery", "luggage", "data storage", "drives",
+            ]
+            for a in pdp.find_all("a", href=True):
+                text = a.text.strip()
+                if not text or len(text) > 50:
+                    continue
+                if any(kw in text.lower() for kw in keywords) and text not in seen:
+                    seen.add(text)
+                    cats.append(text)
+            if cats:
+                data["takealot_category_path"] = " > ".join(cats)
+
+        # in_stock_price 回退到 buybox 价格
+        if data["actual_sale_price_zar"] is not None:
+            data["in_stock_price"] = data["actual_sale_price_zar"]
+
+        return data, ""
+
+    except Exception as e:
+        return None, f"curl_cffi error: {str(e)}"
+
+
 async def scrape_product(url: str) -> Dict[str, Any]:
     """
     抓取 Takealot 商品页面,返回结构化数据。
-    策略: Firefox -> Chromium+stealth -> 报错
+    策略: curl_cffi -> Firefox -> Chromium+stealth -> 报错
     """
     result = {
         "normalized_url": normalize_takealot_url(url),
@@ -367,6 +469,15 @@ async def scrape_product(url: str) -> Dict[str, Any]:
 
     normalized_url = result["normalized_url"]
     errors = []
+
+    # 策略 0: curl_cffi (最快，模拟浏览器 TLS 指纹)
+    data, err = _scrape_with_curl_cffi(url, normalized_url)
+    if data is not None:
+        result.update(data)
+        result["success"] = True
+        return result
+    if err:
+        errors.append(err)
 
     async with async_playwright() as p:
         # 策略 1: Firefox
