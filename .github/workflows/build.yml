@@ -34,15 +34,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Takealot-Selector-Windows
-          path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
-
-      - name: Upload NSIS installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: Takealot-Selector-Windows-NSIS
-          path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: warn
+          path: |
+            src-tauri/target/**/bundle/msi/*.msi
+            src-tauri/target/**/bundle/nsis/*.exe
+          if-no-files-found: error
 
   build-macos:
     name: macOS
@@ -72,5 +67,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Takealot-Selector-macOS
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: src-tauri/target/**/bundle/dmg/*.dmg
           if-no-files-found: warn
