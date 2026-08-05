@@ -144,6 +144,8 @@ class MigrationPayload(BaseModel):
     table: str
     rows: List[Dict[str, Any]]
 
+import uuid
+
 @app.post("/api/migrate")
 def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
     """将本地数据库数据批量迁移到 Railway"""
@@ -151,20 +153,34 @@ def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
     from database import engine as raw_engine
     results = {}
     with raw_engine.begin() as conn:
+        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
+        # 按外键依赖顺序清空：先删 scrape_logs（FK->products），再处理其他表
+        ordered_deletes = ["scrape_logs", "products", "fee_mapping_rules", "fee_categories", "system_settings"]
+        for table_name in ordered_deletes:
+            try:
+                conn.execute(sa.text(f"DELETE FROM {table_name}"))
+            except Exception:
+                pass  # 表可能不存在
         for payload in data:
             if not payload.rows:
                 continue
             table_name = payload.table
-            # 先清空
-            conn.execute(sa.text(f"DELETE FROM {table_name}"))
-            # 逐行插入
+            # 查询目标表实际存在的列
+            existing_cols = set()
+            col_rows = conn.execute(sa.text(f"PRAGMA table_info({table_name})")).fetchall()
+            for r in col_rows:
+                existing_cols.add(r[1])  # name 列在第二列
             count = 0
             for row in payload.rows:
-                columns = list(row.keys())
+                if table_name == "system_settings" and "id" not in row:
+                    row["id"] = uuid.uuid4().hex
+                # 仅保留目标表实际存在的列（过滤掉本地多出的字段如 unit_price_cny）
+                filtered = {k: v for k, v in row.items() if k in existing_cols}
+                columns = list(filtered.keys())
                 placeholders = ", ".join([f":{c}" for c in columns])
                 cols = ", ".join(columns)
                 sql = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})"
-                conn.execute(sa.text(sql), row)
+                conn.execute(sa.text(sql), filtered)
                 count += 1
             results[table_name] = count
     return {"status": "ok", "imported": results}
