@@ -4,6 +4,7 @@ Takealot 商品信息抓取服务
 先尝试 Firefox（Cloudflare 检测较宽松），失败回退 Chromium+stealth。
 """
 
+import os
 import re
 import json
 import random
@@ -349,8 +350,9 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
     try:
         resp = curl_requests.get(
             normalized_url,
-            impersonate="chrome131",
+            impersonate="chrome124",
             timeout=30,
+            proxies={"http": os.environ.get("TAKEALOT_PROXY", ""), "https": os.environ.get("TAKEALOT_PROXY", "")} if os.environ.get("TAKEALOT_PROXY") else None,
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-ZA,en;q=0.9",
