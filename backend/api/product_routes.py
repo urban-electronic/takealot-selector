@@ -246,9 +246,13 @@ def list_products(
     if fee_category:
         query = query.filter(Product.fee_category == fee_category)
     if shipping_method:
-        query = query.filter(Product.shipping_method == shipping_method)
+        values = [v.strip() for v in shipping_method.split(",") if v.strip()]
+        if values:
+            query = query.filter(Product.shipping_method.in_(values))
     if link_status:
-        query = query.filter(Product.link_status == link_status)
+        values = [v.strip() for v in link_status.split(",") if v.strip()]
+        if values:
+            query = query.filter(Product.link_status.in_(values))
     if min_margin is not None:
         query = query.filter(Product.profit_margin >= min_margin)
     if max_margin is not None:

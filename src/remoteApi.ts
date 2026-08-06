@@ -57,7 +57,7 @@ export const createProduct = (data: Partial<Product>): Promise<Product> =>
 
 export const updateProduct = (id: string, data: Partial<Product>): Promise<Product> =>
   request<Product>(`/api/products/${encodeURIComponent(id)}`, {
-    method: 'PUT',
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
