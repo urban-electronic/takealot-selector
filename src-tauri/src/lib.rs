@@ -25,6 +25,8 @@ pub fn run() {
             commands::products::create_product,
             commands::products::update_product,
             commands::products::delete_product,
+            commands::products::sync_product,
+            commands::products::sync_delete_product,
             commands::products::get_dashboard,
             commands::scraper::scrape_takealot,
             commands::scraper::refresh_price,
@@ -36,6 +38,12 @@ pub fn run() {
             commands::categories::update_fee_mapping_rule,
             commands::settings::get_settings,
             commands::settings::update_settings,
+            commands::procurement::list_procurement_records,
+            commands::procurement::get_procurement_record,
+            commands::procurement::create_procurement_record,
+            commands::procurement::update_procurement_record,
+            commands::procurement::delete_procurement_record,
+            commands::procurement::search_products_by_no,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

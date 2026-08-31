@@ -5,3 +5,4 @@ pub mod scraper;
 pub mod categories;
 pub mod settings;
 pub mod seed;
+pub mod procurement;

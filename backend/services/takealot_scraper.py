@@ -164,6 +164,10 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
         "actual_sale_price_zar": None,
         "in_stock_price": None,
         "takealot_category_path": None,
+        "competing_sellers_count": None,
+        "stock_remaining": None,
+        "review_count": None,
+        "rating_value": None,
     }
 
     # 1. 从页面标题提取产品名称
@@ -311,6 +315,82 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
         if result["actual_sale_price_zar"] is not None:
             result["in_stock_price"] = result["actual_sale_price_zar"]
 
+    # 8. 提取竞品卖家数
+    try:
+        sellers_count = await page.evaluate("""
+            () => {
+                // 方法1: 从 .more-buying-choices-module_offer 文本中提取 "X offers"
+                const offerEl = document.querySelector('[class*="more-buying-choices"]');
+                if (offerEl) {
+                    const text = offerEl.textContent || '';
+                    const match = text.match(/(\\d+)\\s*offers?/i);
+                    if (match) return parseInt(match[1], 10);
+                }
+                // 方法2: 计数 a[href*="/seller/"] 链接
+                const sellerLinks = document.querySelectorAll('a[href*="/seller/"]');
+                if (sellerLinks.length > 0) return sellerLinks.length;
+                return null;
+            }
+        """)
+        if sellers_count is not None:
+            result["competing_sellers_count"] = sellers_count
+    except Exception:
+        pass
+
+    # 9. 提取剩余库存
+    try:
+        stock_text = await page.evaluate("""
+            () => {
+                const aside = document.querySelector('aside') || document.body;
+                const text = aside.textContent || '';
+                const match = text.match(/Only\\s*(\\d+)\\s*left/i);
+                return match ? parseInt(match[1], 10) : null;
+            }
+        """)
+        if stock_text is not None:
+            result["stock_remaining"] = stock_text
+    except Exception:
+        pass
+
+    # 10. 提取评价数和评分
+    try:
+        rating_data = await page.evaluate("""
+            () => {
+                // 找评分链接 a[href*="Reviews"]
+                const reviewLink = document.querySelector('a[href*="Reviews"]');
+                let reviewCount = null;
+                let ratingVal = null;
+                
+                if (reviewLink) {
+                    const text = reviewLink.textContent || '';
+                    // 提取评价数: "279 Reviews" 或 "(279)"
+                    const countMatch = text.match(/(\\d+)\\s*Reviews?/i) || text.match(/\\((\\d+)\\)/);
+                    if (countMatch) {
+                        reviewCount = parseInt(countMatch[1], 10);
+                    }
+                }
+                
+                // 提取评分: 找包含数字.数字格式的元素
+                const ratingEl = document.querySelector('[class*="rating"], [data-rating]');
+                if (ratingEl) {
+                    const text = ratingEl.textContent || ratingEl.getAttribute('data-rating') || '';
+                    const ratingMatch = text.match(/(\\d+\\.?\\d*)/);
+                    if (ratingMatch) {
+                        ratingVal = parseFloat(ratingMatch[1]);
+                    }
+                }
+                
+                return { reviewCount, ratingVal };
+            }
+        """)
+        if rating_data:
+            if rating_data.get("reviewCount") is not None:
+                result["review_count"] = rating_data["reviewCount"]
+            if rating_data.get("ratingVal") is not None:
+                result["rating_value"] = rating_data["ratingVal"]
+    except Exception:
+        pass
+
     return result
 
 
@@ -381,6 +461,10 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
             "actual_sale_price_zar": None,
             "in_stock_price": None,
             "takealot_category_path": None,
+            "competing_sellers_count": None,
+            "stock_remaining": None,
+            "review_count": None,
+            "rating_value": None,
         }
 
         # TSIN
@@ -436,6 +520,43 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
         if data["actual_sale_price_zar"] is not None:
             data["in_stock_price"] = data["actual_sale_price_zar"]
 
+        # 竞品卖家数: 从 .more-buying-choices 文本提取 "X offers"
+        offer_el = soup.select_one('[class*="more-buying-choices"]')
+        if offer_el:
+            offer_match = re.search(r'(\d+)\s*offers?', offer_el.text, re.IGNORECASE)
+            if offer_match:
+                data["competing_sellers_count"] = int(offer_match.group(1))
+        # 备用: 计数 seller 链接
+        if data["competing_sellers_count"] is None:
+            seller_links = soup.select('a[href*="/seller/"]')
+            if seller_links:
+                data["competing_sellers_count"] = len(seller_links)
+
+        # 剩余库存: aside 区域 "Only X left"
+        aside = soup.select_one("aside")
+        stock_src = aside.text if aside else soup.body.text if soup.body else ""
+        stock_match = re.search(r'Only\s*(\d+)\s*left', stock_src, re.IGNORECASE)
+        if stock_match:
+            data["stock_remaining"] = int(stock_match.group(1))
+
+        # 评价数与评分
+        review_link = soup.select_one('a[href*="Reviews"]')
+        if review_link:
+            count_match = re.search(r'(\d+)\s*Reviews?', review_link.text, re.IGNORECASE) \
+                or re.search(r'\((\d+)\)', review_link.text)
+            if count_match:
+                data["review_count"] = int(count_match.group(1))
+
+        rating_el = soup.select_one('[class*="rating"], [data-rating]')
+        if rating_el:
+            rating_text = rating_el.get("data-rating", "") or rating_el.text or ""
+            rating_match = re.search(r'(\d+\.?\d*)', rating_text)
+            if rating_match:
+                try:
+                    data["rating_value"] = float(rating_match.group(1))
+                except (ValueError, TypeError):
+                    pass
+
         return data, ""
 
     except Exception as e:
@@ -455,6 +576,10 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         "actual_sale_price_zar": None,
         "in_stock_price": None,
         "takealot_category_path": None,
+        "competing_sellers_count": None,
+        "stock_remaining": None,
+        "review_count": None,
+        "rating_value": None,
         "warnings": [],
         "success": False,
     }
@@ -475,12 +600,18 @@ async def scrape_product(url: str) -> Dict[str, Any]:
     # 策略 0: curl_cffi (最快，模拟浏览器 TLS 指纹)
     print(f"[scraper] Trying curl_cffi for {normalized_url}", flush=True)
     data, err = _scrape_with_curl_cffi(url, normalized_url)
-    if data is not None:
-        print(f"[scraper] curl_cffi SUCCESS", flush=True)
+    # 校验：如果没拿到真实价格或拿到了 Cloudflare 占位页面，视为失败
+    cf_title = data.get("product_name", "") if data else ""
+    if data is not None and data.get("actual_sale_price_zar") is not None \
+       and not cf_title.startswith("Takealot.com:"):
+        print(f"[scraper] curl_cffi SUCCESS (price={data['actual_sale_price_zar']})", flush=True)
         result.update(data)
         result["success"] = True
         return result
-    print(f"[scraper] curl_cffi FAILED: {err}", flush=True)
+    if data is not None:
+        print(f"[scraper] curl_cffi got placeholder, falling back to Playwright", flush=True)
+    else:
+        print(f"[scraper] curl_cffi FAILED: {err}", flush=True)
     if err:
         errors.append(err)
 

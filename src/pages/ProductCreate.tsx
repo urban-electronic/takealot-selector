@@ -92,7 +92,7 @@ export default function ProductCreate() {
         width_mm: width ? parseFloat(width) : null,
         height_mm: height ? parseFloat(height) : null,
         actual_weight_kg: weight ? parseFloat(weight) : null,
-        packaging_cost_per_unit_cny: packagingCost ? parseFloat(packagingCost) : null,
+        packaging_cost_per_unit_cny: packagingCost ? parseFloat(packagingCost) : 1.0,
         shipping_method: shippingMethod || null,
         link_status: linkStatus,
       });

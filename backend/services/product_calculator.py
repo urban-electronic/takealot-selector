@@ -7,6 +7,31 @@ from typing import Optional, Dict, Any
 from math import floor
 
 
+def default_fulfillment_fee_zar(fee_category) -> float:
+    """按类目返回 Fulfillment Fee(ZAR) 默认值，未覆盖类目回退 42.00。"""
+    if not fee_category:
+        return 42.0
+    # R51.75
+    if fee_category in (
+        "Electronic Accessories", "Clothing & Footwear", "Automotive",
+        "DIY & Automotive", "DIY", "Luggage & Travel", "Wearables and GPS",
+        "Cameras", "Sport", "Toys", "Camping & Outdoor",
+        "Musical Instruments", "Games", "Smart Home & Connected Living", "TV & Audio",
+        "Office", "Computers & Laptops", "Garden, Pool & Patio",
+    ):
+        return 51.75
+    # R69
+    if fee_category in ("Computer Components", "Small Appliances", "Large Appliances"):
+        return 69.0
+    # R37.95
+    if fee_category in ("Pets", "Health", "Beauty", "Stationery", "Homeware", "Baby"):
+        return 37.95
+    # R25.3
+    if fee_category == "Non-Perishable":
+        return 25.3
+    return 42.0
+
+
 def calculate_all(product: Dict[str, Any], exchange_rate: float = 0.41) -> Dict[str, Any]:
     """
     输入产品字典,返回所有计算结果。
@@ -34,7 +59,9 @@ def calculate_all(product: Dict[str, Any], exchange_rate: float = 0.41) -> Dict[
     outbound_fee = product.get("outbound_operation_fee_cny", 0.70)
     last_mile = product.get("last_mile_delivery_fee_cny", 2.00)
     other_fee = product.get("other_fee_cny", 2.00)
-    fulfillment_fee = product.get("fulfillment_fee_zar", 42.00)
+    fulfillment_fee = product.get("fulfillment_fee_zar")
+    if fulfillment_fee is None:
+        fulfillment_fee = default_fulfillment_fee_zar(product.get("fee_category"))
 
     # 添加 manual_fulfillment_fee_zar 覆盖
     manual_fulfillment = product.get("manual_fulfillment_fee_zar")

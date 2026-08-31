@@ -12,10 +12,34 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal, get_db
 from models import FeeCategory, FeeMappingRule, SystemSettings
-from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy
+from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes
 from migrate import migrate_from_dump
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
+
+
+@app.on_event("startup")
+async def ensure_playwright_browsers():
+    """确保 Playwright 浏览器已安装。若是 Docker / 无头环境，自动下载。"""
+    import subprocess, sys
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            pass  # 仅仅测试是否能启动，不能启动则自动下载
+        print("[startup] Playwright 浏览器已就绪", flush=True)
+    except ImportError:
+        print("[startup] Playwright 未安装，尝试安装...", flush=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "playwright"], check=True)
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"], check=True)
+        print("[startup] Playwright 安装完成", flush=True)
+    except Exception as e:
+        print(f"[startup] Playwright 浏览器缺失，正在自动安装: {e}", flush=True)
+        try:
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+                           check=True, timeout=300)
+            print("[startup] Playwright 浏览器安装完成", flush=True)
+        except Exception as e2:
+            print(f"[startup] Playwright 浏览器安装失败: {e2}", flush=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,6 +55,7 @@ app.include_router(scraper_routes.router)
 app.include_router(category_routes.router)
 app.include_router(settings_routes.router)
 app.include_router(image_proxy.router)
+app.include_router(procurement_routes.router)
 
 
 # 默认费率表
@@ -70,8 +95,24 @@ DEFAULT_FEE_CATEGORIES = [
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
     migrate_from_dump()
     _init_default_data()
+
+
+def _ensure_columns():
+    """轻量迁移：为已存在的表补齐新增列（create_all 不会修改已有表）"""
+    from sqlalchemy import inspect, text
+    try:
+        insp = inspect(engine)
+        if "products" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("products")}
+            if "unit_price_cny" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN unit_price_cny REAL"))
+                print("[startup] products 表已补列 unit_price_cny", flush=True)
+    except Exception as e:
+        print(f"[startup] _ensure_columns 迁移失败: {e}", flush=True)
 
 
 def _init_default_data():
@@ -153,10 +194,15 @@ def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
     from database import engine as raw_engine
     results = {}
     with raw_engine.begin() as conn:
-        conn.execute(sa.text("PRAGMA foreign_keys = ON"))
-        # 按外键依赖顺序清空：先删 scrape_logs（FK->products），再处理其他表
-        ordered_deletes = ["scrape_logs", "products", "fee_mapping_rules", "fee_categories", "system_settings"]
+        # 删除阶段临时关闭外键约束，避免 procutement_records 引用 products 导致 DELETE 被阻塞
+        conn.execute(sa.text("PRAGMA foreign_keys = OFF"))
+        # 仅清空本次 payload 涉及的表，避免误删未同步的表（如只同步采购记录时不碰 products）
+        payload_tables = {p.table for p in data}
+        # 按外键依赖顺序清空：先删 scrape_logs、procurement_records（均 FK->products），再删 products
+        ordered_deletes = ["scrape_logs", "procurement_records", "products", "fee_mapping_rules", "fee_categories", "system_settings"]
         for table_name in ordered_deletes:
+            if table_name not in payload_tables:
+                continue
             try:
                 conn.execute(sa.text(f"DELETE FROM {table_name}"))
             except Exception:
@@ -184,6 +230,27 @@ def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
                 count += 1
             results[table_name] = count
     return {"status": "ok", "imported": results}
+
+
+@app.get("/debug/scraper")
+async def debug_scraper():
+    info = {"playwright_avail": False, "playwright_error": None,
+            "curl_cffi_avail": False, "scraper_test": None}
+    try:
+        from playwright.async_api import async_playwright
+        info["playwright_avail"] = True
+    except ImportError as e:
+        info["playwright_error"] = str(e)
+    try:
+        import curl_cffi
+        info["curl_cffi_avail"] = True
+    except ImportError as e:
+        info["curl_cffi_error"] = str(e)
+    from services.takealot_scraper import scrape_product
+    result = await scrape_product("https://www.takealot.com/bmw-f30-m4-mirror-covers/PLID90630735")
+    info["scraper_test"] = {k: result.get(k) for k in
+        ["success", "actual_sale_price_zar", "competing_sellers_count", "review_count", "rating_value", "warnings"]}
+    return info
 
 
 @app.get("/")

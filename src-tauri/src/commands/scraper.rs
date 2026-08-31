@@ -19,6 +19,10 @@ pub struct ScrapeResult {
     pub fee_match_reason: Option<String>,
     pub warnings: Vec<String>,
     pub success: bool,
+    pub competing_sellers_count: Option<i32>,
+    pub stock_remaining: Option<i32>,
+    pub review_count: Option<i32>,
+    pub rating_value: Option<f64>,
 }
 
 fn normalize_url(url: &str) -> String {
@@ -115,6 +119,10 @@ pub async fn scrape_takealot(app: AppHandle, product_url: String) -> Result<Scra
             recommended_fee_category: None, fee_category_confidence: None, fee_match_reason: None,
             warnings: vec!["URL 不属于 takealot.com".into()],
             success: false,
+            competing_sellers_count: None,
+            stock_remaining: None,
+            review_count: None,
+            rating_value: None,
         });
     }
 
@@ -126,6 +134,10 @@ pub async fn scrape_takealot(app: AppHandle, product_url: String) -> Result<Scra
         recommended_fee_category: None, fee_category_confidence: None, fee_match_reason: None,
         warnings: vec![],
         success: false,
+        competing_sellers_count: None,
+        stock_remaining: None,
+        review_count: None,
+        rating_value: None,
     };
 
     // Extract TSIN from URL
@@ -264,6 +276,90 @@ fn parse_html(html: &str, data: &mut ScrapeResult) {
     // Fee category recommendation
     recommend_fee_category(data);
 
+    // ---- Extract market signals ----
+
+    // Competing sellers count: try .more-buying-choices text "X offers", then count a[href*="/seller/"]
+    if let Ok(sel) = scraper::Selector::parse(".more-buying-choices-module_offer, [class*=\"more-buying-choices\"]") {
+        for el in doc.select(&sel) {
+            let text = el.text().collect::<String>();
+            if let Some(caps) = regex_lite::Regex::new(r"(\d+)\s*offers?").ok()
+                .and_then(|re| re.captures(&text))
+            {
+                if let Some(m) = caps.get(1) {
+                    if let Ok(n) = m.as_str().parse::<i32>() {
+                        data.competing_sellers_count = Some(n);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: count seller links
+    if data.competing_sellers_count.is_none() {
+        if let Ok(sel) = scraper::Selector::parse("a[href*=\"/seller/\"]") {
+            let count = doc.select(&sel).count() as i32;
+            if count > 0 {
+                data.competing_sellers_count = Some(count);
+            }
+        }
+    }
+
+    // Stock remaining: "Only X left"
+    if let Ok(sel) = scraper::Selector::parse("aside, [class*=\"stock\"], [class*=\"availability\"]") {
+        for el in doc.select(&sel) {
+            let text = el.text().collect::<String>();
+            if let Some(caps) = regex_lite::Regex::new(r"[Oo]nly\s+(\d+)\s+left").ok()
+                .and_then(|re| re.captures(&text))
+            {
+                if let Some(m) = caps.get(1) {
+                    if let Ok(n) = m.as_str().parse::<i32>() {
+                        data.stock_remaining = Some(n);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Review count and rating
+    // Review count from a[href*="Reviews"]
+    if let Ok(sel) = scraper::Selector::parse("a[href*=\"Reviews\"]") {
+        for el in doc.select(&sel) {
+            let text = el.text().collect::<String>();
+            if let Some(caps) = regex_lite::Regex::new(r"(\d[\d,]*)").ok()
+                .and_then(|re| re.captures(&text))
+            {
+                if let Some(m) = caps.get(1) {
+                    let cleaned = m.as_str().replace(",", "");
+                    if let Ok(n) = cleaned.parse::<i32>() {
+                        data.review_count = Some(n);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Rating value: look for "4.9 (279)" pattern
+    if let Ok(sel) = scraper::Selector::parse("[class*=\"rating\"], [class*=\"star\"], [class*=\"review-summary\"]") {
+        for el in doc.select(&sel) {
+            let text = el.text().collect::<String>();
+            // Match pattern like "4.9 (279)" or just "4.9"
+            if let Some(caps) = regex_lite::Regex::new(r"(\d+\.\d+)").ok()
+                .and_then(|re| re.captures(&text))
+            {
+                if let Some(m) = caps.get(1) {
+                    if let Ok(r) = m.as_str().parse::<f64>() {
+                        if r >= 1.0 && r <= 5.0 {
+                            data.rating_value = Some(r);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     data.success = true;
 }
 
@@ -366,6 +462,28 @@ pub async fn refresh_price(app: AppHandle, state: State<'_, DbState>, id: String
             conn.execute("UPDATE products SET tsin=? WHERE id=?", rusqlite::params![tsin, &id])
                 .map_err(|e| e.to_string())?;
         }
+    }
+
+    // Save market signals
+    if let Some(sellers) = result.competing_sellers_count {
+        conn.execute("UPDATE products SET competing_sellers_count=? WHERE id=?", rusqlite::params![sellers, &id])
+            .map_err(|e| e.to_string())?;
+        updated["competing_sellers_count"] = serde_json::json!(sellers);
+    }
+    if let Some(stock) = result.stock_remaining {
+        conn.execute("UPDATE products SET stock_remaining=? WHERE id=?", rusqlite::params![stock, &id])
+            .map_err(|e| e.to_string())?;
+        updated["stock_remaining"] = serde_json::json!(stock);
+    }
+    if let Some(reviews) = result.review_count {
+        conn.execute("UPDATE products SET review_count=? WHERE id=?", rusqlite::params![reviews, &id])
+            .map_err(|e| e.to_string())?;
+        updated["review_count"] = serde_json::json!(reviews);
+    }
+    if let Some(rating) = result.rating_value {
+        conn.execute("UPDATE products SET rating_value=? WHERE id=?", rusqlite::params![rating, &id])
+            .map_err(|e| e.to_string())?;
+        updated["rating_value"] = serde_json::json!(rating);
     }
 
     // Recalculate

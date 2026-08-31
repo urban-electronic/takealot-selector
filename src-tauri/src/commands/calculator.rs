@@ -29,6 +29,31 @@ pub struct CalcInput {
     pub manual_total_cost_zar: Option<f64>,
 }
 
+/// 按类目返回 Fulfillment Fee(ZAR) 默认值。
+/// 未覆盖类目统一回退 42.00。
+pub fn default_fulfillment_fee_zar(fee_category: Option<&str>) -> f64 {
+    match fee_category {
+        // R51.75
+        Some("Electronic Accessories") | Some("Clothing & Footwear")
+        | Some("Automotive") | Some("DIY & Automotive") | Some("DIY")
+        | Some("Luggage & Travel") | Some("Wearables and GPS") | Some("Cameras")
+        | Some("Sport") | Some("Toys") | Some("Camping & Outdoor")
+        | Some("Musical Instruments") | Some("Games")
+        | Some("Smart Home & Connected Living") | Some("TV & Audio")
+        | Some("Office") | Some("Computers & Laptops")
+        | Some("Garden, Pool & Patio") => 51.75,
+        // R69
+        Some("Computer Components") | Some("Small Appliances")
+        | Some("Large Appliances") => 69.0,
+        // R37.95
+        Some("Pets") | Some("Health") | Some("Beauty") | Some("Stationery")
+        | Some("Homeware") | Some("Baby") => 37.95,
+        // R25.3
+        Some("Non-Perishable") => 25.3,
+        _ => 42.0,
+    }
+}
+
 pub fn calculate_all(input: &CalcInput, exchange_rate: f64) -> HashMap<String, serde_json::Value> {
     let mut r: HashMap<String, serde_json::Value> = HashMap::new();
     let n = serde_json::Value::Null;
@@ -39,7 +64,9 @@ pub fn calculate_all(input: &CalcInput, exchange_rate: f64) -> HashMap<String, s
     let outbound = input.outbound_operation_fee_cny.unwrap_or(0.70);
     let last_mile = input.last_mile_delivery_fee_cny.unwrap_or(2.0);
     let other = input.other_fee_cny.unwrap_or(2.0);
-    let mut fulfillment = input.fulfillment_fee_zar.unwrap_or(42.0);
+    let mut fulfillment = input.fulfillment_fee_zar
+        .or_else(|| Some(default_fulfillment_fee_zar(input.fee_category.as_deref())))
+        .unwrap_or(42.0);
 
     if let Some(mf) = input.manual_fulfillment_fee_zar {
         fulfillment = mf;
@@ -203,3 +230,5 @@ fn round2(v: f64) -> f64 { (v * 100.0).round() / 100.0 }
 fn round3(v: f64) -> f64 { (v * 1000.0).round() / 1000.0 }
 fn round4(v: f64) -> f64 { (v * 10000.0).round() / 10000.0 }
 fn round6(v: f64) -> f64 { (v * 1000000.0).round() / 1000000.0 }
+
+

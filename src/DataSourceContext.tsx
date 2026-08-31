@@ -12,8 +12,19 @@ interface DataSourceContextValue {
 
 const DataSourceContext = createContext<DataSourceContextValue | null>(null);
 
+/** 是否运行在 Tauri WebView（存在 Tauri 桥接对象） */
+const isTauri = (): boolean =>
+  typeof window !== 'undefined' &&
+  !!(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+
 const getStoredDataSource = (): DataSource => {
   try {
+    // 纯浏览器（vite dev 页面）无 Tauri invoke，local 数据源必然失败
+    // → 强制 remote 并落盘，避免列表空/无图
+    if (!isTauri()) {
+      localStorage.setItem('data_source', 'remote');
+      return 'remote';
+    }
     const stored = localStorage.getItem('data_source');
     if (stored === 'remote') return 'remote';
   } catch {

@@ -73,7 +73,11 @@ pub fn init_db(db_path: &str) -> Result<Connection, rusqlite::Error> {
             fee_rate_used REAL,
             created_at TEXT,
             updated_at TEXT,
-            unit_price_cny REAL
+            unit_price_cny REAL,
+            competing_sellers_count INTEGER,
+            stock_remaining INTEGER,
+            review_count INTEGER,
+            rating_value REAL
         );
 
         CREATE TABLE IF NOT EXISTS fee_categories (
@@ -109,6 +113,19 @@ pub fn init_db(db_path: &str) -> Result<Connection, rusqlite::Error> {
             FOREIGN KEY (product_id) REFERENCES products(id)
         );
 
+        CREATE TABLE IF NOT EXISTS procurement_records (
+            id TEXT PRIMARY KEY,
+            product_id TEXT,
+            product_no INTEGER,
+            product_name TEXT DEFAULT '',
+            quantity INTEGER DEFAULT 1,
+            total_amount REAL DEFAULT 0,
+            unit_price REAL DEFAULT 0,
+            notes TEXT DEFAULT '',
+            recorded_at TEXT,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+
         CREATE TABLE IF NOT EXISTS system_settings (
             id TEXT PRIMARY KEY,
             key TEXT UNIQUE NOT NULL,
@@ -116,6 +133,17 @@ pub fn init_db(db_path: &str) -> Result<Connection, rusqlite::Error> {
             updated_at TEXT
         );
     ")?;
+
+    // Migration: add market signal columns for existing databases
+    let migrations = [
+        "ALTER TABLE products ADD COLUMN competing_sellers_count INTEGER",
+        "ALTER TABLE products ADD COLUMN stock_remaining INTEGER",
+        "ALTER TABLE products ADD COLUMN review_count INTEGER",
+        "ALTER TABLE products ADD COLUMN rating_value REAL",
+    ];
+    for m in &migrations {
+        let _ = conn.execute(m, []);
+    }
 
     Ok(conn)
 }

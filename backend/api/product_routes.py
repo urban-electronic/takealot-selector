@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from database import get_db
 from models import Product, SelectionStatus, ScrapeLog
-from services.product_calculator import calculate_all, determine_selection_status
+from services.product_calculator import calculate_all, determine_selection_status, default_fulfillment_fee_zar
 from services.translator import translate_to_chinese_sync
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -32,13 +32,14 @@ class ProductCreate(BaseModel):
     sku: Optional[str] = ""
     chinese_product_name: Optional[str] = ""
     purchase_cost_cny: Optional[float] = None
+    unit_price_cny: Optional[float] = None
     purchase_shipping_cny: Optional[float] = None
     purchase_quantity: int = 4
     length_mm: Optional[float] = None
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
     actual_weight_kg: Optional[float] = None
-    packaging_cost_per_unit_cny: float = 1.0
+    packaging_cost_per_unit_cny: Optional[float] = 1.0
     shipping_method: Optional[str] = None
     inbound_listing_fee_cny: float = 0.75
     outbound_operation_fee_cny: float = 0.70
@@ -53,6 +54,11 @@ class ProductCreate(BaseModel):
     manual_success_fee_zar: Optional[float] = None
     manual_fulfillment_fee_zar: Optional[float] = None
     manual_total_cost_zar: Optional[float] = None
+    # Market signals
+    competing_sellers_count: Optional[int] = None
+    stock_remaining: Optional[int] = None
+    review_count: Optional[int] = None
+    rating_value: Optional[float] = None
 
 
 class ProductUpdate(BaseModel):
@@ -83,6 +89,7 @@ class ProductUpdate(BaseModel):
     other_fee_cny: Optional[float] = None
     fulfillment_fee_zar: Optional[float] = None
     link_status: Optional[str] = None
+    product_no: Optional[int] = None
     # Manual cost overrides
     manual_domestic_forwarding_cny: Optional[float] = None
     manual_international_shipping_cny: Optional[float] = None
@@ -90,6 +97,11 @@ class ProductUpdate(BaseModel):
     manual_success_fee_zar: Optional[float] = None
     manual_fulfillment_fee_zar: Optional[float] = None
     manual_total_cost_zar: Optional[float] = None
+    # Market signals
+    competing_sellers_count: Optional[int] = None
+    stock_remaining: Optional[int] = None
+    review_count: Optional[int] = None
+    rating_value: Optional[float] = None
 
 
 class ProductOut(BaseModel):
@@ -113,6 +125,7 @@ class ProductOut(BaseModel):
     purchase_cost_cny: Optional[float] = None
     purchase_shipping_cny: Optional[float] = None
     purchase_quantity: int = 4
+    unit_price_cny: Optional[float] = None
     length_mm: Optional[float] = None
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
@@ -131,6 +144,11 @@ class ProductOut(BaseModel):
     manual_success_fee_zar: Optional[float] = None
     manual_fulfillment_fee_zar: Optional[float] = None
     manual_total_cost_zar: Optional[float] = None
+    # Market signals
+    competing_sellers_count: Optional[int] = None
+    stock_remaining: Optional[int] = None
+    review_count: Optional[int] = None
+    rating_value: Optional[float] = None
     # Calculated
     volume_cbm: Optional[float] = None
     volumetric_weight_kg: Optional[float] = None
@@ -265,6 +283,10 @@ def list_products(
             | (Product.takealot_url.ilike(like))
         )
 
+    # 先按创建时间正序建立固定编号映射（product_no = 创建顺序，与排序无关）
+    all_ordered = db.query(Product).order_by(Product.created_at.asc()).all()
+    id_to_no = {p.id: idx + 1 for idx, p in enumerate(all_ordered)}
+
     # 排序
     sort_field = getattr(Product, sort_by, Product.created_at)
     if sort_order == "asc":
@@ -272,15 +294,20 @@ def list_products(
     else:
         query = query.order_by(sort_field.desc())
 
-    return query.all()
-
+    products = query.all()
+    # 动态应用固定编号
+    for p in products:
+        p.product_no = id_to_no.get(p.id)
+    return products
 
 @router.get("/{product_id}", response_model=ProductOut)
 def get_product(product_id: str, db: Session = Depends(get_db)):
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
-    return p
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(p, by_alias=False)
+
 
 
 @router.post("", response_model=ProductOut)
@@ -296,7 +323,10 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db)):
                 detail=f"该 Takealot 链接已存在 (产品: {existing.product_name})",
             )
 
-    p = Product(**data.model_dump())
+    payload = data.model_dump()
+    if "fulfillment_fee_zar" not in data.model_dump(exclude_unset=True):
+        payload["fulfillment_fee_zar"] = default_fulfillment_fee_zar(data.fee_category)
+    p = Product(**payload)
     if normalized:
         p.takealot_url = normalized
 
@@ -316,7 +346,9 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db)):
     db.add(p)
     db.commit()
     db.refresh(p)
-    return p
+
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(p, by_alias=False)
 
 
 @router.patch("/{product_id}", response_model=ProductOut)
@@ -356,7 +388,9 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
     _apply_calculated_fields(db, p)
     db.commit()
     db.refresh(p)
-    return p
+
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(p, by_alias=False)
 
 
 @router.post("/batch-import", response_model=dict)
@@ -416,6 +450,10 @@ class PriceRefreshOut(BaseModel):
     minimum_price_at_20_margin: Optional[float] = None
     minimum_price_at_15_margin: Optional[float] = None
     selection_status: Optional[str] = None
+    competing_sellers_count: Optional[int] = None
+    stock_remaining: Optional[int] = None
+    review_count: Optional[int] = None
+    rating_value: Optional[float] = None
 
 
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)
@@ -444,6 +482,13 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
 
     if result.get("tsin") and not p.tsin:
         p.tsin = result["tsin"]
+
+    # 保存新抓取的竞品信号
+    for field in ["competing_sellers_count", "stock_remaining", "review_count", "rating_value"]:
+        val = result.get(field)
+        if val is not None:
+            setattr(p, field, val)
+            updated[field] = val
 
     # 重新计算利润
     try:

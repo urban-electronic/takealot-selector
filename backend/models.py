@@ -57,6 +57,7 @@ class Product(Base):
     purchase_cost_cny = Column(Float, nullable=True)
     purchase_shipping_cny = Column(Float, nullable=True)
     purchase_quantity = Column(Integer, default=4)
+    unit_price_cny = Column(Float, nullable=True)
 
     # Dimensions & weight
     length_mm = Column(Float, nullable=True)
@@ -86,6 +87,12 @@ class Product(Base):
     manual_success_fee_zar = Column(Float, nullable=True)           # 手动Success Fee(ZAR)
     manual_fulfillment_fee_zar = Column(Float, nullable=True)       # 手动Fulfillment Fee(ZAR)
     manual_total_cost_zar = Column(Float, nullable=True)            # 手动总成本(ZAR)
+
+    # Market signals from scraping
+    competing_sellers_count = Column(Integer, nullable=True)
+    stock_remaining = Column(Integer, nullable=True)
+    review_count = Column(Integer, nullable=True)
+    rating_value = Column(Float, nullable=True)
 
     # Calculated results (computed fields, stored for query efficiency)
     volume_cbm = Column(Float, nullable=True)
@@ -167,3 +174,18 @@ class SystemSettings(Base):
     key = Column(String, unique=True, nullable=False)
     value = Column(String, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProcurementRecord(Base):
+    """采购记录：仅做记录，不联动产品数据（对齐本地 Rust procurement_records 表）"""
+    __tablename__ = "procurement_records"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    product_id = Column(String, ForeignKey("products.id"), nullable=True)
+    product_no = Column(Integer, nullable=True)
+    product_name = Column(String, default="")
+    quantity = Column(Integer, default=1)
+    total_amount = Column(Float, default=0.0)
+    unit_price = Column(Float, default=0.0)
+    notes = Column(String, default="")
+    recorded_at = Column(String, default="")

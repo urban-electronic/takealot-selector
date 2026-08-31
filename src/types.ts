@@ -38,6 +38,11 @@ export interface Product {
   manual_success_fee_zar?: number | null;
   manual_fulfillment_fee_zar?: number | null;
   manual_total_cost_zar?: number | null;
+  // market signals
+  competing_sellers_count?: number | null;
+  stock_remaining?: number | null;
+  review_count?: number | null;
+  rating_value?: number | null;
   // calculated
   volume_cbm: number | null;
   volumetric_weight_kg: number | null;
@@ -118,6 +123,18 @@ export const LINK_STATUS_MAP: Record<string, { label: string; color: string }> =
   '已上架': { label: '已上架', color: '#52c41a' },
   '已发货': { label: '已发货', color: '#ff9800' },
 };
+
+export interface ProcurementRecord {
+  id: string;
+  product_id: string | null;
+  product_no: number | null;
+  product_name: string | null;
+  quantity: number;
+  total_amount: number;
+  unit_price: number | null;
+  notes: string | null;
+  recorded_at: string;
+}
 
 export const SELECTION_STATUS_MAP: Record<string, { label: string; color: string }> = {
   '数据待补充': { label: '数据待补充', color: '#faad14' },

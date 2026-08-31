@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .env
 *.db
+*.db-shm
+*.db-wal
 dist/
 temp/
 .vite/

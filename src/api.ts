@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord } from './types';
 export const IMAGE_PROXY_BASE = '';
 
 /** 在系统默认浏览器中打开外部 URL，Tauri 中 target="_blank" 不生效 */
@@ -74,3 +74,21 @@ export const updateSettings = (data: Record<string, string>): Promise<string> =>
 // Translation
 export const translateProductName = (text: string): Promise<{ chinese_name: string }> =>
   invoke('translate_product_name', { text }) as Promise<{ chinese_name: string }>;
+
+// Procurement Records
+export const listProcurementRecords = (): Promise<ProcurementRecord[]> =>
+  invoke('list_procurement_records') as Promise<ProcurementRecord[]>;
+
+export const createProcurementRecord = (data: Partial<ProcurementRecord>): Promise<ProcurementRecord> =>
+  invoke('create_procurement_record', { data }) as Promise<ProcurementRecord>;
+
+export const updateProcurementRecord = (id: string, data: Partial<ProcurementRecord>): Promise<ProcurementRecord> =>
+  invoke('update_procurement_record', { id, data }) as Promise<ProcurementRecord>;
+
+export const deleteProcurementRecord = (id: string): Promise<string> =>
+  invoke('delete_procurement_record', { id }) as Promise<string>;
+
+export const searchProductsByNo = async (keyword: string): Promise<Product[]> => {
+  const result = await invoke('search_products_by_no', { productNo: parseInt(keyword, 10) });
+  return [result as Product];
+};

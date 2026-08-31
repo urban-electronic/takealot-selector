@@ -71,6 +71,10 @@ pub struct Product {
     pub fee_rate_used: Option<f64>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    pub competing_sellers_count: Option<i32>,
+    pub stock_remaining: Option<i32>,
+    pub review_count: Option<i32>,
+    pub rating_value: Option<f64>,
 }
 
 impl Product {
@@ -107,6 +111,10 @@ impl Product {
             selection_status: row.get(56)?, exchange_rate_used: row.get(57)?,
             fee_rate_used: row.get(58)?, created_at: row.get(59)?, updated_at: row.get(60)?,
             unit_price_cny: row.get(61)?,
+            competing_sellers_count: row.get(62)?,
+            stock_remaining: row.get(63)?,
+            review_count: row.get(64)?,
+            rating_value: row.get(65)?,
         })
     }
 
@@ -251,7 +259,8 @@ pub fn get_products(
         .map_err(|e| e.to_string())?;
     let mut products = vec![];
     for row in rows {
-        products.push(row.map_err(|e| e.to_string())?);
+        let p = row.map_err(|e| e.to_string())?;
+        products.push(p);
     }
     Ok(products)
 }
@@ -259,8 +268,9 @@ pub fn get_products(
 #[tauri::command]
 pub fn get_product(state: State<DbState>, id: String) -> Result<Product, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    conn.query_row("SELECT * FROM products WHERE id=?", [&id], |row| Product::from_row(row))
-        .map_err(|e| format!("产品不存在: {}", e))
+    let p: Product = conn.query_row("SELECT * FROM products WHERE id=?", [&id], |row| Product::from_row(row))
+        .map_err(|e| format!("产品不存在: {}", e))?;
+    Ok(p)
 }
 
 #[tauri::command]
@@ -305,8 +315,8 @@ pub fn create_product(state: State<DbState>, data: Value) -> Result<Product, Str
         purchase_url, sku, chinese_product_name, purchase_cost_cny, purchase_shipping_cny,
         purchase_quantity, length_mm, width_mm, height_mm, actual_weight_kg,
         packaging_cost_per_unit_cny, unit_price_cny, shipping_method, success_fee_rate, note,
-        link_status, created_at, updated_at, selection_status, exchange_rate_used)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)",
+        link_status, created_at, updated_at, selection_status, exchange_rate_used, fulfillment_fee_zar)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)",
         rusqlite::params![
             &id, product_no, &now,
             &takealot_url,
@@ -333,12 +343,15 @@ pub fn create_product(state: State<DbState>, data: Value) -> Result<Product, Str
             data["note"].as_str().unwrap_or(""),
             data["link_status"].as_str().unwrap_or("未购买"),
             &now, &now, "数据待补充", 0.41,
+            data["fulfillment_fee_zar"].as_f64()
+                .or_else(|| Some(crate::commands::calculator::default_fulfillment_fee_zar(fee_cat.as_deref()))),
         ],
     ).map_err(|e| e.to_string())?;
 
     let p = get_product_state(&conn, &id)?;
     recalc_and_update(&conn, &p)?;
-    get_product_state(&conn, &id)
+    let prod = get_product_state(&conn, &id)?;
+    Ok(prod)
 }
 
 #[tauri::command]
@@ -381,7 +394,7 @@ pub fn update_product(state: State<DbState>, id: String, data: Value) -> Result<
     set_str!("purchase_url", "purchase_url");
     set_str!("sku", "sku");
     set_str!("chinese_product_name", "chinese_product_name");
-    set_opt!("purchase_cost_cny", "purchase_cost_cny");
+    // purchase_cost_cny handled in recompute block below (to avoid param count mismatch)
     set_opt!("purchase_shipping_cny", "purchase_shipping_cny");
     if let Some(v) = data["purchase_quantity"].as_i64() {
         updates.push("purchase_quantity = ?".into());
@@ -407,6 +420,20 @@ pub fn update_product(state: State<DbState>, id: String, data: Value) -> Result<
     set_opt!("manual_success_fee_zar", "manual_success_fee_zar");
     set_opt!("manual_fulfillment_fee_zar", "manual_fulfillment_fee_zar");
     set_opt!("manual_total_cost_zar", "manual_total_cost_zar");
+    // Market signals
+    if let Some(v) = data["competing_sellers_count"].as_i64() {
+        updates.push("competing_sellers_count = ?".into());
+        params.push(Box::new(v as i32));
+    }
+    if let Some(v) = data["stock_remaining"].as_i64() {
+        updates.push("stock_remaining = ?".into());
+        params.push(Box::new(v as i32));
+    }
+    if let Some(v) = data["review_count"].as_i64() {
+        updates.push("review_count = ?".into());
+        params.push(Box::new(v as i32));
+    }
+    set_opt!("rating_value", "rating_value");
 
     // Update fee_rate if fee_category changed
     if data.get("fee_category").is_some() {
@@ -427,30 +454,17 @@ pub fn update_product(state: State<DbState>, id: String, data: Value) -> Result<
         }
     }
 
-    // Recompute purchase_cost_cny if unit_price_cny or purchase_quantity changed
-    let unit_price_changed = data.get("unit_price_cny").is_some();
-    let qty_changed = data.get("purchase_quantity").is_some();
-    if unit_price_changed || qty_changed {
-        // Fetch current unit_price and quantity from DB to compute
-        let (cur_up, cur_qty) = conn.query_row(
-            "SELECT COALESCE(unit_price_cny, 0), COALESCE(purchase_quantity, 4) FROM products WHERE id=?",
-            [&id],
-            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i32>(1)?)),
-        ).unwrap_or((0.0, 4));
-        let new_up = data["unit_price_cny"].as_f64().unwrap_or(cur_up);
-        let new_qty = if let Some(v) = data["purchase_quantity"].as_i64() { v as f64 } else { cur_qty as f64 };
-        let new_pc = new_up * new_qty;
-        // push to updates and params - but need to be careful: set_opt! may have already pushed
-        // Remove existing purchase_cost_cny update if present
-        updates.retain(|u| !u.starts_with("purchase_cost_cny"));
-        params.retain(|p| {
-            // Can't easily filter params, just rebuild. Simpler: always append after.
-            true
-        });
-        // Actually, just push as additional update; if set_opt! pushed a duplicate, second one wins in SQL
-        updates.push("purchase_cost_cny = ?".into());
-        params.push(Box::new(new_pc));
-    }
+    // Always recompute purchase_cost_cny = unit_price_cny * purchase_quantity
+    let (cur_up, cur_qty) = conn.query_row(
+        "SELECT COALESCE(unit_price_cny, 0), COALESCE(purchase_quantity, 4) FROM products WHERE id=?",
+        [&id],
+        |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i32>(1)?)),
+    ).unwrap_or((0.0, 4));
+    let new_up = data.get("unit_price_cny").and_then(|v| v.as_f64()).unwrap_or(cur_up);
+    let new_qty = data.get("purchase_quantity").and_then(|v| v.as_i64()).unwrap_or(cur_qty as i64);
+    let new_pc = new_up * (new_qty as f64);
+    updates.push("purchase_cost_cny = ?".into());
+    params.push(Box::new(new_pc));
 
     // Clear manual fields if not explicitly set (so recalc uses formula)
     let manual_fields = [
@@ -475,7 +489,8 @@ pub fn update_product(state: State<DbState>, id: String, data: Value) -> Result<
 
     let p = get_product_state(&conn, &id)?;
     recalc_and_update(&conn, &p)?;
-    get_product_state(&conn, &id)
+    let prod = get_product_state(&conn, &id)?;
+    Ok(prod)
 }
 
 #[tauri::command]
@@ -514,6 +529,195 @@ pub fn get_dashboard(state: State<DbState>) -> Result<Value, String> {
         "top_product_name": top_name,
         "top_profit_margin": top_margin,
     }))
+}
+
+// ---- Sync from remote (upsert by takealot_url) ----
+
+// Macros for sync_product field building (must be defined before use)
+macro_rules! set_sync_str {
+    ($data:expr, $key:expr, $updates:expr, $params:expr) => {
+        if let Some(v) = $data[$key].as_str() {
+            $updates.push(format!("{} = ?", $key));
+            $params.push(Box::new(v.to_string()));
+        }
+    };
+}
+macro_rules! set_sync_f64 {
+    ($data:expr, $key:expr, $updates:expr, $params:expr) => {
+        if $data.get($key).is_some() && !$data[$key].is_null() {
+            let v = $data[$key].as_f64();
+            $updates.push(format!("{} = ?", $key));
+            $params.push(Box::new(v));
+        }
+    };
+}
+macro_rules! set_sync_i64 {
+    ($data:expr, $key:expr, $updates:expr, $params:expr) => {
+        if let Some(v) = $data[$key].as_i64() {
+            $updates.push(format!("{} = ?", $key));
+            $params.push(Box::new(v as i32));
+        }
+    };
+}
+macro_rules! set_sync_bool {
+    ($data:expr, $key:expr, $updates:expr, $params:expr) => {
+        if let Some(v) = $data[$key].as_bool() {
+            $updates.push(format!("{} = ?", $key));
+            $params.push(Box::new(v as i32));
+        }
+    };
+}
+
+#[tauri::command]
+pub fn sync_product(state: State<DbState>, data: Value) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let takealot_url = data["takealot_url"].as_str().unwrap_or("");
+    if takealot_url.is_empty() {
+        return Err("takealot_url is required for sync".into());
+    }
+
+    // Look up local product by takealot_url
+    let local: Option<(String,)> = conn.query_row(
+        "SELECT id FROM products WHERE takealot_url = ?", [takealot_url],
+        |row| Ok((row.get(0)?,)),
+    ).ok();
+
+    if let Some((local_id,)) = local {
+        // Update existing local product with remote fields
+        let mut updates: Vec<String> = vec![];
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
+
+        set_sync_str!(data, "tsin", &mut updates, &mut params);
+        set_sync_str!(data, "product_name", &mut updates, &mut params);
+        set_sync_f64!(data, "actual_sale_price_zar", &mut updates, &mut params);
+        set_sync_str!(data, "fee_category", &mut updates, &mut params);
+        set_sync_bool!(data, "fee_category_confirmed", &mut updates, &mut params);
+        set_sync_str!(data, "note", &mut updates, &mut params);
+        set_sync_str!(data, "purchase_url", &mut updates, &mut params);
+        set_sync_str!(data, "sku", &mut updates, &mut params);
+        set_sync_str!(data, "chinese_product_name", &mut updates, &mut params);
+        set_sync_f64!(data, "purchase_cost_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "purchase_shipping_cny", &mut updates, &mut params);
+        set_sync_i64!(data, "purchase_quantity", &mut updates, &mut params);
+        set_sync_f64!(data, "length_mm", &mut updates, &mut params);
+        set_sync_f64!(data, "width_mm", &mut updates, &mut params);
+        set_sync_f64!(data, "height_mm", &mut updates, &mut params);
+        set_sync_f64!(data, "actual_weight_kg", &mut updates, &mut params);
+        set_sync_f64!(data, "packaging_cost_per_unit_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "unit_price_cny", &mut updates, &mut params);
+        set_sync_str!(data, "shipping_method", &mut updates, &mut params);
+        set_sync_f64!(data, "inbound_listing_fee_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "outbound_operation_fee_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "last_mile_delivery_fee_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "other_fee_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "fulfillment_fee_zar", &mut updates, &mut params);
+        set_sync_str!(data, "link_status", &mut updates, &mut params);
+        set_sync_str!(data, "selection_status", &mut updates, &mut params);
+        set_sync_f64!(data, "manual_domestic_forwarding_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "manual_international_shipping_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "manual_overseas_op_cost_cny", &mut updates, &mut params);
+        set_sync_f64!(data, "manual_success_fee_zar", &mut updates, &mut params);
+        set_sync_f64!(data, "manual_fulfillment_fee_zar", &mut updates, &mut params);
+        set_sync_f64!(data, "manual_total_cost_zar", &mut updates, &mut params);
+        set_sync_str!(data, "product_image_url", &mut updates, &mut params);
+        set_sync_i64!(data, "competing_sellers_count", &mut updates, &mut params);
+        set_sync_i64!(data, "stock_remaining", &mut updates, &mut params);
+        set_sync_i64!(data, "review_count", &mut updates, &mut params);
+        set_sync_f64!(data, "rating_value", &mut updates, &mut params);
+
+        // Update fee_rate if fee_category changed
+        if data.get("fee_category").is_some() {
+            let fee_cat = data["fee_category"].as_str().map(|s| s.to_string());
+            let fee_rate = get_fee_rate(&conn, &fee_cat);
+            updates.push("success_fee_rate = ?".into());
+            params.push(Box::new(fee_rate));
+        }
+
+        if !updates.is_empty() {
+            updates.push("updated_at = ?".into());
+            params.push(Box::new(now_str()));
+
+            let sql = format!("UPDATE products SET {} WHERE id = ?", updates.join(", "));
+            params.push(Box::new(local_id.clone()));
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            conn.execute(&sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
+
+            // Recalculate
+            if let Ok(p) = get_product_state(&conn, &local_id) {
+                recalc_and_update(&conn, &p)?;
+            }
+        }
+    } else {
+        // Create new local product from remote data
+        let id = gen_id();
+        let now = now_str();
+        let max_no: Option<i32> = conn.query_row(
+            "SELECT MAX(product_no) FROM products", [],
+            |row| row.get(0),
+        ).ok().flatten();
+        let product_no = max_no.map_or(1, |n| n + 1);
+
+        let fee_cat = data["fee_category"].as_str().map(|s| s.to_string());
+        let fee_rate = get_fee_rate(&conn, &fee_cat);
+
+        let insert_sql = "INSERT INTO products (id, product_no, recorded_at, takealot_url, tsin, product_name,
+            product_image_url, actual_sale_price_zar, fee_category, fee_category_confirmed,
+            purchase_url, sku, chinese_product_name, purchase_cost_cny, purchase_shipping_cny,
+            purchase_quantity, length_mm, width_mm, height_mm, actual_weight_kg,
+            packaging_cost_per_unit_cny, unit_price_cny, shipping_method, success_fee_rate, note,
+            link_status, created_at, updated_at, selection_status, exchange_rate_used,
+            competing_sellers_count, stock_remaining, review_count, rating_value)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)";
+        let insert_params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(id.clone()), Box::new(product_no), Box::new(now.clone()), Box::new(takealot_url.to_string()),
+            Box::new(data["tsin"].as_str().unwrap_or("").to_string()),
+            Box::new(data["product_name"].as_str().unwrap_or("").to_string()),
+            Box::new(data["product_image_url"].as_str().unwrap_or("").to_string()),
+            Box::new(data["actual_sale_price_zar"].as_f64()),
+            Box::new(fee_cat.clone().unwrap_or_default()),
+            Box::new(data["fee_category_confirmed"].as_bool().unwrap_or(false) as i32),
+            Box::new(data["purchase_url"].as_str().unwrap_or("").to_string()),
+            Box::new(data["sku"].as_str().unwrap_or("").to_string()),
+            Box::new(data["chinese_product_name"].as_str().unwrap_or("").to_string()),
+            Box::new(data["purchase_cost_cny"].as_f64()),
+            Box::new(data["purchase_shipping_cny"].as_f64()),
+            Box::new(data["purchase_quantity"].as_i64().unwrap_or(4) as i32),
+            Box::new(data["length_mm"].as_f64()),
+            Box::new(data["width_mm"].as_f64()),
+            Box::new(data["height_mm"].as_f64()),
+            Box::new(data["actual_weight_kg"].as_f64()),
+            Box::new(data["packaging_cost_per_unit_cny"].as_f64().unwrap_or(1.0)),
+            Box::new(data["unit_price_cny"].as_f64()),
+            Box::new(data["shipping_method"].as_str().unwrap_or("").to_string()),
+            Box::new(fee_rate),
+            Box::new(data["note"].as_str().unwrap_or("").to_string()),
+            Box::new(data["link_status"].as_str().unwrap_or("未购买").to_string()),
+            Box::new(now.clone()), Box::new(now.clone()),
+            Box::new("数据待补充".to_string()), Box::new(0.41_f64),
+            Box::new(data["competing_sellers_count"].as_i64().map(|v| v as i32)),
+            Box::new(data["stock_remaining"].as_i64().map(|v| v as i32)),
+            Box::new(data["review_count"].as_i64().map(|v| v as i32)),
+            Box::new(data["rating_value"].as_f64()),
+        ];
+        let q_count = insert_sql.matches('?').count();
+        eprintln!("[DEBUG sync_product INSERT] Q={} params={}", q_count, insert_params.len());
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = insert_params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(insert_sql, param_refs.as_slice()).map_err(|e| e.to_string())?;
+
+        if let Ok(p) = get_product_state(&conn, &id) {
+            recalc_and_update(&conn, &p)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn sync_delete_product(state: State<DbState>, takealot_url: String) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM products WHERE takealot_url = ?", [&takealot_url])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---- Helper functions ----

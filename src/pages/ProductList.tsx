@@ -20,6 +20,7 @@ const allColumns: ColumnDef[] = [
   { key: 'chinese_product_name', label: '中文品名', defaultWidth: 120 },
   { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 100 },
   { key: 'fee_category', label: 'Fee品类', defaultWidth: 140 },
+  { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
   { key: 'profit_zar', label: '利润', defaultWidth: 80 },
   { key: 'sku', label: 'SKU', defaultWidth: 140 },
@@ -32,6 +33,17 @@ const allColumns: ColumnDef[] = [
 
 const LS_VISIBLE_KEY = 'productListVisibleColumns';
 const LS_ORDER_KEY = 'productListColumnOrder';
+
+/** Validate saved column order against canonical allColumns keys:
+ *  - Remove stale keys no longer in allColumns
+ *  - Append missing new keys to the end */
+function validateColumnOrder(saved: string[], canonical: string[]): string[] {
+  const canonicalSet = new Set(canonical);
+  const cleaned = saved.filter(k => canonicalSet.has(k));
+  const cleanedSet = new Set(cleaned);
+  const missing = canonical.filter(k => !cleanedSet.has(k));
+  return [...cleaned, ...missing];
+}
 
 export default function ProductList() {
   const api = useApi();
@@ -49,32 +61,34 @@ export default function ProductList() {
   const [colPanelOpen, setColPanelOpen] = useState(false);
   const colPanelRef = useRef<HTMLDivElement>(null);
 
-  // 列可见性 (localStorage)
+  // 列可见性 (localStorage) — 校验迁移：过滤僵尸key、补全缺失key
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(() => {
+    const canonical = allColumns.map(c => c.key);
     try {
       const saved = localStorage.getItem(LS_VISIBLE_KEY);
-      if (saved) return new Set(JSON.parse(saved));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const validated = validateColumnOrder(parsed, canonical);
+        localStorage.setItem(LS_VISIBLE_KEY, JSON.stringify(validated));
+        return new Set(validated);
+      }
     } catch { /* ignore */ }
-    return new Set(allColumns.map(c => c.key));
+    return new Set(canonical);
   });
 
-  // 列顺序 (localStorage) - 迁移旧默认顺序：把 link_status 移到 image 前
-  const defaultOrder = allColumns.map(c => c.key);
+  // 列顺序 (localStorage) — 通用校验：过滤僵尸key、补全缺失key
   const [columnOrder, setColumnOrder] = useState<string[]>(() => {
+    const canonical = allColumns.map(c => c.key);
     try {
       const saved = localStorage.getItem(LS_ORDER_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Migration: if old order has link_status after image, migrate to new default
-        const linkIdx = parsed.indexOf('link_status');
-        const imgIdx = parsed.indexOf('image');
-        if (linkIdx > imgIdx && imgIdx !== -1) {
-          return defaultOrder;
-        }
-        return parsed;
+        const validated = validateColumnOrder(parsed, canonical);
+        localStorage.setItem(LS_ORDER_KEY, JSON.stringify(validated));
+        return validated;
       }
     } catch { /* ignore */ }
-    return defaultOrder;
+    return canonical;
   });
 
   // 列拖拽排序 (mouse-based to avoid HTML5 drag conflict with Tauri window drag)
@@ -145,6 +159,7 @@ export default function ProductList() {
   const pageSizeFromUrl = parseInt(searchParams.get('pageSize') || '20', 10) || 20;
   const [currentPage, setCurrentPage] = useState(pageFromUrl);
   const [pageSize, setPageSize] = useState(pageSizeFromUrl);
+  const [jumpPage, setJumpPage] = useState('');
 
   // filters from URL
   const statusFilter = searchParams.get('selection_status') || '';
@@ -302,6 +317,10 @@ export default function ProductList() {
             minimum_price_at_20_margin: result.minimum_price_at_20_margin ?? p.minimum_price_at_20_margin,
             minimum_price_at_15_margin: result.minimum_price_at_15_margin ?? p.minimum_price_at_15_margin,
             selection_status: result.selection_status ?? p.selection_status,
+            competing_sellers_count: result.competing_sellers_count != null ? result.competing_sellers_count : p.competing_sellers_count,
+            stock_remaining: result.stock_remaining != null ? result.stock_remaining : p.stock_remaining,
+            review_count: result.review_count != null ? result.review_count : p.review_count,
+            rating_value: result.rating_value != null ? result.rating_value : p.rating_value,
           };
         })
       );
@@ -473,12 +492,15 @@ export default function ProductList() {
             {feeCategories.map((fc) => <option key={fc} value={fc}>{fc}</option>)}
           </select>
         );
+      case 'competing_sellers_count':
+        return p.competing_sellers_count != null ? p.competing_sellers_count : '-';
       case 'profit_margin':
         return (
           <span className={p.profit_margin != null && p.profit_margin >= 0.25 ? 'high-margin' : p.profit_margin !== null ? 'low-margin' : ''}>
             {formatPercent(p.profit_margin)}
           </span>
         );
+
       case 'profit_zar':
         return formatPrice(p.profit_zar, 'ZAR');
       case 'sku':
@@ -712,16 +734,58 @@ export default function ProductList() {
               <button
                 className="btn btn-outline btn-sm"
                 disabled={safeCurrentPage <= 1}
+                onClick={() => goToPage(1)}
+              >
+                首页
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                disabled={safeCurrentPage <= 1}
                 onClick={() => goToPage(safeCurrentPage - 1)}
               >
                 上一页
               </button>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                到第
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={jumpPage}
+                  onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const n = parseInt(jumpPage, 10);
+                      if (n >= 1 && n <= totalPages) { goToPage(n); setJumpPage(''); }
+                    }
+                  }}
+                  style={{ width: 42, padding: '2px 4px', textAlign: 'center', fontSize: 13 }}
+                />
+                页
+                <button
+                  className="btn btn-outline btn-sm"
+                  style={{ padding: '2px 8px', fontSize: 12 }}
+                  onClick={() => {
+                    const n = parseInt(jumpPage, 10);
+                    if (n >= 1 && n <= totalPages) { goToPage(n); setJumpPage(''); }
+                  }}
+                >
+                  跳转
+                </button>
+              </span>
               <button
                 className="btn btn-outline btn-sm"
                 disabled={safeCurrentPage >= totalPages}
                 onClick={() => goToPage(safeCurrentPage + 1)}
               >
                 下一页
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                disabled={safeCurrentPage >= totalPages}
+                onClick={() => goToPage(totalPages)}
+              >
+                尾页
               </button>
             </div>
           </div>

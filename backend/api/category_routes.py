@@ -3,6 +3,7 @@ Fee 品类与映射规则路由
 """
 
 from typing import Optional, List
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -72,7 +73,7 @@ class FeeMappingRuleOut(BaseModel):
     priority: int
     active: bool
     created_by_user: bool
-    created_at: Optional[str] = None
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

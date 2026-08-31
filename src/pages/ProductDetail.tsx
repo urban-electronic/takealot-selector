@@ -25,6 +25,7 @@ export default function ProductDetail() {
         setProduct(p);
         setEditData({
           note: p.note || '',
+          actual_sale_price_zar: p.actual_sale_price_zar,
           unit_price_cny: p.unit_price_cny,
           purchase_cost_cny: p.purchase_cost_cny,
           purchase_shipping_cny: p.purchase_shipping_cny,
@@ -74,6 +75,11 @@ export default function ProductDetail() {
           cleanedData[f] = null;
         }
       });
+      // 显式计算采购总成本 = 产品单价 × 采购数量
+      const upVal = cleanedData.unit_price_cny ?? product?.unit_price_cny ?? 0;
+      const qtyVal = cleanedData.purchase_quantity ?? product?.purchase_quantity ?? 4;
+      cleanedData.purchase_cost_cny = upVal * qtyVal;
+
       const updated: Product = await api.updateProduct(id, {
         ...cleanedData,
         fee_category_confirmed: editData.fee_category ? true : product?.fee_category_confirmed,
@@ -104,7 +110,7 @@ export default function ProductDetail() {
         const up = field === 'unit_price_cny' ? value : prev.unit_price_cny;
         const qty = field === 'purchase_quantity' ? value : prev.purchase_quantity;
         if (up != null && up > 0) {
-          next.purchase_cost_cny = up * (qty || 4);
+          next.purchase_cost_cny = up * (qty != null ? qty : 4);
         }
       }
       return next;
@@ -159,7 +165,13 @@ export default function ProductDetail() {
           <div>
             <table>
               <tbody>
-                <tr><td style={{ fontWeight: 600, width: 100 }}>售价</td><td style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-primary)' }}>{formatPrice(product.actual_sale_price_zar, 'ZAR')}</td></tr>
+                <tr><td style={{ fontWeight: 600, width: 100 }}>售价</td><td style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-primary)' }}>
+                  {editMode ? (
+                    <input type="number" step="0.01" value={editData.actual_sale_price_zar ?? ''} onChange={(e) => updateField('actual_sale_price_zar', e.target.value ? parseFloat(e.target.value) : null)} style={{ width: 180, fontSize: 16 }} />
+                  ) : (
+                    formatPrice(product.actual_sale_price_zar, 'ZAR')
+                  )}
+                </td></tr>
                 <tr><td style={{ fontWeight: 600 }}>TSIN</td><td>{product.tsin || '-'}</td></tr>
                 <tr><td style={{ fontWeight: 600 }}>链接</td><td><span onClick={() => openUrl(product.takealot_url!)} style={{ color: 'var(--color-primary)', cursor: 'pointer', textDecoration: 'underline' }}>{product.takealot_url || '-'}</span></td></tr>
                 <tr><td style={{ fontWeight: 600 }}>产品序号</td><td>{product.product_no}</td></tr>
@@ -236,7 +248,7 @@ export default function ProductDetail() {
               </div>
               <div className="form-group">
                 <label>采购数量</label>
-                <input type="number" min="1" value={editData.purchase_quantity ?? 4} onChange={(e) => updateField('purchase_quantity', parseInt(e.target.value) || 4)} />
+                <input type="text" inputMode="numeric" pattern="[0-9]*" value={editData.purchase_quantity ?? 4} onChange={(e) => { const v = e.target.value.replace(/\D/g, ''); updateField('purchase_quantity', v ? parseInt(v) : 1); }} />
               </div>
             </div>
             <div className="form-group">
@@ -574,7 +586,13 @@ export default function ProductDetail() {
             <tr><td style={{ fontWeight: 600, width: 140 }}>使用汇率</td><td>{product.exchange_rate_used}</td></tr>
             <tr><td style={{ fontWeight: 600 }}>创建时间</td><td>{product.created_at ? new Date(product.created_at).toLocaleString('zh-CN') : '-'}</td></tr>
             <tr><td style={{ fontWeight: 600 }}>更新时间</td><td>{product.updated_at ? new Date(product.updated_at).toLocaleString('zh-CN') : '-'}</td></tr>
-            <tr><td style={{ fontWeight: 600 }}>备注</td><td>{product.note || '-'}</td></tr>
+            <tr><td style={{ fontWeight: 600 }}>备注</td><td>
+              {editMode ? (
+                <textarea value={editData.note || ''} onChange={(e) => updateField('note', e.target.value)} rows={3} style={{ width: '100%', maxWidth: 400 }} />
+              ) : (
+                product.note || '-'
+              )}
+            </td></tr>
           </tbody>
         </table>
       </div>
