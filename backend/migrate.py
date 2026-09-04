@@ -7,7 +7,9 @@ import os
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'takealot_selector.db')
+# 与 database.py 保持一致的数据库路径（支持 Railway 卷挂载）
+import database as _database
+DB_PATH = os.path.join(_database.DB_DIR, 'takealot_selector.db')
 
 
 def migrate_from_dump():
