@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { listProcurementRecords as listLocalProcurementRecords } from '../api';
 import type { ProcurementRecord, Product } from '../types';
 
 export default function Procurement() {
@@ -57,7 +56,7 @@ export default function Procurement() {
     setSyncMsg('');
     setError('');
     try {
-      const rows = await listLocalProcurementRecords();
+      const rows = await api.listProcurementRecords();
       const payload = [{ table: 'procurement_records', rows }];
       const res = await fetch(`${baseUrl}/api/migrate`, {
         method: 'POST',

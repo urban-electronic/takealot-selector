@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { useApi, useDataSource } from '../DataSourceContext';
-import { getProducts, getFeeCategories, updateFeeCategory, getFeeMappingRules, createFeeMappingRule, updateFeeMappingRule, getSettings, updateSettings } from '../api';
 import type { FeeCategory, FeeMappingRule } from '../types';
 
 export default function Settings() {
@@ -23,7 +22,7 @@ export default function Settings() {
   const [rulePriority, setRulePriority] = useState('0');
 
   useEffect(() => {
-    Promise.all([getSettings(), getFeeCategories()])
+    Promise.all([api.getSettings(), api.getFeeCategories()])
       .then(([s, f]: [Record<string, string>, FeeCategory[]]) => {
         setSettings(s);
         setExchangeRate(s.cny_per_zar || '0.41');
@@ -31,11 +30,12 @@ export default function Settings() {
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSaveExchange = async () => {
     try {
-      await updateSettings({ cny_per_zar: exchangeRate });
+      await api.updateSettings({ cny_per_zar: exchangeRate });
       setMessage('汇率已更新');
     } catch (e: any) {
       setError(e.message);
@@ -44,7 +44,7 @@ export default function Settings() {
 
   const handleToggleCategory = async (fc: FeeCategory) => {
     try {
-      await updateFeeCategory(fc.id, { active: !fc.active });
+      await api.updateFeeCategory(fc.id, { active: !fc.active });
       setFeeCategories((prev) =>
         prev.map((f) => (f.id === fc.id ? { ...f, active: !f.active } : f))
       );
@@ -56,7 +56,7 @@ export default function Settings() {
 
   const handleUpdateFeeRate = async (fc: FeeCategory, newRate: number) => {
     try {
-      await updateFeeCategory(fc.id, { success_fee_rate: newRate });
+      await api.updateFeeCategory(fc.id, { success_fee_rate: newRate });
       setFeeCategories((prev) =>
         prev.map((f) => (f.id === fc.id ? { ...f, success_fee_rate: newRate } : f))
       );
@@ -69,7 +69,7 @@ export default function Settings() {
   const handleAddMappingRule = async () => {
     if (!ruleCategory) return;
     try {
-      await createFeeMappingRule({
+      await api.createFeeMappingRule({
         takealot_category_pattern: rulePattern,
         fee_category: ruleCategory,
         priority: parseInt(rulePriority) || 0,
@@ -96,11 +96,11 @@ export default function Settings() {
     setError('');
     setMessage('');
     try {
-      const products = await getProducts() as any[];
-      const categories = await getFeeCategories();
+      const products = await api.getProducts() as any[];
+      const categories = await api.getFeeCategories();
       const rules: FeeMappingRule[] = [];
-      try { const r = await getFeeMappingRules(); rules.push(...r); } catch {}
-      const settingsData = await getSettings(); // 始终读本地，不受远程模式影响
+      try { const r = await api.getFeeMappingRules(); rules.push(...r); } catch {}
+      const settingsData = await api.getSettings(); // 跟随当前数据源
       const settingsRows = Object.entries(settingsData).map(([key, value]) => ({ key, value }));
       const payload = [
         { table: 'products', rows: products.map(({ product_no, ...rest }: any) => rest) },
