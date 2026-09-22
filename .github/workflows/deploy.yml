@@ -21,6 +21,10 @@ jobs:
         run: npm install
       - name: Build
         run: npm run build
+        env:
+          GH_PAGES: 'true'
+      - name: SPA 404 fallback
+        run: cp dist/index.html dist/404.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

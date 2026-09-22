@@ -17,7 +17,7 @@ const navItems = [
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <DataSourceProvider>
         <header className="app-header">
         <h1>Takealot 选品测算</h1>
