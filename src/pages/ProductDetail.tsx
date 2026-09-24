@@ -155,7 +155,7 @@ export default function ProductDetail() {
           <div>
             {product.product_image_url && (
               <img
-              src={product.product_image_url}
+              src={api.getImageUrl(product.product_image_url)}
                 alt=""
                 referrerPolicy="no-referrer"
                 className="image-preview"

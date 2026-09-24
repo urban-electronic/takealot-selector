@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useApi, useDataSource } from '../DataSourceContext';
+import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
 
 export default function Settings() {
@@ -136,14 +136,22 @@ export default function Settings() {
       <div className="card">
         <div className="card-title">数据源</div>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <input type="radio" name="dataSource" value="local" checked={dataSource === 'local'} onChange={() => setDataSource('local')} />
-            本地数据库
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <input type="radio" name="dataSource" value="remote" checked={dataSource === 'remote'} onChange={() => setDataSource('remote')} />
-            远程共享库
-          </label>
+          {isTauri() ? (
+            <>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input type="radio" name="dataSource" value="local" checked={dataSource === 'local'} onChange={() => setDataSource('local')} />
+                本地数据库
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input type="radio" name="dataSource" value="remote" checked={dataSource === 'remote'} onChange={() => setDataSource('remote')} />
+                远程共享库
+              </label>
+            </>
+          ) : (
+            <span style={{ fontSize: 14, color: 'var(--color-text-secondary, #888)' }}>
+              网页版仅支持远程共享库（数据保存在云端）
+            </span>
+          )}
         </div>
         {dataSource === 'remote' && (
           <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center' }}>

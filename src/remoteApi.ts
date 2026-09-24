@@ -206,3 +206,14 @@ export const searchProductsByNo = async (keyword: string): Promise<Product[]> =>
   if (!no) return [];
   return request<Product[]>(`/api/procurement/by-no/${no}`);
 };
+
+/**
+ * 远程模式图片地址：Takealot CDN 对浏览器/非白名单请求一律 403 防盗链，
+ * 统一走后端 /api/image-proxy 代理（服务端带 Referer+UA 已验证可正常抓取）。
+ */
+export const getImageUrl = (url: string): string => {
+  if (!url) return url;
+  if (!/^https?:\/\//i.test(url)) return url;
+  const baseUrl = getBaseUrl();
+  return `${baseUrl}/api/image-proxy?url=${encodeURIComponent(url)}`;
+};

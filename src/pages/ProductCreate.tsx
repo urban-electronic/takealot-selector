@@ -143,7 +143,7 @@ export default function ProductCreate() {
           <div className="two-col">
             <div>
               {scrapeResult.product_image_url && (
-                <img src={scrapeResult.product_image_url} alt="" className="image-preview" />
+                <img src={api.getImageUrl(scrapeResult.product_image_url)} alt="" className="image-preview" />
               )}
             </div>
             <div>

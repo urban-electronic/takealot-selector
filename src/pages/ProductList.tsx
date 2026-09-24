@@ -406,7 +406,7 @@ export default function ProductList() {
       case 'image':
         return p.product_image_url ? (
           <img
-            src={p.product_image_url}
+            src={api.getImageUrl(p.product_image_url)}
             alt=""
             referrerPolicy="no-referrer"
             style={{ width: 68, height: 68, objectFit: 'cover', borderRadius: 4 }}

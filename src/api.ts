@@ -92,3 +92,6 @@ export const searchProductsByNo = async (keyword: string): Promise<Product[]> =>
   const result = await invoke('search_products_by_no', { productNo: parseInt(keyword, 10) });
   return [result as Product];
 };
+
+/** 本地模式：Tauri WebView 请求特征被 Takealot CDN 放行，直接返回原图地址 */
+export const getImageUrl = (url: string): string => url;

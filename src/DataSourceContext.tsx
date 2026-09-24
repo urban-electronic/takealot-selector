@@ -13,7 +13,7 @@ interface DataSourceContextValue {
 const DataSourceContext = createContext<DataSourceContextValue | null>(null);
 
 /** 是否运行在 Tauri WebView（存在 Tauri 桥接对象） */
-const isTauri = (): boolean =>
+export const isTauri = (): boolean =>
   typeof window !== 'undefined' &&
   !!(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
 
