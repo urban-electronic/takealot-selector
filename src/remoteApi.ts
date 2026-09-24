@@ -31,6 +31,14 @@ const getBaseUrl = (): string => {
   }
 };
 
+const getApiKey = (): string => {
+  try {
+    return localStorage.getItem('api_key') || '';
+  } catch {
+    return '';
+  }
+};
+
 const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {
   const baseUrl = getBaseUrl();
   const url = `${baseUrl}${path}`;
@@ -38,6 +46,7 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      'X-API-Key': getApiKey(),
       ...options.headers,
     },
   });

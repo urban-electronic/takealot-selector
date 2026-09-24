@@ -49,6 +49,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---- API Key 鉴权（可选）----
+# 设置环境变量 API_KEY 后，所有 /api 请求必须携带 X-API-Key 请求头；
+# 未设置环境变量时保持放行（兼容本地开发）。
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+_API_KEY = os.environ.get("API_KEY", "").strip()
+
+
+@app.middleware("http")
+async def api_key_check(request: Request, call_next):
+    if _API_KEY and request.url.path.startswith("/api"):
+        key = request.headers.get("X-API-Key", "")
+        if key != _API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "无效或缺失 API Key，请在设置页填写"},
+            )
+    return await call_next(request)
+
 # 注册路由
 app.include_router(product_routes.router)
 app.include_router(scraper_routes.router)

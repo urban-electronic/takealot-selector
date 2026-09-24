@@ -10,6 +10,9 @@ export default function Settings() {
   const [apiBaseUrl, setApiBaseUrl] = useState(() => {
     try { return localStorage.getItem('api_base_url') || ''; } catch { return ''; }
   });
+  const [apiKey, setApiKey] = useState(() => {
+    try { return localStorage.getItem('api_key') || ''; } catch { return ''; }
+  });
   const [exporting, setExporting] = useState(false);
   const [feeCategories, setFeeCategories] = useState<FeeCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,8 +88,11 @@ export default function Settings() {
   };
 
   const handleSaveApiUrl = () => {
-    try { localStorage.setItem('api_base_url', apiBaseUrl); } catch {}
-    setMessage('API 地址已保存');
+    try {
+      localStorage.setItem('api_base_url', apiBaseUrl);
+      localStorage.setItem('api_key', apiKey);
+    } catch {}
+    setMessage('API 配置已保存');
   };
 
   const handleExportToCloud = async () => {
@@ -154,6 +160,7 @@ export default function Settings() {
           )}
         </div>
         {dataSource === 'remote' && (
+          <>
           <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
             <label style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>API 地址:</label>
             <input
@@ -167,6 +174,17 @@ export default function Settings() {
               {exporting ? '导出中...' : '一键导出到云端'}
             </button>
           </div>
+          <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
+            <label style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>API Key:</label>
+            <input
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="填写后端 API Key（未设置鉴权可留空）"
+              style={{ flex: 1, maxWidth: 400 }}
+              type="password"
+            />
+          </div>
+          </>
         )}
       </div>
 
