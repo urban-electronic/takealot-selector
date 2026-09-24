@@ -42,7 +42,17 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
     },
   });
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    // 优先透传后端 detail，避免丢失真实错误原因
+    let detail = `HTTP ${res.status}: ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body && body.detail) {
+        detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+      }
+    } catch {
+      // 响应体非 JSON 时保持默认错误
+    }
+    throw new Error(detail);
   }
   const text = await res.text();
   if (!text) return undefined as unknown as T;

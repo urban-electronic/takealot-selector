@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import cast, String
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -111,18 +112,31 @@ def search_product_by_no(product_no: int, db: Session = Depends(get_db)):
 
 @router.post("", response_model=ProcurementRecordOut)
 def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depends(get_db)):
-    # 校验 product_id 非空且产品存在（对齐本地 Rust create 行为）
-    if not data.product_id:
-        raise HTTPException(status_code=400, detail="请先选择产品")
-    product = db.query(Product).filter(Product.id == data.product_id).first()
-    if not product:
-        raise HTTPException(status_code=400, detail=f"产品不存在（id: {data.product_id}）")
+    # 校验 product_id 非空且产品存在（对齐本地 Rust create 行为）；
+    # 若前端只传了 product_no（手动输入序号场景），按 product_no 反查产品填充
+    product_id = data.product_id
+    product = None
+    if product_id:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            raise HTTPException(status_code=400, detail=f"产品不存在（id: {product_id}）")
+    elif data.product_no is not None:
+        product = (
+            db.query(Product)
+            .filter(cast(Product.product_no, String) == str(data.product_no))
+            .first()
+        )
+        if not product:
+            raise HTTPException(status_code=400, detail=f"产品不存在（序号: {data.product_no}）")
+        product_id = product.id
+    else:
+        raise HTTPException(status_code=400, detail="请选择产品")
 
     rec = ProcurementRecord(
         id=str(uuid.uuid4()),
-        product_id=data.product_id,
-        product_no=data.product_no,
-        product_name=data.product_name or "",
+        product_id=product_id,
+        product_no=data.product_no if data.product_no is not None else product.product_no,
+        product_name=data.product_name or (product.product_name or ""),
         quantity=data.quantity or 0,
         total_amount=data.total_amount or 0.0,
         unit_price=_calc_unit_price(data.quantity, data.total_amount),

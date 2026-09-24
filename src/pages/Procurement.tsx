@@ -251,11 +251,12 @@ export default function Procurement() {
                 {searching && <small style={{ color: '#888' }}>搜索中...</small>}
               </div>
 
-              {/* product name (auto-filled) */}
+              {/* product name (auto-filled, editable as fallback) */}
               <div>
                 <label>产品名称</label>
-                <input type="text" value={form.product_name} readOnly
-                  style={{ width: '100%', boxSizing: 'border-box', background: '#f5f5f5' }} />
+                <input type="text" value={form.product_name}
+                  onChange={e => setForm(prev => ({ ...prev, product_name: e.target.value }))}
+                  style={{ width: '100%', boxSizing: 'border-box' }} />
               </div>
 
               {/* quantity */}
