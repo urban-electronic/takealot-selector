@@ -253,6 +253,22 @@ async def debug_scraper():
     return info
 
 
+@app.get("/debug/product-no-types")
+def debug_product_no_types(db=Depends(get_db)):
+    """临时诊断：查看远程库 products.product_no 的真实存储类型与字面量"""
+    import sqlalchemy as sa
+    from database import engine as raw_engine
+    with raw_engine.connect() as conn:
+        types = conn.execute(sa.text("SELECT typeof(product_no) AS t, COUNT(*) AS c FROM products GROUP BY t")).fetchall()
+        cols = conn.execute(sa.text("PRAGMA table_info(products)")).fetchall()
+        sample = conn.execute(sa.text("SELECT typeof(product_no) AS t, quote(product_no) AS q FROM products WHERE quote(product_no) LIKE '%372%' LIMIT 5")).fetchall()
+        return {
+            "types": [dict(r._mapping) for r in types],
+            "cols": [dict(r._mapping) for r in cols],
+            "sample372": [dict(r._mapping) for r in sample],
+        }
+
+
 @app.get("/")
 def root():
     return {"message": "Takealot 选品与利润测算系统 API", "version": "1.0.0"}
