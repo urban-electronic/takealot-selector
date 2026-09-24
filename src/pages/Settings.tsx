@@ -103,7 +103,7 @@ export default function Settings() {
       const settingsData = await api.getSettings(); // 跟随当前数据源
       const settingsRows = Object.entries(settingsData).map(([key, value]) => ({ key, value }));
       const payload = [
-        { table: 'products', rows: products.map(({ product_no, ...rest }: any) => rest) },
+        { table: 'products', rows: products },
         { table: 'fee_categories', rows: categories },
         { table: 'fee_mapping_rules', rows: rules },
         { table: 'system_settings', rows: settingsRows },
