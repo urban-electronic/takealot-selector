@@ -101,10 +101,27 @@ def list_procurement_records(db: Session = Depends(get_db)):
     return [_to_out(r) for r in records]
 
 
+def _find_product_by_no(db: Session, product_no: int):
+    """按 product_no 查找产品，兼容远程库 INTEGER / REAL / TEXT 三种存储类型：
+    - INTEGER/REAL（372 / 372.0）：数值比较命中
+    - TEXT（'372'）：cast 字符串比较命中
+    """
+    return (
+        db.query(Product)
+        .filter(
+            or_(
+                Product.product_no == int(product_no),
+                cast(Product.product_no, String) == str(product_no),
+            )
+        )
+        .first()
+    )
+
+
 @router.get("/by-no/{product_no}", response_model=List[ProductBriefOut])
 def search_product_by_no(product_no: int, db: Session = Depends(get_db)):
     """按 product_no 搜索产品（采购表单自动带出名称），对齐本地 search_products_by_no"""
-    p = db.query(Product).filter(Product.product_no == product_no).first()
+    p = _find_product_by_no(db, product_no)
     if not p:
         return []
     return [ProductBriefOut(id=p.id, product_no=p.product_no, product_name=p.product_name or "")]
@@ -121,11 +138,7 @@ def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depen
         if not product:
             raise HTTPException(status_code=400, detail=f"产品不存在（id: {product_id}）")
     elif data.product_no is not None:
-        product = (
-            db.query(Product)
-            .filter(cast(Product.product_no, String) == str(data.product_no))
-            .first()
-        )
+        product = _find_product_by_no(db, data.product_no)
         if not product:
             raise HTTPException(status_code=400, detail=f"产品不存在（序号: {data.product_no}）")
         product_id = product.id
