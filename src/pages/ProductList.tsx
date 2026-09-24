@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
 import type { Product } from '../types';
@@ -13,6 +13,7 @@ interface ColumnDef {
 }
 
 const allColumns: ColumnDef[] = [
+  { key: 'select', label: '勾选', defaultWidth: 40 },
   { key: 'product_no', label: '#', defaultWidth: 50 },
   { key: 'link_status', label: '链接状态', defaultWidth: 80 },
   { key: 'image', label: '图片', defaultWidth: 80 },
@@ -47,11 +48,13 @@ function validateColumnOrder(saved: string[], canonical: string[]): string[] {
 
 export default function ProductList() {
   const api = useApi();
+  const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
 
   // 列宽拖拽
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
@@ -401,6 +404,23 @@ export default function ProductList() {
   const renderCell = (p: Product, colKey: string) => {
     const isRefreshing = refreshingIds.has(p.id);
     switch (colKey) {
+      case 'select':
+        if (!p.sku) return <span style={{ color: '#ccc', fontSize: 11 }}>无SKU</span>;
+        return (
+          <input
+            type="checkbox"
+            checked={selectedSkus.has(p.sku)}
+            onChange={() => {
+              setSelectedSkus(prev => {
+                const next = new Set(prev);
+                if (next.has(p.sku!)) next.delete(p.sku!); else next.add(p.sku!);
+                return next;
+              });
+            }}
+            title="勾选后可加入装箱单"
+            style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)', cursor: 'pointer' }}
+          />
+        );
       case 'product_no':
         return p.product_no;
       case 'image':
@@ -569,6 +589,34 @@ export default function ProductList() {
   const renderTh = (colKey: string, idx: number) => {
     const def = colDefMap.get(colKey);
     if (!def) return null;
+    if (colKey === 'select') {
+      const pageSkus = pagedProducts.map(p => p.sku).filter((s): s is string => !!s);
+      const allChecked = pageSkus.length > 0 && pageSkus.every(s => selectedSkus.has(s));
+      return (
+        <th
+          key={colKey}
+          style={{ width: 40, position: 'relative', whiteSpace: 'nowrap', userSelect: 'none', textAlign: 'center' }}
+        >
+          <input
+            type="checkbox"
+            checked={allChecked}
+            onChange={(e) => {
+              setSelectedSkus(prev => {
+                const next = new Set(prev);
+                if (e.target.checked) {
+                  pageSkus.forEach(s => next.add(s));
+                } else {
+                  pageSkus.forEach(s => next.delete(s));
+                }
+                return next;
+              });
+            }}
+            title="全选当前页"
+            style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)', cursor: 'pointer' }}
+          />
+        </th>
+      );
+    }
     const w = getColWidth(colKey, def.defaultWidth);
     const isDragTarget = dragTargetIdx === idx;
     return (
@@ -689,6 +737,18 @@ export default function ProductList() {
             </div>
           )}
         </div>
+
+        <button
+          className="btn btn-primary btn-sm"
+          disabled={selectedSkus.size === 0}
+          title={selectedSkus.size === 0 ? '请先勾选产品（需有 SKU）' : `将选中的 ${selectedSkus.size} 个产品加入装箱单`}
+          onClick={() => {
+            const skus = Array.from(selectedSkus);
+            navigate(`/packing?import=${encodeURIComponent(skus.join(','))}`);
+          }}
+        >
+          加入装箱单{selectedSkus.size > 0 ? ` (${selectedSkus.size})` : ''}
+        </button>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}

@@ -29,13 +29,14 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import PackingProduct
+from models import PackingProduct, Product
 from services import packing_excel as px
 
 router = APIRouter(prefix="/api/packing", tags=["packing"])
@@ -77,6 +78,10 @@ class ImageIn(BaseModel):
     sku: str = ''
     data: str = ''
     remove: bool = False
+
+
+class ImportFromProductsIn(BaseModel):
+    product_ids: List[str] = []
 
 
 class ExportLine(BaseModel):
@@ -212,6 +217,92 @@ def delete_product(data: DeleteIn, db: Session = Depends(get_db)):
         db.delete(p)
         db.commit()
     return {'ok': True}
+
+
+# ---- 4.5 POST /api/packing/import-from-products（选品库导入） ----
+
+_TAKEALOT_HEADERS = {
+    "Referer": "https://www.takealot.com/",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    ),
+}
+
+
+def _fetch_takealot_image(url: str) -> str:
+    """抓取 Takealot 图片（复用 image-proxy 的 Referer/UA 头）并按 SHA256 命名入库，
+    返回图片文件名；任何失败抛 ValueError，由调用方降级为空图不阻断导入。
+    """
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            resp = client.get(url, headers=_TAKEALOT_HEADERS)
+    except Exception as e:
+        raise ValueError(f'图片抓取异常：{e}')
+    if resp.status_code != 200:
+        raise ValueError(f'图片抓取失败 HTTP {resp.status_code}')
+    blob = resp.content
+    if len(blob) > 20 * 1024 * 1024:
+        raise ValueError('图片超过 20 MB')
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(blob)
+        tmp = f.name
+    try:
+        filename = px.add_image('import', tmp)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+    return filename
+
+
+@router.post('/import-from-products')
+def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_db)):
+    """选品 products 批量导入装箱单库（幂等：SKU 已存在则跳过，不覆盖云端已有编辑）。
+    字段映射 + Takealot 图片自动抓取转存 SHA256；图片失败不阻断导入。
+    """
+    imported = skipped = 0
+    failed = []
+    for pid in data.product_ids:
+        prod = db.query(Product).filter(Product.id == pid).first()
+        if prod is None:
+            failed.append({'sku': '', 'reason': f'选品产品 {pid} 不存在'})
+            continue
+        sku = (prod.sku or '').strip()
+        name_zh = (prod.chinese_product_name or '').strip()
+        name_en = (prod.product_name or '').strip()
+        if not sku:
+            skipped += 1
+            failed.append({'sku': sku, 'reason': 'SKU 为空'})
+            continue
+        if _find(db, sku):
+            skipped += 1
+            continue
+        electric_hint = '是' if (prod.shipping_method or '').find('带电') >= 0 else ''
+        electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
+        p = PackingProduct(sku=sku)
+        p.name = ' / '.join(x for x in (name_zh, name_en) if x)
+        p.name_zh = name_zh
+        p.name_en = name_en
+        p.unit = '个'
+        p.weight = str(prod.actual_weight_kg or '')
+        p.material = px.infer_material(name_zh, name_en)
+        p.brand = ''
+        p.battery = ''
+        p.electric = electric
+        p.magnetic = magnetic
+        p.template_row = None
+        p.default_count = 1
+        image_url = (prod.product_image_url or '').strip()
+        if image_url:
+            try:
+                p.image_file = _fetch_takealot_image(image_url)
+            except Exception as e:
+                p.image_file = ''
+                failed.append({'sku': sku, 'reason': f'图片抓取失败：{e}'})
+        db.add(p)
+        imported += 1
+    db.commit()
+    return {'ok': True, 'imported': imported, 'skipped': skipped, 'failed': failed}
 
 
 # ---- 5. POST /api/packing/image ----

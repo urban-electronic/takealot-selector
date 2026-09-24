@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -225,4 +225,88 @@ export const getImageUrl = (url: string): string => {
   if (!/^https?:\/\//i.test(url)) return url;
   const baseUrl = getBaseUrl();
   return `${baseUrl}/api/image-proxy?url=${encodeURIComponent(url)}`;
+};
+
+// ---- Packing（装箱单，云端独立鲲鹏库） ----
+
+export interface PackingUpsertInput {
+  sku: string;
+  name_zh?: string;
+  name_en?: string;
+  unit?: string;
+  weight?: string;
+  material?: string;
+  brand?: string;
+  battery?: string;
+  electric?: string;
+  magnetic?: string;
+  default_count?: number | null;
+  template_row?: number | null;
+}
+
+export const getPackingProducts = (): Promise<PackingProduct[]> =>
+  request<PackingProduct[]>('/api/packing/products');
+
+export const upsertPackingProduct = async (data: PackingUpsertInput): Promise<{ ok: boolean }> => {
+  const result = await request<{ ok: boolean }>('/api/packing/product', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  return result;
+};
+
+export const deletePackingProduct = (sku: string): Promise<{ ok: boolean }> =>
+  request<{ ok: boolean }>('/api/packing/delete', {
+    method: 'POST',
+    body: JSON.stringify({ sku }),
+  });
+
+export const uploadPackingImage = (sku: string, dataBase64: string, remove = false): Promise<{ ok: boolean; filename?: string }> =>
+  request<{ ok: boolean; filename?: string }>('/api/packing/image', {
+    method: 'POST',
+    body: JSON.stringify({ sku, data: dataBase64, remove }),
+  });
+
+export const importFromProducts = (productIds: string[]): Promise<{ ok: boolean; imported: number; skipped: number; failed: Array<{ sku: string; reason: string }> }> =>
+  request<{ ok: boolean; imported: number; skipped: number; failed: Array<{ sku: string; reason: string }> }>('/api/packing/import-from-products', {
+    method: 'POST',
+    body: JSON.stringify({ product_ids: productIds }),
+  });
+
+/** 导出装箱单 Excel：返回原始 blob（不走 request 的 JSON 解析） */
+export const exportPacking = async (payload: PackingExportPayload): Promise<Blob> => {
+  const res = await fetch(`${getBaseUrl()}/api/packing/export`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': getApiKey(),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}: ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body && body.detail) {
+        detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+      } else if (body && body.error) {
+        detail = body.error;
+      }
+    } catch {
+      // 响应体非 JSON 时保持默认错误
+    }
+    throw new Error(detail);
+  }
+  return await res.blob();
+};
+
+/** 装箱单图片访问（img 标签无法带 X-API-Key header，改用 fetch blob） */
+export const fetchPackingImageBlob = async (filename: string): Promise<Blob> => {
+  const res = await fetch(`${getBaseUrl()}/api/packing/images/${encodeURIComponent(filename)}`, {
+    headers: { 'X-API-Key': getApiKey() },
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+  return await res.blob();
 };

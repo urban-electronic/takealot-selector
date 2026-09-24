@@ -136,6 +136,36 @@ export interface ProcurementRecord {
   recorded_at: string;
 }
 
+export interface PackingProduct {
+  sku: string;
+  name_zh: string;
+  name_en: string;
+  unit: string;
+  weight: string;
+  material: string;
+  brand: string;
+  battery: string;
+  electric: string;
+  magnetic: string;
+  template_row: number | null;
+  default_count: number | null;
+  image_file: string;
+}
+
+export interface PackingExportLine {
+  sku: string;
+  cartons: string;
+  count: string;
+}
+
+export interface PackingExportPayload {
+  date: string;
+  mark: string;
+  shipping: string;
+  address: string;
+  items: PackingExportLine[];
+}
+
 export const SELECTION_STATUS_MAP: Record<string, { label: string; color: string }> = {
   '数据待补充': { label: '数据待补充', color: '#faad14' },
   '待确认品类': { label: '待确认品类', color: '#1677ff' },
