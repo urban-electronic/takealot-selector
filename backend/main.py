@@ -12,7 +12,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal, get_db
 from models import FeeCategory, FeeMappingRule, SystemSettings
-from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes
+from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes
 from migrate import migrate_from_dump
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
@@ -76,6 +76,8 @@ app.include_router(category_routes.router)
 app.include_router(settings_routes.router)
 app.include_router(image_proxy.router)
 app.include_router(procurement_routes.router)
+app.include_router(packing_routes.router)
+app.include_router(packing_routes.ui_router)
 
 
 # 默认费率表

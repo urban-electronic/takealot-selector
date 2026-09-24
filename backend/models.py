@@ -189,3 +189,29 @@ class ProcurementRecord(Base):
     unit_price = Column(Float, default=0.0)
     notes = Column(String, default="")
     recorded_at = Column(String, default="")
+
+
+class PackingProduct(Base):
+    """云端装箱单产品（对齐本地 kunjia_analyze products 表 14 字段 + updated_at）
+
+    字段顺序与本地 sqlite products 表一致：
+    sku / name / name_zh / name_en / unit / weight / material / brand /
+    battery / electric / magnetic / template_row / default_count / image_file
+    """
+    __tablename__ = "packing_products"
+
+    sku = Column(String, primary_key=True)
+    name = Column(String, nullable=False, default="")
+    name_zh = Column(String, default="")
+    name_en = Column(String, default="")
+    unit = Column(String, default="")
+    weight = Column(String, default="")
+    material = Column(String, default="")
+    brand = Column(String, default="")
+    battery = Column(String, default="")
+    electric = Column(String, default="")
+    magnetic = Column(String, default="")
+    template_row = Column(Integer, nullable=True)
+    default_count = Column(Integer, default=1)
+    image_file = Column(String, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
