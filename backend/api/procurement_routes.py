@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import cast, String
+from sqlalchemy import or_, cast, String
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
