@@ -60,6 +60,10 @@ _API_KEY = os.environ.get("API_KEY", "").strip()
 
 @app.middleware("http")
 async def api_key_check(request: Request, call_next):
+    # CORS 预检（OPTIONS）不带 X-API-Key，必须放行交给 CORSMiddleware 处理，
+    # 否则浏览器跨域请求 preflight 401 导致 "Failed to fetch"
+    if request.method == "OPTIONS":
+        return await call_next(request)
     if _API_KEY and request.url.path.startswith("/api"):
         key = request.headers.get("X-API-Key", "")
         if key != _API_KEY:
