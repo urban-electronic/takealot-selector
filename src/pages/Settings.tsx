@@ -138,9 +138,10 @@ export default function Settings() {
         { table: 'fee_mapping_rules', rows: rules },
         { table: 'system_settings', rows: settingsRows },
       ];
+      const migrateKey = (apiKeyRef.current?.value ?? apiKey ?? localStorage.getItem('api_key') ?? '').trim();
       const res = await fetch(`${baseUrl}/api/migrate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': migrateKey },
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

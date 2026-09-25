@@ -20,6 +20,10 @@ export default function ProductDetail() {
 
   useEffect(() => {
     if (!id) return;
+    if (id === 'new') {
+      navigate('/create', { replace: true });
+      return;
+    }
     api.getProduct(id)
       .then((p: Product) => {
         setProduct(p);

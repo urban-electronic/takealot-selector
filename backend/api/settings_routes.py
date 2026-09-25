@@ -42,3 +42,15 @@ def update_settings(data: dict, db: Session = Depends(get_db)):
             db.add(SystemSettings(key=key, value=str(value)))
     db.commit()
     return {"detail": "设置已更新"}
+
+
+@router.put("/settings")
+def update_settings_put(data: dict, db: Session = Depends(get_db)):
+    for key, value in data.items():
+        setting = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+        if setting:
+            setting.value = str(value)
+        else:
+            db.add(SystemSettings(key=key, value=str(value)))
+    db.commit()
+    return {"detail": "设置已更新"}
