@@ -58,6 +58,19 @@ from fastapi.responses import JSONResponse
 _API_KEY = os.environ.get("API_KEY", "").strip()
 
 
+def _cors_headers(request: Request) -> dict:
+    """为 401 等提前返回的响应手动补 CORS 头（CORSMiddleware 理论上会处理，
+    但实测部分 Starlette 版本对中间件内直接返回的响应不追加头，导致浏览器拦截）。"""
+    origin = request.headers.get("origin", "")
+    return {
+        "Access-Control-Allow-Origin": origin or "*",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Vary": "Origin",
+    }
+
+
 @app.middleware("http")
 async def api_key_check(request: Request, call_next):
     # CORS 预检（OPTIONS）不带 X-API-Key，必须放行交给 CORSMiddleware 处理，
@@ -70,6 +83,7 @@ async def api_key_check(request: Request, call_next):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "无效或缺失 API Key，请在设置页填写"},
+                headers=_cors_headers(request),
             )
     return await call_next(request)
 

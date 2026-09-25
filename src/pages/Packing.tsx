@@ -7,6 +7,7 @@ import {
   deletePackingProduct,
   uploadPackingImage,
   importFromProducts,
+  syncPackingImagesFromProducts,
   exportPacking,
   fetchPackingImageBlob,
 } from '../remoteApi';
@@ -113,6 +114,9 @@ export default function Packing() {
   const [importSearching, setImportSearching] = useState(false);
   const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
+
+  // 按 SKU 从选品库匹配图片
+  const [syncingImages, setSyncingImages] = useState(false);
 
   // 文件输入
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -382,6 +386,27 @@ export default function Packing() {
     }
   };
 
+  // 按 SKU 从选品库匹配图片（后端抓取转存，仅处理待补图）
+  const handleSyncImages = async () => {
+    setSyncingImages(true);
+    setMsg('');
+    setError('');
+    try {
+      const res = await syncPackingImagesFromProducts(200);
+      await loadProducts();
+      const failNote = res.failed.length ? `，失败 ${res.failed.length} 条（${res.failed.slice(0, 3).map(f => `${f.sku}:${f.reason}`).join('；')}${res.failed.length > 3 ? '…' : ''}）` : '';
+      if (res.updated === 0 && res.failed.length === 0) {
+        setMsg('未找到可匹配的图片：选品库中没有这些 SKU 的图片记录，或装箱单库已无待补图');
+      } else {
+        setMsg(`SKU 图片匹配完成：成功补图 ${res.updated} 条（本批处理 ${res.total_pending} 条待补图）${failNote}`);
+      }
+    } catch (e: any) {
+      setError(`图片匹配失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+    } finally {
+      setSyncingImages(false);
+    }
+  };
+
   // 从选品库导入执行
   const confirmImport = async () => {
     const ids = Array.from(importSelected);
@@ -448,7 +473,17 @@ export default function Packing() {
 
       {/* 装箱单库 */}
       <div className="card" style={{ marginBottom: 20, padding: 16 }}>
-        <h3 style={{ marginTop: 0, marginBottom: 12 }}>装箱单产品库</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h3 style={{ margin: 0 }}>装箱单产品库</h3>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={handleSyncImages}
+            disabled={syncingImages}
+            title="将装箱单库中“待补图”的产品，按 SKU 从选品库匹配并抓取图片"
+          >
+            {syncingImages ? '匹配中...' : '按SKU匹配选品库图片'}
+          </button>
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
           <input
             type="text"

@@ -84,6 +84,10 @@ class ImportFromProductsIn(BaseModel):
     product_ids: List[str] = []
 
 
+class SyncImagesIn(BaseModel):
+    limit: int = 100
+
+
 class ExportLine(BaseModel):
     sku: str = ''
     cartons: str = '1'
@@ -303,6 +307,51 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
         imported += 1
     db.commit()
     return {'ok': True, 'imported': imported, 'skipped': skipped, 'failed': failed}
+
+
+# ---- 4.6 POST /api/packing/sync-images-from-products（按 SKU 从选品库匹配图片） ----
+
+@router.post('/sync-images-from-products')
+def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db)):
+    """把装箱单库中"待补图"（image_file 为空）的产品，按 SKU 去选品库 products
+    匹配 product_image_url 并抓取转存为 SHA256 图片。
+
+    - 仅处理 image_file 为空的产品，不覆盖用户手动上传的图
+    - 按 SKU 精确匹配（str 直接比较，与导入逻辑一致）
+    - 图片抓取失败不阻断，记入 failed 返回
+    """
+    limit = max(0, int(getattr(data, 'limit', 100) or 100))
+    pending = (
+        db.query(PackingProduct)
+        .filter(PackingProduct.image_file == '')
+        .order_by(PackingProduct.sku)
+        .all()
+    )
+    if limit > 0:
+        pending = pending[:limit]
+    updated = 0
+    failed = []
+    for p in pending:
+        prod = db.query(Product).filter(Product.sku == p.sku).first()
+        if prod is None:
+            continue
+        image_url = (prod.product_image_url or '').strip()
+        if not image_url:
+            continue
+        try:
+            p.image_file = _fetch_takealot_image(image_url)
+            db.commit()
+            updated += 1
+        except Exception as e:
+            db.rollback()
+            failed.append({'sku': p.sku, 'reason': str(e)})
+    db.commit()
+    return {
+        'ok': True,
+        'updated': updated,
+        'total_pending': len(pending),
+        'failed': failed,
+    }
 
 
 # ---- 5. POST /api/packing/image ----

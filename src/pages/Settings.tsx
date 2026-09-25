@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
 
@@ -13,6 +13,9 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState(() => {
     try { return localStorage.getItem('api_key') || ''; } catch { return ''; }
   });
+  // ref 兜底：部分浏览器/自动化填写不会触发 React onChange，保存时从 DOM 读真实值
+  const apiBaseUrlRef = useRef<HTMLInputElement>(null);
+  const apiKeyRef = useRef<HTMLInputElement>(null);
   const [exporting, setExporting] = useState(false);
   const [feeCategories, setFeeCategories] = useState<FeeCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -88,11 +91,32 @@ export default function Settings() {
   };
 
   const handleSaveApiUrl = () => {
+    // 优先读 DOM 真实值（兼容 onChange 未触发的场景），再与 state 同步
+    const baseUrl = (apiBaseUrlRef.current?.value ?? apiBaseUrl).trim();
+    const key = (apiKeyRef.current?.value ?? apiKey).trim();
+    setApiBaseUrl(baseUrl);
+    setApiKey(key);
     try {
-      localStorage.setItem('api_base_url', apiBaseUrl);
-      localStorage.setItem('api_key', apiKey);
-    } catch {}
-    setMessage('API 配置已保存');
+      localStorage.setItem('api_base_url', baseUrl);
+      localStorage.setItem('api_key', key);
+    } catch (e) {
+      setError('API 配置保存失败：浏览器存储不可用');
+      return;
+    }
+    // 保存后立即读回验证，避免"点了保存但没落库"
+    let verified = false;
+    try {
+      verified =
+        localStorage.getItem('api_base_url') === baseUrl &&
+        localStorage.getItem('api_key') === key;
+    } catch {
+      verified = false;
+    }
+    if (!verified) {
+      setError('API 配置未生效，请重试（必要时清理浏览器缓存后刷新）');
+      return;
+    }
+    setMessage('API 配置已保存并生效');
   };
 
   const handleExportToCloud = async () => {
@@ -177,6 +201,7 @@ export default function Settings() {
           <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
             <label style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>API Key:</label>
             <input
+              ref={apiKeyRef}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="填写后端 API Key（未设置鉴权可留空）"

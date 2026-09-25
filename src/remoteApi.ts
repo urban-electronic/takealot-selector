@@ -273,6 +273,13 @@ export const importFromProducts = (productIds: string[]): Promise<{ ok: boolean;
     body: JSON.stringify({ product_ids: productIds }),
   });
 
+/** 装箱单库"待补图"产品按 SKU 从选品库匹配图片（后端抓取转存 SHA256） */
+export const syncPackingImagesFromProducts = (limit = 100): Promise<{ ok: boolean; updated: number; total_pending: number; failed: Array<{ sku: string; reason: string }> }> =>
+  request<{ ok: boolean; updated: number; total_pending: number; failed: Array<{ sku: string; reason: string }> }>('/api/packing/sync-images-from-products', {
+    method: 'POST',
+    body: JSON.stringify({ limit }),
+  });
+
 /** 导出装箱单 Excel：返回原始 blob（不走 request 的 JSON 解析） */
 export const exportPacking = async (payload: PackingExportPayload): Promise<Blob> => {
   const res = await fetch(`${getBaseUrl()}/api/packing/export`, {
