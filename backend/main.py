@@ -77,7 +77,8 @@ async def api_key_check(request: Request, call_next):
     # 否则浏览器跨域请求 preflight 401 导致 "Failed to fetch"
     if request.method == "OPTIONS":
         return await call_next(request)
-    if _API_KEY and request.url.path.startswith("/api"):
+    # image-proxy 由路由层自己校验 token/header（<img> 无法带 header）
+    if _API_KEY and request.url.path.startswith("/api") and not request.url.path.startswith("/api/image-proxy"):
         key = request.headers.get("X-API-Key", "")
         if key != _API_KEY:
             return JSONResponse(

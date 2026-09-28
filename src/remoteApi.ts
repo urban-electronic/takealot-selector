@@ -224,7 +224,10 @@ export const getImageUrl = (url: string): string => {
   if (!url) return url;
   if (!/^https?:\/\//i.test(url)) return url;
   const baseUrl = getBaseUrl();
-  return `${baseUrl}/api/image-proxy?url=${encodeURIComponent(url)}`;
+  // <img> 标签无法带 X-API-Key 头，图片代理改用 query token 鉴权
+  const key = (localStorage.getItem('api_key') || '').trim();
+  const sep = key ? `&token=${encodeURIComponent(key)}` : '';
+  return `${baseUrl}/api/image-proxy?url=${encodeURIComponent(url)}${sep}`;
 };
 
 // ---- Packing（装箱单，云端独立鲲鹏库） ----

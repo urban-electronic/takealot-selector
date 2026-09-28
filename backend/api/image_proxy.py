@@ -2,16 +2,30 @@
 图片代理端点 - 转发外部图片以绕过 CDN Referer 防盗链
 """
 
-from fastapi import APIRouter, Query, HTTPException
+import os
+from fastapi import APIRouter, Query, Header, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
 
 router = APIRouter(prefix="/api", tags=["image-proxy"])
 
+_API_KEY = os.environ.get("API_KEY", "").strip()
+
 
 @router.get("/image-proxy")
-async def image_proxy(url: str = Query(..., description="原始图片 URL")):
-    """代理转发图片，携带 Takealot Referer 头以绕过 CDN 防盗链"""
+async def image_proxy(
+    url: str = Query(..., description="原始图片 URL"),
+    token: str = Query("", description="图片鉴权 token（<img> 无法带 header，走 query）"),
+    x_api_key: str = Header("", alias="X-API-Key"),
+):
+    """代理转发图片，携带 Takealot Referer 头以绕过 CDN 防盗链。
+
+    鉴权说明：/api/image-proxy 从全局中间件跳过，因为 <img> 标签无法携带
+    X-API-Key 头；此处改用 query token（前端 getImageUrl 自动拼接）校验，
+    同时兼容 X-API-Key 头（fetch 场景），避免鉴权被绕过。
+    """
+    if _API_KEY and token != _API_KEY and x_api_key != _API_KEY:
+        raise HTTPException(status_code=401, detail="无效或缺失 API Key")
     headers = {
         "Referer": "https://www.takealot.com/",
         "User-Agent": (
