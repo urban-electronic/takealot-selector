@@ -5,8 +5,15 @@ export const IMAGE_PROXY_BASE = '';
 
 /** 在系统默认浏览器中打开外部 URL，Tauri 中 target="_blank" 不生效 */
 export const openUrl = (url: string): void => {
-  if (url && url !== '#') {
+  if (!url || url === '#') return;
+  const isTauri =
+    typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+  if (isTauri) {
     open(url).catch(() => {});
+  } else {
+    // 纯浏览器（网页版 GitHub Pages）无 Tauri 桥接，open() 为 undefined 会被吞错，
+    // 改用 window.open 新标签打开，避免点击无反应
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 };
 
