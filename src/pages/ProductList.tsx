@@ -170,6 +170,19 @@ export default function ProductList() {
   const shippingFilter = (searchParams.get('shipping_method') || '').split(',').filter(Boolean);
   const linkStatusFilter = (searchParams.get('link_status') || '').split(',').filter(Boolean);
   const searchText = searchParams.get('search') || '';
+  const [searchInput, setSearchInput] = useState(searchText);
+
+  // URL 与输入框双向同步；输入停止 300ms 后再请求，避免每个按键都刷新列表
+  useEffect(() => {
+    setSearchInput(searchText);
+  }, [searchText]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (searchInput !== searchText) setFilter('search', searchInput.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput, searchText]);
 
   // 多选下拉状态
   const [multiOpen, setMultiOpen] = useState<string | null>(null);
@@ -643,8 +656,8 @@ export default function ProductList() {
   };
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+    <div className="product-list-page">
+      <div className="product-list-header">
         <h2>产品列表 ({products.length})</h2>
         <Link to="/create" className="btn btn-primary">+ 新建产品</Link>
       </div>
@@ -708,10 +721,11 @@ export default function ProductList() {
 
         <input
           type="text"
-          placeholder="搜索标题/TSIN/链接..."
-          value={searchText}
-          onChange={(e) => setFilter('search', e.target.value)}
-          style={{ width: 240 }}
+          className="product-search-input"
+          placeholder="搜索中文品名/英文品名/TSIN/链接..."
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          aria-label="搜索中文品名、英文品名、TSIN或链接"
         />
 
         {/* 列设置按钮 */}
@@ -761,8 +775,9 @@ export default function ProductList() {
           <Link to="/create" className="btn btn-primary" style={{ marginTop: 12 }}>新建产品</Link>
         </div>
       ) : (
-        <div className="table-wrapper">
-          <table className="product-table" style={{ whiteSpace: 'nowrap' }}>
+        <div className="table-wrapper product-list-table-wrapper">
+          <div className="product-table-scroll">
+            <table className="product-table" style={{ whiteSpace: 'nowrap' }}>
             <thead>
               <tr>
                 {renderColumns.map((colKey, idx) => renderTh(colKey, idx))}
@@ -782,7 +797,8 @@ export default function ProductList() {
                 );
               })}
             </tbody>
-          </table>
+            </table>
+          </div>
           <div className="pagination-bar">
             <span>共 {products.length} 条，第 {safeCurrentPage}/{totalPages} 页</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
