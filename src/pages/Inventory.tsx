@@ -70,7 +70,7 @@ export default function Inventory() {
   return (
     <div className="page inventory-page">
       <div className="inventory-heading">
-        <div><h1>库存管理</h1><p>库存余额、人工调整和发货记录统一留痕，可撤回，不覆盖历史。</p></div>
+        <div><h1>库存管理</h1><p>自 2026-09-24 起重新计算 · 库存余额、人工调整和发货记录统一留痕，可撤回，不覆盖历史。</p></div>
         <div className="inventory-kpis">
           <span><strong>{totalAvailable}</strong> 可用库存</span>
           <span><strong>{shipments.filter(x => x.status === 'confirmed').length}</strong> 已发货单</span>
