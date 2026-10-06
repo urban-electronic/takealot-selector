@@ -2,6 +2,7 @@
 """库存余额、人工调整和发货历史。"""
 
 import datetime as dt
+import re
 import uuid
 from typing import Optional
 
@@ -38,11 +39,22 @@ def _procurement_by_product(db: Session) -> dict:
     return result
 
 
+def _find_product_for_sku(db: Session, sku: str):
+    exact = db.query(Product).filter(Product.sku == sku).first()
+    if exact:
+        return exact, False
+    for product in db.query(Product).filter(Product.sku.isnot(None)).all():
+        variants = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
+        if len(variants) > 1 and sku in variants:
+            return product, True
+    return None, False
+
+
 def inventory_balance_for_sku(db: Session, sku: str) -> int:
     start_date = _start_date(db)
-    product = db.query(Product).filter(Product.sku == sku).first()
+    product, is_variant = _find_product_for_sku(db, sku)
     purchased = 0
-    if product:
+    if product and not is_variant:
         purchased = int(
             db.query(func.coalesce(func.sum(ProcurementRecord.quantity), 0))
             .filter(
@@ -94,26 +106,33 @@ def list_inventory(db: Session = Depends(get_db)):
     rows = []
     seen_skus = set()
     for product in products:
-        sku = (product.sku or "").strip()
-        if sku and sku in seen_skus:
-            continue
-        if sku:
-            seen_skus.add(sku)
-        purchased = int(purchased_by_id.get(product.id, 0) or 0) + int(purchased_by_no.get(product.product_no, 0) or 0)
-        adjusted = int(adjusted_by_sku.get(sku, 0) or 0) if sku else 0
-        shipped = int(shipped_by_sku.get(sku, 0) or 0) if sku else 0
-        rows.append({
-            "product_id": product.id,
-            "product_no": product.product_no,
-            "sku": sku,
-            "name": product.chinese_product_name or product.product_name or "未命名产品",
-            "name_en": product.product_name or "",
-            "image_url": product.product_image_url or "",
-            "purchased": purchased,
-            "adjusted": adjusted,
-            "shipped": shipped,
-            "available": purchased + adjusted - shipped,
-        })
+        raw_sku = (product.sku or "").strip()
+        variants = [x for x in re.split(r'[\s,，;；]+', raw_sku) if x] or [""]
+        zh_names = [x for x in re.split(r'\s{1,}', (product.chinese_product_name or "").strip()) if x]
+        for idx, sku in enumerate(variants):
+            if sku and sku in seen_skus:
+                continue
+            if sku:
+                seen_skus.add(sku)
+            # 多颜色历史记录无法可靠分摊采购总数，分支库存从人工调整开始，避免重复放大库存。
+            purchased = 0 if len(variants) > 1 else int(purchased_by_id.get(product.id, 0) or 0) + int(purchased_by_no.get(product.product_no, 0) or 0)
+            adjusted = int(adjusted_by_sku.get(sku, 0) or 0) if sku else 0
+            shipped = int(shipped_by_sku.get(sku, 0) or 0) if sku else 0
+            variant_name = zh_names[idx] if len(zh_names) == len(variants) else (product.chinese_product_name or product.product_name or "未命名产品")
+            rows.append({
+                "product_id": f"{product.id}:{idx}" if len(variants) > 1 else product.id,
+                "product_no": product.product_no,
+                "sku": sku,
+                "name": variant_name,
+                "name_en": product.product_name or "",
+                "image_url": product.product_image_url or "",
+                "purchased": purchased,
+                "adjusted": adjusted,
+                "shipped": shipped,
+                "available": purchased + adjusted - shipped,
+                "variant_group": product.id if len(variants) > 1 else "",
+                "is_primary_variant": idx == 0,
+            })
     return rows
 
 
@@ -130,7 +149,8 @@ def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db)):
     sku = data.sku.strip()
     if not sku or data.quantity_delta == 0:
         raise HTTPException(status_code=400, detail="SKU 不能为空，调整数量不能为 0")
-    if not db.query(Product).filter(Product.sku == sku).first():
+    product, _ = _find_product_for_sku(db, sku)
+    if not product:
         raise HTTPException(status_code=404, detail="找不到该 SKU")
     current = inventory_balance_for_sku(db, sku)
     if data.quantity_delta < 0 and current + data.quantity_delta < 0:
