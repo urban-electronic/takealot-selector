@@ -47,6 +47,7 @@ SKU_RE = re.compile(r'[A-Za-z0-9_-]{1,50}')
 PUBLIC_FIELDS = (
     'sku', 'name_zh', 'name_en', 'unit', 'weight', 'material', 'brand',
     'battery', 'electric', 'magnetic', 'default_count', 'image_file', 'template_row',
+    'variant_group', 'variant_label', 'is_primary_variant',
 )
 
 
@@ -66,6 +67,9 @@ class ProductIn(BaseModel):
     template_row: Optional[int] = None
     default_count: Optional[int] = None
     old_sku: Optional[str] = None
+    variant_group: str = ''
+    variant_label: str = ''
+    is_primary_variant: bool = True
 
 
 class BatchIn(BaseModel):
@@ -185,11 +189,13 @@ def _parse_migration_zip(content: bytes) -> tuple:
 @router.get('/products')
 def list_products(db: Session = Depends(get_db)):
     rows = db.query(PackingProduct).order_by(PackingProduct.sku).all()
-    source_images = {
-        sku: image_url
-        for sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.sku.isnot(None)).all()
-        if sku and image_url
-    }
+    rows.sort(key=lambda p: (p.variant_group or p.sku, 0 if p.is_primary_variant else 1, p.sku))
+    source_images = {}
+    for raw_sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.sku.isnot(None)).all():
+        if raw_sku and image_url:
+            for sku in re.split(r'[\s,，;；]+', raw_sku.strip()):
+                if sku:
+                    source_images[sku] = image_url
     result = []
     for p in rows:
         item = public(p)
@@ -210,37 +216,51 @@ def sync_from_products(db: Session = Depends(get_db)):
     imported = skipped_no_sku = duplicate_sku = 0
     seen = set(existing)
     for prod in products:
-        sku = (prod.sku or '').strip()
-        if not sku:
+        raw_sku = (prod.sku or '').strip()
+        sku_variants = [x for x in re.split(r'[\s,，;；]+', raw_sku) if x]
+        if not sku_variants:
             skipped_no_sku += 1
-            continue
-        if sku in seen:
-            if sku not in existing:
-                duplicate_sku += 1
             continue
         name_zh = (prod.chinese_product_name or '').strip()
         name_en = (prod.product_name or '').strip()
+        zh_variants = [x for x in re.split(r'\s{1,}', name_zh) if x]
         electric_hint = '是' if '带电' in (prod.shipping_method or '') else ''
         electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
-        p = PackingProduct(
-            sku=sku,
-            name=' / '.join(x for x in (name_zh, name_en) if x),
-            name_zh=name_zh,
-            name_en=name_en,
-            unit='个',
-            weight=str(prod.actual_weight_kg or ''),
-            material=px.infer_material(name_zh, name_en),
-            brand='',
-            battery='',
-            electric=electric,
-            magnetic=magnetic,
-            template_row=None,
-            default_count=1,
-            image_file='',
-        )
-        db.add(p)
-        seen.add(sku)
-        imported += 1
+        legacy = _find(db, raw_sku) if len(sku_variants) > 1 else None
+        for idx, sku in enumerate(sku_variants):
+            variant_name = zh_variants[idx] if len(zh_variants) == len(sku_variants) else name_zh
+            if sku in seen:
+                current = _find(db, sku)
+                if current and len(sku_variants) > 1:
+                    current.variant_group = prod.id
+                    current.variant_label = variant_name
+                    current.is_primary_variant = idx == 0
+                continue
+            p = PackingProduct(
+                sku=sku,
+                name=' / '.join(x for x in (variant_name, name_en) if x),
+                name_zh=variant_name,
+                name_en=name_en,
+                unit=legacy.unit if legacy else '个',
+                weight=legacy.weight if legacy else str(prod.actual_weight_kg or ''),
+                material=legacy.material if legacy else px.infer_material(variant_name, name_en),
+                brand=legacy.brand if legacy else '',
+                battery=legacy.battery if legacy else '',
+                electric=legacy.electric if legacy else electric,
+                magnetic=legacy.magnetic if legacy else magnetic,
+                template_row=None,
+                default_count=legacy.default_count if legacy else 1,
+                image_file=legacy.image_file if legacy else '',
+                variant_group=prod.id if len(sku_variants) > 1 else '',
+                variant_label=variant_name if len(sku_variants) > 1 else '',
+                is_primary_variant=idx == 0,
+            )
+            db.add(p)
+            seen.add(sku)
+            imported += 1
+        if legacy and raw_sku not in sku_variants:
+            db.delete(legacy)
+            seen.discard(raw_sku)
     db.commit()
     return {
         'ok': True,

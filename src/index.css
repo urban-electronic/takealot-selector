@@ -615,6 +615,68 @@ button {
   white-space: nowrap;
 }
 
+.sku-variant-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 240px;
+}
+
+.sku-variant {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid #dfe4ea;
+  border-radius: 4px;
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sku-variant.primary {
+  border-color: #91b9ef;
+  background: #eef6ff;
+}
+
+.sku-variant input {
+  width: auto;
+}
+
+.sku-variant span,
+.variant-role {
+  color: #fff;
+  background: #8a94a5;
+  border-radius: 3px;
+  padding: 0 3px;
+  font-family: inherit;
+  font-size: 9px;
+}
+
+.sku-variant.primary span,
+.variant-role.primary {
+  background: var(--color-primary);
+}
+
+.packing-variant-primary {
+  background: #f7fbff;
+}
+
+.packing-variant-branch td:first-child {
+  border-left: 3px solid #d8e4f2;
+}
+
+.packing-variant-branch .packing-product-name {
+  padding-left: 10px;
+}
+
+.variant-role {
+  display: inline-block;
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+
 .packing-row-actions {
   white-space: nowrap;
 }

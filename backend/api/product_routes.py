@@ -4,6 +4,7 @@
 
 from datetime import datetime
 from typing import Optional, List
+import re
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -254,6 +255,8 @@ def list_products(
     max_margin: Optional[float] = Query(None),
     search: Optional[str] = Query(None),
     missing_field: Optional[str] = Query(None),
+    multi_sku: bool = Query(False),
+    duplicate_sku: bool = Query(False),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
     db: Session = Depends(get_db),
@@ -305,6 +308,21 @@ def list_products(
         query = query.order_by(sort_field.desc())
 
     products = query.all()
+
+    def sku_tokens(value: Optional[str]) -> List[str]:
+        return [token.strip() for token in re.split(r"[\s,，;；]+", value or "") if token.strip()]
+
+    if multi_sku:
+        products = [product for product in products if len(sku_tokens(product.sku)) > 1]
+
+    if duplicate_sku:
+        # 重复冲突必须基于完整产品库判断，不能只统计当前筛选结果。
+        owners = {}
+        for product in db.query(Product).all():
+            for sku in set(sku_tokens(product.sku)):
+                owners.setdefault(sku, set()).add(product.id)
+        conflicting = {sku for sku, ids in owners.items() if len(ids) > 1}
+        products = [product for product in products if any(sku in conflicting for sku in sku_tokens(product.sku))]
     # 动态应用固定编号
     for p in products:
         p.product_no = id_to_no.get(p.id)

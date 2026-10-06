@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { getInventory, getShipments } from '../remoteApi';
-import type { DashboardStats, InventoryRow, ProcurementRecord, ShipmentRecord } from '../types';
+import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
 
 export default function Dashboard() {
@@ -11,13 +11,14 @@ export default function Dashboard() {
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [shipments, setShipments] = useState<ShipmentRecord[]>([]);
   const [procurements, setProcurements] = useState<ProcurementRecord[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords()])
-      .then(([dashboard, inventoryRows, shipmentRows, procurementRows]) => {
-        setStats(dashboard); setInventory(inventoryRows); setShipments(shipmentRows); setProcurements(procurementRows);
+    Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
+      .then(([dashboard, inventoryRows, shipmentRows, procurementRows, productRows]) => {
+        setStats(dashboard); setInventory(inventoryRows); setShipments(shipmentRows); setProcurements(procurementRows); setProducts(productRows);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -25,22 +26,36 @@ export default function Dashboard() {
 
   const overview = useMemo(() => {
     const validInventory = inventory.filter(row => row.sku);
+    const skuOwners = new Map<string, Set<string>>();
+    let multiSkuProducts = 0;
+    products.forEach(product => {
+      const tokens = (product.sku || '').split(/[\s,，;；]+/).map(value => value.trim()).filter(Boolean);
+      if (tokens.length > 1) multiSkuProducts += 1;
+      new Set(tokens).forEach(sku => {
+        if (!skuOwners.has(sku)) skuOwners.set(sku, new Set());
+        skuOwners.get(sku)!.add(product.id);
+      });
+    });
     return {
       available: validInventory.reduce((sum, row) => sum + row.available, 0),
       zeroOrNegative: validInventory.filter(row => row.available <= 0).length,
       missingSku: inventory.filter(row => !row.sku).length,
-      missingImage: inventory.filter(row => !row.image_url).length,
+      missingImage: products.filter(row => !row.product_image_url && !row.product_image_path).length,
+      multiSkuProducts,
+      duplicateSkuProducts: new Set(Array.from(skuOwners.values()).filter(ids => ids.size > 1).flatMap(ids => Array.from(ids))).size,
       confirmedShipments: shipments.filter(row => row.status === 'confirmed'),
       purchasedUnits: procurements.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
     };
-  }, [inventory, shipments, procurements]);
+  }, [inventory, shipments, procurements, products]);
 
   const tasks = [
     { step: 1, count: overview.missingSku, label: '产品缺少 SKU', detail: 'SKU 是库存与装箱匹配的基础', to: '/products?missing_field=sku&task=第1步：补充SKU', tone: 'red' },
     { step: 2, count: stats?.data_incomplete || 0, label: '产品资料待补充', detail: '补齐成本、尺寸和物流信息', to: '/products?selection_status=数据待补充&task=第2步：补充产品资料', tone: 'orange' },
     { step: 3, count: stats?.category_pending || 0, label: '品类待确认', detail: '确认 Fee 品类后重新计算利润', to: '/products?selection_status=待确认品类&task=第3步：确认产品品类', tone: 'blue' },
-    { step: 4, count: overview.missingImage, label: '产品缺少图片', detail: '图片会影响装箱单识别', to: '/products?missing_field=image&task=第4步：补充产品图片', tone: 'purple' },
-    { step: 5, count: overview.zeroOrNegative, label: '零库存产品', detail: '补录采购或进行库存调整', to: '/inventory?stock=zero', tone: 'purple' },
+    { step: 4, count: overview.multiSkuProducts, label: '多款 SKU 待确认', detail: '区分同商品的颜色、款式分支', to: '/products?multi_sku=1&task=第4步：确认主商品与款式分支', tone: 'blue' },
+    { step: 5, count: overview.duplicateSkuProducts, label: '重复 SKU 冲突', detail: '同一 SKU 出现在多个商品中', to: '/products?duplicate_sku=1&task=第5步：处理重复SKU', tone: 'red' },
+    { step: 6, count: overview.missingImage, label: '产品缺少图片', detail: '完整产品库检查，补图后同步至装箱单', to: '/products?missing_field=image&task=第6步：补充产品图片', tone: 'purple' },
+    { step: 7, count: overview.zeroOrNegative, label: '零库存产品', detail: '补录采购或进行库存调整', to: '/inventory?stock=zero', tone: 'purple' },
   ];
 
   if (loading) return <div className="loading">正在汇总经营数据...</div>;

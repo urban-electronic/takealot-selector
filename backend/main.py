@@ -153,6 +153,18 @@ def _ensure_columns():
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE products ADD COLUMN unit_price_cny REAL"))
                 print("[startup] products 表已补列 unit_price_cny", flush=True)
+        if "packing_products" in insp.get_table_names():
+            packing_cols = {c["name"] for c in insp.get_columns("packing_products")}
+            additions = {
+                "variant_group": "TEXT DEFAULT ''",
+                "variant_label": "TEXT DEFAULT ''",
+                "is_primary_variant": "BOOLEAN DEFAULT 1",
+            }
+            with engine.begin() as conn:
+                for name, sql_type in additions.items():
+                    if name not in packing_cols:
+                        conn.execute(text(f"ALTER TABLE packing_products ADD COLUMN {name} {sql_type}"))
+                        print(f"[startup] packing_products 表已补列 {name}", flush=True)
     except Exception as e:
         print(f"[startup] _ensure_columns 迁移失败: {e}", flush=True)
 

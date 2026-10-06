@@ -105,7 +105,7 @@ export default function Inventory() {
         <div className="inventory-table-wrap"><table className="inventory-table">
           <thead><tr><th>产品</th><th>SKU</th><th>采购入库</th><th>人工调整</th><th>已发货</th><th>可用库存</th><th>操作</th></tr></thead>
           <tbody>{filtered.map(row => <tr key={row.product_id}>
-            <td><div className="inventory-product">{row.image_url ? <img src={getImageUrl(row.image_url)} alt="" /> : <span className="inventory-no-image">无图</span>}<div><strong>{row.name}</strong><small>{row.name_en}</small></div></div></td>
+            <td><div className="inventory-product">{row.image_url ? <img src={getImageUrl(row.image_url)} alt="" /> : <span className="inventory-no-image">无图</span>}<div><strong>{row.variant_group && <span className={row.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{row.is_primary_variant ? '主' : '分支'}</span>}{row.name}</strong><small>{row.name_en}</small></div></div></td>
             <td className="mono">{row.sku || <span className="muted">缺少 SKU</span>}</td>
             <td>{row.purchased}</td><td>{row.adjusted > 0 ? `+${row.adjusted}` : row.adjusted}</td><td>{row.shipped}</td>
             <td><strong className={row.available <= 0 ? 'stock-danger' : 'stock-value'}>{row.available}</strong></td>
