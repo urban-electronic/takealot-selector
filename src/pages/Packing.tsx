@@ -608,14 +608,9 @@ export default function Packing() {
                   <th style={{ padding: '8px 10px', width: 40 }}></th>
                   <th style={{ padding: '8px 10px', width: 72 }}>图片</th>
                   <th style={{ padding: '8px 10px' }}>SKU</th>
-                  <th style={{ padding: '8px 10px' }}>中文名</th>
-                  <th style={{ padding: '8px 10px' }}>英文名</th>
-                  <th style={{ padding: '8px 10px', width: 56 }}>单位</th>
-                  <th style={{ padding: '8px 10px', width: 64 }}>重量(kg)</th>
-                  <th style={{ padding: '8px 10px', width: 72 }}>材质</th>
-                  <th style={{ padding: '8px 10px', width: 56 }}>带电</th>
-                  <th style={{ padding: '8px 10px', width: 56 }}>含磁</th>
-                  <th style={{ padding: '8px 10px', width: 220 }}>操作</th>
+                  <th style={{ padding: '8px 10px' }}>产品名称</th>
+                  <th style={{ padding: '8px 10px', width: 230 }}>产品属性</th>
+                  <th style={{ padding: '8px 10px', width: 190 }}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -635,14 +630,20 @@ export default function Packing() {
                       </div>
                     </td>
                     <td style={{ padding: '8px 10px', fontWeight: 600 }}>{p.sku}</td>
-                    <td style={{ padding: '8px 10px' }}>{p.name_zh || '-'}</td>
-                    <td style={{ padding: '8px 10px', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name_en || '-'}</td>
-                    <td style={{ padding: '8px 10px' }}>{p.unit || '个'}</td>
-                    <td style={{ padding: '8px 10px' }}>{p.weight || '-'}</td>
-                    <td style={{ padding: '8px 10px' }}>{p.material || '-'}</td>
-                    <td style={{ padding: '8px 10px' }}>{p.electric || '-'}</td>
-                    <td style={{ padding: '8px 10px' }}>{p.magnetic || '-'}</td>
                     <td style={{ padding: '8px 10px' }}>
+                      <strong className="packing-product-name">{p.name_zh || p.name_en || '-'}</strong>
+                      {p.name_en && p.name_en !== p.name_zh && <small className="packing-product-en">{p.name_en}</small>}
+                    </td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <div className="packing-attribute-list">
+                        <span>{p.unit || '个'}</span>
+                        {p.weight && <span>{p.weight} kg</span>}
+                        {p.material && <span>{p.material}</span>}
+                        {p.electric && <span>带电 {p.electric}</span>}
+                        {p.magnetic && <span>含磁 {p.magnetic}</span>}
+                      </div>
+                    </td>
+                    <td className="packing-row-actions" style={{ padding: '8px 10px' }}>
                       <button className="btn btn-sm" onClick={() => openEdit(p)} style={{ marginRight: 4 }}>编辑</button>
                       <button
                         className="btn btn-sm"
@@ -690,53 +691,38 @@ export default function Packing() {
           </div>
         ) : (
           <div className="packing-selected-scroll">
-            <table className="packing-selected-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
-                  <th style={{ padding: '8px 12px' }}>SKU</th>
-                  <th style={{ padding: '8px 12px' }}>产品名称</th>
-                  <th style={{ padding: '8px 12px', width: 120 }}>箱数</th>
-                  <th style={{ padding: '8px 12px', width: 140 }}>每箱件数</th>
-                  <th style={{ padding: '8px 12px', width: 100 }}>件数小计</th>
-                  <th style={{ padding: '8px 12px', width: 80 }}>操作</th>
-                </tr>
-              </thead>
-              <tbody>
                 {selectedRows.map(p => {
                   const cartons = parseInt(lines[p.sku]?.cartons || '1', 10) || 1;
                   const perCount = parseInt(lines[p.sku]?.count || '', 10) || p.default_count || 0;
                   return (
-                    <tr key={p.sku} style={{ borderBottom: '1px solid #eee' }}>
-                      <td style={{ padding: '8px 12px', fontWeight: 600 }}>{p.sku}</td>
-                      <td style={{ padding: '8px 12px' }}>{p.name_zh || p.name_en || '-'}</td>
-                      <td style={{ padding: '8px 12px' }}>
+                    <div className="packing-selected-item" key={p.sku}>
+                      <div className="packing-selected-item-head">
+                        <div><strong>{p.name_zh || p.name_en || '-'}</strong><small>{p.sku}</small></div>
+                        <button className="packing-remove-btn" onClick={() => toggleSelect(p.sku)} title="从本次装箱单移除">×</button>
+                      </div>
+                      <div className="packing-selected-controls">
+                        <label>箱数
                         <input
                           type="number"
                           min={1}
                           value={lines[p.sku]?.cartons ?? '1'}
                           onChange={e => setLine(p.sku, 'cartons', e.target.value)}
-                          style={{ width: 80, padding: '4px 8px' }}
                         />
-                      </td>
-                      <td style={{ padding: '8px 12px' }}>
+                        </label>
+                        <label>每箱件数
                         <input
                           type="number"
                           min={1}
                           placeholder={p.default_count ? `默认 ${p.default_count}` : '每箱件数'}
                           value={lines[p.sku]?.count ?? ''}
                           onChange={e => setLine(p.sku, 'count', e.target.value)}
-                          style={{ width: 100, padding: '4px 8px' }}
                         />
-                      </td>
-                      <td style={{ padding: '8px 12px' }}>{perCount * cartons}</td>
-                      <td style={{ padding: '8px 12px' }}>
-                        <button className="btn btn-sm btn-danger" onClick={() => toggleSelect(p.sku)}>移除</button>
-                      </td>
-                    </tr>
+                        </label>
+                        <div className="packing-line-total"><span>小计</span><strong>{perCount * cartons} 件</strong></div>
+                      </div>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
           </div>
         )}
       </div>

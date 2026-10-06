@@ -13,9 +13,9 @@ const navItems = [
   { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
   { path: '/inventory', label: '库存' },
+  { path: '/packing', label: '装箱单' },
   { path: '/create', label: '新建产品' },
   { path: '/procurement', label: '采购记录' },
-  { path: '/packing', label: '装箱单' },
   { path: '/settings', label: '系统设置' },
 ];
 
