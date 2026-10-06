@@ -150,6 +150,7 @@ export interface PackingProduct {
   template_row: number | null;
   default_count: number | null;
   image_file: string;
+  source_image_url?: string;
 }
 
 export interface PackingExportLine {
