@@ -214,6 +214,9 @@ class PackingProduct(Base):
     template_row = Column(Integer, nullable=True)
     default_count = Column(Integer, default=1)
     image_file = Column(String, default="")
+    variant_group = Column(String, default="")
+    variant_label = Column(String, default="")
+    is_primary_variant = Column(Boolean, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
