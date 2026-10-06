@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -258,6 +258,28 @@ export const syncPackingProductsFromCatalog = (): Promise<{
   skipped_no_sku: number;
   duplicate_sku: number;
 }> => request('/api/packing/sync-from-products', { method: 'POST', body: '{}' });
+
+export const getInventory = (): Promise<InventoryRow[]> =>
+  request<InventoryRow[]>('/api/inventory');
+
+export const createInventoryAdjustment = (data: {
+  sku: string; quantity_delta: number; reason: string; notes?: string; occurred_at?: string;
+}): Promise<{ ok: boolean; id: string; available: number }> =>
+  request('/api/inventory/adjustments', { method: 'POST', body: JSON.stringify(data) });
+
+export const getInventoryAdjustments = (): Promise<InventoryAdjustment[]> =>
+  request<InventoryAdjustment[]>('/api/inventory/adjustments');
+
+export const reverseInventoryAdjustment = (id: string): Promise<{ ok: boolean }> =>
+  request(`/api/inventory/adjustments/${encodeURIComponent(id)}/reverse`, { method: 'POST', body: '{}' });
+
+export const getShipments = (): Promise<ShipmentRecord[]> =>
+  request<ShipmentRecord[]>('/api/inventory/shipments');
+
+export const voidShipment = (id: string, reason: string): Promise<{ ok: boolean }> =>
+  request(`/api/inventory/shipments/${encodeURIComponent(id)}/void`, {
+    method: 'POST', body: JSON.stringify({ reason }),
+  });
 
 export const upsertPackingProduct = async (data: PackingUpsertInput): Promise<{ ok: boolean }> => {
   const result = await request<{ ok: boolean }>('/api/packing/product', {

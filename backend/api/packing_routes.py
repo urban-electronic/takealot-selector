@@ -25,6 +25,7 @@ import io
 import json
 import re
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 from typing import List, Optional
@@ -36,7 +37,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import PackingProduct, Product
+from models import PackingProduct, Product, Shipment, ShipmentLine
+from api.inventory_routes import inventory_balance_for_sku
 from services import packing_excel as px
 
 router = APIRouter(prefix="/api/packing", tags=["packing"])
@@ -100,6 +102,7 @@ class ExportIn(BaseModel):
     shipping: str = '空'
     address: str = '找客服提供'
     items: List[ExportLine] = []
+    draft_key: str = ''
 
 
 # ---- Helpers ----
@@ -478,6 +481,10 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
     except ValueError:
         return fail(400, '请填写 YYYY-MM-DD 格式的有效日期')
     items = []
+    existing_shipment = None
+    if data.draft_key.strip():
+        existing_shipment = db.query(Shipment).filter(Shipment.draft_key == data.draft_key.strip()).first()
+    requested_by_sku = {}
     for line in data.items:
         p = _find(db, line.sku.strip())
         if not p:
@@ -486,7 +493,14 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
         count = line.count.strip()
         if not cartons.isdecimal() or not count.isdecimal() or int(cartons) < 1 or int(count) < 1:
             return fail(400, '箱数和每箱件数须为正整数')
+        total_quantity = int(cartons) * int(count)
+        requested_by_sku[p.sku] = requested_by_sku.get(p.sku, 0) + total_quantity
         items.append((public(p), cartons, count))
+    if not existing_shipment:
+        for sku, requested in requested_by_sku.items():
+            available = inventory_balance_for_sku(db, sku)
+            if available < requested:
+                return fail(400, f'{sku} 库存不足：可用 {available}，本次发货 {requested}')
     try:
         with tempfile.TemporaryDirectory() as td:
             output = Path(td) / 'list.xlsx'
@@ -496,6 +510,33 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
         return fail(400, str(e))
     except Exception as e:
         return fail(400, f'生成失败：{e}')
+    if not existing_shipment:
+        day_count = db.query(Shipment).filter(Shipment.shipment_date == date.isoformat()).count()
+        shipment = Shipment(
+            id=str(uuid.uuid4()),
+            draft_key=data.draft_key.strip() or str(uuid.uuid4()),
+            shipment_no=f'PK-{date.strftime("%Y%m%d")}-{day_count + 1:03d}',
+            shipment_date=date.isoformat(),
+            mark=data.mark,
+            shipping=data.shipping,
+            address=data.address,
+            status='confirmed',
+        )
+        db.add(shipment)
+        db.flush()
+        for p, cartons, count in items:
+            db.add(ShipmentLine(
+                id=str(uuid.uuid4()),
+                shipment_id=shipment.id,
+                sku=p['sku'],
+                name_zh=p.get('name_zh', ''),
+                name_en=p.get('name_en', ''),
+                image_file=p.get('image_file', ''),
+                cartons=int(cartons),
+                count_per_carton=int(count),
+                total_quantity=int(cartons) * int(count),
+            ))
+        db.commit()
     return Response(
         content=content,
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

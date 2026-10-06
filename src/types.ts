@@ -165,6 +165,46 @@ export interface PackingExportPayload {
   shipping: string;
   address: string;
   items: PackingExportLine[];
+  draft_key?: string;
+}
+
+export interface InventoryRow {
+  product_id: string;
+  product_no: number | null;
+  sku: string;
+  name: string;
+  name_en: string;
+  image_url: string;
+  purchased: number;
+  adjusted: number;
+  shipped: number;
+  available: number;
+}
+
+export interface InventoryAdjustment {
+  id: string;
+  sku: string;
+  quantity_delta: number;
+  reason: string;
+  notes: string;
+  occurred_at: string;
+  reversed_by: string | null;
+  created_at: string;
+}
+
+export interface ShipmentRecord {
+  id: string;
+  shipment_no: string;
+  shipment_date: string;
+  mark: string;
+  shipping: string;
+  address: string;
+  status: 'confirmed' | 'void';
+  version: number;
+  void_reason: string;
+  total_skus: number;
+  total_quantity: number;
+  lines: Array<{ sku: string; name: string; cartons: number; count_per_carton: number; total_quantity: number }>;
 }
 
 export const SELECTION_STATUS_MAP: Record<string, { label: string; color: string }> = {
