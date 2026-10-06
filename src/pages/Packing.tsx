@@ -107,6 +107,7 @@ export default function Packing() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
+  const [detailsOpen, setDetailsOpen] = useState(() => localStorage.getItem('packingDetailsOpen') === 'true');
   const [catalogStats, setCatalogStats] = useState<{ total: number; noSku: number; duplicates: number } | null>(null);
 
   // 产品库筛选
@@ -170,6 +171,10 @@ export default function Packing() {
   useEffect(() => {
     loadProducts();
   }, [loadProducts]);
+
+  useEffect(() => {
+    localStorage.setItem('packingDetailsOpen', String(detailsOpen));
+  }, [detailsOpen]);
 
   useEffect(() => {
     localStorage.setItem(PACKING_DRAFT_KEY, JSON.stringify({
@@ -519,6 +524,9 @@ export default function Packing() {
           </span>
         </div>
         <div className="packing-hero-actions">
+          <button className="btn btn-outline packing-detail-toggle" onClick={() => setDetailsOpen(open => !open)}>
+            {detailsOpen ? '收起装箱信息' : `打开装箱信息（${selectedRows.length}）`}
+          </button>
           <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); }}>
             新增产品
           </button>
@@ -553,7 +561,7 @@ export default function Packing() {
         </div>
       )}
 
-      <div className="packing-workspace">
+      <div className={`packing-workspace ${detailsOpen ? '' : 'packing-focus-mode'}`}>
       <div className="packing-library-column">
       {/* 装箱单库 */}
       <div className="card packing-library-card">
