@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
 import type { Product, FeeCategory } from '../types';
@@ -8,12 +8,13 @@ import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LIN
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const api = useApi();
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [feeCategories, setFeeCategories] = useState<FeeCategory[]>([]);
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(searchParams.get('edit') === '1');
 
   // edit form
   const [editData, setEditData] = useState<Partial<Product>>({});
@@ -28,6 +29,9 @@ export default function ProductDetail() {
       .then((p: Product) => {
         setProduct(p);
         setEditData({
+          product_name: p.product_name || '',
+          takealot_url: p.takealot_url || '',
+          product_image_url: p.product_image_url || '',
           note: p.note || '',
           actual_sale_price_zar: p.actual_sale_price_zar,
           unit_price_cny: p.unit_price_cny,
@@ -90,6 +94,7 @@ export default function ProductDetail() {
       });
       setProduct(updated);
       setEditMode(false);
+      if (searchParams.get('from') === 'task') navigate(-1);
     } catch (e: any) {
       setError(typeof e === 'string' ? e : e.message || '保存失败');
     }
@@ -126,6 +131,7 @@ export default function ProductDetail() {
   if (!product) return <div className="loading">产品不存在</div>;
 
   const status = SELECTION_STATUS_MAP[product.selection_status];
+  const skuCount = (editData.sku || product.sku || '').split(/[\s,，;；]+/).filter(Boolean).length;
 
   return (
     <div>
@@ -155,6 +161,11 @@ export default function ProductDetail() {
       {/* Takealot Info */}
       <div className="card">
         <div className="card-title">Takealot 信息</div>
+        {editMode && <div className="form-row" style={{ marginBottom: 16 }}>
+          <div className="form-group"><label>英文产品标题</label><input value={editData.product_name || ''} onChange={e => updateField('product_name', e.target.value)} /></div>
+          <div className="form-group"><label>Takealot 链接</label><input type="url" value={editData.takealot_url || ''} onChange={e => updateField('takealot_url', e.target.value)} /></div>
+          <div className="form-group"><label>产品图片链接</label><input type="url" value={editData.product_image_url || ''} onChange={e => updateField('product_image_url', e.target.value)} /></div>
+        </div>}
         <div className="two-col">
           <div>
             {product.product_image_url && (
@@ -232,14 +243,12 @@ export default function ProductDetail() {
               <label>中文品名</label>
               <input
                 type="text"
-                maxLength={10}
+                maxLength={skuCount > 1 ? 200 : 30}
                 value={editData.chinese_product_name || ''}
                 onChange={(e) => updateField('chinese_product_name', e.target.value)}
-                placeholder="最多10个字"
+                placeholder={skuCount > 1 ? '多个 SKU 的中文规格名请按 SKU 顺序用空格分隔' : '输入简洁中文品名'}
               />
-              {editData.chinese_product_name && editData.chinese_product_name.length >= 10 && (
-                <small style={{ color: '#f44336' }}>已到上限</small>
-              )}
+              {skuCount > 1 && <small style={{ color: 'var(--color-text-secondary)' }}>当前识别到 {skuCount} 个 SKU，请填写相同数量的中文名称，例如：黑色 白色 蓝色。</small>}
             </div>
             <div className="form-group">
               <label>产品单价 (CNY)</label>
