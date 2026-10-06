@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { Fragment, useEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
@@ -51,6 +51,20 @@ function skuVariants(sku: string | null): string[] {
   return (sku || '').split(/[\s,，;；]+/).map(value => value.trim()).filter(Boolean);
 }
 
+function variantLabels(product: Product): string[] {
+  const skus = skuVariants(product.sku);
+  const labels = (product.chinese_product_name || '').split(/[\s,，;；/]+/).map(value => value.trim()).filter(Boolean);
+  return labels.length === skus.length ? labels : skus.map((_, index) => index === 0 ? '主款' : `款式 ${index + 1}`);
+}
+
+function variantKind(label: string): string {
+  if (/(黑|白|红|蓝|绿|黄|紫|粉|灰|棕|咖|卡其|军绿|藏蓝|颜色|色$)/.test(label)) return '颜色';
+  if (/(^|\s)(XS|S|M|L|XL|XXL)(\s|$)|码|尺寸|厘米|cm|mm|英寸|inch/i.test(label)) return '尺寸';
+  if (/\d+\s*(个|只|件|包|片|套|pcs|pack)/i.test(label)) return '数量';
+  if (/型号|版本|代|款/.test(label)) return '型号';
+  return '款式';
+}
+
 export default function ProductList() {
   const api = useApi();
   const navigate = useNavigate();
@@ -59,6 +73,7 @@ export default function ProductList() {
   const [error, setError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
+  const [imageBatchProgress, setImageBatchProgress] = useState('');
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_SELECTED_SKUS_KEY) || '[]');
@@ -351,6 +366,8 @@ export default function ProductList() {
           if (p.id !== id) return p;
           return {
             ...p,
+            product_name: result.product_name ?? p.product_name,
+            chinese_product_name: result.chinese_product_name ?? p.chinese_product_name,
             actual_sale_price_zar: result.actual_sale_price_zar ?? p.actual_sale_price_zar,
             product_image_url: result.product_image_url ?? p.product_image_url,
             profit_margin: result.profit_margin ?? p.profit_margin,
@@ -375,6 +392,31 @@ export default function ProductList() {
         return next;
       });
     }
+  };
+
+  const handleRefetchMissingImages = async () => {
+    const pending = products.filter(product => !product.product_image_url && product.takealot_url);
+    if (pending.length === 0) {
+      alert('当前缺图产品没有可用的 Takealot 官网链接。');
+      return;
+    }
+    let success = 0;
+    for (let index = 0; index < pending.length; index += 1) {
+      const product = pending[index];
+      setImageBatchProgress(`正在从官网抓图 ${index + 1}/${pending.length}`);
+      setRefreshingIds(prev => new Set(prev).add(product.id));
+      try {
+        const result: Record<string, any> = await api.refreshPrice(product.id);
+        if (result.product_image_url) success += 1;
+      } catch {
+        // 单个链接失败不阻断整批，结束后仍保留在缺图任务中。
+      } finally {
+        setRefreshingIds(prev => { const next = new Set(prev); next.delete(product.id); return next; });
+      }
+    }
+    setImageBatchProgress('');
+    await fetchProducts();
+    alert(`官网资料回抓完成：图片成功 ${success} 个，英文标题已按官网更新，中文空缺已自动补全；仍缺图 ${pending.length - success} 个。`);
   };
 
   // --- 内联编辑 ---
@@ -569,24 +611,7 @@ export default function ProductList() {
       case 'sku':
         const skuOptions = skuVariants(p.sku);
         if (skuOptions.length > 1) {
-          return (
-            <div className="sku-variant-group">
-              {skuOptions.map((sku, index) => (
-                <label key={sku} className={`sku-variant ${index === 0 ? 'primary' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={selectedSkus.has(sku)}
-                    onChange={() => setSelectedSkus(prev => {
-                      const next = new Set(prev);
-                      if (next.has(sku)) next.delete(sku); else next.add(sku);
-                      return next;
-                    })}
-                  />
-                  <span>{index === 0 ? '主' : '分'}</span>{sku}
-                </label>
-              ))}
-            </div>
-          );
+          return <span className="sku-branch-summary"><b>{skuOptions[0]}</b><small>＋{skuOptions.length - 1} 个款式分支</small></span>;
         }
         return editingSkuId === p.id ? (
           <input
@@ -654,7 +679,7 @@ export default function ProductList() {
     const def = colDefMap.get(colKey);
     if (!def) return null;
     if (colKey === 'select') {
-      const pageSkus = pagedProducts.map(p => p.sku).filter((s): s is string => !!s);
+      const pageSkus = pagedProducts.flatMap(p => skuVariants(p.sku));
       const allChecked = pageSkus.length > 0 && pageSkus.every(s => selectedSkus.has(s));
       return (
         <th
@@ -720,6 +745,15 @@ export default function ProductList() {
             <span>当前只显示需要处理的产品。直接在表格中点击对应字段即可编辑，处理完成后该产品会自动从任务结果中移除。</span>
           </div>
           <Link to="/products" className="btn btn-outline btn-sm">退出任务模式</Link>
+        </div>
+      )}
+
+      {missingField === 'image' && (
+        <div className="image-recovery-bar">
+          <div><strong>官网资料自动修复</strong><span>沿用蓝色 Takealot 链接回抓主图和英文标题；中文为空时自动翻译，已有人工分支名保持不变。</span></div>
+          <button className="btn btn-primary btn-sm" disabled={!!imageBatchProgress} onClick={handleRefetchMissingImages}>
+            {imageBatchProgress || `从官网抓取缺图 (${products.filter(p => !p.product_image_url && p.takealot_url).length})`}
+          </button>
         </div>
       )}
 
@@ -847,14 +881,39 @@ export default function ProductList() {
             <tbody>
               {pagedProducts.map((p) => {
                 const linkBgColor = p.link_status === '已上架' ? '#e3f2fd' : p.link_status === '已购买' ? '#e8f5e9' : p.link_status === '已发货' ? '#fff3e0' : undefined;
+                const branches = skuVariants(p.sku);
+                const labels = variantLabels(p);
                 return (
-                  <tr key={p.id} style={linkBgColor ? { background: linkBgColor } : undefined}>
-                    {renderColumns.map(colKey => (
-                      <td key={colKey}>
-                        {renderCell(p, colKey)}
-                      </td>
-                    ))}
-                  </tr>
+                  <Fragment key={p.id}>
+                    <tr className={branches.length > 1 ? 'product-parent-row' : ''} style={linkBgColor ? { background: linkBgColor } : undefined}>
+                      {renderColumns.map(colKey => (
+                        <td key={colKey}>{renderCell(p, colKey)}</td>
+                      ))}
+                    </tr>
+                    {branches.length > 1 && (
+                      <tr className="product-branch-row">
+                        <td colSpan={renderColumns.length}>
+                          <div className="product-branch-rail">
+                            {branches.map((sku, index) => (
+                              <label key={sku} className={`product-branch-item ${index === 0 ? 'primary' : ''}`}>
+                                <input type="checkbox" checked={selectedSkus.has(sku)} onChange={() => setSelectedSkus(prev => {
+                                  const next = new Set(prev);
+                                  if (next.has(sku)) next.delete(sku); else next.add(sku);
+                                  return next;
+                                })} />
+                                <span className="branch-image">
+                                  {p.product_image_url ? <img src={api.getImageUrl(p.product_image_url)} alt="" referrerPolicy="no-referrer" /> : <i>待补图</i>}
+                                </span>
+                                <span className={`branch-role ${index === 0 ? 'primary' : ''}`}>{index === 0 ? '主' : variantKind(labels[index])}</span>
+                                <code>{sku}</code>
+                                <span className="branch-names"><strong>{labels[index]}</strong><small>{p.product_name || '英文品名待回抓'}</small></span>
+                              </label>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

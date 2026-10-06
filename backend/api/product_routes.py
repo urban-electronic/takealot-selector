@@ -469,6 +469,8 @@ def batch_import(data: List[ProductCreate], db: Session = Depends(get_db)):
 
 
 class PriceRefreshOut(BaseModel):
+    product_name: Optional[str] = None
+    chinese_product_name: Optional[str] = None
     actual_sale_price_zar: Optional[float] = None
     in_stock_price: Optional[float] = None
     product_image_url: Optional[str] = None
@@ -497,6 +499,16 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
     result = await scrape_product(p.takealot_url)
 
     updated = {}
+    official_name = (result.get("product_name") or "").strip()
+    if official_name:
+        # 英文标题以官网为准；中文人工分支名若已有则保留，避免覆盖颜色/规格信息。
+        p.product_name = official_name
+        updated["product_name"] = official_name
+        if not (p.chinese_product_name or "").strip():
+            translated_name = translate_to_chinese_sync(official_name)
+            if translated_name:
+                p.chinese_product_name = translated_name
+                updated["chinese_product_name"] = translated_name
     if result.get("actual_sale_price_zar") is not None:
         p.actual_sale_price_zar = result["actual_sale_price_zar"]
         updated["actual_sale_price_zar"] = result["actual_sale_price_zar"]
