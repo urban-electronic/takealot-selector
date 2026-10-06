@@ -14,6 +14,7 @@ export default function Dashboard() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [officialCheck, setOfficialCheck] = useState('');
 
   useEffect(() => {
     Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
@@ -58,6 +59,21 @@ export default function Dashboard() {
     { step: 7, count: overview.zeroOrNegative, label: '零库存产品', detail: '补录采购或进行库存调整', to: '/inventory?stock=zero', tone: 'purple' },
   ];
 
+  const runOfficialCheck = async () => {
+    const candidates = products.filter(product => product.takealot_url && (!product.product_image_url || !product.product_name || product.actual_sale_price_zar == null)).slice(0, 30);
+    if (!candidates.length) { setOfficialCheck('没有可由官网自动修复的项目'); return; }
+    let repaired = 0;
+    for (let index = 0; index < candidates.length; index += 1) {
+      setOfficialCheck(`官网自检 ${index + 1}/${candidates.length}`);
+      try {
+        const result = await api.refreshPrice(candidates[index].id);
+        setProducts(prev => prev.map(product => product.id === candidates[index].id ? { ...product, ...result } as Product : product));
+        repaired += 1;
+      } catch { /* 单项失败保留在任务列表中 */ }
+    }
+    setOfficialCheck(`官网自检完成：更新 ${repaired} 项`);
+  };
+
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
   if (error) return <div className="alert alert-error">仪表盘加载失败：{error}</div>;
   if (!stats) return <div className="loading">暂无数据</div>;
@@ -81,7 +97,7 @@ export default function Dashboard() {
 
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-tasks">
-          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div></div>
+          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled={officialCheck.startsWith('官网自检 ')} onClick={runOfficialCheck}>{officialCheck || '官网自检可修复项'}</button></div>
           <div className="dashboard-task-grid">
             {tasks.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
               <em>第 {task.step} 步</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
