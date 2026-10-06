@@ -469,6 +469,9 @@ def batch_import(data: List[ProductCreate], db: Session = Depends(get_db)):
 
 
 class PriceRefreshOut(BaseModel):
+    sku: Optional[str] = None
+    fee_category: Optional[str] = None
+    fee_category_confirmed: Optional[bool] = None
     product_name: Optional[str] = None
     chinese_product_name: Optional[str] = None
     actual_sale_price_zar: Optional[float] = None
@@ -509,6 +512,28 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
             if translated_name:
                 p.chinese_product_name = translated_name
                 updated["chinese_product_name"] = translated_name
+
+    # 官网只返回一个明确 SKU 时才补录；多个变体不按顺序猜测。
+    if not (p.sku or "").strip():
+        official_skus = {str(item.get("sku") or "").strip() for item in result.get("variants", []) if item.get("sku")}
+        official_skus.discard("")
+        if len(official_skus) == 1:
+            official_sku = next(iter(official_skus))
+            conflict = db.query(Product).filter(Product.sku == official_sku, Product.id != p.id).first()
+            if not conflict:
+                p.sku = official_sku
+                updated["sku"] = official_sku
+
+    # 仅高置信度官网分类自动确认，中低置信度继续交给人工。
+    if not p.fee_category_confirmed:
+        from services.fee_category_matcher import match_fee_category
+        fee_match = match_fee_category(db, result.get("takealot_category_path"), official_name or p.product_name)
+        if fee_match.get("confidence") == "high" and fee_match.get("fee_category"):
+            p.fee_category = fee_match["fee_category"]
+            p.fee_category_confirmed = True
+            p.success_fee_rate = _get_fee_rate(db, p.fee_category)
+            updated["fee_category"] = p.fee_category
+            updated["fee_category_confirmed"] = True
     if result.get("actual_sale_price_zar") is not None:
         p.actual_sale_price_zar = result["actual_sale_price_zar"]
         updated["actual_sale_price_zar"] = result["actual_sale_price_zar"]
