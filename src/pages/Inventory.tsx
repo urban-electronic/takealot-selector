@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createInventoryAdjustment, getImageUrl, getInventory, getInventoryAdjustments, getShipments, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
 import type { InventoryAdjustment, InventoryRow, ShipmentRecord } from '../types';
 
@@ -9,12 +9,13 @@ const draftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}
 
 export default function Inventory() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [rows, setRows] = useState<InventoryRow[]>([]);
   const [shipments, setShipments] = useState<ShipmentRecord[]>([]);
   const [adjustments, setAdjustments] = useState<InventoryAdjustment[]>([]);
   const [tab, setTab] = useState<Tab>('inventory');
   const [search, setSearch] = useState('');
-  const [stockFilter, setStockFilter] = useState('all');
+  const [stockFilter, setStockFilter] = useState(() => searchParams.get('stock') || 'all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
