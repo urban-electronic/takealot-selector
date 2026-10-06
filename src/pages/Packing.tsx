@@ -615,7 +615,7 @@ export default function Packing() {
               </thead>
               <tbody>
                 {filteredProducts.map(p => (
-                  <tr key={p.sku} style={{ borderBottom: '1px solid #eee' }}>
+                  <tr key={p.sku} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid #eee' }}>
                     <td style={{ padding: '8px 10px', textAlign: 'center' }}>
                       <input
                         type="checkbox"
@@ -629,7 +629,10 @@ export default function Packing() {
                         <PackingImage filename={p.image_file} fallbackUrl={p.source_image_url} alt={p.sku} />
                       </div>
                     </td>
-                    <td style={{ padding: '8px 10px', fontWeight: 600 }}>{p.sku}</td>
+                    <td style={{ padding: '8px 10px', fontWeight: 600 }}>
+                      {p.variant_group && <span className={p.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{p.is_primary_variant ? '主' : '分支'}</span>}
+                      {p.sku}
+                    </td>
                     <td style={{ padding: '8px 10px' }}>
                       <strong className="packing-product-name">{p.name_zh || p.name_en || '-'}</strong>
                       {p.name_en && p.name_en !== p.name_zh && <small className="packing-product-en">{p.name_en}</small>}
