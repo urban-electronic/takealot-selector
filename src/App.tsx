@@ -10,7 +10,7 @@ import Packing from './pages/Packing';
 import Inventory from './pages/Inventory';
 
 const navItems = [
-  { path: '/', label: '仪表盘' },
+  { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
   { path: '/inventory', label: '库存' },
   { path: '/create', label: '新建产品' },
