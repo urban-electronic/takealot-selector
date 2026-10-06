@@ -682,7 +682,7 @@ export default function ProductList() {
       case 'actions':
         return (
           <>
-            <Link to={`/products/${p.id}`} className="btn btn-outline btn-sm">详情</Link>
+            <Link to={`/products/${p.id}${taskMode ? '?edit=1&from=task' : ''}`} className={`btn btn-sm ${taskMode ? 'btn-primary' : 'btn-outline'}`}>{taskMode ? '修改资料' : '详情'}</Link>
             <button className="btn btn-danger btn-sm" style={{ marginLeft: 4 }} onClick={() => handleDelete(p.id, p.product_name || '')}>删除</button>
           </>
         );
@@ -758,7 +758,7 @@ export default function ProductList() {
         <div className="product-task-banner">
           <div>
             <strong>智能任务模式：{taskMode}</strong>
-            <span>当前只显示需要处理的产品。直接在表格中点击对应字段即可编辑，处理完成后该产品会自动从任务结果中移除。</span>
+            <span>当前只显示需要处理的产品。点击每行右侧“修改资料”进入完整编辑界面；SKU 和售价也可直接点击表格字段修改。</span>
           </div>
           <Link to="/products" className="btn btn-outline btn-sm">退出任务模式</Link>
         </div>
