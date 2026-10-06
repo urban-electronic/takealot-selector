@@ -250,6 +250,15 @@ export interface PackingUpsertInput {
 export const getPackingProducts = (): Promise<PackingProduct[]> =>
   request<PackingProduct[]>('/api/packing/products');
 
+export const syncPackingProductsFromCatalog = (): Promise<{
+  ok: boolean;
+  total_products: number;
+  packing_products: number;
+  imported: number;
+  skipped_no_sku: number;
+  duplicate_sku: number;
+}> => request('/api/packing/sync-from-products', { method: 'POST', body: '{}' });
+
 export const upsertPackingProduct = async (data: PackingUpsertInput): Promise<{ ok: boolean }> => {
   const result = await request<{ ok: boolean }>('/api/packing/product', {
     method: 'POST',

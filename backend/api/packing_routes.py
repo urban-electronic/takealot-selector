@@ -182,7 +182,71 @@ def _parse_migration_zip(content: bytes) -> tuple:
 @router.get('/products')
 def list_products(db: Session = Depends(get_db)):
     rows = db.query(PackingProduct).order_by(PackingProduct.sku).all()
-    return [public(p) for p in rows]
+    source_images = {
+        sku: image_url
+        for sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.sku.isnot(None)).all()
+        if sku and image_url
+    }
+    result = []
+    for p in rows:
+        item = public(p)
+        item['source_image_url'] = source_images.get(p.sku, '')
+        result.append(item)
+    return result
+
+
+@router.post('/sync-from-products')
+def sync_from_products(db: Session = Depends(get_db)):
+    """轻量同步完整产品库到装箱单库。
+
+    只补充尚不存在的 SKU，不覆盖装箱单中的人工编辑；图片直接由列表接口
+    回退到产品库图片，避免批量下载图片导致请求超时。
+    """
+    products = db.query(Product).order_by(Product.created_at.asc()).all()
+    existing = {sku for (sku,) in db.query(PackingProduct.sku).all()}
+    imported = skipped_no_sku = duplicate_sku = 0
+    seen = set(existing)
+    for prod in products:
+        sku = (prod.sku or '').strip()
+        if not sku:
+            skipped_no_sku += 1
+            continue
+        if sku in seen:
+            if sku not in existing:
+                duplicate_sku += 1
+            continue
+        name_zh = (prod.chinese_product_name or '').strip()
+        name_en = (prod.product_name or '').strip()
+        electric_hint = '是' if '带电' in (prod.shipping_method or '') else ''
+        electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
+        p = PackingProduct(
+            sku=sku,
+            name=' / '.join(x for x in (name_zh, name_en) if x),
+            name_zh=name_zh,
+            name_en=name_en,
+            unit='个',
+            weight=str(prod.actual_weight_kg or ''),
+            material=px.infer_material(name_zh, name_en),
+            brand='',
+            battery='',
+            electric=electric,
+            magnetic=magnetic,
+            template_row=None,
+            default_count=1,
+            image_file='',
+        )
+        db.add(p)
+        seen.add(sku)
+        imported += 1
+    db.commit()
+    return {
+        'ok': True,
+        'total_products': len(products),
+        'packing_products': len(seen),
+        'imported': imported,
+        'skipped_no_sku': skipped_no_sku,
+        'duplicate_sku': duplicate_sku,
+    }
 
 
 # ---- 2. POST /api/packing/products（批量 UPSERT） ----

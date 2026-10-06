@@ -34,6 +34,7 @@ const allColumns: ColumnDef[] = [
 
 const LS_VISIBLE_KEY = 'productListVisibleColumns';
 const LS_ORDER_KEY = 'productListColumnOrder';
+const LS_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 
 /** Validate saved column order against canonical allColumns keys:
  *  - Remove stale keys no longer in allColumns
@@ -54,7 +55,17 @@ export default function ProductList() {
   const [error, setError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
-  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_SELECTED_SKUS_KEY) || '[]');
+      return new Set(Array.isArray(saved) ? saved.filter((sku): sku is string => typeof sku === 'string') : []);
+    } catch { return new Set(); }
+  });
+
+  // 在产品库和装箱单之间切换时保留本次勾选，成功导出装箱单后由装箱单页清除。
+  useEffect(() => {
+    localStorage.setItem(LS_SELECTED_SKUS_KEY, JSON.stringify(Array.from(selectedSkus)));
+  }, [selectedSkus]);
 
   // 列宽拖拽
   const [colWidths, setColWidths] = useState<Record<string, number>>({});

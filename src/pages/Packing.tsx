@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import {
   getPackingProducts,
+  syncPackingProductsFromCatalog,
   upsertPackingProduct,
   deletePackingProduct,
   uploadPackingImage,
@@ -16,11 +17,17 @@ import type { PackingProduct, Product, PackingExportPayload } from '../types';
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
 
-function PackingImage({ filename, alt }: { filename: string; alt?: string }) {
+function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallbackUrl?: string; alt?: string }) {
+  const api = useApi();
   const [src, setSrc] = useState<string | null>(null);
   const [state, setState] = useState<'loading' | 'ok' | 'empty' | 'failed'>('loading');
 
   useEffect(() => {
+    if (!filename && fallbackUrl) {
+      setSrc(api.getImageUrl(fallbackUrl));
+      setState('ok');
+      return;
+    }
     if (!filename) {
       setSrc(null);
       setState('empty');
@@ -49,7 +56,7 @@ function PackingImage({ filename, alt }: { filename: string; alt?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [filename]);
+  }, [api, fallbackUrl, filename]);
 
   if (state === 'loading') {
     return <span className="packing-noimg">加载中...</span>;
@@ -68,15 +75,37 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+const PACKING_DRAFT_KEY = 'packingDraftV1';
+const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
+
+type PackingLines = Record<string, { cartons: string; count: string }>;
+type PackingExportForm = { date: string; mark: string; shipping: string; address: string };
+type PackingDraft = { selected: string[]; lines: PackingLines; exportForm: Partial<PackingExportForm> };
+
+function readPackingDraft(): PackingDraft {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PACKING_DRAFT_KEY) || '{}');
+    return {
+      selected: Array.isArray(parsed.selected) ? parsed.selected.filter((v: unknown): v is string => typeof v === 'string') : [],
+      lines: parsed.lines && typeof parsed.lines === 'object' ? parsed.lines as PackingLines : {},
+      exportForm: parsed.exportForm && typeof parsed.exportForm === 'object' ? parsed.exportForm as Partial<PackingExportForm> : {},
+    };
+  } catch {
+    return { selected: [], lines: {}, exportForm: {} };
+  }
+}
+
 export default function Packing() {
   const api = useApi();
   const [searchParams, setSearchParams] = useSearchParams();
+  const savedDraft = useMemo(readPackingDraft, []);
 
   // 装箱单库
   const [products, setProducts] = useState<PackingProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
+  const [catalogStats, setCatalogStats] = useState<{ total: number; noSku: number; duplicates: number } | null>(null);
 
   // 产品库筛选
   const [searchText, setSearchText] = useState('');
@@ -85,11 +114,11 @@ export default function Packing() {
   const [fltMaterial, setFltMaterial] = useState('');
 
   // 本次装箱单行
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [lines, setLines] = useState<Record<string, { cartons: string; count: string }>>({});
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(savedDraft.selected));
+  const [lines, setLines] = useState<PackingLines>(() => savedDraft.lines);
 
   // 导出设置
-  const [exportForm, setExportForm] = useState({ date: todayStr(), mark: '', shipping: '', address: '' });
+  const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm });
   const [exporting, setExporting] = useState(false);
 
   // URL import=sku1,sku2
@@ -110,6 +139,7 @@ export default function Packing() {
   // 从选品库导入弹层
   const [importOpen, setImportOpen] = useState(false);
   const [importSearch, setImportSearch] = useState('');
+  const [importCategory, setImportCategory] = useState('');
   const [importResults, setImportResults] = useState<Product[]>([]);
   const [importSearching, setImportSearching] = useState(false);
   const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
@@ -123,6 +153,8 @@ export default function Packing() {
 
   const loadProducts = useCallback(async () => {
     try {
+      const sync = await syncPackingProductsFromCatalog();
+      setCatalogStats({ total: sync.total_products, noSku: sync.skipped_no_sku, duplicates: sync.duplicate_sku });
       const data = await getPackingProducts();
       setProducts(data);
     } catch (e: any) {
@@ -135,6 +167,14 @@ export default function Packing() {
   useEffect(() => {
     loadProducts();
   }, [loadProducts]);
+
+  useEffect(() => {
+    localStorage.setItem(PACKING_DRAFT_KEY, JSON.stringify({
+      selected: Array.from(selected),
+      lines,
+      exportForm,
+    }));
+  }, [selected, lines, exportForm]);
 
   // URL import 自动勾选 + 缺失 SKU 提示一键导入
   useEffect(() => {
@@ -159,26 +199,43 @@ export default function Packing() {
     }
   }, [loading, urlImportSkus, products, searchParams, setSearchParams]);
 
-  // 从选品库导入弹层搜索（debounce）
+  // 打开弹层即加载完整选品库，搜索和类目在前端筛选，避免遗漏未被搜索到的类目。
   useEffect(() => {
     if (!importOpen) return;
-    if (importSearch.trim().length < 1) {
-      setImportResults([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
+    let cancelled = false;
+    (async () => {
       setImportSearching(true);
       try {
-        const results = await api.getProducts({ search: importSearch.trim() });
-        setImportResults(results || []);
+        const results = await api.getProducts();
+        if (!cancelled) setImportResults(results || []);
       } catch {
-        setImportResults([]);
+        if (!cancelled) setImportResults([]);
       } finally {
-        setImportSearching(false);
+        if (!cancelled) setImportSearching(false);
       }
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [importSearch, importOpen]);
+    })();
+    return () => { cancelled = true; };
+  }, [api, importOpen]);
+
+  const importCategories = useMemo(() => Array.from(new Set(
+    importResults.map(p => p.fee_category).filter((v): v is string => Boolean(v)),
+  )).sort((a, b) => a.localeCompare(b)), [importResults]);
+
+  const filteredImportResults = useMemo(() => {
+    const kw = importSearch.trim().toLowerCase();
+    return importResults.filter(p => {
+      if (importCategory && p.fee_category !== importCategory) return false;
+      if (!kw) return true;
+      return `${p.sku || ''} ${p.product_name || ''} ${p.chinese_product_name || ''} ${p.tsin || ''} ${p.fee_category || ''}`
+        .toLowerCase().includes(kw);
+    });
+  }, [importResults, importSearch, importCategory]);
+
+  const existingPackingSkus = useMemo(() => new Set(products.map(p => p.sku)), [products]);
+  const selectableImportResults = useMemo(
+    () => filteredImportResults.filter(p => p.sku && !existingPackingSkus.has(p.sku)),
+    [filteredImportResults, existingPackingSkus],
+  );
 
   const filteredProducts = useMemo(() => {
     const kw = searchText.trim().toLowerCase();
@@ -378,7 +435,16 @@ export default function Packing() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      setMsg('导出成功，请检查下载的 Excel');
+      setSelected(new Set());
+      setLines({});
+      setImportMissing([]);
+      localStorage.removeItem(PACKING_DRAFT_KEY);
+      localStorage.removeItem(PRODUCT_SELECTED_SKUS_KEY);
+      const sp = new URLSearchParams(searchParams);
+      sp.delete('import');
+      setSearchParams(sp, { replace: true });
+      await loadProducts();
+      setMsg('导出成功，已刷新装箱单库并清空本次勾选，请检查下载的 Excel');
     } catch (e: any) {
       setError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
@@ -438,12 +504,12 @@ export default function Packing() {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
           <h1 style={{ margin: 0 }}>装箱单</h1>
           <span style={{ fontSize: 13, color: '#888' }}>
-            装箱单库 {products.length} 条 · 本次已选 {selectedRows.length} 条
+            装箱单库 {products.length} 条{catalogStats ? ` / 产品库 ${catalogStats.total} 条` : ''} · 本次已选 {selectedRows.length} 条
             {selectedRows.length > 0 && <>（共 {totalCartons} 箱 / {totalCount} 件）</>}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSelected(new Set()); }}>
+          <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); }}>
             从选品库导入
           </button>
           <button className="btn btn-primary" onClick={handleExport} disabled={exporting}>
@@ -454,6 +520,12 @@ export default function Packing() {
 
       {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
       {msg && <div className="alert alert-success" style={{ marginBottom: 12 }}>{msg}</div>}
+      {catalogStats && (catalogStats.noSku > 0 || catalogStats.duplicates > 0) && (
+        <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid #faad14', background: '#fffbe6' }}>
+          已同步全部可用 SKU；另有 {catalogStats.noSku} 条产品缺少 SKU
+          {catalogStats.duplicates > 0 ? `，${catalogStats.duplicates} 条 SKU 重复` : ''}，无法作为独立装箱产品。
+        </div>
+      )}
 
       {/* URL import 缺失提示 */}
       {importMissing.length > 0 && (
@@ -544,7 +616,7 @@ export default function Packing() {
                     </td>
                     <td style={{ padding: '8px 10px' }}>
                       <div style={{ width: 56, height: 56, border: '1px solid #eee', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <PackingImage filename={p.image_file} alt={p.sku} />
+                        <PackingImage filename={p.image_file} fallbackUrl={p.source_image_url} alt={p.sku} />
                       </div>
                     </td>
                     <td style={{ padding: '8px 10px', fontWeight: 600 }}>{p.sku}</td>
@@ -562,7 +634,7 @@ export default function Packing() {
                         onClick={() => fileInputRefs.current[p.sku]?.click()}
                         style={{ marginRight: 4 }}
                       >
-                        {p.image_file ? '换图' : '传图'}
+                        {p.image_file || p.source_image_url ? '换图' : '传图'}
                       </button>
                       {p.image_file && (
                         <button className="btn btn-sm" onClick={() => clearImage(p.sku)} style={{ marginRight: 4 }}>删图</button>
@@ -761,16 +833,28 @@ export default function Packing() {
             <p style={{ margin: '0 0 12px', fontSize: 13, color: '#888' }}>
               勾选选品产品后导入装箱单库（SKU 已存在则自动跳过，不会覆盖已有编辑；图片自动抓取转存）。
             </p>
-            <input
-              type="text"
-              placeholder="搜索选品产品（SKU / 名称）..."
-              value={importSearch}
-              onChange={e => setImportSearch(e.target.value)}
-              style={{ padding: '6px 12px', borderRadius: 4, border: '1px solid #ccc', width: '100%', boxSizing: 'border-box', marginBottom: 12 }}
-              autoFocus
-            />
-            {importSearching && <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>搜索中...</div>}
-            {importResults.length === 0 && importSearch.trim() ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(160px, 240px)', gap: 8, marginBottom: 10 }}>
+              <input
+                type="text"
+                placeholder="搜索 SKU / 中文品名 / 英文品名 / TSIN / 类目"
+                value={importSearch}
+                onChange={e => setImportSearch(e.target.value)}
+                style={{ padding: '6px 12px', borderRadius: 4, border: '1px solid #ccc', width: '100%', boxSizing: 'border-box' }}
+                autoFocus
+              />
+              <select value={importCategory} onChange={e => setImportCategory(e.target.value)}>
+                <option value="">全部类目（{importCategories.length}）</option>
+                {importCategories.map(category => <option key={category} value={category}>{category}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: '#666' }}>
+              <span>产品库 {importResults.length} 条 · 当前结果 {filteredImportResults.length} 条 · 可导入 {selectableImportResults.length} 条</span>
+              <button className="btn btn-outline" style={{ marginLeft: 'auto', padding: '3px 9px' }} disabled={selectableImportResults.length === 0} onClick={() => {
+                setImportSelected(prev => new Set([...prev, ...selectableImportResults.map(p => String(p.id))]));
+              }}>选择当前全部</button>
+            </div>
+            {importSearching && <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>正在加载完整产品库...</div>}
+            {!importSearching && filteredImportResults.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#888', padding: 20 }}>未找到匹配的选品产品</div>
             ) : (
               <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #eee', borderRadius: 4 }}>
@@ -780,19 +864,22 @@ export default function Packing() {
                       <th style={{ padding: '6px 10px', width: 40 }}></th>
                       <th style={{ padding: '6px 10px' }}>SKU</th>
                       <th style={{ padding: '6px 10px' }}>产品名称</th>
+                      <th style={{ padding: '6px 10px' }}>类目</th>
                       <th style={{ padding: '6px 10px' }}>运输方式</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {importResults.map(p => {
+                    {filteredImportResults.map(p => {
                       const pid = String(p.id);
                       const checked = importSelected.has(pid);
+                      const disabled = !p.sku || existingPackingSkus.has(p.sku);
                       return (
                         <tr key={pid} style={{ borderBottom: '1px solid #eee' }}>
                           <td style={{ padding: '6px 10px', textAlign: 'center' }}>
                             <input
                               type="checkbox"
                               checked={checked}
+                              disabled={disabled}
                               onChange={() => {
                                 setImportSelected(prev => {
                                   const next = new Set(prev);
@@ -803,8 +890,9 @@ export default function Packing() {
                               style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)' }}
                             />
                           </td>
-                          <td style={{ padding: '6px 10px', fontWeight: 600 }}>{p.sku || '-'}</td>
+                          <td style={{ padding: '6px 10px', fontWeight: 600 }}>{p.sku || '无 SKU'}</td>
                           <td style={{ padding: '6px 10px' }}>{p.chinese_product_name || p.product_name || '-'}</td>
+                          <td style={{ padding: '6px 10px' }}>{p.fee_category || '-'}</td>
                           <td style={{ padding: '6px 10px' }}>{p.shipping_method || '-'}</td>
                         </tr>
                       );
