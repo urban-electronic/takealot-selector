@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { getInventory, getShipments } from '../remoteApi';
+import { getInventory, getShipments, syncPackingVariantsFromTakealot } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
 
@@ -60,8 +60,8 @@ export default function Dashboard() {
   ];
 
   const runOfficialCheck = async () => {
-    const candidates = products.filter(product => product.takealot_url && (!product.product_image_url || !product.product_name || product.actual_sale_price_zar == null)).slice(0, 30);
-    if (!candidates.length) { setOfficialCheck('没有可由官网自动修复的项目'); return; }
+    const candidates = products.filter(product => product.takealot_url && (!product.sku || !product.fee_category_confirmed || !product.product_image_url || !product.product_name || product.actual_sale_price_zar == null)).slice(0, 30);
+    if (!candidates.length) setOfficialCheck('正在核对官网规格…');
     let repaired = 0;
     for (let index = 0; index < candidates.length; index += 1) {
       setOfficialCheck(`官网自检 ${index + 1}/${candidates.length}`);
@@ -71,7 +71,12 @@ export default function Dashboard() {
         repaired += 1;
       } catch { /* 单项失败保留在任务列表中 */ }
     }
-    setOfficialCheck(`官网自检完成：更新 ${repaired} 项`);
+    let variantNote = '';
+    try {
+      const variants = await syncPackingVariantsFromTakealot(30);
+      variantNote = `，确认 ${variants.matched} 个规格`;
+    } catch { variantNote = '，规格核对暂未完成'; }
+    setOfficialCheck(`官网自检完成：更新 ${repaired} 项${variantNote}`);
   };
 
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
