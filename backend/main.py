@@ -170,6 +170,9 @@ def _init_default_data():
         setting = db.query(SystemSettings).filter(SystemSettings.key == "cny_per_zar").first()
         if not setting:
             db.add(SystemSettings(key="cny_per_zar", value="0.41"))
+        inventory_start = db.query(SystemSettings).filter(SystemSettings.key == "inventory_start_date").first()
+        if not inventory_start:
+            db.add(SystemSettings(key="inventory_start_date", value="2026-09-24"))
 
         # 初始化默认品类映射规则
         rule_count = db.query(FeeMappingRule).count()
