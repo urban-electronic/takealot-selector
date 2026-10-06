@@ -9,6 +9,7 @@ import {
   uploadPackingImage,
   importFromProducts,
   syncPackingImagesFromProducts,
+  syncPackingVariantsFromTakealot,
   exportPacking,
   fetchPackingImageBlob,
 } from '../remoteApi';
@@ -172,6 +173,8 @@ export default function Packing() {
 
   // 按 SKU 从选品库匹配图片
   const [syncingImages, setSyncingImages] = useState(false);
+  const [syncingVariants, setSyncingVariants] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // 文件输入
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -276,6 +279,8 @@ export default function Packing() {
       return true;
     });
   }, [products, searchText, fltElectric, fltMagnetic, fltMaterial]);
+
+  const visibleProducts = useMemo(() => filteredProducts.filter(row => !row.variant_group || row.is_primary_variant || expandedGroups.has(row.variant_group)), [filteredProducts, expandedGroups]);
 
   const materials = useMemo(() => {
     const set = new Set<string>();
@@ -501,6 +506,17 @@ export default function Packing() {
     }
   };
 
+  const handleSyncOfficialVariants = async () => {
+    setSyncingVariants(true); setMsg(''); setError('');
+    try {
+      const res = await syncPackingVariantsFromTakealot(30);
+      await loadProducts();
+      setMsg(`官网规格核对完成：检查 ${res.groups_checked} 组，确认 ${res.matched} 个 SKU 规格，匹配 ${res.images} 张独立图片；${res.unresolved.length} 组需人工确认。`);
+    } catch (e: any) {
+      setError(`官网规格核对失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+    } finally { setSyncingVariants(false); }
+  };
+
   // 从选品库导入执行
   const confirmImport = async () => {
     const ids = Array.from(importSelected);
@@ -572,6 +588,9 @@ export default function Packing() {
           >
             {oneClickImporting ? '导入中...' : '一键导入'}
           </button>
+          <button className="btn btn-outline btn-sm" onClick={handleSyncOfficialVariants} disabled={syncingVariants} title="仅在 Takealot 官网返回可验证的 SKU、规格和图片对应关系时更新">
+            {syncingVariants ? '官网核对中...' : '官网核对规格与图片'}
+          </button>
         </div>
       )}
 
@@ -636,7 +655,9 @@ export default function Packing() {
                 </tr>
               </thead>
               <tbody>
-                {filteredProducts.map(p => (
+                {visibleProducts.map(p => {
+                  const groupCount = p.variant_group ? products.filter(row => row.variant_group === p.variant_group).length : 0;
+                  return (
                   <tr key={p.sku} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid #eee' }}>
                     <td style={{ padding: '8px 10px', textAlign: 'center' }}>
                       <input
@@ -670,6 +691,7 @@ export default function Packing() {
                       </div>
                     </td>
                     <td className="packing-row-actions" style={{ padding: '8px 10px' }}>
+                      {p.variant_group && p.is_primary_variant && groupCount > 1 && <button className="btn btn-sm packing-expand-btn" onClick={() => { const groupId = p.variant_group!; setExpandedGroups(prev => { const next = new Set(prev); if (next.has(groupId)) next.delete(groupId); else next.add(groupId); return next; }); }}>{expandedGroups.has(p.variant_group) ? '收起' : `展开 ${groupCount} 个规格`}</button>}
                       <button className="btn btn-sm" onClick={() => openEdit(p)} style={{ marginRight: 4 }}>编辑</button>
                       <button
                         className="btn btn-sm"
@@ -694,7 +716,7 @@ export default function Packing() {
                       />
                     </td>
                   </tr>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>

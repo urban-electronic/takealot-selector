@@ -13,6 +13,33 @@ from urllib.parse import urlparse, urlunparse
 from bs4 import BeautifulSoup
 
 
+def _variants_from_payload(payload: Any) -> list:
+    """从页面 JSON 状态中保守提取 SKU/规格/图片；只返回同时带 SKU 的对象。"""
+    found = {}
+    def walk(value: Any):
+        if isinstance(value, dict):
+            sku = next((value.get(k) for k in ('sku', 'SKU', 'seller_sku', 'sellerSku', 'barcode', 'ean') if value.get(k)), None)
+            if sku:
+                sku = str(sku).strip()
+                label = next((value.get(k) for k in ('colour', 'color', 'size', 'variation', 'variant', 'value', 'title', 'name') if isinstance(value.get(k), (str, int, float))), '')
+                image = next((value.get(k) for k in ('image_url', 'imageUrl', 'image', 'thumbnail', 'src') if isinstance(value.get(k), str) and 'http' in value.get(k)), '')
+                images = value.get('images')
+                if not image and isinstance(images, list) and images:
+                    first = images[0]
+                    image = first if isinstance(first, str) else (first.get('url') or first.get('src') or '') if isinstance(first, dict) else ''
+                if image and 'media.takealot.com' in image:
+                    image = image.replace('s-thumbnail', 's-pdpxl')
+                if sku and (label or image):
+                    found[sku] = {'sku': sku, 'label': str(label).strip(), 'image_url': image}
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+    walk(payload)
+    return list(found.values())
+
+
 def normalize_takealot_url(url: str) -> str:
     """规范化 Takealot URL,去除无关参数"""
     parsed = urlparse(url)
@@ -168,6 +195,7 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
         "stock_remaining": None,
         "review_count": None,
         "rating_value": None,
+        "variants": [],
     }
 
     # 1. 从页面标题提取产品名称
@@ -202,6 +230,19 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
         """)
         if img_url:
             result["product_image_url"] = img_url
+    except Exception:
+        pass
+
+    # 3.5 从页面内嵌状态提取真实变体 SKU、颜色/容量/尺码和对应图片。
+    try:
+        scripts = await page.evaluate("""() => Array.from(document.querySelectorAll('script')).map(s => s.textContent || '').filter(t => t.trim().startsWith('{') || t.trim().startsWith('['))""")
+        variants = []
+        for script in scripts:
+            try:
+                variants.extend(_variants_from_payload(json.loads(script)))
+            except Exception:
+                continue
+        result["variants"] = list({item['sku']: item for item in variants}.values())
     except Exception:
         pass
 
@@ -465,6 +506,7 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
             "stock_remaining": None,
             "review_count": None,
             "rating_value": None,
+            "variants": [],
         }
 
         # TSIN
@@ -483,6 +525,17 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
         img = soup.select_one('img[src*="media.takealot.com/covers_images"]')
         if img and img.get("src"):
             data["product_image_url"] = img["src"].replace("s-thumbnail", "s-pdpxl")
+
+        variants = []
+        for script in soup.find_all('script'):
+            text_value = script.string or script.get_text() or ''
+            if not text_value.strip().startswith(('{', '[')):
+                continue
+            try:
+                variants.extend(_variants_from_payload(json.loads(text_value)))
+            except Exception:
+                continue
+        data["variants"] = list({item['sku']: item for item in variants}.values())
 
         # 售价: [class*="price-buybox"]
         price_el = soup.select_one('[class*="price-buybox"]')
@@ -580,6 +633,7 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         "stock_remaining": None,
         "review_count": None,
         "rating_value": None,
+        "variants": [],
         "warnings": [],
         "success": False,
     }

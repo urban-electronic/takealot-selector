@@ -94,6 +94,10 @@ class SyncImagesIn(BaseModel):
     limit: int = 100
 
 
+class SyncVariantsIn(BaseModel):
+    limit: int = 20
+
+
 class ExportLine(BaseModel):
     sku: str = ''
     cartons: str = '1'
@@ -448,6 +452,49 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db))
         'total_pending': len(pending),
         'failed': failed,
     }
+
+
+@router.post('/sync-variants-from-takealot')
+async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depends(get_db)):
+    """从 Takealot 页面结构化状态匹配真实 SKU 变体。
+
+    只有官网同时给出 SKU 与规格/图片时才写入，绝不按顺序猜测颜色或复制主图。
+    """
+    from services.takealot_scraper import scrape_product
+    limit = max(1, min(int(data.limit or 20), 50))
+    candidates = []
+    for product in db.query(Product).filter(Product.takealot_url.isnot(None), Product.sku.isnot(None)).all():
+        skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
+        if len(skus) > 1 and product.takealot_url:
+            candidates.append((product, skus))
+    matched = images = 0
+    unresolved = []
+    for product, known_skus in candidates[:limit]:
+        result = await scrape_product(product.takealot_url)
+        official = {str(item.get('sku', '')).strip(): item for item in result.get('variants', []) if item.get('sku')}
+        group_matched = 0
+        for sku in known_skus:
+            item = official.get(sku)
+            row = _find(db, sku)
+            if not item or not row:
+                continue
+            label = str(item.get('label') or '').strip()
+            if label:
+                row.variant_label = label
+                row.name_zh = label if not row.name_zh or re.fullmatch(r'款式\s*\d+', row.name_zh) else row.name_zh
+                group_matched += 1
+                matched += 1
+            image_url = str(item.get('image_url') or '').strip()
+            if image_url:
+                try:
+                    row.image_file = _fetch_takealot_image(image_url)
+                    images += 1
+                except Exception:
+                    pass
+        if group_matched == 0:
+            unresolved.append({'product_id': product.id, 'skus': known_skus, 'reason': '官网未返回可验证的 SKU 变体关系'})
+        db.commit()
+    return {'ok': True, 'groups_checked': min(len(candidates), limit), 'matched': matched, 'images': images, 'unresolved': unresolved}
 
 
 # ---- 5. POST /api/packing/image ----
