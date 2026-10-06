@@ -24,7 +24,10 @@ export default function App() {
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <DataSourceProvider>
         <header className="app-header">
-        <h1>Takealot 选品测算</h1>
+        <div className="app-brand">
+          <img src={`${import.meta.env.BASE_URL}yellow-mascot.png`} alt="黄色噜噜" />
+          <h1>Takealot 选品与利润测算</h1>
+        </div>
         <nav>
           {navItems.map((item) => (
             <NavLink
