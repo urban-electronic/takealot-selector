@@ -80,7 +80,8 @@ const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 
 type PackingLines = Record<string, { cartons: string; count: string }>;
 type PackingExportForm = { date: string; mark: string; shipping: string; address: string };
-type PackingDraft = { selected: string[]; lines: PackingLines; exportForm: Partial<PackingExportForm> };
+type PackingDraft = { selected: string[]; lines: PackingLines; exportForm: Partial<PackingExportForm>; draftKey: string };
+const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 function readPackingDraft(): PackingDraft {
   try {
@@ -89,9 +90,10 @@ function readPackingDraft(): PackingDraft {
       selected: Array.isArray(parsed.selected) ? parsed.selected.filter((v: unknown): v is string => typeof v === 'string') : [],
       lines: parsed.lines && typeof parsed.lines === 'object' ? parsed.lines as PackingLines : {},
       exportForm: parsed.exportForm && typeof parsed.exportForm === 'object' ? parsed.exportForm as Partial<PackingExportForm> : {},
+      draftKey: typeof parsed.draftKey === 'string' && parsed.draftKey ? parsed.draftKey : newDraftKey(),
     };
   } catch {
-    return { selected: [], lines: {}, exportForm: {} };
+    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey() };
   }
 }
 
@@ -119,6 +121,7 @@ export default function Packing() {
 
   // 导出设置
   const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm });
+  const [draftKey, setDraftKey] = useState(savedDraft.draftKey);
   const [exporting, setExporting] = useState(false);
 
   // URL import=sku1,sku2
@@ -173,8 +176,9 @@ export default function Packing() {
       selected: Array.from(selected),
       lines,
       exportForm,
+      draftKey,
     }));
-  }, [selected, lines, exportForm]);
+  }, [selected, lines, exportForm, draftKey]);
 
   // URL import 自动勾选 + 缺失 SKU 提示一键导入
   useEffect(() => {
@@ -420,6 +424,7 @@ export default function Packing() {
         mark: exportForm.mark,
         shipping: exportForm.shipping,
         address: exportForm.address,
+        draft_key: draftKey,
         items: rows.map(p => ({
           sku: p.sku,
           cartons: lines[p.sku]?.cartons || '1',
@@ -437,6 +442,7 @@ export default function Packing() {
       URL.revokeObjectURL(url);
       setSelected(new Set());
       setLines({});
+      setDraftKey(newDraftKey());
       setImportMissing([]);
       localStorage.removeItem(PACKING_DRAFT_KEY);
       localStorage.removeItem(PRODUCT_SELECTED_SKUS_KEY);
