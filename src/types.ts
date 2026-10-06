@@ -151,6 +151,9 @@ export interface PackingProduct {
   default_count: number | null;
   image_file: string;
   source_image_url?: string;
+  variant_group?: string;
+  variant_label?: string;
+  is_primary_variant?: boolean;
 }
 
 export interface PackingExportLine {
@@ -179,6 +182,8 @@ export interface InventoryRow {
   adjusted: number;
   shipped: number;
   available: number;
+  variant_group?: string;
+  is_primary_variant?: boolean;
 }
 
 export interface InventoryAdjustment {
