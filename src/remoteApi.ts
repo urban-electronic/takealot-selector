@@ -314,6 +314,11 @@ export const syncPackingImagesFromProducts = (limit = 100): Promise<{ ok: boolea
     body: JSON.stringify({ limit }),
   });
 
+export const syncPackingVariantsFromTakealot = (limit = 20): Promise<{ ok: boolean; groups_checked: number; matched: number; images: number; unresolved: Array<{ product_id: string; skus: string[]; reason: string }> }> =>
+  request('/api/packing/sync-variants-from-takealot', {
+    method: 'POST', body: JSON.stringify({ limit }),
+  });
+
 /** 导出装箱单 Excel：返回原始 blob（不走 request 的 JSON 解析） */
 export const exportPacking = async (payload: PackingExportPayload): Promise<Blob> => {
   const res = await fetch(`${getBaseUrl()}/api/packing/export`, {
