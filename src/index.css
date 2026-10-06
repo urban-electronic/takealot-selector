@@ -659,6 +659,35 @@ button {
   background: var(--color-primary);
 }
 
+.sku-branch-summary { display: flex; flex-direction: column; gap: 3px; }
+.sku-branch-summary small { color: #1677ff; font-size: 11px; }
+.product-parent-row td { border-bottom: 0; }
+.product-branch-row td { padding: 0; background: #fbfdff; border-top: 0; }
+.product-branch-rail { display: flex; flex-direction: column; border-left: 3px solid #d6e4ff; background: #fbfdff; }
+.product-branch-item { display: grid; grid-template-columns: 28px 76px 48px 170px minmax(240px, 1fr); align-items: center; gap: 10px; min-height: 78px; padding: 8px 18px; border-top: 1px solid #edf0f5; cursor: pointer; }
+.product-branch-item:hover { background: #f4f9ff; }
+.product-branch-item.primary { background: #f2f8ff; }
+.product-branch-item input { width: auto; accent-color: #1677ff; }
+.branch-image { width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid #e4e8ee; border-radius: 6px; background: #fff; }
+.branch-image img { width: 100%; height: 100%; object-fit: contain; }
+.branch-image i { color: #b4bac4; font-size: 11px; font-style: normal; }
+.branch-role { justify-self: start; padding: 2px 5px; border-radius: 4px; background: #98a2b3; color: #fff; font-size: 10px; font-weight: 700; }
+.branch-role.primary { background: #1677ff; }
+.product-branch-item code { color: #24344d; font-family: inherit; font-size: 13px; }
+.branch-names { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.branch-names strong, .branch-names small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-names strong { color: #24344d; font-size: 13px; }
+.branch-names small { color: #8792a5; font-size: 12px; }
+.image-recovery-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding: 11px 14px; border: 1px solid #bae0ff; border-radius: 8px; background: #f0f8ff; }
+.image-recovery-bar div { display: flex; flex-direction: column; gap: 2px; }
+.image-recovery-bar span { color: var(--color-text-secondary); font-size: 12px; }
+
+@media (max-width: 900px) {
+  .product-branch-item { grid-template-columns: 24px 58px 42px 130px minmax(180px, 1fr); padding-inline: 10px; }
+  .branch-image { width: 52px; height: 52px; }
+  .image-recovery-bar { align-items: stretch; flex-direction: column; }
+}
+
 .packing-variant-primary {
   background: #f7fbff;
 }
