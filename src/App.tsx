@@ -7,10 +7,12 @@ import ProductDetail from './pages/ProductDetail';
 import Settings from './pages/Settings';
 import Procurement from './pages/Procurement';
 import Packing from './pages/Packing';
+import Inventory from './pages/Inventory';
 
 const navItems = [
   { path: '/', label: '仪表盘' },
   { path: '/products', label: '产品列表' },
+  { path: '/inventory', label: '库存' },
   { path: '/create', label: '新建产品' },
   { path: '/procurement', label: '采购记录' },
   { path: '/packing', label: '装箱单' },
@@ -41,6 +43,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<ProductList />} />
+          <Route path="/inventory" element={<Inventory />} />
           <Route path="/create" element={<ProductCreate />} />
           <Route path="/procurement" element={<Procurement />} />
           <Route path="/packing" element={<Packing />} />
