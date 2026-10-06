@@ -38,9 +38,10 @@ button {
 }
 
 .container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 24px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 20px clamp(16px, 2.4vw, 44px);
 }
 
 /* Layout */
@@ -158,13 +159,14 @@ button {
 
 .packing-library-card,
 .packing-summary-column > .card {
-  border: 1px solid #ece8e3;
-  border-radius: 8px;
+  border: 0;
+  border-top: 2px solid #e6e9ee;
+  border-radius: 0;
   box-shadow: none;
 }
 
 .packing-library-card {
-  padding: 22px !important;
+  padding: 18px 0 0 !important;
   margin: 0 !important;
 }
 
@@ -197,8 +199,10 @@ button {
   max-height: calc(100vh - 335px);
   min-height: 420px;
   overflow: auto;
-  border: 1px solid #eee9e4;
-  border-radius: 12px;
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  border-radius: 0;
 }
 
 .packing-table-scroll .product-table {
@@ -220,6 +224,30 @@ button {
   position: sticky;
   top: 76px;
   min-width: 0;
+}
+
+.packing-selected-card,
+.packing-export-card {
+  background: transparent;
+}
+
+.product-list-table-wrapper {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 1500px) and (min-width: 1181px) {
+  .packing-table-scroll .product-table {
+    min-width: 780px;
+  }
+  .packing-table-scroll .product-table th:nth-child(6),
+  .packing-table-scroll .product-table td:nth-child(6),
+  .packing-table-scroll .product-table th:nth-child(7),
+  .packing-table-scroll .product-table td:nth-child(7),
+  .packing-table-scroll .product-table th:nth-child(8),
+  .packing-table-scroll .product-table td:nth-child(8) {
+    display: none;
+  }
 }
 
 .packing-summary-banner {
