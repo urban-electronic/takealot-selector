@@ -29,16 +29,18 @@ export default function Dashboard() {
       available: validInventory.reduce((sum, row) => sum + row.available, 0),
       zeroOrNegative: validInventory.filter(row => row.available <= 0).length,
       missingSku: inventory.filter(row => !row.sku).length,
+      missingImage: inventory.filter(row => !row.image_url).length,
       confirmedShipments: shipments.filter(row => row.status === 'confirmed'),
       purchasedUnits: procurements.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
     };
   }, [inventory, shipments, procurements]);
 
   const tasks = [
-    { count: stats?.data_incomplete || 0, label: '产品资料待补充', to: '/products', tone: 'orange' },
-    { count: stats?.category_pending || 0, label: '品类待确认', to: '/products', tone: 'blue' },
-    { count: overview.missingSku, label: '产品缺少 SKU', to: '/products', tone: 'red' },
-    { count: overview.zeroOrNegative, label: '零库存产品', to: '/inventory', tone: 'purple' },
+    { step: 1, count: overview.missingSku, label: '产品缺少 SKU', detail: 'SKU 是库存与装箱匹配的基础', to: '/products?missing_field=sku&task=第1步：补充SKU', tone: 'red' },
+    { step: 2, count: stats?.data_incomplete || 0, label: '产品资料待补充', detail: '补齐成本、尺寸和物流信息', to: '/products?selection_status=数据待补充&task=第2步：补充产品资料', tone: 'orange' },
+    { step: 3, count: stats?.category_pending || 0, label: '品类待确认', detail: '确认 Fee 品类后重新计算利润', to: '/products?selection_status=待确认品类&task=第3步：确认产品品类', tone: 'blue' },
+    { step: 4, count: overview.missingImage, label: '产品缺少图片', detail: '图片会影响装箱单识别', to: '/products?missing_field=image&task=第4步：补充产品图片', tone: 'purple' },
+    { step: 5, count: overview.zeroOrNegative, label: '零库存产品', detail: '补录采购或进行库存调整', to: '/inventory?stock=zero', tone: 'purple' },
   ];
 
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
@@ -67,7 +69,7 @@ export default function Dashboard() {
           <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div></div>
           <div className="dashboard-task-grid">
             {tasks.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
-              <strong>{task.count}</strong><span>{task.label}</span><small>立即处理 →</small>
+              <em>第 {task.step} 步</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
             </Link>)}
           </div>
         </section>

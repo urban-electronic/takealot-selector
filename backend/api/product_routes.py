@@ -253,6 +253,7 @@ def list_products(
     min_margin: Optional[float] = Query(None),
     max_margin: Optional[float] = Query(None),
     search: Optional[str] = Query(None),
+    missing_field: Optional[str] = Query(None),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
     db: Session = Depends(get_db),
@@ -283,6 +284,14 @@ def list_products(
             | (Product.tsin.ilike(like))
             | (Product.takealot_url.ilike(like))
         )
+    if missing_field == "sku":
+        query = query.filter((Product.sku.is_(None)) | (Product.sku == ""))
+    elif missing_field == "image":
+        query = query.filter((Product.product_image_url.is_(None)) | (Product.product_image_url == ""))
+    elif missing_field == "chinese_name":
+        query = query.filter((Product.chinese_product_name.is_(None)) | (Product.chinese_product_name == ""))
+    elif missing_field == "shipping":
+        query = query.filter((Product.shipping_method.is_(None)) | (Product.shipping_method == ""))
 
     # 先按创建时间正序建立固定编号映射（product_no = 创建顺序，与排序无关）
     all_ordered = db.query(Product).order_by(Product.created_at.asc()).all()
