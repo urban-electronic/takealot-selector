@@ -46,23 +46,27 @@ button {
 
 /* Layout */
 .app-header {
-  background: #082654;
-  border-bottom: 1px solid #173b6d;
+  background: #fbf8f5;
+  border-top: 4px solid #13a8a8;
+  border-bottom: 1px solid #ded9d4;
   padding: 0 24px;
   display: flex;
   align-items: center;
-  height: 56px;
+  height: 64px;
   gap: 32px;
-  box-shadow: 0 3px 14px rgba(8, 38, 84, 0.16);
+  box-shadow: 0 3px 12px rgba(46, 41, 36, 0.1);
   position: sticky;
   top: 0;
   z-index: 100;
 }
 
+.app-brand { display: flex; align-items: center; gap: 9px; min-width: max-content; }
+.app-brand img { width: 46px; height: 52px; object-fit: contain; object-position: center; }
+
 .app-header h1 {
   font-size: 18px;
   font-weight: 700;
-  color: #fff;
+  color: #24211f;
   white-space: nowrap;
 }
 
@@ -74,7 +78,7 @@ button {
 .app-header nav a {
   padding: 8px 16px;
   border-radius: var(--radius);
-  color: #cbd8ea;
+  color: #534e49;
   font-size: 14px;
   font-weight: 500;
   transition: all 0.2s;
@@ -83,8 +87,8 @@ button {
 
 .app-header nav a:hover,
 .app-header nav a.active {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: #e4f5f3;
+  color: #087d7d;
   text-decoration: none;
 }
 
