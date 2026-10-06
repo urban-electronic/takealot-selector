@@ -279,6 +279,7 @@ def list_products(
         like = f"%{search}%"
         query = query.filter(
             (Product.product_name.ilike(like))
+            | (Product.chinese_product_name.ilike(like))
             | (Product.tsin.ilike(like))
             | (Product.takealot_url.ilike(like))
         )
