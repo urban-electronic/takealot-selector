@@ -181,6 +181,8 @@ export default function ProductList() {
   const shippingFilter = (searchParams.get('shipping_method') || '').split(',').filter(Boolean);
   const linkStatusFilter = (searchParams.get('link_status') || '').split(',').filter(Boolean);
   const searchText = searchParams.get('search') || '';
+  const missingField = searchParams.get('missing_field') || '';
+  const taskMode = searchParams.get('task') || '';
   const [searchInput, setSearchInput] = useState(searchText);
 
   // URL 与输入框双向同步；输入停止 300ms 后再请求，避免每个按键都刷新列表
@@ -282,6 +284,7 @@ export default function ProductList() {
     if (shippingFilter.length > 0) params.shipping_method = shippingFilter.join(',');
     if (linkStatusFilter.length > 0) params.link_status = linkStatusFilter.join(',');
     if (searchText) params.search = searchText;
+    if (missingField) params.missing_field = missingField;
 
     api.getProducts(params)
       .then(setProducts)
@@ -291,7 +294,7 @@ export default function ProductList() {
 
   useEffect(() => {
     fetchProducts();
-  }, [statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText]);
+  }, [statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField]);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -315,13 +318,17 @@ export default function ProductList() {
 
   const handleFieldUpdate = async (id: string, field: string, value: any) => {
     try {
-      await api.updateProduct(id, { [field]: value });
-      setProducts((prev) =>
-        prev.map((p) => {
-          if (p.id !== id) return p;
-          return { ...p, [field]: value };
-        })
-      );
+      const updated = await api.updateProduct(id, { [field]: value });
+      setProducts((prev) => prev
+        .map((p) => p.id === id ? updated : p)
+        .filter((p) => {
+          if (missingField === 'sku') return !p.sku;
+          if (missingField === 'image') return !p.product_image_url;
+          if (missingField === 'chinese_name') return !p.chinese_product_name;
+          if (missingField === 'shipping') return !p.shipping_method;
+          if (statusFilter) return p.selection_status === statusFilter;
+          return true;
+        }));
     } catch (e: any) {
       alert(e.message);
     }
@@ -672,6 +679,16 @@ export default function ProductList() {
         <h2>产品列表 ({products.length})</h2>
         <Link to="/create" className="btn btn-primary">+ 新建产品</Link>
       </div>
+
+      {taskMode && (
+        <div className="product-task-banner">
+          <div>
+            <strong>智能任务模式：{taskMode}</strong>
+            <span>当前只显示需要处理的产品。直接在表格中点击对应字段即可编辑，处理完成后该产品会自动从任务结果中移除。</span>
+          </div>
+          <Link to="/products" className="btn btn-outline btn-sm">退出任务模式</Link>
+        </div>
+      )}
 
       <div className="filters-bar">
         <select value={statusFilter} onChange={(e) => setFilter('selection_status', e.target.value)}>
