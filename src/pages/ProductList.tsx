@@ -47,6 +47,10 @@ function validateColumnOrder(saved: string[], canonical: string[]): string[] {
   return [...cleaned, ...missing];
 }
 
+function skuVariants(sku: string | null): string[] {
+  return (sku || '').split(/[\s,，;；]+/).map(value => value.trim()).filter(Boolean);
+}
+
 export default function ProductList() {
   const api = useApi();
   const navigate = useNavigate();
@@ -437,18 +441,22 @@ export default function ProductList() {
     switch (colKey) {
       case 'select':
         if (!p.sku) return <span style={{ color: '#ccc', fontSize: 11 }}>无SKU</span>;
+        const variants = skuVariants(p.sku);
+        const allVariantsChecked = variants.length > 0 && variants.every(sku => selectedSkus.has(sku));
         return (
           <input
             type="checkbox"
-            checked={selectedSkus.has(p.sku)}
+            checked={allVariantsChecked}
             onChange={() => {
               setSelectedSkus(prev => {
                 const next = new Set(prev);
-                if (next.has(p.sku!)) next.delete(p.sku!); else next.add(p.sku!);
+                variants.forEach(sku => {
+                  if (allVariantsChecked) next.delete(sku); else next.add(sku);
+                });
                 return next;
               });
             }}
-            title="勾选后可加入装箱单"
+            title={variants.length > 1 ? '选择或取消该产品的全部颜色分支' : '勾选后可加入装箱单'}
             style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)', cursor: 'pointer' }}
           />
         );
@@ -555,6 +563,27 @@ export default function ProductList() {
       case 'profit_zar':
         return formatPrice(p.profit_zar, 'ZAR');
       case 'sku':
+        const skuOptions = skuVariants(p.sku);
+        if (skuOptions.length > 1) {
+          return (
+            <div className="sku-variant-group">
+              {skuOptions.map((sku, index) => (
+                <label key={sku} className={`sku-variant ${index === 0 ? 'primary' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedSkus.has(sku)}
+                    onChange={() => setSelectedSkus(prev => {
+                      const next = new Set(prev);
+                      if (next.has(sku)) next.delete(sku); else next.add(sku);
+                      return next;
+                    })}
+                  />
+                  <span>{index === 0 ? '主' : '分'}</span>{sku}
+                </label>
+              ))}
+            </div>
+          );
+        }
         return editingSkuId === p.id ? (
           <input
             type="text" value={editingSkuValue}
