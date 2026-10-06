@@ -54,7 +54,7 @@ function skuVariants(sku: string | null): string[] {
 function variantLabels(product: Product): string[] {
   const skus = skuVariants(product.sku);
   const labels = (product.chinese_product_name || '').split(/[\s,，;；/]+/).map(value => value.trim()).filter(Boolean);
-  return labels.length === skus.length ? labels : skus.map((_, index) => index === 0 ? '主款' : `款式 ${index + 1}`);
+  return labels.length === skus.length ? labels : skus.map((_, index) => index === 0 ? (product.chinese_product_name || '主商品') : '规格待识别');
 }
 
 function variantKind(label: string): string {
@@ -88,6 +88,7 @@ export default function ProductList() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [imageBatchProgress, setImageBatchProgress] = useState('');
+  const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_SELECTED_SKUS_KEY) || '[]');
@@ -625,7 +626,8 @@ export default function ProductList() {
       case 'sku':
         const skuOptions = skuVariants(p.sku);
         if (skuOptions.length > 1) {
-          return <span className="sku-branch-summary"><b>{skuOptions[0]}</b><small>＋{skuOptions.length - 1} 个款式分支</small></span>;
+          const expanded = expandedVariantRows.has(p.id);
+          return <span className="sku-branch-summary"><b>{skuOptions[0]}</b><button type="button" onClick={() => setExpandedVariantRows(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })}>{expanded ? '收起规格' : `展开 ${skuOptions.length} 个规格`}</button></span>;
         }
         return editingSkuId === p.id ? (
           <input
@@ -904,7 +906,7 @@ export default function ProductList() {
                         <td key={colKey}>{renderCell(p, colKey)}</td>
                       ))}
                     </tr>
-                    {branches.length > 1 && (
+                    {branches.length > 1 && expandedVariantRows.has(p.id) && (
                       <tr className="product-branch-row">
                         <td colSpan={renderColumns.length}>
                           <div className="product-branch-rail">
