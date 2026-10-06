@@ -498,21 +498,25 @@ export default function Packing() {
   if (loading) return <div className="loading">加载中...</div>;
 
   return (
-    <div className="page">
+    <div className="page packing-page">
       {/* 头部 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
-          <h1 style={{ margin: 0 }}>装箱单</h1>
-          <span style={{ fontSize: 13, color: '#888' }}>
+      <div className="packing-hero">
+        <div>
+          <div className="packing-eyebrow">KUNPENG · PACKING LIST</div>
+          <h1>装箱单工作台</h1>
+          <span className="packing-subtitle">
+            选择产品、调整数量，生成带图片的装箱单。
+            <small>
             装箱单库 {products.length} 条{catalogStats ? ` / 产品库 ${catalogStats.total} 条` : ''} · 本次已选 {selectedRows.length} 条
             {selectedRows.length > 0 && <>（共 {totalCartons} 箱 / {totalCount} 件）</>}
+            </small>
           </span>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="packing-hero-actions">
           <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); }}>
-            从选品库导入
+            新增产品
           </button>
-          <button className="btn btn-primary" onClick={handleExport} disabled={exporting}>
+          <button className="btn packing-export-btn" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
           </button>
         </div>
@@ -543,10 +547,15 @@ export default function Packing() {
         </div>
       )}
 
+      <div className="packing-workspace">
+      <div className="packing-library-column">
       {/* 装箱单库 */}
-      <div className="card" style={{ marginBottom: 20, padding: 16 }}>
+      <div className="card packing-library-card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>装箱单产品库</h3>
+          <div>
+            <h3 style={{ margin: 0 }}>产品资料</h3>
+            <div className="packing-section-note">中文、英文与 SKU 独立展示，支持搜索与多选。</div>
+          </div>
           <button
             className="btn btn-outline btn-sm"
             onClick={handleSyncImages}
@@ -556,13 +565,13 @@ export default function Packing() {
             {syncingImages ? '匹配中...' : '按SKU匹配选品库图片'}
           </button>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+        <div className="packing-filterbar">
           <input
             type="text"
             placeholder="搜索 SKU / 名称 / 材质..."
             value={searchText}
             onChange={e => setSearchText(e.target.value)}
-            style={{ padding: '6px 12px', borderRadius: 4, border: '1px solid #ccc', width: 240 }}
+            className="packing-search"
           />
           <select value={fltElectric} onChange={e => setFltElectric(e.target.value)} style={{ padding: '6px 8px' }}>
             <option value="">带电：全部</option>
@@ -586,7 +595,7 @@ export default function Packing() {
             暂无产品，点击右上角「从选品库导入」添加。
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
+          <div className="packing-table-scroll">
             <table className="product-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
@@ -658,17 +667,24 @@ export default function Packing() {
           </div>
         )}
       </div>
+      </div>
 
+      <aside className="packing-summary-column">
+      <div className="packing-summary-banner">
+        <span>本次装箱单 · PACKING LIST</span>
+        <strong>{selectedRows.length} 件产品</strong>
+        <small>{totalCartons} 箱 · {totalCount} 件，草稿自动保存在本机</small>
+      </div>
       {/* 本次装箱单行 */}
-      <div className="card" style={{ marginBottom: 20, padding: 16 }}>
-        <h3 style={{ marginTop: 0, marginBottom: 12 }}>本次装箱单行</h3>
+      <div className="card packing-selected-card">
+        <h3 style={{ marginTop: 0, marginBottom: 12 }}>已选产品</h3>
         {selectedRows.length === 0 ? (
           <div style={{ textAlign: 'center', color: '#888', padding: 24 }}>
             尚未选择产品，请在上方产品库勾选，或通过产品列表「加入装箱单」直达。
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div className="packing-selected-scroll">
+            <table className="packing-selected-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
                   <th style={{ padding: '8px 12px' }}>SKU</th>
@@ -720,9 +736,9 @@ export default function Packing() {
       </div>
 
       {/* 导出设置 */}
-      <div className="card" style={{ padding: 16 }}>
-        <h3 style={{ marginTop: 0, marginBottom: 12 }}>导出设置</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', maxWidth: 720 }}>
+      <div className="card packing-export-card">
+        <h3 style={{ marginTop: 0, marginBottom: 12 }}>出货信息</h3>
+        <div className="packing-export-grid">
           <div>
             <label>日期</label>
             <input type="date" value={exportForm.date} onChange={e => setExportForm(prev => ({ ...prev, date: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
@@ -741,11 +757,13 @@ export default function Packing() {
           </div>
         </div>
         <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="btn btn-primary" onClick={handleExport} disabled={exporting}>
+          <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
           </button>
           <span style={{ fontSize: 13, color: '#888' }}>将导出 {selectedRows.length} 行装箱单数据（带产品图）</span>
         </div>
+      </div>
+      </aside>
       </div>
 
       {/* 编辑弹层 */}
