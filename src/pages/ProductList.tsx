@@ -186,6 +186,8 @@ export default function ProductList() {
   const linkStatusFilter = (searchParams.get('link_status') || '').split(',').filter(Boolean);
   const searchText = searchParams.get('search') || '';
   const missingField = searchParams.get('missing_field') || '';
+  const multiSkuOnly = searchParams.get('multi_sku') === '1';
+  const duplicateSkuOnly = searchParams.get('duplicate_sku') === '1';
   const taskMode = searchParams.get('task') || '';
   const [searchInput, setSearchInput] = useState(searchText);
 
@@ -289,6 +291,8 @@ export default function ProductList() {
     if (linkStatusFilter.length > 0) params.link_status = linkStatusFilter.join(',');
     if (searchText) params.search = searchText;
     if (missingField) params.missing_field = missingField;
+    if (multiSkuOnly) params.multi_sku = '1';
+    if (duplicateSkuOnly) params.duplicate_sku = '1';
 
     api.getProducts(params)
       .then(setProducts)
@@ -298,7 +302,7 @@ export default function ProductList() {
 
   useEffect(() => {
     fetchProducts();
-  }, [statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField]);
+  }, [statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly]);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
