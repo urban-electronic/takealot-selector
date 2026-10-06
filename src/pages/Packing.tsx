@@ -161,6 +161,7 @@ export default function Packing() {
 
   // 删除确认
   const [deleteSku, setDeleteSku] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ sku: string; x: number; y: number } | null>(null);
 
   // 从选品库导入弹层
   const [importOpen, setImportOpen] = useState(false);
@@ -195,6 +196,14 @@ export default function Packing() {
   useEffect(() => {
     loadProducts();
   }, [loadProducts]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); };
+  }, [contextMenu]);
 
   useEffect(() => {
     localStorage.setItem(PACKING_DRAFT_KEY, JSON.stringify({
@@ -647,18 +656,18 @@ export default function Packing() {
               <thead>
                 <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
                   <th style={{ padding: '8px 10px', width: 40 }}></th>
-                  <th style={{ padding: '8px 10px', width: 72 }}>图片</th>
+                  <th style={{ padding: '6px 8px', width: 60 }}>图片</th>
                   <th style={{ padding: '8px 10px' }}>SKU</th>
                   <th style={{ padding: '8px 10px' }}>产品名称</th>
                   <th style={{ padding: '8px 10px', width: 230 }}>产品属性</th>
-                  <th style={{ padding: '8px 10px', width: 190 }}>操作</th>
+                  <th style={{ padding: '6px 8px', width: 142 }}>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleProducts.map(p => {
                   const groupCount = p.variant_group ? products.filter(row => row.variant_group === p.variant_group).length : 0;
                   return (
-                  <tr key={p.sku} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid #eee' }}>
+                  <tr key={p.sku} onContextMenu={e => { e.preventDefault(); setContextMenu({ sku: p.sku, x: e.clientX, y: e.clientY }); }} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid #eee' }}>
                     <td style={{ padding: '8px 10px', textAlign: 'center' }}>
                       <input
                         type="checkbox"
@@ -668,7 +677,7 @@ export default function Packing() {
                       />
                     </td>
                     <td style={{ padding: '8px 10px' }}>
-                      <div style={{ width: 56, height: 56, border: '1px solid #eee', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div style={{ width: 46, height: 46, border: '1px solid #eee', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <PackingImage filename={p.image_file} fallbackUrl={p.source_image_url} alt={p.sku} />
                       </div>
                     </td>
@@ -703,7 +712,6 @@ export default function Packing() {
                       {p.image_file && (
                         <button className="btn btn-sm" onClick={() => clearImage(p.sku)} style={{ marginRight: 4 }}>删图</button>
                       )}
-                      <button className="btn btn-sm btn-danger" onClick={() => setDeleteSku(p.sku)}>删除</button>
                       <input
                         ref={el => { fileInputRefs.current[p.sku] = el; }}
                         type="file"
@@ -721,6 +729,10 @@ export default function Packing() {
             </table>
           </div>
         )}
+        {contextMenu && <div className="packing-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={e => e.stopPropagation()}>
+          <button onClick={() => { setDeleteSku(contextMenu.sku); setContextMenu(null); }}>删除该产品…</button>
+          <small>删除前仍会二次确认</small>
+        </div>}
       </div>
       </div>
 

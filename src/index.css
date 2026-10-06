@@ -469,9 +469,19 @@ button {
 
 .dashboard-task-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   padding-top: 14px;
+}
+
+.packing-context-menu { position: fixed; z-index: 1200; width: 170px; padding: 6px; border: 1px solid #d9dde5; border-radius: 7px; background: #fff; box-shadow: 0 8px 24px rgba(20, 35, 60, .18); }
+.packing-context-menu button { width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; background: #fff1f0; color: #cf1322; text-align: left; cursor: pointer; }
+.packing-context-menu button:hover { background: #ffccc7; }
+.packing-context-menu small { display: block; padding: 5px 10px 2px; color: #98a1af; }
+.packing-table-scroll tbody td { padding-top: 5px !important; padding-bottom: 5px !important; }
+
+@media (max-width: 1280px) {
+  .dashboard-task-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 .dashboard-task {
   padding: 14px;
