@@ -89,6 +89,8 @@ export default function ProductList() {
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [imageBatchProgress, setImageBatchProgress] = useState('');
   const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
+  const [variantEditor, setVariantEditor] = useState<{ productId: string; index: number; sku: string; label: string; makePrimary: boolean } | null>(null);
+  const [savingVariant, setSavingVariant] = useState(false);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_SELECTED_SKUS_KEY) || '[]');
@@ -432,6 +434,33 @@ export default function ProductList() {
     setImageBatchProgress('');
     await fetchProducts();
     alert(`官网资料回抓完成：图片成功 ${success} 个，英文标题已按官网更新，中文空缺已自动补全；仍缺图 ${pending.length - success} 个。`);
+  };
+
+  const saveVariant = async () => {
+    if (!variantEditor) return;
+    const product = products.find(item => item.id === variantEditor.productId);
+    if (!product) return;
+    const skus = skuVariants(product.sku);
+    const labels = variantLabels(product);
+    const nextSku = variantEditor.sku.trim();
+    const nextLabel = variantEditor.label.trim();
+    if (!nextSku || !nextLabel) { alert('SKU 和规格名称都不能为空'); return; }
+    if (skus.some((sku, index) => index !== variantEditor.index && sku === nextSku)) { alert('该 SKU 已存在于当前产品分支中'); return; }
+    const oldSku = skus[variantEditor.index];
+    skus[variantEditor.index] = nextSku;
+    labels[variantEditor.index] = nextLabel;
+    if (variantEditor.makePrimary && variantEditor.index > 0) {
+      skus.unshift(...skus.splice(variantEditor.index, 1));
+      labels.unshift(...labels.splice(variantEditor.index, 1));
+    }
+    setSavingVariant(true);
+    try {
+      const updated = await api.updateProduct(product.id, { sku: skus.join(' '), chinese_product_name: labels.join(' ') });
+      setProducts(prev => prev.map(item => item.id === product.id ? updated : item));
+      setSelectedSkus(prev => { const next = new Set(prev); if (next.delete(oldSku)) next.add(nextSku); return next; });
+      setVariantEditor(null);
+    } catch (e: any) { alert(e.message || '分支保存失败'); }
+    finally { setSavingVariant(false); }
   };
 
   // --- 内联编辑 ---
@@ -911,7 +940,7 @@ export default function ProductList() {
                         <td colSpan={renderColumns.length}>
                           <div className="product-branch-rail">
                             {branches.map((sku, index) => (
-                              <label key={sku} className={`product-branch-item ${index === 0 ? 'primary' : ''}`}>
+                              <div key={sku} className={`product-branch-item ${index === 0 ? 'primary' : ''}`}>
                                 <input type="checkbox" checked={selectedSkus.has(sku)} onChange={() => setSelectedSkus(prev => {
                                   const next = new Set(prev);
                                   if (next.has(sku)) next.delete(sku); else next.add(sku);
@@ -924,7 +953,8 @@ export default function ProductList() {
                                 <code>{sku}</code>
                                 <span className="branch-names"><strong>{labels[index]}</strong><small>{p.product_name || '英文品名待回抓'}</small></span>
                                 <span className="branch-spec">{variantSpec(labels[index], labels)}</span>
-                              </label>
+                                <button type="button" className="btn btn-outline btn-sm branch-edit-btn" onClick={() => setVariantEditor({ productId: p.id, index, sku, label: labels[index], makePrimary: index === 0 })}>修改分支</button>
+                              </div>
                             ))}
                           </div>
                         </td>
@@ -1004,6 +1034,15 @@ export default function ProductList() {
           </div>
         </div>
       )}
+      {variantEditor && <div className="packing-modal-mask" onClick={() => !savingVariant && setVariantEditor(null)}>
+        <div className="packing-modal variant-editor-modal" onClick={e => e.stopPropagation()}>
+          <h3>修改 SKU 分支</h3>
+          <div className="form-group"><label>分支 SKU</label><input value={variantEditor.sku} onChange={e => setVariantEditor({ ...variantEditor, sku: e.target.value })} /></div>
+          <div className="form-group"><label>真实规格名称</label><input value={variantEditor.label} onChange={e => setVariantEditor({ ...variantEditor, label: e.target.value })} placeholder="例如：军绿色、XL、128GB" /><small>填写用户能直接辨认的颜色、尺码、容量或型号。</small></div>
+          <label className="variant-primary-toggle"><input type="checkbox" checked={variantEditor.makePrimary} onChange={e => setVariantEditor({ ...variantEditor, makePrimary: e.target.checked })} />设为主款（保存后移动到第一位）</label>
+          <div className="modal-actions"><button className="btn btn-outline" disabled={savingVariant} onClick={() => setVariantEditor(null)}>取消</button><button className="btn btn-primary" disabled={savingVariant} onClick={saveVariant}>{savingVariant ? '保存中...' : '保存分支'}</button></div>
+        </div>
+      </div>}
     </div>
   );
 }
