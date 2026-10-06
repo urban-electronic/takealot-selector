@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import {
   getPackingProducts,
+  syncPackingProductsFromCatalog,
   upsertPackingProduct,
   deletePackingProduct,
   uploadPackingImage,
@@ -16,11 +17,17 @@ import type { PackingProduct, Product, PackingExportPayload } from '../types';
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
 
-function PackingImage({ filename, alt }: { filename: string; alt?: string }) {
+function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallbackUrl?: string; alt?: string }) {
+  const api = useApi();
   const [src, setSrc] = useState<string | null>(null);
   const [state, setState] = useState<'loading' | 'ok' | 'empty' | 'failed'>('loading');
 
   useEffect(() => {
+    if (!filename && fallbackUrl) {
+      setSrc(api.getImageUrl(fallbackUrl));
+      setState('ok');
+      return;
+    }
     if (!filename) {
       setSrc(null);
       setState('empty');
@@ -49,7 +56,7 @@ function PackingImage({ filename, alt }: { filename: string; alt?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [filename]);
+  }, [api, fallbackUrl, filename]);
 
   if (state === 'loading') {
     return <span className="packing-noimg">加载中...</span>;
@@ -98,6 +105,7 @@ export default function Packing() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
+  const [catalogStats, setCatalogStats] = useState<{ total: number; noSku: number; duplicates: number } | null>(null);
 
   // 产品库筛选
   const [searchText, setSearchText] = useState('');
@@ -145,6 +153,8 @@ export default function Packing() {
 
   const loadProducts = useCallback(async () => {
     try {
+      const sync = await syncPackingProductsFromCatalog();
+      setCatalogStats({ total: sync.total_products, noSku: sync.skipped_no_sku, duplicates: sync.duplicate_sku });
       const data = await getPackingProducts();
       setProducts(data);
     } catch (e: any) {
@@ -494,7 +504,7 @@ export default function Packing() {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
           <h1 style={{ margin: 0 }}>装箱单</h1>
           <span style={{ fontSize: 13, color: '#888' }}>
-            装箱单库 {products.length} 条 · 本次已选 {selectedRows.length} 条
+            装箱单库 {products.length} 条{catalogStats ? ` / 产品库 ${catalogStats.total} 条` : ''} · 本次已选 {selectedRows.length} 条
             {selectedRows.length > 0 && <>（共 {totalCartons} 箱 / {totalCount} 件）</>}
           </span>
         </div>
@@ -510,6 +520,12 @@ export default function Packing() {
 
       {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
       {msg && <div className="alert alert-success" style={{ marginBottom: 12 }}>{msg}</div>}
+      {catalogStats && (catalogStats.noSku > 0 || catalogStats.duplicates > 0) && (
+        <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid #faad14', background: '#fffbe6' }}>
+          已同步全部可用 SKU；另有 {catalogStats.noSku} 条产品缺少 SKU
+          {catalogStats.duplicates > 0 ? `，${catalogStats.duplicates} 条 SKU 重复` : ''}，无法作为独立装箱产品。
+        </div>
+      )}
 
       {/* URL import 缺失提示 */}
       {importMissing.length > 0 && (
@@ -600,7 +616,7 @@ export default function Packing() {
                     </td>
                     <td style={{ padding: '8px 10px' }}>
                       <div style={{ width: 56, height: 56, border: '1px solid #eee', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <PackingImage filename={p.image_file} alt={p.sku} />
+                        <PackingImage filename={p.image_file} fallbackUrl={p.source_image_url} alt={p.sku} />
                       </div>
                     </td>
                     <td style={{ padding: '8px 10px', fontWeight: 600 }}>{p.sku}</td>
@@ -618,7 +634,7 @@ export default function Packing() {
                         onClick={() => fileInputRefs.current[p.sku]?.click()}
                         style={{ marginRight: 4 }}
                       >
-                        {p.image_file ? '换图' : '传图'}
+                        {p.image_file || p.source_image_url ? '换图' : '传图'}
                       </button>
                       {p.image_file && (
                         <button className="btn btn-sm" onClick={() => clearImage(p.sku)} style={{ marginRight: 4 }}>删图</button>
