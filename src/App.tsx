@@ -1,13 +1,15 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { DataSourceProvider } from './DataSourceContext';
-import Dashboard from './pages/Dashboard';
-import ProductList from './pages/ProductList';
-import ProductCreate from './pages/ProductCreate';
-import ProductDetail from './pages/ProductDetail';
-import Settings from './pages/Settings';
-import Procurement from './pages/Procurement';
-import Packing from './pages/Packing';
-import Inventory from './pages/Inventory';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const ProductList = lazy(() => import('./pages/ProductList'));
+const ProductCreate = lazy(() => import('./pages/ProductCreate'));
+const ProductDetail = lazy(() => import('./pages/ProductDetail'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Procurement = lazy(() => import('./pages/Procurement'));
+const Packing = lazy(() => import('./pages/Packing'));
+const Inventory = lazy(() => import('./pages/Inventory'));
 
 const navItems = [
   { path: '/', label: '主页' },
@@ -43,6 +45,7 @@ export default function App() {
       </header>
 
       <div className="container">
+        <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<ProductList />} />
@@ -53,6 +56,7 @@ export default function App() {
           <Route path="/products/:id" element={<ProductDetail />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
+        </Suspense>
       </div>
       </DataSourceProvider>
     </BrowserRouter>

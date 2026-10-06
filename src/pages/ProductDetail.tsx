@@ -94,7 +94,7 @@ export default function ProductDetail() {
       });
       setProduct(updated);
       setEditMode(false);
-      if (searchParams.get('from') === 'task') navigate(-1);
+      if (searchParams.get('from')) navigate(-1);
     } catch (e: any) {
       setError(typeof e === 'string' ? e : e.message || '保存失败');
     }

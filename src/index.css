@@ -92,6 +92,15 @@ button {
   text-decoration: none;
 }
 
+.page-loading { min-height: 240px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--color-text-secondary); }
+.page-loading span { width: 18px; height: 18px; border: 2px solid #c9dedc; border-top-color: #13a8a8; border-radius: 50%; animation: page-spin .7s linear infinite; }
+@keyframes page-spin { to { transform: rotate(360deg); } }
+
+.product-context-menu { position: fixed; z-index: 1250; width: 150px; padding: 6px; border: 1px solid #d9dde5; border-radius: 7px; background: #fff; box-shadow: 0 8px 24px rgba(20, 35, 60, .18); }
+.product-context-menu button { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 5px; background: transparent; color: #26364d; text-align: left; cursor: pointer; }
+.product-context-menu button:first-child { color: #0958d9; font-weight: 600; }
+.product-context-menu button:hover { background: #edf6ff; }
+
 /* Packing workstation */
 .packing-page {
   --packing-accent: #ff6b47;
