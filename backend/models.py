@@ -215,3 +215,49 @@ class PackingProduct(Base):
     default_count = Column(Integer, default=1)
     image_file = Column(String, default="")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class InventoryAdjustment(Base):
+    """人工库存调整流水；记录只追加、不覆盖，保证库存变化可追溯。"""
+    __tablename__ = "inventory_adjustments"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    sku = Column(String, nullable=False, index=True)
+    quantity_delta = Column(Integer, nullable=False)
+    reason = Column(String, default="")
+    notes = Column(String, default="")
+    occurred_at = Column(String, default="")
+    reversed_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Shipment(Base):
+    """一次已确认的装箱/发货记录。void 状态不再扣减库存。"""
+    __tablename__ = "shipments"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    draft_key = Column(String, unique=True, nullable=False, index=True)
+    shipment_no = Column(String, unique=True, nullable=False, index=True)
+    shipment_date = Column(String, nullable=False)
+    mark = Column(String, default="")
+    shipping = Column(String, default="")
+    address = Column(String, default="")
+    status = Column(String, default="confirmed")
+    version = Column(Integer, default=1)
+    void_reason = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    voided_at = Column(DateTime, nullable=True)
+
+
+class ShipmentLine(Base):
+    __tablename__ = "shipment_lines"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    shipment_id = Column(String, ForeignKey("shipments.id"), nullable=False, index=True)
+    sku = Column(String, nullable=False, index=True)
+    name_zh = Column(String, default="")
+    name_en = Column(String, default="")
+    image_file = Column(String, default="")
+    cartons = Column(Integer, default=1)
+    count_per_carton = Column(Integer, default=1)
+    total_quantity = Column(Integer, default=1)
