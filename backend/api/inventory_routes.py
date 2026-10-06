@@ -13,17 +13,24 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     InventoryAdjustment, PackingProduct, ProcurementRecord, Product,
-    Shipment, ShipmentLine,
+    Shipment, ShipmentLine, SystemSettings,
 )
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
 
+def _start_date(db: Session) -> str:
+    setting = db.query(SystemSettings).filter(SystemSettings.key == "inventory_start_date").first()
+    return setting.value if setting and setting.value else "2026-09-24"
+
+
 def _procurement_by_product(db: Session) -> dict:
+    start_date = _start_date(db)
     result = {}
     for product_id, quantity in (
         db.query(ProcurementRecord.product_id, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
         .filter(ProcurementRecord.product_id.isnot(None))
+        .filter(ProcurementRecord.recorded_at >= start_date)
         .group_by(ProcurementRecord.product_id)
         .all()
     ):
@@ -32,6 +39,7 @@ def _procurement_by_product(db: Session) -> dict:
 
 
 def inventory_balance_for_sku(db: Session, sku: str) -> int:
+    start_date = _start_date(db)
     product = db.query(Product).filter(Product.sku == sku).first()
     purchased = 0
     if product:
@@ -41,17 +49,20 @@ def inventory_balance_for_sku(db: Session, sku: str) -> int:
                 (ProcurementRecord.product_id == product.id)
                 | ((ProcurementRecord.product_id.is_(None)) & (ProcurementRecord.product_no == product.product_no))
             )
+            .filter(ProcurementRecord.recorded_at >= start_date)
             .scalar() or 0
         )
     adjusted = int(
         db.query(func.coalesce(func.sum(InventoryAdjustment.quantity_delta), 0))
         .filter(InventoryAdjustment.sku == sku)
+        .filter(InventoryAdjustment.occurred_at >= start_date)
         .scalar() or 0
     )
     shipped = int(
         db.query(func.coalesce(func.sum(ShipmentLine.total_quantity), 0))
         .join(Shipment, Shipment.id == ShipmentLine.shipment_id)
         .filter(ShipmentLine.sku == sku, Shipment.status == "confirmed")
+        .filter(Shipment.shipment_date >= start_date)
         .scalar() or 0
     )
     return purchased + adjusted - shipped
@@ -59,21 +70,25 @@ def inventory_balance_for_sku(db: Session, sku: str) -> int:
 
 @router.get("")
 def list_inventory(db: Session = Depends(get_db)):
+    start_date = _start_date(db)
     products = db.query(Product).order_by(Product.product_no.asc()).all()
     purchased_by_id = _procurement_by_product(db)
     purchased_by_no = dict(
         db.query(ProcurementRecord.product_no, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
         .filter(ProcurementRecord.product_id.is_(None), ProcurementRecord.product_no.isnot(None))
+        .filter(ProcurementRecord.recorded_at >= start_date)
         .group_by(ProcurementRecord.product_no).all()
     )
     adjusted_by_sku = dict(
         db.query(InventoryAdjustment.sku, func.coalesce(func.sum(InventoryAdjustment.quantity_delta), 0))
+        .filter(InventoryAdjustment.occurred_at >= start_date)
         .group_by(InventoryAdjustment.sku).all()
     )
     shipped_by_sku = dict(
         db.query(ShipmentLine.sku, func.coalesce(func.sum(ShipmentLine.total_quantity), 0))
         .join(Shipment, Shipment.id == ShipmentLine.shipment_id)
         .filter(Shipment.status == "confirmed")
+        .filter(Shipment.shipment_date >= start_date)
         .group_by(ShipmentLine.sku).all()
     )
     rows = []
