@@ -157,6 +157,22 @@ button {
   align-items: start;
 }
 
+.packing-workspace.packing-focus-mode {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.packing-workspace.packing-focus-mode .packing-summary-column {
+  display: none;
+}
+
+.packing-detail-toggle {
+  min-width: 150px;
+}
+
+.packing-focus-mode .packing-table-scroll .product-table {
+  min-width: 980px;
+}
+
 .packing-library-card,
 .packing-summary-column > .card {
   border: 0;
