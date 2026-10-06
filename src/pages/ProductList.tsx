@@ -91,6 +91,7 @@ export default function ProductList() {
   const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
   const [variantEditor, setVariantEditor] = useState<{ productId: string; index: number; sku: string; label: string; makePrimary: boolean } | null>(null);
   const [savingVariant, setSavingVariant] = useState(false);
+  const [contextProduct, setContextProduct] = useState<{ id: string; x: number; y: number } | null>(null);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LS_SELECTED_SKUS_KEY) || '[]');
@@ -102,6 +103,14 @@ export default function ProductList() {
   useEffect(() => {
     localStorage.setItem(LS_SELECTED_SKUS_KEY, JSON.stringify(Array.from(selectedSkus)));
   }, [selectedSkus]);
+
+  useEffect(() => {
+    if (!contextProduct) return;
+    const close = () => setContextProduct(null);
+    window.addEventListener('click', close);
+    window.addEventListener('scroll', close, true);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('scroll', close, true); };
+  }, [contextProduct]);
 
   // 列宽拖拽
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
@@ -930,7 +939,7 @@ export default function ProductList() {
                 const labels = variantLabels(p);
                 return (
                   <Fragment key={p.id}>
-                    <tr className={branches.length > 1 ? 'product-parent-row' : ''} style={linkBgColor ? { background: linkBgColor } : undefined}>
+                    <tr onContextMenu={e => { e.preventDefault(); setContextProduct({ id: p.id, x: e.clientX, y: e.clientY }); }} className={branches.length > 1 ? 'product-parent-row' : ''} style={linkBgColor ? { background: linkBgColor } : undefined}>
                       {renderColumns.map(colKey => (
                         <td key={colKey}>{renderCell(p, colKey)}</td>
                       ))}
@@ -1042,6 +1051,10 @@ export default function ProductList() {
           <label className="variant-primary-toggle"><input type="checkbox" checked={variantEditor.makePrimary} onChange={e => setVariantEditor({ ...variantEditor, makePrimary: e.target.checked })} />设为主款（保存后移动到第一位）</label>
           <div className="modal-actions"><button className="btn btn-outline" disabled={savingVariant} onClick={() => setVariantEditor(null)}>取消</button><button className="btn btn-primary" disabled={savingVariant} onClick={saveVariant}>{savingVariant ? '保存中...' : '保存分支'}</button></div>
         </div>
+      </div>}
+      {contextProduct && <div className="product-context-menu" style={{ left: contextProduct.x, top: contextProduct.y }} onClick={e => e.stopPropagation()}>
+        <button onClick={() => navigate(`/products/${contextProduct.id}?edit=1&from=list`)}>修改资料</button>
+        <button onClick={() => navigate(`/products/${contextProduct.id}`)}>查看详情</button>
       </div>}
     </div>
   );
