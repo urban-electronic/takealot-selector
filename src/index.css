@@ -46,15 +46,15 @@ button {
 
 /* Layout */
 .app-header {
-  background: #fbf8f5;
-  border-top: 4px solid #13a8a8;
-  border-bottom: 1px solid #ded9d4;
+  background: #082654;
+  border-top: 0;
+  border-bottom: 1px solid #173b6d;
   padding: 0 24px;
   display: flex;
   align-items: center;
   height: 64px;
   gap: 32px;
-  box-shadow: 0 3px 12px rgba(46, 41, 36, 0.1);
+  box-shadow: 0 3px 14px rgba(8, 38, 84, 0.16);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -66,7 +66,7 @@ button {
 .app-header h1 {
   font-size: 18px;
   font-weight: 700;
-  color: #24211f;
+  color: #fff;
   white-space: nowrap;
 }
 
@@ -78,7 +78,7 @@ button {
 .app-header nav a {
   padding: 8px 16px;
   border-radius: var(--radius);
-  color: #534e49;
+  color: #cbd8ea;
   font-size: 14px;
   font-weight: 500;
   transition: all 0.2s;
@@ -87,8 +87,8 @@ button {
 
 .app-header nav a:hover,
 .app-header nav a.active {
-  background: #e4f5f3;
-  color: #087d7d;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
   text-decoration: none;
 }
 
