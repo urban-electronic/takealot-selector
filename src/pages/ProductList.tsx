@@ -65,6 +65,20 @@ function variantKind(label: string): string {
   return '款式';
 }
 
+function variantSpec(label: string, allLabels: string[]): string {
+  const direct = label.match(/\b(?:\d+\s*(?:GB|TB)|XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|\d+(?:\.\d+)?\s*(?:cm|mm|inch|英寸|码))\b/i);
+  if (direct) return direct[0].replace(/\s+/g, '').toUpperCase();
+  const color = label.match(/(藏蓝|军绿|卡其|墨绿|深蓝|浅蓝|天蓝|玫红|粉红|黑色|白色|红色|蓝色|绿色|黄色|紫色|粉色|灰色|棕色|咖色|黑|白|红|蓝|绿|黄|紫|粉|灰|棕)$/);
+  if (color) return color[1];
+  if (allLabels.length > 1) {
+    let prefix = allLabels[0];
+    while (prefix && !allLabels.every(item => item.startsWith(prefix))) prefix = prefix.slice(0, -1);
+    const distinct = label.slice(prefix.length).replace(/^[\s\-_/]+|[\s\-_/]+$/g, '');
+    if (distinct) return distinct.slice(0, 12);
+  }
+  return label.slice(0, 12) || '待确认';
+}
+
 export default function ProductList() {
   const api = useApi();
   const navigate = useNavigate();
@@ -907,6 +921,7 @@ export default function ProductList() {
                                 <span className={`branch-role ${index === 0 ? 'primary' : ''}`}>{index === 0 ? '主' : variantKind(labels[index])}</span>
                                 <code>{sku}</code>
                                 <span className="branch-names"><strong>{labels[index]}</strong><small>{p.product_name || '英文品名待回抓'}</small></span>
+                                <span className="branch-spec">{variantSpec(labels[index], labels)}</span>
                               </label>
                             ))}
                           </div>

@@ -51,7 +51,13 @@ function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallba
         setState('ok');
       })
       .catch(() => {
-        if (!cancelled) setState('failed');
+        if (cancelled) return;
+        if (fallbackUrl) {
+          setSrc(api.getImageUrl(fallbackUrl));
+          setState('ok');
+        } else {
+          setState('failed');
+        }
       });
     return () => {
       cancelled = true;
@@ -74,6 +80,22 @@ const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
+
+function packingSpec(product: PackingProduct, rows: PackingProduct[]): string {
+  const label = product.variant_label || product.name_zh || '';
+  const direct = label.match(/\b(?:\d+\s*(?:GB|TB)|XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|\d+(?:\.\d+)?\s*(?:cm|mm|inch|英寸|码))\b/i);
+  if (direct) return direct[0].replace(/\s+/g, '').toUpperCase();
+  const color = label.match(/(藏蓝|军绿|卡其|墨绿|深蓝|浅蓝|天蓝|玫红|粉红|黑色|白色|红色|蓝色|绿色|黄色|紫色|粉色|灰色|棕色|咖色|黑|白|红|蓝|绿|黄|紫|粉|灰|棕)$/);
+  if (color) return color[1];
+  const group = rows.filter(row => row.variant_group && row.variant_group === product.variant_group).map(row => row.variant_label || row.name_zh || '');
+  if (group.length > 1) {
+    let prefix = group[0];
+    while (prefix && !group.every(item => item.startsWith(prefix))) prefix = prefix.slice(0, -1);
+    const distinct = label.slice(prefix.length).replace(/^[\s\-_/]+|[\s\-_/]+$/g, '');
+    if (distinct) return distinct.slice(0, 12);
+  }
+  return product.is_primary_variant ? '主款' : '待确认';
+}
 
 const PACKING_DRAFT_KEY = 'packingDraftV1';
 const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
@@ -632,6 +654,7 @@ export default function Packing() {
                     <td style={{ padding: '8px 10px', fontWeight: 600 }}>
                       {p.variant_group && <span className={p.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{p.is_primary_variant ? '主' : '分支'}</span>}
                       {p.sku}
+                      {p.variant_group && <span className="packing-spec-box">{packingSpec(p, products)}</span>}
                     </td>
                     <td style={{ padding: '8px 10px' }}>
                       <strong className="packing-product-name">{p.name_zh || p.name_en || '-'}</strong>

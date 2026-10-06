@@ -664,7 +664,7 @@ button {
 .product-parent-row td { border-bottom: 0; }
 .product-branch-row td { padding: 0; background: #fbfdff; border-top: 0; }
 .product-branch-rail { display: flex; flex-direction: column; border-left: 3px solid #d6e4ff; background: #fbfdff; }
-.product-branch-item { display: grid; grid-template-columns: 28px 76px 48px 170px minmax(240px, 1fr); align-items: center; gap: 10px; min-height: 78px; padding: 8px 18px; border-top: 1px solid #edf0f5; cursor: pointer; }
+.product-branch-item { display: grid; grid-template-columns: 28px 76px 48px 170px minmax(240px, 1fr) auto; align-items: center; gap: 10px; min-height: 78px; padding: 8px 18px; border-top: 1px solid #edf0f5; cursor: pointer; }
 .product-branch-item:hover { background: #f4f9ff; }
 .product-branch-item.primary { background: #f2f8ff; }
 .product-branch-item input { width: auto; accent-color: #1677ff; }
@@ -678,12 +678,14 @@ button {
 .branch-names strong, .branch-names small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-names strong { color: #24344d; font-size: 13px; }
 .branch-names small { color: #8792a5; font-size: 12px; }
+.branch-spec, .packing-spec-box { display: inline-flex; align-items: center; justify-content: center; min-width: 42px; padding: 4px 8px; border: 1px solid #91caff; border-radius: 5px; background: #e6f4ff; color: #0958d9; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.packing-spec-box { margin-left: 8px; vertical-align: middle; }
 .image-recovery-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; padding: 11px 14px; border: 1px solid #bae0ff; border-radius: 8px; background: #f0f8ff; }
 .image-recovery-bar div { display: flex; flex-direction: column; gap: 2px; }
 .image-recovery-bar span { color: var(--color-text-secondary); font-size: 12px; }
 
 @media (max-width: 900px) {
-  .product-branch-item { grid-template-columns: 24px 58px 42px 130px minmax(180px, 1fr); padding-inline: 10px; }
+  .product-branch-item { grid-template-columns: 24px 58px 42px 130px minmax(180px, 1fr) auto; padding-inline: 10px; }
   .branch-image { width: 52px; height: 52px; }
   .image-recovery-bar { align-items: stretch; flex-direction: column; }
 }
@@ -699,6 +701,10 @@ button {
 .packing-variant-branch .packing-product-name {
   padding-left: 10px;
 }
+
+.packing-table-scroll tbody td { vertical-align: middle; }
+.packing-product-name, .packing-product-en { display: block; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.packing-product-en { margin-top: 5px; color: #8792a5; font-size: 12px; line-height: 1.35; }
 
 .variant-role {
   display: inline-block;
