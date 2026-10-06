@@ -231,9 +231,13 @@ def sync_from_products(db: Session = Depends(get_db)):
             variant_name = zh_variants[idx] if len(zh_variants) == len(sku_variants) else name_zh
             if sku in seen:
                 current = _find(db, sku)
-                if current and len(sku_variants) > 1:
-                    current.variant_group = prod.id
-                    current.variant_label = variant_name
+                if current:
+                    # 每次同步都刷新产品库名称与分支关系；保留装箱单人工维护的物流属性和上传图片。
+                    current.name_zh = variant_name
+                    current.name_en = name_en
+                    current.name = ' / '.join(x for x in (variant_name, name_en) if x)
+                    current.variant_group = prod.id if len(sku_variants) > 1 else ''
+                    current.variant_label = variant_name if len(sku_variants) > 1 else ''
                     current.is_primary_variant = idx == 0
                 continue
             p = PackingProduct(
@@ -420,6 +424,11 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db))
     failed = []
     for p in pending:
         prod = db.query(Product).filter(Product.sku == p.sku).first()
+        if prod is None:
+            for candidate in db.query(Product).filter(Product.sku.isnot(None)).all():
+                if p.sku in [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]:
+                    prod = candidate
+                    break
         if prod is None:
             continue
         image_url = (prod.product_image_url or '').strip()
