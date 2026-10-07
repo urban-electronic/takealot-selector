@@ -172,11 +172,14 @@ def _ensure_columns():
             store_additions = {
                 "sync_interval_minutes": "INTEGER DEFAULT 60",
                 "external_store_ref": "TEXT DEFAULT ''",
+                "allow_negative_inventory_shipments": "BOOLEAN DEFAULT 0",
             }
             with engine.begin() as conn:
                 for name, sql_type in store_additions.items():
                     if name not in store_cols:
                         conn.execute(text(f"ALTER TABLE stores ADD COLUMN {name} {sql_type}"))
+                        if name == "allow_negative_inventory_shipments":
+                            conn.execute(text("UPDATE stores SET allow_negative_inventory_shipments = 1 WHERE id = :store_id"), {"store_id": DEFAULT_STORE_ID})
                         print(f"[startup] stores 表已补列 {name}", flush=True)
         store_scoped_tables = ("procurement_records", "inventory_adjustments", "shipments")
         with engine.begin() as conn:
@@ -198,7 +201,7 @@ def _ensure_default_store():
     try:
         default_store = db.query(Store).filter(Store.id == DEFAULT_STORE_ID).first()
         if not default_store:
-            db.add(Store(id=DEFAULT_STORE_ID, name="自营店铺", platform="Takealot", status="active", sync_method="manual"))
+            db.add(Store(id=DEFAULT_STORE_ID, name="自营店铺", platform="Takealot", status="active", sync_method="manual", allow_negative_inventory_shipments=True))
             db.commit()
     except Exception as e:
         db.rollback()
