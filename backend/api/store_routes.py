@@ -26,6 +26,7 @@ class StoreCreate(BaseModel):
     external_store_ref: str = ""
     sync_method: str = "manual"
     sync_interval_minutes: int = 60
+    allow_negative_inventory_shipments: bool = False
 
 
 class StoreUpdate(BaseModel):
@@ -36,6 +37,7 @@ class StoreUpdate(BaseModel):
     external_store_ref: str | None = None
     sync_method: str | None = None
     sync_interval_minutes: int | None = None
+    allow_negative_inventory_shipments: bool | None = None
 
 
 def serialize_store(row: Store):
@@ -45,6 +47,7 @@ def serialize_store(row: Store):
         "sync_method": row.sync_method,
         "sync_interval_minutes": row.sync_interval_minutes or 60,
         "external_store_ref": row.external_store_ref or "",
+        "allow_negative_inventory_shipments": bool(row.allow_negative_inventory_shipments),
         "last_synced_at": row.last_synced_at.isoformat() if row.last_synced_at else None,
     }
 
@@ -69,6 +72,7 @@ def create_store(data: StoreCreate, db: Session = Depends(get_db)):
         platform=data.platform.strip() or "Takealot",
         external_store_ref=data.external_store_ref.strip(), sync_method=data.sync_method,
         sync_interval_minutes=data.sync_interval_minutes,
+        allow_negative_inventory_shipments=data.allow_negative_inventory_shipments,
     )
     db.add(row)
     db.commit()
