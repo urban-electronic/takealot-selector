@@ -192,11 +192,13 @@ def _parse_migration_zip(content: bytes) -> tuple:
 # ---- 1. GET /api/packing/products ----
 
 @router.get('/products')
-def list_products(db: Session = Depends(get_db)):
-    rows = db.query(PackingProduct).order_by(PackingProduct.sku).all()
+def list_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    store_products = db.query(Product).filter(Product.store_id == store_id).all()
+    store_skus = {sku for product in store_products for sku in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if sku}
+    rows = db.query(PackingProduct).filter(PackingProduct.sku.in_(store_skus)).order_by(PackingProduct.sku).all() if store_skus else []
     rows.sort(key=lambda p: (p.variant_group or p.sku, 0 if p.is_primary_variant else 1, p.sku))
     source_images = {}
-    for raw_sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.sku.isnot(None)).all():
+    for raw_sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
         if raw_sku and image_url:
             for sku in re.split(r'[\s,，;；]+', raw_sku.strip()):
                 if sku:
@@ -210,13 +212,13 @@ def list_products(db: Session = Depends(get_db)):
 
 
 @router.post('/sync-from-products')
-def sync_from_products(db: Session = Depends(get_db)):
+def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """轻量同步完整产品库到装箱单库。
 
     只补充尚不存在的 SKU，不覆盖装箱单中的人工编辑；图片直接由列表接口
     回退到产品库图片，避免批量下载图片导致请求超时。
     """
-    products = db.query(Product).order_by(Product.created_at.asc()).all()
+    products = db.query(Product).filter(Product.store_id == store_id).order_by(Product.created_at.asc()).all()
     existing = {sku for (sku,) in db.query(PackingProduct.sku).all()}
     imported = skipped_no_sku = duplicate_sku = 0
     seen = set(existing)
@@ -357,21 +359,21 @@ def _fetch_takealot_image(url: str) -> str:
     return filename
 
 
-def _catalog_product_for_sku(db: Session, sku: str) -> Optional[Product]:
+def _catalog_product_for_sku(db: Session, sku: str, store_id: str) -> Optional[Product]:
     """按独立 SKU 或历史多 SKU 字段找到选品库产品。"""
-    exact = db.query(Product).filter(Product.sku == sku).first()
+    exact = db.query(Product).filter(Product.store_id == store_id, Product.sku == sku).first()
     if exact:
         return exact
-    for candidate in db.query(Product).filter(Product.sku.isnot(None)).all():
+    for candidate in db.query(Product).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
         variants = [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]
         if sku in variants:
             return candidate
     return None
 
 
-def _hydrate_export_product(db: Session, product: PackingProduct) -> None:
+def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str) -> None:
     """导出前补齐选品库中的重量和本地图片，不让远程图片只停留在页面预览。"""
-    source = _catalog_product_for_sku(db, product.sku)
+    source = _catalog_product_for_sku(db, product.sku, store_id)
     if source is None:
         return
     if source.actual_weight_kg:
@@ -385,14 +387,14 @@ def _hydrate_export_product(db: Session, product: PackingProduct) -> None:
 
 
 @router.post('/import-from-products')
-def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_db)):
+def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """选品 products 批量导入装箱单库（幂等：SKU 已存在则跳过，不覆盖云端已有编辑）。
     字段映射 + Takealot 图片自动抓取转存 SHA256；图片失败不阻断导入。
     """
     imported = skipped = 0
     failed = []
     for pid in data.product_ids:
-        prod = db.query(Product).filter(Product.id == pid).first()
+        prod = db.query(Product).filter(Product.id == pid, Product.store_id == store_id).first()
         if prod is None:
             failed.append({'sku': '', 'reason': f'选品产品 {pid} 不存在'})
             continue
@@ -437,7 +439,7 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
 # ---- 4.6 POST /api/packing/sync-images-from-products（按 SKU 从选品库匹配图片） ----
 
 @router.post('/sync-images-from-products')
-def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db)):
+def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """把装箱单库中"待补图"（image_file 为空）的产品，按 SKU 去选品库 products
     匹配 product_image_url 并抓取转存为 SHA256 图片。
 
@@ -457,9 +459,9 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db))
     updated = 0
     failed = []
     for p in pending:
-        prod = db.query(Product).filter(Product.sku == p.sku).first()
+        prod = db.query(Product).filter(Product.store_id == store_id, Product.sku == p.sku).first()
         if prod is None:
-            for candidate in db.query(Product).filter(Product.sku.isnot(None)).all():
+            for candidate in db.query(Product).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
                 if p.sku in [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]:
                     prod = candidate
                     break
@@ -485,7 +487,7 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db))
 
 
 @router.post('/sync-variants-from-takealot')
-async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depends(get_db)):
+async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """从 Takealot 页面结构化状态匹配真实 SKU 变体。
 
     只有官网同时给出 SKU 与规格/图片时才写入，绝不按顺序猜测颜色或复制主图。
@@ -493,7 +495,7 @@ async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depend
     from services.takealot_scraper import scrape_product
     limit = max(1, min(int(data.limit or 20), 50))
     candidates = []
-    for product in db.query(Product).filter(Product.takealot_url.isnot(None), Product.sku.isnot(None)).all():
+    for product in db.query(Product).filter(Product.store_id == store_id, Product.takealot_url.isnot(None), Product.sku.isnot(None)).all():
         skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
         if len(skus) > 1 and product.takealot_url:
             candidates.append((product, skus))
@@ -595,7 +597,9 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         p = _find(db, line.sku.strip())
         if not p:
             return fail(400, '找不到产品 ' + line.sku)
-        _hydrate_export_product(db, p)
+        if not _catalog_product_for_sku(db, p.sku, store_id):
+            return fail(400, f'{p.sku} 不属于当前店铺，请先加入当前店铺产品列表')
+        _hydrate_export_product(db, p, store_id)
         cartons = line.cartons.strip()
         count = line.count.strip()
         if not cartons.isdecimal() or not count.isdecimal() or int(cartons) < 1 or int(count) < 1:
