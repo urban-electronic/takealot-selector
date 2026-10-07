@@ -142,6 +142,22 @@ def startup():
     _ensure_default_store()
     migrate_from_dump()
     _init_default_data()
+    _backfill_offer_catalog()
+
+
+def _backfill_offer_catalog():
+    """用卖家导出的权威清单补现有产品，不导入清单中的额外产品。"""
+    from services.offer_catalog_backfill import apply_offer_catalog_backfill
+
+    db = SessionLocal()
+    try:
+        stats = apply_offer_catalog_backfill(db, store_id=DEFAULT_STORE_ID)
+        print(f"[startup] Offer Export 补齐完成: {stats}", flush=True)
+    except Exception as exc:
+        db.rollback()
+        print(f"[startup] Offer Export 补齐失败: {exc}", flush=True)
+    finally:
+        db.close()
 
 
 def _ensure_columns():
