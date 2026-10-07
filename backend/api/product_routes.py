@@ -14,6 +14,7 @@ from database import get_db
 from models import Product, SelectionStatus, ScrapeLog
 from services.product_calculator import calculate_all, determine_selection_status, default_fulfillment_fee_zar
 from services.translator import translate_to_chinese_sync
+from api.store_routes import get_store_id
 
 router = APIRouter(prefix="/api/products", tags=["products"])
 
@@ -261,8 +262,9 @@ def list_products(
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
     db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
 ):
-    query = db.query(Product)
+    query = db.query(Product).filter(Product.store_id == store_id)
 
     if selection_status:
         query = query.filter(Product.selection_status == selection_status)
@@ -298,7 +300,7 @@ def list_products(
         query = query.filter((Product.shipping_method.is_(None)) | (Product.shipping_method == ""))
 
     # 先按创建时间正序建立固定编号映射（product_no = 创建顺序，与排序无关）
-    all_ordered = db.query(Product).order_by(Product.created_at.asc()).all()
+    all_ordered = db.query(Product).filter(Product.store_id == store_id).order_by(Product.created_at.asc()).all()
     id_to_no = {p.id: idx + 1 for idx, p in enumerate(all_ordered)}
 
     # 排序
@@ -319,7 +321,7 @@ def list_products(
     if duplicate_sku:
         # 重复冲突必须基于完整产品库判断，不能只统计当前筛选结果。
         owners = {}
-        for product in db.query(Product).all():
+        for product in db.query(Product).filter(Product.store_id == store_id).all():
             for sku in set(sku_tokens(product.sku)):
                 owners.setdefault(sku, set()).add(product.id)
         conflicting = {sku for sku, ids in owners.items() if len(ids) > 1}
@@ -330,8 +332,8 @@ def list_products(
     return products
 
 @router.get("/{product_id}", response_model=ProductOut)
-def get_product(product_id: str, db: Session = Depends(get_db)):
-    p = db.query(Product).filter(Product.id == product_id).first()
+def get_product(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
     from fastapi.encoders import jsonable_encoder
@@ -340,12 +342,12 @@ def get_product(product_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=ProductOut)
-def create_product(data: ProductCreate, db: Session = Depends(get_db)):
+def create_product(data: ProductCreate, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     # 检查重复
     from services.takealot_scraper import normalize_takealot_url
     normalized = normalize_takealot_url(data.takealot_url or "")
     if normalized:
-        existing = db.query(Product).filter(Product.takealot_url == normalized).first()
+        existing = db.query(Product).filter(Product.store_id == store_id, Product.takealot_url == normalized).first()
         if existing:
             raise HTTPException(
                 status_code=409,
@@ -355,7 +357,7 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db)):
     payload = data.model_dump()
     if "fulfillment_fee_zar" not in data.model_dump(exclude_unset=True):
         payload["fulfillment_fee_zar"] = default_fulfillment_fee_zar(data.fee_category)
-    p = Product(**payload)
+    p = Product(**payload, store_id=store_id)
     if normalized:
         p.takealot_url = normalized
 
@@ -381,8 +383,8 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/{product_id}", response_model=ProductOut)
-def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(get_db)):
-    p = db.query(Product).filter(Product.id == product_id).first()
+def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
 
@@ -423,7 +425,7 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
 
 
 @router.post("/batch-import", response_model=dict)
-def batch_import(data: List[ProductCreate], db: Session = Depends(get_db)):
+def batch_import(data: List[ProductCreate], db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """批量导入产品"""
     from services.takealot_scraper import normalize_takealot_url
     
@@ -435,13 +437,13 @@ def batch_import(data: List[ProductCreate], db: Session = Depends(get_db)):
         try:
             normalized = normalize_takealot_url(item.takealot_url or "")
             if normalized:
-                existing = db.query(Product).filter(Product.takealot_url == normalized).first()
+                existing = db.query(Product).filter(Product.store_id == store_id, Product.takealot_url == normalized).first()
                 if existing:
                     failed_count += 1
                     errors.append(f"链接已存在: {item.product_name or item.takealot_url}")
                     continue
             
-            p = Product(**item.model_dump())
+            p = Product(**item.model_dump(), store_id=store_id)
             if normalized:
                 p.takealot_url = normalized
             
@@ -491,8 +493,8 @@ class PriceRefreshOut(BaseModel):
 
 
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)
-async def refresh_price(product_id: str, db: Session = Depends(get_db)):
-    p = db.query(Product).filter(Product.id == product_id).first()
+async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
     if not p.takealot_url:
@@ -523,7 +525,7 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
         official_skus.discard("")
         if len(official_skus) == 1:
             official_sku = next(iter(official_skus))
-            conflict = db.query(Product).filter(Product.sku == official_sku, Product.id != p.id).first()
+            conflict = db.query(Product).filter(Product.store_id == store_id, Product.sku == official_sku, Product.id != p.id).first()
             if not conflict:
                 p.sku = official_sku
                 updated["sku"] = official_sku
@@ -579,8 +581,8 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{product_id}")
-def delete_product(product_id: str, db: Session = Depends(get_db)):
-    p = db.query(Product).filter(Product.id == product_id).first()
+def delete_product(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
     db.delete(p)
@@ -589,23 +591,28 @@ def delete_product(product_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/stats/dashboard")
-def dashboard(db: Session = Depends(get_db)):
-    total = db.query(Product).count()
+def dashboard(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    base = db.query(Product).filter(Product.store_id == store_id)
+    total = base.count()
     data_incomplete = db.query(Product).filter(
+        Product.store_id == store_id,
         Product.selection_status == SelectionStatus.DATA_INCOMPLETE.value
     ).count()
     category_pending = db.query(Product).filter(
+        Product.store_id == store_id,
         Product.selection_status == SelectionStatus.CATEGORY_PENDING.value
     ).count()
     qualified = db.query(Product).filter(
+        Product.store_id == store_id,
         Product.selection_status == SelectionStatus.QUALIFIED.value
     ).count()
     not_recommended = db.query(Product).filter(
+        Product.store_id == store_id,
         Product.selection_status == SelectionStatus.NOT_RECOMMENDED.value
     ).count()
 
     # 平均利润率(仅已计算的产品)
-    products_with_margin = db.query(Product).filter(Product.profit_margin != None).all()
+    products_with_margin = db.query(Product).filter(Product.store_id == store_id, Product.profit_margin != None).all()
     avg_margin = (
         sum(p.profit_margin for p in products_with_margin) / len(products_with_margin)
         if products_with_margin
@@ -615,7 +622,7 @@ def dashboard(db: Session = Depends(get_db)):
     # 利润率最高的产品
     top = (
         db.query(Product)
-        .filter(Product.profit_margin != None)
+        .filter(Product.store_id == store_id, Product.profit_margin != None)
         .order_by(Product.profit_margin.desc())
         .first()
     )
