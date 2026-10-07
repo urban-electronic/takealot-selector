@@ -43,6 +43,9 @@ export const updateProduct = (id: string, data: Partial<Product>): Promise<Produ
 export const deleteProduct = (id: string): Promise<string> =>
   invoke('delete_product', { id }) as Promise<string>;
 
+export const restoreProduct = (id: string): Promise<string> =>
+  invoke('restore_product', { id }) as Promise<string>;
+
 export const refreshPrice = (id: string): Promise<Record<string, unknown>> =>
   invoke('refresh_price', { id }) as Promise<Record<string, unknown>>;
 
