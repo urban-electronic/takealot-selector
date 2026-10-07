@@ -125,7 +125,9 @@ export default function Dashboard() {
           {shipments.length === 0 ? <div className="dashboard-empty">暂无发货记录</div> : (
             <table><thead><tr><th>单号</th><th>日期</th><th>SKU</th><th>数量</th><th>状态</th></tr></thead>
               <tbody>{shipments.slice(0, 6).map(row => <tr key={row.id}>
-                <td>{row.shipment_no}</td><td>{row.shipment_date}</td>\n                <td><div className="dashboard-shipment-lines">{row.lines.map(line => <span key={line.sku}>{line.sku}</span>)}</div></td>\n                <td><div className="dashboard-shipment-lines dashboard-shipment-quantities">{row.lines.map(line => <span key={line.sku}>{line.total_quantity}</span>)}</div></td>
+                <td>{row.shipment_no}</td><td>{row.shipment_date}</td>
+                <td><div className="dashboard-shipment-lines">{row.lines.map(line => <span key={line.sku}>{line.sku}</span>)}</div></td>
+                <td><div className="dashboard-shipment-lines dashboard-shipment-quantities">{row.lines.map(line => <span key={line.sku}>{line.total_quantity}</span>)}</div></td>
                 <td><span className={row.status === 'confirmed' ? 'status-confirmed' : 'status-void'}>{row.status === 'confirmed' ? '已发货' : '已撤回'}</span></td>
               </tr>)}</tbody>
             </table>
