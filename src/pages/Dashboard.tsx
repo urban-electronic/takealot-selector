@@ -143,9 +143,13 @@ export default function Dashboard() {
             <table className="dashboard-recent-table"><colgroup><col className="col-order" /><col className="col-date" /><col className="col-sku" /><col className="col-name" /><col className="col-qty" /><col className="col-status" /></colgroup><thead><tr><th>单号</th><th>日期</th><th>SKU</th><th>中文品名</th><th>数量</th><th>状态</th></tr></thead>
               <tbody>{shipments.slice(0, 6).map(row => <tr key={row.id}>
                 <td>{row.shipment_no}</td><td>{row.shipment_date}</td>
-                <td><div className="dashboard-shipment-lines">{row.lines.map(line => <span key={line.sku}>{line.sku}</span>)}</div></td>
-                <td><div className="dashboard-shipment-lines dashboard-shipment-names">{row.lines.map(line => <span key={line.sku} title={line.name}>{line.name.length > 10 ? `${line.name.slice(0, 10)}…` : line.name}</span>)}</div></td>
-                <td><div className="dashboard-shipment-lines dashboard-shipment-quantities">{row.lines.map(line => <span key={line.sku}>{line.total_quantity}</span>)}</div></td>
+                <td colSpan={3} className="dashboard-shipment-group-cell"><div className="dashboard-shipment-group">
+                  {row.lines.map((line, index) => <div className="dashboard-shipment-line" key={`${line.sku}-${index}`}>
+                    <span className="dashboard-line-sku">{line.sku}</span>
+                    <span className="dashboard-line-name" title={line.name}>{line.name.length > 10 ? `${line.name.slice(0, 10)}…` : line.name}</span>
+                    <span className="dashboard-line-quantity">{line.total_quantity}</span>
+                  </div>)}
+                </div></td>
                 <td><span className={row.status === 'confirmed' ? 'status-confirmed' : 'status-void'}>{row.status === 'confirmed' ? '已发货' : '已撤回'}</span></td>
               </tr>)}</tbody>
             </table>
