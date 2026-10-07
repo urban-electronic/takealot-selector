@@ -216,8 +216,15 @@ def reverse_adjustment(adjustment_id: str, db: Session = Depends(get_db), store_
         raise HTTPException(status_code=404, detail="调整记录不存在")
     if original.reversed_by:
         raise HTTPException(status_code=400, detail="该调整已经撤销")
+    reversal_delta = -original.quantity_delta
+    current = inventory_balance_for_sku(db, original.sku, store_id)
+    if reversal_delta < 0 and current + reversal_delta < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"撤销后库存会变为负数：当前可用 {current}，请先撤回相关发货或补录库存",
+        )
     reversal = InventoryAdjustment(
-        id=str(uuid.uuid4()), store_id=store_id, sku=original.sku, quantity_delta=-original.quantity_delta,
+        id=str(uuid.uuid4()), store_id=store_id, sku=original.sku, quantity_delta=reversal_delta,
         reason="撤销库存调整", notes=f"撤销记录 {original.id}",
         occurred_at=dt.date.today().isoformat(),
     )
