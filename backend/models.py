@@ -13,6 +13,23 @@ def generate_uuid():
     return str(uuid.uuid4())
 
 
+DEFAULT_STORE_ID = "default-store"
+
+
+class Store(Base):
+    """代运营店铺。阶段一先建立默认店铺，后续接入各店独立同步。"""
+    __tablename__ = "stores"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    platform = Column(String, default="Takealot")
+    status = Column(String, default="active")
+    owner_name = Column(String, default="")
+    sync_method = Column(String, default="manual")
+    last_synced_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ShippingMethod(str, enum.Enum):
     AIR_REGULAR = "空运普货"
     AIR_BATTERY = "空运带电"
@@ -181,6 +198,7 @@ class ProcurementRecord(Base):
     __tablename__ = "procurement_records"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
     product_id = Column(String, ForeignKey("products.id"), nullable=True)
     product_no = Column(Integer, nullable=True)
     product_name = Column(String, default="")
@@ -225,6 +243,7 @@ class InventoryAdjustment(Base):
     __tablename__ = "inventory_adjustments"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
     sku = Column(String, nullable=False, index=True)
     quantity_delta = Column(Integer, nullable=False)
     reason = Column(String, default="")
@@ -239,6 +258,7 @@ class Shipment(Base):
     __tablename__ = "shipments"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
     draft_key = Column(String, unique=True, nullable=False, index=True)
     shipment_no = Column(String, unique=True, nullable=False, index=True)
     shipment_date = Column(String, nullable=False)

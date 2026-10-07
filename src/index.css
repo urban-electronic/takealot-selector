@@ -73,7 +73,11 @@ button {
 .app-header nav {
   display: flex;
   gap: 4px;
+  flex: 1;
 }
+
+.store-switcher { display: flex; align-items: center; gap: 7px; min-width: 180px; color: #cbd8ea; font-size: 11px; }
+.store-switcher select { width: 120px; height: 32px; padding: 0 28px 0 9px; border: 1px solid rgba(255,255,255,.24); border-radius: 6px; background: #fff; color: #183354; font-size: 12px; }
 
 .app-header nav a {
   padding: 8px 16px;

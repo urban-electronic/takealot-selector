@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import PackingProduct, Product, Shipment, ShipmentLine
 from api.inventory_routes import inventory_balance_for_sku
+from api.store_routes import get_store_id
 from services import packing_excel as px
 
 router = APIRouter(prefix="/api/packing", tags=["packing"])
@@ -582,7 +583,7 @@ def get_image(filename: str):
 # ---- 7. POST /api/packing/export ----
 
 @router.post('/export')
-def export_excel(data: ExportIn, db: Session = Depends(get_db)):
+def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     if not data.items or len(data.items) > 500:
         return fail(400, '请选择 1 至 500 个产品')
     try:
@@ -592,7 +593,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
     items = []
     existing_shipment = None
     if data.draft_key.strip():
-        existing_shipment = db.query(Shipment).filter(Shipment.draft_key == data.draft_key.strip()).first()
+        existing_shipment = db.query(Shipment).filter(Shipment.draft_key == data.draft_key.strip(), Shipment.store_id == store_id).first()
     requested_by_sku = {}
     for line in data.items:
         p = _find(db, line.sku.strip())
@@ -609,7 +610,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
     db.commit()
     if not existing_shipment and not TEMP_ALLOW_NEGATIVE_INVENTORY_SHIPMENTS:
         for sku, requested in requested_by_sku.items():
-            available = inventory_balance_for_sku(db, sku)
+            available = inventory_balance_for_sku(db, sku, store_id)
             if available < requested:
                 return fail(400, f'{sku} 库存不足：可用 {available}，本次发货 {requested}')
     try:
@@ -622,9 +623,11 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
     except Exception as e:
         return fail(400, f'生成失败：{e}')
     if not existing_shipment:
+        # shipment_no 当前是全局唯一；按全局日序号生成，避免未来不同店铺同日编号冲突。
         day_count = db.query(Shipment).filter(Shipment.shipment_date == date.isoformat()).count()
         shipment = Shipment(
             id=str(uuid.uuid4()),
+            store_id=store_id,
             draft_key=data.draft_key.strip() or str(uuid.uuid4()),
             shipment_no=f'PK-{date.strftime("%Y%m%d")}-{day_count + 1:03d}',
             shipment_date=date.isoformat(),

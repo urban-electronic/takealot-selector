@@ -1,6 +1,8 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { DataSourceProvider } from './DataSourceContext';
+import { getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
+import type { Store } from './types';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const ProductList = lazy(() => import('./pages/ProductList'));
@@ -22,6 +24,24 @@ const navItems = [
 ];
 
 export default function App() {
+  const [stores, setStores] = useState<Store[]>([]);
+  const [activeStore, setActiveStore] = useState(getActiveStoreId());
+
+  useEffect(() => {
+    getStores().then(rows => {
+      setStores(rows);
+      if (rows.length && !rows.some(row => row.id === activeStore)) {
+        setActiveStore(rows[0].id);
+        setActiveStoreId(rows[0].id);
+      }
+    }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', last_synced_at: null }]));
+  }, [activeStore]);
+
+  const switchStore = (storeId: string) => {
+    setActiveStoreId(storeId);
+    setActiveStore(storeId);
+  };
+
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <DataSourceProvider>
@@ -42,9 +62,15 @@ export default function App() {
             </NavLink>
           ))}
         </nav>
+        <div className="store-switcher">
+          <span>当前店铺</span>
+          <select value={activeStore} onChange={event => switchStore(event.target.value)}>
+            {(stores.length ? stores : [{ id: 'default-store', name: '自营店铺' } as Store]).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+          </select>
+        </div>
       </header>
 
-      <div className="container">
+      <div className="container" key={activeStore}>
         <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>
           <Route path="/" element={<Dashboard />} />

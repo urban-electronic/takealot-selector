@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal, get_db
-from models import FeeCategory, FeeMappingRule, SystemSettings
-from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes
+from models import DEFAULT_STORE_ID, FeeCategory, FeeMappingRule, Store, SystemSettings
+from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes, store_routes
 from migrate import migrate_from_dump
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
@@ -97,6 +97,7 @@ app.include_router(image_proxy.router)
 app.include_router(procurement_routes.router)
 app.include_router(packing_routes.router)
 app.include_router(inventory_routes.router)
+app.include_router(store_routes.router)
 app.include_router(packing_routes.ui_router)
 
 
@@ -138,6 +139,7 @@ DEFAULT_FEE_CATEGORIES = [
 def startup():
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
+    _ensure_default_store()
     migrate_from_dump()
     _init_default_data()
 
@@ -165,8 +167,33 @@ def _ensure_columns():
                     if name not in packing_cols:
                         conn.execute(text(f"ALTER TABLE packing_products ADD COLUMN {name} {sql_type}"))
                         print(f"[startup] packing_products 表已补列 {name}", flush=True)
+        store_scoped_tables = ("procurement_records", "inventory_adjustments", "shipments")
+        with engine.begin() as conn:
+            for table_name in store_scoped_tables:
+                if table_name not in insp.get_table_names():
+                    continue
+                cols = {c["name"] for c in insp.get_columns(table_name)}
+                if "store_id" not in cols:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN store_id TEXT DEFAULT '{DEFAULT_STORE_ID}'"))
+                    conn.execute(text(f"UPDATE {table_name} SET store_id = '{DEFAULT_STORE_ID}' WHERE store_id IS NULL OR store_id = ''"))
+                    print(f"[startup] {table_name} 表已补列 store_id", flush=True)
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_store_id ON {table_name} (store_id)"))
     except Exception as e:
         print(f"[startup] _ensure_columns 迁移失败: {e}", flush=True)
+
+
+def _ensure_default_store():
+    db = SessionLocal()
+    try:
+        default_store = db.query(Store).filter(Store.id == DEFAULT_STORE_ID).first()
+        if not default_store:
+            db.add(Store(id=DEFAULT_STORE_ID, name="自营店铺", platform="Takealot", status="active", sync_method="manual"))
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[startup] 默认店铺初始化失败: {e}", flush=True)
+    finally:
+        db.close()
 
 
 def _init_default_data():

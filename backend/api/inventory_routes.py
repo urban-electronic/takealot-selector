@@ -18,6 +18,7 @@ from models import (
     Shipment, ShipmentLine, SystemSettings,
 )
 from services.inbound_excel import generate_inbound
+from api.store_routes import get_store_id
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
@@ -27,11 +28,12 @@ def _start_date(db: Session) -> str:
     return setting.value if setting and setting.value else "2026-09-24"
 
 
-def _procurement_by_product(db: Session) -> dict:
+def _procurement_by_product(db: Session, store_id: str) -> dict:
     start_date = _start_date(db)
     result = {}
     for product_id, quantity in (
         db.query(ProcurementRecord.product_id, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
+        .filter(ProcurementRecord.store_id == store_id)
         .filter(ProcurementRecord.product_id.isnot(None))
         .filter(ProcurementRecord.recorded_at >= start_date)
         .group_by(ProcurementRecord.product_id)
@@ -52,13 +54,14 @@ def _find_product_for_sku(db: Session, sku: str):
     return None, False
 
 
-def inventory_balance_for_sku(db: Session, sku: str) -> int:
+def inventory_balance_for_sku(db: Session, sku: str, store_id: str) -> int:
     start_date = _start_date(db)
     product, is_variant = _find_product_for_sku(db, sku)
     purchased = 0
     if product and not is_variant:
         purchased = int(
             db.query(func.coalesce(func.sum(ProcurementRecord.quantity), 0))
+            .filter(ProcurementRecord.store_id == store_id)
             .filter(
                 (ProcurementRecord.product_id == product.id)
                 | ((ProcurementRecord.product_id.is_(None)) & (ProcurementRecord.product_no == product.product_no))
@@ -68,14 +71,14 @@ def inventory_balance_for_sku(db: Session, sku: str) -> int:
         )
     adjusted = int(
         db.query(func.coalesce(func.sum(InventoryAdjustment.quantity_delta), 0))
-        .filter(InventoryAdjustment.sku == sku)
+        .filter(InventoryAdjustment.sku == sku, InventoryAdjustment.store_id == store_id)
         .filter(InventoryAdjustment.occurred_at >= start_date)
         .scalar() or 0
     )
     shipped = int(
         db.query(func.coalesce(func.sum(ShipmentLine.total_quantity), 0))
         .join(Shipment, Shipment.id == ShipmentLine.shipment_id)
-        .filter(ShipmentLine.sku == sku, Shipment.status == "confirmed")
+        .filter(ShipmentLine.sku == sku, Shipment.status == "confirmed", Shipment.store_id == store_id)
         .filter(Shipment.shipment_date >= start_date)
         .scalar() or 0
     )
@@ -83,25 +86,25 @@ def inventory_balance_for_sku(db: Session, sku: str) -> int:
 
 
 @router.get("")
-def list_inventory(db: Session = Depends(get_db)):
+def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     start_date = _start_date(db)
     products = db.query(Product).order_by(Product.product_no.asc()).all()
-    purchased_by_id = _procurement_by_product(db)
+    purchased_by_id = _procurement_by_product(db, store_id)
     purchased_by_no = dict(
         db.query(ProcurementRecord.product_no, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
-        .filter(ProcurementRecord.product_id.is_(None), ProcurementRecord.product_no.isnot(None))
+        .filter(ProcurementRecord.store_id == store_id, ProcurementRecord.product_id.is_(None), ProcurementRecord.product_no.isnot(None))
         .filter(ProcurementRecord.recorded_at >= start_date)
         .group_by(ProcurementRecord.product_no).all()
     )
     adjusted_by_sku = dict(
         db.query(InventoryAdjustment.sku, func.coalesce(func.sum(InventoryAdjustment.quantity_delta), 0))
-        .filter(InventoryAdjustment.occurred_at >= start_date)
+        .filter(InventoryAdjustment.store_id == store_id, InventoryAdjustment.occurred_at >= start_date)
         .group_by(InventoryAdjustment.sku).all()
     )
     shipped_by_sku = dict(
         db.query(ShipmentLine.sku, func.coalesce(func.sum(ShipmentLine.total_quantity), 0))
         .join(Shipment, Shipment.id == ShipmentLine.shipment_id)
-        .filter(Shipment.status == "confirmed")
+        .filter(Shipment.status == "confirmed", Shipment.store_id == store_id)
         .filter(Shipment.shipment_date >= start_date)
         .group_by(ShipmentLine.sku).all()
     )
@@ -147,18 +150,19 @@ class AdjustmentIn(BaseModel):
 
 
 @router.post("/adjustments")
-def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db)):
+def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     sku = data.sku.strip()
     if not sku or data.quantity_delta == 0:
         raise HTTPException(status_code=400, detail="SKU 不能为空，调整数量不能为 0")
     product, _ = _find_product_for_sku(db, sku)
     if not product:
         raise HTTPException(status_code=404, detail="找不到该 SKU")
-    current = inventory_balance_for_sku(db, sku)
+    current = inventory_balance_for_sku(db, sku, store_id)
     if data.quantity_delta < 0 and current + data.quantity_delta < 0:
         raise HTTPException(status_code=400, detail=f"库存不足：当前可用 {current}，不能减少 {abs(data.quantity_delta)}")
     row = InventoryAdjustment(
         id=str(uuid.uuid4()),
+        store_id=store_id,
         sku=sku,
         quantity_delta=data.quantity_delta,
         reason=data.reason.strip() or "人工调整",
@@ -167,12 +171,12 @@ def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db)):
     )
     db.add(row)
     db.commit()
-    return {"ok": True, "id": row.id, "available": inventory_balance_for_sku(db, sku)}
+    return {"ok": True, "id": row.id, "available": inventory_balance_for_sku(db, sku, store_id)}
 
 
 @router.get("/adjustments")
-def list_adjustments(db: Session = Depends(get_db)):
-    rows = db.query(InventoryAdjustment).order_by(InventoryAdjustment.created_at.desc()).limit(500).all()
+def list_adjustments(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    rows = db.query(InventoryAdjustment).filter(InventoryAdjustment.store_id == store_id).order_by(InventoryAdjustment.created_at.desc()).limit(500).all()
     return [{
         "id": r.id, "sku": r.sku, "quantity_delta": r.quantity_delta,
         "reason": r.reason, "notes": r.notes, "occurred_at": r.occurred_at,
@@ -181,14 +185,14 @@ def list_adjustments(db: Session = Depends(get_db)):
 
 
 @router.post("/adjustments/{adjustment_id}/reverse")
-def reverse_adjustment(adjustment_id: str, db: Session = Depends(get_db)):
-    original = db.query(InventoryAdjustment).filter(InventoryAdjustment.id == adjustment_id).first()
+def reverse_adjustment(adjustment_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    original = db.query(InventoryAdjustment).filter(InventoryAdjustment.id == adjustment_id, InventoryAdjustment.store_id == store_id).first()
     if not original:
         raise HTTPException(status_code=404, detail="调整记录不存在")
     if original.reversed_by:
         raise HTTPException(status_code=400, detail="该调整已经撤销")
     reversal = InventoryAdjustment(
-        id=str(uuid.uuid4()), sku=original.sku, quantity_delta=-original.quantity_delta,
+        id=str(uuid.uuid4()), store_id=store_id, sku=original.sku, quantity_delta=-original.quantity_delta,
         reason="撤销库存调整", notes=f"撤销记录 {original.id}",
         occurred_at=dt.date.today().isoformat(),
     )
@@ -200,8 +204,8 @@ def reverse_adjustment(adjustment_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/shipments")
-def list_shipments(db: Session = Depends(get_db)):
-    rows = db.query(Shipment).order_by(Shipment.created_at.desc()).limit(500).all()
+def list_shipments(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    rows = db.query(Shipment).filter(Shipment.store_id == store_id).order_by(Shipment.created_at.desc()).limit(500).all()
     result = []
     for row in rows:
         lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == row.id).all()
@@ -222,13 +226,13 @@ class InboundExportIn(BaseModel):
 
 
 @router.post("/shipments/inbound-template")
-def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db)):
+def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     if not data.shipment_ids:
         raise HTTPException(status_code=400, detail="请至少选择一个装箱单")
     rows = []
     shipment_numbers = []
     for identifier, shipment_id in enumerate(data.shipment_ids, start=1):
-        shipment = db.query(Shipment).filter(Shipment.id == shipment_id).first()
+        shipment = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
         if not shipment:
             raise HTTPException(status_code=404, detail=f"第 {identifier} 个发货记录不存在")
         if shipment.status != "confirmed":
@@ -253,8 +257,8 @@ class VoidIn(BaseModel):
 
 
 @router.post("/shipments/{shipment_id}/void")
-def void_shipment(shipment_id: str, data: VoidIn, db: Session = Depends(get_db)):
-    row = db.query(Shipment).filter(Shipment.id == shipment_id).first()
+def void_shipment(shipment_id: str, data: VoidIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    row = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="发货记录不存在")
     if row.status != "confirmed":
