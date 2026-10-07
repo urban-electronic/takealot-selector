@@ -244,6 +244,8 @@ def sync_from_products(db: Session = Depends(get_db)):
                     current.name_zh = variant_name
                     current.name_en = name_en
                     current.name = ' / '.join(x for x in (variant_name, name_en) if x)
+                    if prod.actual_weight_kg:
+                        current.weight = str(prod.actual_weight_kg)
                     current.variant_group = prod.id if len(sku_variants) > 1 else ''
                     current.variant_label = variant_name if len(sku_variants) > 1 else ''
                     current.is_primary_variant = idx == 0
@@ -356,6 +358,33 @@ def _fetch_takealot_image(url: str) -> str:
     finally:
         Path(tmp).unlink(missing_ok=True)
     return filename
+
+
+def _catalog_product_for_sku(db: Session, sku: str) -> Optional[Product]:
+    """按独立 SKU 或历史多 SKU 字段找到选品库产品。"""
+    exact = db.query(Product).filter(Product.sku == sku).first()
+    if exact:
+        return exact
+    for candidate in db.query(Product).filter(Product.sku.isnot(None)).all():
+        variants = [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]
+        if sku in variants:
+            return candidate
+    return None
+
+
+def _hydrate_export_product(db: Session, product: PackingProduct) -> None:
+    """导出前补齐选品库中的重量和本地图片，不让远程图片只停留在页面预览。"""
+    source = _catalog_product_for_sku(db, product.sku)
+    if source is None:
+        return
+    if source.actual_weight_kg:
+        product.weight = str(source.actual_weight_kg)
+    if not product.image_file and (source.product_image_url or '').strip():
+        try:
+            product.image_file = _fetch_takealot_image(source.product_image_url.strip())
+        except Exception:
+            # 单张图片抓取失败时保留空图，避免阻断整份装箱单。
+            pass
 
 
 @router.post('/import-from-products')
@@ -569,6 +598,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
         p = _find(db, line.sku.strip())
         if not p:
             return fail(400, '找不到产品 ' + line.sku)
+        _hydrate_export_product(db, p)
         cartons = line.cartons.strip()
         count = line.count.strip()
         if not cartons.isdecimal() or not count.isdecimal() or int(cartons) < 1 or int(count) < 1:
@@ -576,6 +606,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
         total_quantity = int(cartons) * int(count)
         requested_by_sku[p.sku] = requested_by_sku.get(p.sku, 0) + total_quantity
         items.append((public(p), cartons, count))
+    db.commit()
     if not existing_shipment and not TEMP_ALLOW_NEGATIVE_INVENTORY_SHIPMENTS:
         for sku, requested in requested_by_sku.items():
             available = inventory_balance_for_sku(db, sku)
