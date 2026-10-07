@@ -557,11 +557,12 @@ button {
 .dashboard-recent-table .col-name { width: 22%; }
 .dashboard-recent-table .col-qty { width: 8%; }
 .dashboard-recent-table .col-status { width: 12%; }
-.dashboard-shipment-lines { display: flex; flex-direction: column; gap: 3px; max-height: 76px; overflow-y: auto; }
-.dashboard-shipment-lines span { min-height: 17px; line-height: 17px; white-space: nowrap; }
-.dashboard-shipment-names { color: var(--color-text-secondary); font-size: 11px; }
-.dashboard-shipment-names span { overflow: hidden; text-overflow: ellipsis; }
-.dashboard-shipment-quantities { min-width: 44px; font-weight: 600; }
+.dashboard-shipment-group-cell { padding-left: 8px !important; padding-right: 8px !important; }
+.dashboard-shipment-group { max-height: 76px; overflow-y: auto; scrollbar-gutter: stable; }
+.dashboard-shipment-line { display: grid; grid-template-columns: 40% 44% 16%; min-height: 20px; align-items: center; }
+.dashboard-shipment-line span { min-width: 0; line-height: 17px; white-space: nowrap; }
+.dashboard-line-name { padding-right: 8px; overflow: hidden; color: var(--color-text-secondary); font-size: 11px; text-overflow: ellipsis; }
+.dashboard-line-quantity { min-width: 44px; font-weight: 600; }
 .dashboard-empty { padding: 36px; text-align: center; color: var(--color-text-secondary); }
 
 .dashboard-shortcuts { display: grid; align-content: start; }
