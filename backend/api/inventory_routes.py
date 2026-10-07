@@ -44,10 +44,10 @@ def _procurement_by_product(db: Session, store_id: str) -> dict:
 
 
 def _find_product_for_sku(db: Session, sku: str, store_id: str):
-    exact = db.query(Product).filter(Product.store_id == store_id, Product.sku == sku).first()
+    exact = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku == sku).first()
     if exact:
         return exact, False
-    for product in db.query(Product).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
+    for product in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku.isnot(None)).all():
         variants = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
         if len(variants) > 1 and sku in variants:
             return product, True
@@ -88,7 +88,7 @@ def inventory_balance_for_sku(db: Session, sku: str, store_id: str) -> int:
 @router.get("")
 def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     start_date = _start_date(db)
-    products = db.query(Product).filter(Product.store_id == store_id).order_by(Product.product_no.asc()).all()
+    products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).order_by(Product.product_no.asc()).all()
     purchased_by_id = _procurement_by_product(db, store_id)
     purchased_by_no = dict(
         db.query(ProcurementRecord.product_no, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
