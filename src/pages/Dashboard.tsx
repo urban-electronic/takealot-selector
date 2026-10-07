@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { getInventory, getShipments, syncPackingVariantsFromTakealot } from '../remoteApi';
@@ -15,6 +15,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [officialCheck, setOfficialCheck] = useState('');
+  const [officialChecking, setOfficialChecking] = useState(false);
+  const stopOfficialCheck = useRef(false);
 
   useEffect(() => {
     Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
@@ -60,16 +62,30 @@ export default function Dashboard() {
   ];
 
   const runOfficialCheck = async () => {
+    if (officialChecking) {
+      stopOfficialCheck.current = true;
+      setOfficialCheck('正在停止自检...');
+      return;
+    }
     const candidates = products.filter(product => product.takealot_url && (!product.sku || !product.fee_category_confirmed || !product.product_image_url || !product.product_name || product.actual_sale_price_zar == null)).slice(0, 30);
-    if (!candidates.length) setOfficialCheck('正在核对官网规格…');
+    stopOfficialCheck.current = false;
+    setOfficialChecking(true);
     let repaired = 0;
-    for (let index = 0; index < candidates.length; index += 1) {
-      setOfficialCheck(`官网自检 ${index + 1}/${candidates.length}`);
-      try {
-        const result = await api.refreshPrice(candidates[index].id);
-        setProducts(prev => prev.map(product => product.id === candidates[index].id ? { ...product, ...result } as Product : product));
-        repaired += 1;
-      } catch { /* 单项失败保留在任务列表中 */ }
+    for (let index = 0; index < candidates.length && !stopOfficialCheck.current; index += 3) {
+      const batch = candidates.slice(index, index + 3);
+      setOfficialCheck(`官网自检 ${Math.min(index + batch.length, candidates.length)}/${candidates.length}（可停止）`);
+      await Promise.all(batch.map(async product => {
+        try {
+          const result = await api.refreshPrice(product.id);
+          setProducts(prev => prev.map(row => row.id === product.id ? { ...row, ...result } as Product : row));
+          repaired += 1;
+        } catch { /* 超时或失败时跳过，继续下一项 */ }
+      }));
+    }
+    if (stopOfficialCheck.current) {
+      setOfficialCheck(`官网自检已停止：更新 ${repaired} 项`);
+      setOfficialChecking(false);
+      return;
     }
     let variantNote = '';
     try {
@@ -77,6 +93,7 @@ export default function Dashboard() {
       variantNote = `，确认 ${variants.matched} 个规格`;
     } catch { variantNote = '，规格核对暂未完成'; }
     setOfficialCheck(`官网自检完成：更新 ${repaired} 项${variantNote}`);
+    setOfficialChecking(false);
   };
 
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
@@ -102,7 +119,7 @@ export default function Dashboard() {
 
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-tasks">
-          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled={officialCheck.startsWith('官网自检 ')} onClick={runOfficialCheck}>{officialCheck || '官网自检可修复项'}</button></div>
+          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" onClick={runOfficialCheck}>{officialChecking ? (officialCheck || '停止官网自检') : (officialCheck || '官网自检可修复项')}</button></div>
           <div className="dashboard-task-grid">
             {tasks.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
               <em>第 {task.step} 步</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
@@ -123,10 +140,11 @@ export default function Dashboard() {
         <section className="dashboard-panel dashboard-recent">
           <div className="dashboard-panel-title"><div><h2>最近发货</h2><p>已确认装箱单会自动进入这里并扣减库存。</p></div><Link to="/inventory">全部记录</Link></div>
           {shipments.length === 0 ? <div className="dashboard-empty">暂无发货记录</div> : (
-            <table><thead><tr><th>单号</th><th>日期</th><th>SKU</th><th>数量</th><th>状态</th></tr></thead>
+            <table className="dashboard-recent-table"><colgroup><col className="col-order" /><col className="col-date" /><col className="col-sku" /><col className="col-name" /><col className="col-qty" /><col className="col-status" /></colgroup><thead><tr><th>单号</th><th>日期</th><th>SKU</th><th>中文品名</th><th>数量</th><th>状态</th></tr></thead>
               <tbody>{shipments.slice(0, 6).map(row => <tr key={row.id}>
                 <td>{row.shipment_no}</td><td>{row.shipment_date}</td>
                 <td><div className="dashboard-shipment-lines">{row.lines.map(line => <span key={line.sku}>{line.sku}</span>)}</div></td>
+                <td><div className="dashboard-shipment-lines dashboard-shipment-names">{row.lines.map(line => <span key={line.sku} title={line.name}>{line.name.length > 10 ? `${line.name.slice(0, 10)}…` : line.name}</span>)}</div></td>
                 <td><div className="dashboard-shipment-lines dashboard-shipment-quantities">{row.lines.map(line => <span key={line.sku}>{line.total_quantity}</span>)}</div></td>
                 <td><span className={row.status === 'confirmed' ? 'status-confirmed' : 'status-void'}>{row.status === 'confirmed' ? '已发货' : '已撤回'}</span></td>
               </tr>)}</tbody>
