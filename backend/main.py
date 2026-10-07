@@ -143,6 +143,7 @@ def startup():
     migrate_from_dump()
     _init_default_data()
     _backfill_offer_catalog()
+    _repair_product_metadata()
 
 
 def _backfill_offer_catalog():
@@ -156,6 +157,41 @@ def _backfill_offer_catalog():
     except Exception as exc:
         db.rollback()
         print(f"[startup] Offer Export 补齐失败: {exc}", flush=True)
+    finally:
+        db.close()
+
+
+def _repair_product_metadata():
+    """固化历史编号，并确认已经落在有效费率表中的 Fee 品类。"""
+    from models import Product
+    from api.product_routes import _apply_calculated_fields
+
+    db = SessionLocal()
+    try:
+        valid_categories = {row.name: row for row in db.query(FeeCategory).filter(FeeCategory.active == True).all()}
+        changed_numbers = confirmed_categories = 0
+        store_ids = [row[0] for row in db.query(Product.store_id).distinct().all()]
+        for store_id in store_ids:
+            products = db.query(Product).filter(Product.store_id == store_id).order_by(Product.created_at.asc(), Product.id.asc()).all()
+            next_no = max((p.product_no or 0 for p in products), default=0)
+            for product in products:
+                if not product.product_no:
+                    next_no += 1
+                    product.product_no = next_no
+                    changed_numbers += 1
+                category = valid_categories.get((product.fee_category or "").strip())
+                if category and not product.fee_category_confirmed:
+                    product.fee_category_confirmed = True
+                    product.success_fee_rate = category.success_fee_rate
+                    product.fee_rate_range = category.fee_rate_range
+                    _apply_calculated_fields(db, product)
+                    confirmed_categories += 1
+        if changed_numbers or confirmed_categories:
+            db.commit()
+        print(f"[startup] 产品元数据返检: 固化编号 {changed_numbers}, 自动确认 Fee 品类 {confirmed_categories}", flush=True)
+    except Exception as exc:
+        db.rollback()
+        print(f"[startup] 产品元数据返检失败: {exc}", flush=True)
     finally:
         db.close()
 
@@ -177,6 +213,17 @@ def _ensure_columns():
                     conn.execute(text(f"UPDATE products SET store_id = '{DEFAULT_STORE_ID}' WHERE store_id IS NULL OR store_id = ''"))
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_store_id ON products (store_id)"))
                 print("[startup] products 表已归入默认店铺", flush=True)
+            product_additions = {
+                "is_archived": "BOOLEAN DEFAULT 0",
+                "archived_at": "DATETIME",
+            }
+            with engine.begin() as conn:
+                for name, sql_type in product_additions.items():
+                    if name not in cols:
+                        conn.execute(text(f"ALTER TABLE products ADD COLUMN {name} {sql_type}"))
+                        print(f"[startup] products 表已补列 {name}", flush=True)
+                conn.execute(text("UPDATE products SET is_archived = 0 WHERE is_archived IS NULL"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_is_archived ON products (is_archived)"))
         if "packing_products" in insp.get_table_names():
             packing_cols = {c["name"] for c in insp.get_columns("packing_products")}
             additions = {
