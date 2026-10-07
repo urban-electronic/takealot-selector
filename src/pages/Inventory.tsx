@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { createInventoryAdjustment, getImageUrl, getInventory, getInventoryAdjustments, getShipments, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
+import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInventory, getInventoryAdjustments, getShipments, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
 import type { InventoryAdjustment, InventoryRow, ShipmentRecord } from '../types';
 
 type Tab = 'inventory' | 'shipments' | 'adjustments';
@@ -21,6 +21,8 @@ export default function Inventory() {
   const [message, setMessage] = useState('');
   const [adjustSku, setAdjustSku] = useState('');
   const [form, setForm] = useState({ mode: 'increase', quantity: '', reason: '盘点调整', notes: '', occurred_at: today() });
+  const [exportingInbound, setExportingInbound] = useState(false);
+  const [selectedShipmentIds, setSelectedShipmentIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -63,6 +65,21 @@ export default function Inventory() {
       }));
       navigate('/packing');
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+
+
+  const downloadInbound = async () => {
+    if (selectedShipmentIds.length === 0) { setError('请先勾选至少一个有效装箱单'); return; }
+    setExportingInbound(true); setError('');
+    try {
+      const blob = await exportInboundTemplate(selectedShipmentIds);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = `入仓_${selectedShipmentIds.length}个装箱单.xlsx`;
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+      setMessage(`已按选择顺序生成 ${selectedShipmentIds.length} 个装箱单对应的入仓文件`);
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setExportingInbound(false); }
   };
 
   const totalAvailable = rows.reduce((sum, row) => sum + row.available, 0);
@@ -114,14 +131,15 @@ export default function Inventory() {
         </table></div>
       </>}
 
-      {tab === 'shipments' && <div className="inventory-table-wrap"><table className="inventory-table">
-        <thead><tr><th>发货单号</th><th>发货日期</th><th>SKU 数</th><th>总件数</th><th>运输方式</th><th>状态</th><th>操作</th></tr></thead>
+      {tab === 'shipments' && <><div className="inventory-toolbar"><button className="btn btn-primary" disabled={!selectedShipmentIds.length || exportingInbound} onClick={downloadInbound}>{exportingInbound ? '生成中...' : `生成入仓文件（已选 ${selectedShipmentIds.length} 单）`}</button><span className="muted">勾选顺序决定标识号：第 1 单为 1，第 2 单为 2，以此类推</span></div><div className="inventory-table-wrap"><table className="inventory-table">
+        <thead><tr><th>选择</th><th>发货单号</th><th>发货日期</th><th>SKU 数</th><th>总件数</th><th>运输方式</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>{shipments.map(row => <tr key={row.id}>
+          <td>{row.status === 'confirmed' ? <input type="checkbox" checked={selectedShipmentIds.includes(row.id)} onChange={e => setSelectedShipmentIds(prev => e.target.checked ? [...prev, row.id] : prev.filter(id => id !== row.id))} /> : null}</td>
           <td className="mono">{row.shipment_no}</td><td>{row.shipment_date}</td><td>{row.total_skus}</td><td>{row.total_quantity}</td><td>{row.shipping || '-'}</td>
           <td><span className={row.status === 'confirmed' ? 'status-confirmed' : 'status-void'}>{row.status === 'confirmed' ? '已发货' : '已撤回'}</span></td>
           <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : <span className="muted">{row.void_reason}</span>}</td>
         </tr>)}</tbody>
-      </table></div>}
+      </table></div></>}
 
       {tab === 'adjustments' && <div className="inventory-table-wrap"><table className="inventory-table">
         <thead><tr><th>日期</th><th>SKU</th><th>数量变化</th><th>原因</th><th>备注</th><th>操作</th></tr></thead>

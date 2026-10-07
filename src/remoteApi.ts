@@ -281,6 +281,23 @@ export const voidShipment = (id: string, reason: string): Promise<{ ok: boolean 
     method: 'POST', body: JSON.stringify({ reason }),
   });
 
+export const exportInboundTemplate = async (shipmentIds: string[]): Promise<Blob> => {
+  const res = await fetch(`${getBaseUrl()}/api/inventory/shipments/inbound-template`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey() },
+    body: JSON.stringify({ shipment_ids: shipmentIds }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}: ${res.statusText}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || body?.error || detail;
+    } catch { /* 保留默认错误 */ }
+    throw new Error(detail);
+  }
+  return await res.blob();
+};
+
 export const upsertPackingProduct = async (data: PackingUpsertInput): Promise<{ ok: boolean }> => {
   const result = await request<{ ok: boolean }>('/api/packing/product', {
     method: 'POST',
