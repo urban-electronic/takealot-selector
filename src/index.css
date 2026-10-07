@@ -470,14 +470,14 @@ button {
 .dashboard-panel {
   background: #fff;
   border: 1px solid #dfe5ec;
-  padding: 18px;
+  padding: 14px;
 }
 .dashboard-panel-title {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding-bottom: 13px;
+  padding-bottom: 9px;
   border-bottom: 1px solid #edf0f3;
 }
 .dashboard-panel-title h2 { font-size: 17px; }
@@ -487,8 +487,8 @@ button {
 .dashboard-task-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 14px;
+  gap: 8px;
+  padding-top: 10px;
 }
 
 .packing-context-menu { position: fixed; z-index: 1200; width: 170px; padding: 6px; border: 1px solid #d9dde5; border-radius: 7px; background: #fff; box-shadow: 0 8px 24px rgba(20, 35, 60, .18); }
@@ -501,7 +501,7 @@ button {
   .dashboard-task-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 .dashboard-task {
-  padding: 14px;
+  padding: 10px 11px;
   border-left: 3px solid #b7c4d7;
   background: #f8fafc;
   color: inherit;
@@ -509,11 +509,11 @@ button {
 }
 .dashboard-task:hover { background: #eef4fb; transform: translateY(-1px); }
 .dashboard-task em { display: block; color: var(--color-text-secondary); font-style: normal; font-size: 11px; }
-.dashboard-task strong { display: block; font-size: 25px; line-height: 1.1; }
+.dashboard-task strong { display: block; font-size: 22px; line-height: 1.05; }
 .dashboard-task span, .dashboard-task small { display: block; }
-.dashboard-task span { margin: 5px 0 12px; font-weight: 600; }
-.dashboard-task small { color: var(--color-text-secondary); }
-.dashboard-task b { display: block; margin-top: 10px; color: var(--color-primary); font-size: 12px; }
+.dashboard-task span { margin: 3px 0 5px; font-size: 13px; font-weight: 600; }
+.dashboard-task small { color: var(--color-text-secondary); font-size: 11px; line-height: 1.4; }
+.dashboard-task b { display: block; margin-top: 5px; color: var(--color-primary); font-size: 11px; }
 .dashboard-task.orange { border-color: #fa8c16; }
 .dashboard-task.blue { border-color: #1677ff; }
 .dashboard-task.red { border-color: #ff4d4f; }
