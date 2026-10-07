@@ -17,6 +17,7 @@ const Stores = lazy(() => import('./pages/Stores'));
 const navItems = [
   { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
+  { path: '/products?archived=1', label: '废品库' },
   { path: '/inventory', label: '库存' },
   { path: '/packing', label: '装箱单' },
   { path: '/stores', label: '店铺管理' },
