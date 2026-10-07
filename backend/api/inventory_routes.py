@@ -43,11 +43,11 @@ def _procurement_by_product(db: Session, store_id: str) -> dict:
     return result
 
 
-def _find_product_for_sku(db: Session, sku: str):
-    exact = db.query(Product).filter(Product.sku == sku).first()
+def _find_product_for_sku(db: Session, sku: str, store_id: str):
+    exact = db.query(Product).filter(Product.store_id == store_id, Product.sku == sku).first()
     if exact:
         return exact, False
-    for product in db.query(Product).filter(Product.sku.isnot(None)).all():
+    for product in db.query(Product).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
         variants = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
         if len(variants) > 1 and sku in variants:
             return product, True
@@ -56,7 +56,7 @@ def _find_product_for_sku(db: Session, sku: str):
 
 def inventory_balance_for_sku(db: Session, sku: str, store_id: str) -> int:
     start_date = _start_date(db)
-    product, is_variant = _find_product_for_sku(db, sku)
+    product, is_variant = _find_product_for_sku(db, sku, store_id)
     purchased = 0
     if product and not is_variant:
         purchased = int(
@@ -88,7 +88,7 @@ def inventory_balance_for_sku(db: Session, sku: str, store_id: str) -> int:
 @router.get("")
 def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     start_date = _start_date(db)
-    products = db.query(Product).order_by(Product.product_no.asc()).all()
+    products = db.query(Product).filter(Product.store_id == store_id).order_by(Product.product_no.asc()).all()
     purchased_by_id = _procurement_by_product(db, store_id)
     purchased_by_no = dict(
         db.query(ProcurementRecord.product_no, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
@@ -179,7 +179,7 @@ def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db), store_i
     sku = data.sku.strip()
     if not sku or data.quantity_delta == 0:
         raise HTTPException(status_code=400, detail="SKU 不能为空，调整数量不能为 0")
-    product, _ = _find_product_for_sku(db, sku)
+    product, _ = _find_product_for_sku(db, sku, store_id)
     if not product:
         raise HTTPException(status_code=404, detail="找不到该 SKU")
     current = inventory_balance_for_sku(db, sku, store_id)
