@@ -221,6 +221,7 @@ export interface Store {
   sync_method: string;
   sync_interval_minutes: number;
   external_store_ref: string;
+  allow_negative_inventory_shipments: boolean;
   last_synced_at: string | null;
 }
 

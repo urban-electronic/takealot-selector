@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
+import { getStoreStorageKey, readStoreStorage } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 
@@ -94,14 +95,14 @@ export default function ProductList() {
   const [contextProduct, setContextProduct] = useState<{ id: string; x: number; y: number } | null>(null);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(LS_SELECTED_SKUS_KEY) || '[]');
+      const saved = JSON.parse(readStoreStorage(LS_SELECTED_SKUS_KEY) || '[]');
       return new Set(Array.isArray(saved) ? saved.filter((sku): sku is string => typeof sku === 'string') : []);
     } catch { return new Set(); }
   });
 
   // 在产品库和装箱单之间切换时保留本次勾选，成功导出装箱单后由装箱单页清除。
   useEffect(() => {
-    localStorage.setItem(LS_SELECTED_SKUS_KEY, JSON.stringify(Array.from(selectedSkus)));
+    localStorage.setItem(getStoreStorageKey(LS_SELECTED_SKUS_KEY), JSON.stringify(Array.from(selectedSkus)));
   }, [selectedSkus]);
 
   useEffect(() => {

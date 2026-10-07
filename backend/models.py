@@ -28,6 +28,7 @@ class Store(Base):
     sync_method = Column(String, default="manual")
     sync_interval_minutes = Column(Integer, default=60)
     external_store_ref = Column(String, default="")
+    allow_negative_inventory_shipments = Column(Boolean, default=False)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

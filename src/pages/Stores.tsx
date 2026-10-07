@@ -3,11 +3,11 @@ import { createStore, getStores, getStoresInventoryOverview, updateStore } from 
 import type { Store, StoreInventoryOverview } from '../types';
 
 type Props = { onStoresChanged: (stores: Store[]) => void };
-type StoreForm = Pick<Store, 'name' | 'platform' | 'owner_name' | 'external_store_ref' | 'sync_method' | 'sync_interval_minutes'>;
+type StoreForm = Pick<Store, 'name' | 'platform' | 'owner_name' | 'external_store_ref' | 'sync_method' | 'sync_interval_minutes' | 'allow_negative_inventory_shipments'>;
 
 const emptyForm = (): StoreForm => ({
   name: '', platform: 'Takealot', owner_name: '', external_store_ref: '',
-  sync_method: 'manual', sync_interval_minutes: 60,
+  sync_method: 'manual', sync_interval_minutes: 60, allow_negative_inventory_shipments: false,
 });
 
 const syncLabel: Record<string, string> = { manual: '手动维护', import: '文件导入', api: 'API 自动同步' };
@@ -42,7 +42,7 @@ export default function Stores({ onStoresChanged }: Props) {
 
   const beginEdit = (store: Store) => {
     setEditingId(store.id); setShowCreate(false);
-    setForm({ name: store.name, platform: store.platform, owner_name: store.owner_name, external_store_ref: store.external_store_ref, sync_method: store.sync_method, sync_interval_minutes: store.sync_interval_minutes });
+    setForm({ name: store.name, platform: store.platform, owner_name: store.owner_name, external_store_ref: store.external_store_ref, sync_method: store.sync_method, sync_interval_minutes: store.sync_interval_minutes, allow_negative_inventory_shipments: store.allow_negative_inventory_shipments });
   };
 
   const save = async () => {
@@ -90,6 +90,10 @@ export default function Stores({ onStoresChanged }: Props) {
         <label>同步方式<select value={form.sync_method} onChange={e => setForm({ ...form, sync_method: e.target.value })}><option value="manual">手动维护</option><option value="import">文件导入</option><option value="api">API 自动同步（预留）</option></select></label>
         <label>同步间隔<select value={form.sync_interval_minutes} disabled={form.sync_method === 'manual'} onChange={e => setForm({ ...form, sync_interval_minutes: Number(e.target.value) })}><option value={30}>30 分钟</option><option value={60}>1 小时</option><option value={360}>6 小时</option><option value={1440}>每天</option></select></label>
       </div>
+      <label className={form.allow_negative_inventory_shipments ? 'store-risk-toggle enabled' : 'store-risk-toggle'}>
+        <input type="checkbox" checked={form.allow_negative_inventory_shipments} onChange={e => setForm({ ...form, allow_negative_inventory_shipments: e.target.checked })} />
+        <span><strong>旧库存过渡：允许库存不足时发货</strong><small>开启后库存可能出现负数。老库存处理完成后请关闭；新店铺默认关闭。</small></span>
+      </label>
       <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? '保存中...' : '保存店铺'}</button>
     </section>}
 
@@ -102,7 +106,7 @@ export default function Stores({ onStoresChanged }: Props) {
           return <tr key={store.id} className={store.status !== 'active' ? 'store-paused-row' : ''}>
             <td><strong>{store.name}</strong><small>{store.owner_name || '未设置负责人'} · {store.platform}</small></td>
             <td><span className={store.status === 'active' ? 'store-status active' : 'store-status'}>{store.status === 'active' ? '运营中' : '已暂停'}</span></td>
-            <td>{syncLabel[store.sync_method] || store.sync_method}<small>{store.sync_method === 'manual' ? '按操作实时记录' : `每 ${store.sync_interval_minutes} 分钟`}</small></td>
+            <td>{syncLabel[store.sync_method] || store.sync_method}<small>{store.sync_method === 'manual' ? '按操作实时记录' : `每 ${store.sync_interval_minutes} 分钟`}</small>{store.allow_negative_inventory_shipments && <small className="store-risk-text">允许负库存发货</small>}</td>
             <td>{row?.sku_count ?? 0}</td><td>{row?.purchased ?? 0}</td><td>{row?.adjusted ?? 0}</td><td>{row?.shipped ?? 0}</td>
             <td><strong className={(row?.available ?? 0) < 0 ? 'stock-danger' : 'stock-value'}>{row?.available ?? 0}</strong></td>
             <td><strong className={(row?.exception_count ?? 0) ? 'stock-danger' : ''}>{row?.exception_count ?? 0}</strong></td>

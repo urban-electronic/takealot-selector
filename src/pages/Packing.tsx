@@ -12,6 +12,8 @@ import {
   syncPackingVariantsFromTakealot,
   exportPacking,
   fetchPackingImageBlob,
+  getStoreStorageKey,
+  readStoreStorage,
 } from '../remoteApi';
 import type { PackingProduct, Product, PackingExportPayload } from '../types';
 
@@ -108,7 +110,7 @@ const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now
 
 function readPackingDraft(): PackingDraft {
   try {
-    const parsed = JSON.parse(localStorage.getItem(PACKING_DRAFT_KEY) || '{}');
+    const parsed = JSON.parse(readStoreStorage(PACKING_DRAFT_KEY) || '{}');
     return {
       selected: Array.isArray(parsed.selected) ? parsed.selected.filter((v: unknown): v is string => typeof v === 'string') : [],
       lines: parsed.lines && typeof parsed.lines === 'object' ? parsed.lines as PackingLines : {},
@@ -206,7 +208,7 @@ export default function Packing() {
   }, [contextMenu]);
 
   useEffect(() => {
-    localStorage.setItem(PACKING_DRAFT_KEY, JSON.stringify({
+    localStorage.setItem(getStoreStorageKey(PACKING_DRAFT_KEY), JSON.stringify({
       selected: Array.from(selected),
       lines,
       exportForm,
@@ -480,8 +482,8 @@ export default function Packing() {
       setLines({});
       setDraftKey(newDraftKey());
       setImportMissing([]);
-      localStorage.removeItem(PACKING_DRAFT_KEY);
-      localStorage.removeItem(PRODUCT_SELECTED_SKUS_KEY);
+      localStorage.removeItem(getStoreStorageKey(PACKING_DRAFT_KEY));
+      localStorage.removeItem(getStoreStorageKey(PRODUCT_SELECTED_SKUS_KEY));
       const sp = new URLSearchParams(searchParams);
       sp.delete('import');
       setSearchParams(sp, { replace: true });

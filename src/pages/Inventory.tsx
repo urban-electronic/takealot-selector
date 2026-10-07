@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInventory, getInventoryAdjustments, getShipments, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
+import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInventory, getInventoryAdjustments, getShipments, getStoreStorageKey, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
 import type { InventoryAdjustment, InventoryRow, ShipmentRecord } from '../types';
 
 type Tab = 'inventory' | 'shipments' | 'adjustments';
@@ -57,13 +57,23 @@ export default function Inventory() {
     if (!window.confirm(`确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`)) return;
     try {
       await voidShipment(shipment.id, '装箱单有误，撤回修改');
-      localStorage.setItem('packingDraftV1', JSON.stringify({
+      localStorage.setItem(getStoreStorageKey('packingDraftV1'), JSON.stringify({
         selected: shipment.lines.map(line => line.sku),
         lines: Object.fromEntries(shipment.lines.map(line => [line.sku, { cartons: String(line.cartons), count: String(line.count_per_carton) }])),
         exportForm: { date: shipment.shipment_date, mark: shipment.mark, shipping: shipment.shipping, address: shipment.address },
         draftKey: draftKey(),
       }));
       navigate('/packing');
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+
+  const undoAdjustment = async (row: InventoryAdjustment) => {
+    if (!window.confirm(`确认撤销 ${row.sku} 的库存调整 ${row.quantity_delta > 0 ? '+' : ''}${row.quantity_delta}？`)) return;
+    setError(''); setMessage('');
+    try {
+      await reverseInventoryAdjustment(row.id);
+      setMessage('库存调整已撤销');
+      await load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -145,7 +155,7 @@ export default function Inventory() {
         <thead><tr><th>日期</th><th>SKU</th><th>数量变化</th><th>原因</th><th>备注</th><th>操作</th></tr></thead>
         <tbody>{adjustments.map(row => <tr key={row.id}>
           <td>{row.occurred_at}</td><td className="mono">{row.sku}</td><td className={row.quantity_delta > 0 ? 'stock-value' : 'stock-danger'}>{row.quantity_delta > 0 ? '+' : ''}{row.quantity_delta}</td>
-          <td>{row.reason}</td><td>{row.notes || '-'}</td><td>{row.reversed_by ? <span className="muted">已撤销</span> : <button className="btn btn-sm" onClick={async () => { await reverseInventoryAdjustment(row.id); await load(); }}>撤销</button>}</td>
+          <td>{row.reason}</td><td>{row.notes || '-'}</td><td>{row.reversed_by ? <span className="muted">已撤销</span> : <button className="btn btn-sm" onClick={() => undoAdjustment(row)}>撤销</button>}</td>
         </tr>)}</tbody>
       </table></div>}
       {loading && <div className="loading">正在更新库存...</div>}
