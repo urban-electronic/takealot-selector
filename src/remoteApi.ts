@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord, Store } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -79,8 +79,12 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
 };
 
 export const getStores = (): Promise<Store[]> => request<Store[]>('/api/stores');
-export const createStore = (data: { name: string; owner_name?: string; platform?: string }): Promise<Store> =>
+export const createStore = (data: Partial<Store> & { name: string }): Promise<Store> =>
   request<Store>('/api/stores', { method: 'POST', body: JSON.stringify(data) });
+export const updateStore = (id: string, data: Partial<Store>): Promise<Store> =>
+  request<Store>(`/api/stores/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const getStoresInventoryOverview = (): Promise<StoreInventoryOverview[]> =>
+  request<StoreInventoryOverview[]>('/api/inventory/stores-overview');
 
 export const openUrl = (url: string): void => {
   if (url && url !== '#') {

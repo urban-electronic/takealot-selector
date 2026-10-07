@@ -12,12 +12,14 @@ const Settings = lazy(() => import('./pages/Settings'));
 const Procurement = lazy(() => import('./pages/Procurement'));
 const Packing = lazy(() => import('./pages/Packing'));
 const Inventory = lazy(() => import('./pages/Inventory'));
+const Stores = lazy(() => import('./pages/Stores'));
 
 const navItems = [
   { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
   { path: '/inventory', label: '库存' },
   { path: '/packing', label: '装箱单' },
+  { path: '/stores', label: '店铺管理' },
   { path: '/create', label: '新建产品' },
   { path: '/procurement', label: '采购记录' },
   { path: '/settings', label: '系统设置' },
@@ -30,11 +32,12 @@ export default function App() {
   useEffect(() => {
     getStores().then(rows => {
       setStores(rows);
-      if (rows.length && !rows.some(row => row.id === activeStore)) {
-        setActiveStore(rows[0].id);
-        setActiveStoreId(rows[0].id);
+      const activeRows = rows.filter(row => row.status === 'active');
+      if (activeRows.length && !activeRows.some(row => row.id === activeStore)) {
+        setActiveStore(activeRows[0].id);
+        setActiveStoreId(activeRows[0].id);
       }
-    }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', last_synced_at: null }]));
+    }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', last_synced_at: null }]));
   }, [activeStore]);
 
   const switchStore = (storeId: string) => {
@@ -65,7 +68,7 @@ export default function App() {
         <div className="store-switcher">
           <span>当前店铺</span>
           <select value={activeStore} onChange={event => switchStore(event.target.value)}>
-            {(stores.length ? stores : [{ id: 'default-store', name: '自营店铺' } as Store]).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+            {(stores.filter(store => store.status === 'active').length ? stores.filter(store => store.status === 'active') : [{ id: 'default-store', name: '自营店铺' } as Store]).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
           </select>
         </div>
       </header>
@@ -79,6 +82,7 @@ export default function App() {
           <Route path="/create" element={<ProductCreate />} />
           <Route path="/procurement" element={<Procurement />} />
           <Route path="/packing" element={<Packing />} />
+          <Route path="/stores" element={<Stores onStoresChanged={setStores} />} />
           <Route path="/products/:id" element={<ProductDetail />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>

@@ -26,6 +26,8 @@ class Store(Base):
     status = Column(String, default="active")
     owner_name = Column(String, default="")
     sync_method = Column(String, default="manual")
+    sync_interval_minutes = Column(Integer, default=60)
+    external_store_ref = Column(String, default="")
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

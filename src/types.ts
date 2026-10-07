@@ -219,6 +219,21 @@ export interface Store {
   status: string;
   owner_name: string;
   sync_method: string;
+  sync_interval_minutes: number;
+  external_store_ref: string;
+  last_synced_at: string | null;
+}
+
+export interface StoreInventoryOverview {
+  store_id: string;
+  store_name: string;
+  status: string;
+  sku_count: number;
+  purchased: number;
+  adjusted: number;
+  shipped: number;
+  available: number;
+  exception_count: number;
   last_synced_at: string | null;
 }
 

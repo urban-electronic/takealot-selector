@@ -167,6 +167,17 @@ def _ensure_columns():
                     if name not in packing_cols:
                         conn.execute(text(f"ALTER TABLE packing_products ADD COLUMN {name} {sql_type}"))
                         print(f"[startup] packing_products 表已补列 {name}", flush=True)
+        if "stores" in insp.get_table_names():
+            store_cols = {c["name"] for c in insp.get_columns("stores")}
+            store_additions = {
+                "sync_interval_minutes": "INTEGER DEFAULT 60",
+                "external_store_ref": "TEXT DEFAULT ''",
+            }
+            with engine.begin() as conn:
+                for name, sql_type in store_additions.items():
+                    if name not in store_cols:
+                        conn.execute(text(f"ALTER TABLE stores ADD COLUMN {name} {sql_type}"))
+                        print(f"[startup] stores 表已补列 {name}", flush=True)
         store_scoped_tables = ("procurement_records", "inventory_adjustments", "shipments")
         with engine.begin() as conn:
             for table_name in store_scoped_tables:
