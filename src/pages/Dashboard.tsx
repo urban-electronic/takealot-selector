@@ -123,9 +123,11 @@ export default function Dashboard() {
         <section className="dashboard-panel dashboard-recent">
           <div className="dashboard-panel-title"><div><h2>最近发货</h2><p>已确认装箱单会自动进入这里并扣减库存。</p></div><Link to="/inventory">全部记录</Link></div>
           {shipments.length === 0 ? <div className="dashboard-empty">暂无发货记录</div> : (
-            <table><thead><tr><th>单号</th><th>日期</th><th>SKU</th><th>件数</th><th>状态</th></tr></thead>
+            <table><thead><tr><th>单号</th><th>日期</th><th>SKU</th><th>数量</th><th>状态</th></tr></thead>
               <tbody>{shipments.slice(0, 6).map(row => <tr key={row.id}>
-                <td>{row.shipment_no}</td><td>{row.shipment_date}</td><td>{row.total_skus}</td><td>{row.total_quantity}</td>
+                <td>{row.shipment_no}</td><td>{row.shipment_date}</td>
+                <td><div className="dashboard-shipment-lines">{row.lines.map(line => <span key={line.sku}>{line.sku}</span>)}</div></td>
+                <td><div className="dashboard-shipment-lines dashboard-shipment-quantities">{row.lines.map(line => <span key={line.sku}>{line.total_quantity}</span>)}</div></td>
                 <td><span className={row.status === 'confirmed' ? 'status-confirmed' : 'status-void'}>{row.status === 'confirmed' ? '已发货' : '已撤回'}</span></td>
               </tr>)}</tbody>
             </table>
