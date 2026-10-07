@@ -37,7 +37,7 @@ export default function App() {
         setActiveStore(activeRows[0].id);
         setActiveStoreId(activeRows[0].id);
       }
-    }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', last_synced_at: null }]));
+    }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', allow_negative_inventory_shipments: true, last_synced_at: null }]));
   }, [activeStore]);
 
   const switchStore = (storeId: string) => {
