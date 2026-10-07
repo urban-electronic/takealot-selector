@@ -37,16 +37,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import PackingProduct, Product, Shipment, ShipmentLine
+from models import PackingProduct, Product, Shipment, ShipmentLine, Store
 from api.inventory_routes import inventory_balance_for_sku
 from api.store_routes import get_store_id
 from services import packing_excel as px
 
 router = APIRouter(prefix="/api/packing", tags=["packing"])
-
-# 临时旧库存处理规则：允许确认发货后库存为负数。
-# 老库存清理完成后改回 False，即恢复“库存不足时禁止发货”。
-TEMP_ALLOW_NEGATIVE_INVENTORY_SHIPMENTS = True
 
 SKU_RE = re.compile(r'[A-Za-z0-9_-]{1,50}')
 PUBLIC_FIELDS = (
@@ -608,7 +604,9 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         requested_by_sku[p.sku] = requested_by_sku.get(p.sku, 0) + total_quantity
         items.append((public(p), cartons, count))
     db.commit()
-    if not existing_shipment and not TEMP_ALLOW_NEGATIVE_INVENTORY_SHIPMENTS:
+    store = db.query(Store).filter(Store.id == store_id).first()
+    allow_negative_inventory = bool(store and store.allow_negative_inventory_shipments)
+    if not existing_shipment and not allow_negative_inventory:
         for sku, requested in requested_by_sku.items():
             available = inventory_balance_for_sku(db, sku, store_id)
             if available < requested:
