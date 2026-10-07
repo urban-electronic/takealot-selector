@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from database import get_db
 from models import ProcurementRecord, Product
+from api.store_routes import get_store_id
 
 router = APIRouter(prefix="/api/procurement", tags=["procurement"])
 
@@ -92,9 +93,10 @@ def _now_str() -> str:
 # --- Routes ---
 
 @router.get("", response_model=List[ProcurementRecordOut])
-def list_procurement_records(db: Session = Depends(get_db)):
+def list_procurement_records(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     records = (
         db.query(ProcurementRecord)
+        .filter(ProcurementRecord.store_id == store_id)
         .order_by(ProcurementRecord.recorded_at.desc())
         .all()
     )
@@ -128,7 +130,7 @@ def search_product_by_no(product_no: int, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=ProcurementRecordOut)
-def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depends(get_db)):
+def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     # 校验 product_id 非空且产品存在（对齐本地 Rust create 行为）；
     # 若前端只传了 product_no（手动输入序号场景），按 product_no 反查产品填充
     product_id = data.product_id
@@ -147,6 +149,7 @@ def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depen
 
     rec = ProcurementRecord(
         id=str(uuid.uuid4()),
+        store_id=store_id,
         product_id=product_id,
         product_no=data.product_no if data.product_no is not None else product.product_no,
         product_name=data.product_name or (product.product_name or ""),
@@ -167,8 +170,9 @@ def update_procurement_record(
     record_id: str,
     data: ProcurementRecordUpdate,
     db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
 ):
-    rec = db.query(ProcurementRecord).filter(ProcurementRecord.id == record_id).first()
+    rec = db.query(ProcurementRecord).filter(ProcurementRecord.id == record_id, ProcurementRecord.store_id == store_id).first()
     if not rec:
         raise HTTPException(status_code=404, detail="采购记录不存在")
 
@@ -193,8 +197,8 @@ def update_procurement_record(
 
 
 @router.delete("/{record_id}")
-def delete_procurement_record(record_id: str, db: Session = Depends(get_db)):
-    rec = db.query(ProcurementRecord).filter(ProcurementRecord.id == record_id).first()
+def delete_procurement_record(record_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    rec = db.query(ProcurementRecord).filter(ProcurementRecord.id == record_id, ProcurementRecord.store_id == store_id).first()
     if not rec:
         raise HTTPException(status_code=404, detail="采购记录不存在")
     db.delete(rec)
