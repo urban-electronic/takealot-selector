@@ -1524,6 +1524,13 @@ table tbody tr:hover {
 .store-form-grid label { color: #40516a; font-size: 12px; font-weight: 600; }
 .store-form-grid input, .store-form-grid select { display: block; width: 100%; height: 38px; margin-top: 5px; padding: 0 10px; border: 1px solid #ccd5e1; border-radius: 7px; background: #fff; color: var(--color-text); }
 .store-form-grid select:disabled { background: #f3f5f8; color: #9aa3af; }
+.store-risk-toggle { display: flex; align-items: flex-start; gap: 10px; max-width: 620px; margin: 0 0 16px; padding: 11px 13px; border: 1px solid #dce3eb; border-radius: 8px; background: #f8fafc; cursor: pointer; }
+.store-risk-toggle.enabled { border-color: #ffd591; background: #fff7e6; }
+.store-risk-toggle input { width: auto; margin-top: 4px; accent-color: #d46b08; }
+.store-risk-toggle span, .store-risk-toggle small { display: block; }
+.store-risk-toggle strong { color: #37465b; font-size: 13px; }
+.store-risk-toggle small { margin-top: 2px; color: var(--color-text-secondary); font-size: 11px; }
+.store-risk-text { color: #d46b08 !important; font-weight: 600; }
 .store-overview-table td small { display: block; margin-top: 2px; color: var(--color-text-secondary); font-size: 11px; white-space: nowrap; }
 .store-status { display: inline-flex; padding: 2px 8px; border-radius: 999px; background: #f1f3f5; color: #77808d; font-size: 11px; white-space: nowrap; }
 .store-status.active { background: #e8f7ee; color: #237a42; }
