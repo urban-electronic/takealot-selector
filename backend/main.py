@@ -155,6 +155,12 @@ def _ensure_columns():
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE products ADD COLUMN unit_price_cny REAL"))
                 print("[startup] products 表已补列 unit_price_cny", flush=True)
+            if "store_id" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE products ADD COLUMN store_id TEXT DEFAULT '{DEFAULT_STORE_ID}'"))
+                    conn.execute(text(f"UPDATE products SET store_id = '{DEFAULT_STORE_ID}' WHERE store_id IS NULL OR store_id = ''"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_products_store_id ON products (store_id)"))
+                print("[startup] products 表已归入默认店铺", flush=True)
         if "packing_products" in insp.get_table_names():
             packing_cols = {c["name"] for c in insp.get_columns("packing_products")}
             additions = {
@@ -286,7 +292,7 @@ class MigrationPayload(BaseModel):
 import uuid
 
 @app.post("/api/migrate")
-def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
+def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db), store_id: str = Depends(store_routes.get_store_id)):
     """将本地数据库数据批量迁移到 Railway"""
     import sqlalchemy as sa
     from database import engine as raw_engine
@@ -302,7 +308,10 @@ def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
             if table_name not in payload_tables:
                 continue
             try:
-                conn.execute(sa.text(f"DELETE FROM {table_name}"))
+                if table_name in {"products", "procurement_records"}:
+                    conn.execute(sa.text(f"DELETE FROM {table_name} WHERE store_id = :store_id"), {"store_id": store_id})
+                else:
+                    conn.execute(sa.text(f"DELETE FROM {table_name}"))
             except Exception:
                 pass  # 表可能不存在
         for payload in data:
@@ -318,6 +327,8 @@ def bulk_migrate(data: List[MigrationPayload], db=Depends(get_db)):
             for row in payload.rows:
                 if table_name == "system_settings" and "id" not in row:
                     row["id"] = uuid.uuid4().hex
+                if table_name in {"products", "procurement_records"}:
+                    row["store_id"] = store_id
                 # 仅保留目标表实际存在的列（过滤掉本地多出的字段如 unit_price_cny）
                 filtered = {k: v for k, v in row.items() if k in existing_cols}
                 columns = list(filtered.keys())
