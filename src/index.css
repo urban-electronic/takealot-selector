@@ -545,7 +545,7 @@ button {
 
 .dashboard-recent table { width: 100%; border-collapse: collapse; margin-top: 10px; }
 .dashboard-recent th, .dashboard-recent td { padding: 9px 8px; text-align: left; border-bottom: 1px solid #edf0f3; font-size: 13px; }
-.dashboard-recent th { color: var(--color-text-secondary); font-weight: 600; }
+.dashboard-recent th { color: var(--color-text-secondary); font-weight: 600; }\n.dashboard-shipment-lines { display: flex; flex-direction: column; gap: 3px; max-height: 76px; overflow-y: auto; }\n.dashboard-shipment-lines span { min-height: 17px; line-height: 17px; white-space: nowrap; }\n.dashboard-shipment-quantities { min-width: 44px; font-weight: 600; }
 .dashboard-empty { padding: 36px; text-align: center; color: var(--color-text-secondary); }
 
 .dashboard-shortcuts { display: grid; align-content: start; }
