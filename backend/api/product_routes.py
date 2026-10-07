@@ -110,6 +110,8 @@ class ProductUpdate(BaseModel):
 class ProductOut(BaseModel):
     id: str
     product_no: Optional[int] = None
+    is_archived: bool = False
+    archived_at: Optional[datetime] = None
     recorded_at: Optional[datetime] = None
     note: Optional[str] = None
     takealot_url: Optional[str] = None
@@ -259,12 +261,13 @@ def list_products(
     missing_field: Optional[str] = Query(None),
     multi_sku: bool = Query(False),
     duplicate_sku: bool = Query(False),
+    archived: bool = Query(False),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
     db: Session = Depends(get_db),
     store_id: str = Depends(get_store_id),
 ):
-    query = db.query(Product).filter(Product.store_id == store_id)
+    query = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == archived)
 
     if selection_status:
         query = query.filter(Product.selection_status == selection_status)
@@ -299,10 +302,6 @@ def list_products(
     elif missing_field == "shipping":
         query = query.filter((Product.shipping_method.is_(None)) | (Product.shipping_method == ""))
 
-    # 先按创建时间正序建立固定编号映射（product_no = 创建顺序，与排序无关）
-    all_ordered = db.query(Product).filter(Product.store_id == store_id).order_by(Product.created_at.asc()).all()
-    id_to_no = {p.id: idx + 1 for idx, p in enumerate(all_ordered)}
-
     # 排序
     sort_field = getattr(Product, sort_by, Product.created_at)
     if sort_order == "asc":
@@ -321,14 +320,11 @@ def list_products(
     if duplicate_sku:
         # 重复冲突必须基于完整产品库判断，不能只统计当前筛选结果。
         owners = {}
-        for product in db.query(Product).filter(Product.store_id == store_id).all():
+        for product in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == archived).all():
             for sku in set(sku_tokens(product.sku)):
                 owners.setdefault(sku, set()).add(product.id)
         conflicting = {sku for sku, ids in owners.items() if len(ids) > 1}
         products = [product for product in products if any(sku in conflicting for sku in sku_tokens(product.sku))]
-    # 动态应用固定编号
-    for p in products:
-        p.product_no = id_to_no.get(p.id)
     return products
 
 @router.get("/{product_id}", response_model=ProductOut)
@@ -362,7 +358,7 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db), store_id:
         p.takealot_url = normalized
 
     # 自动编号
-    max_no = db.query(Product.product_no).order_by(Product.product_no.desc()).first()
+    max_no = db.query(Product.product_no).filter(Product.store_id == store_id).order_by(Product.product_no.desc()).first()
     p.product_no = (max_no[0] + 1) if max_no and max_no[0] else 1
 
     # 自动翻译中文品名（如果为空且有英文名）
@@ -398,6 +394,8 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
         fc = db.query(FeeCategory).filter(FeeCategory.name == new_category, FeeCategory.active == True).first()
         if fc:
             update_data["fee_rate_range"] = fc.fee_rate_range
+            if "fee_category_confirmed" not in update_data:
+                update_data["fee_category_confirmed"] = True
 
     for field, value in update_data.items():
         setattr(p, field, value)
@@ -447,7 +445,7 @@ def batch_import(data: List[ProductCreate], db: Session = Depends(get_db), store
             if normalized:
                 p.takealot_url = normalized
             
-            max_no = db.query(Product.product_no).order_by(Product.product_no.desc()).first()
+            max_no = db.query(Product.product_no).filter(Product.store_id == store_id).order_by(Product.product_no.desc()).first()
             p.product_no = (max_no[0] + 1) if max_no and max_no[0] else 1
             
             p.success_fee_rate = _get_fee_rate(db, item.fee_category)
@@ -585,34 +583,51 @@ def delete_product(product_id: str, db: Session = Depends(get_db), store_id: str
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
-    db.delete(p)
+    p.is_archived = True
+    p.archived_at = datetime.utcnow()
     db.commit()
-    return {"detail": "已删除"}
+    return {"detail": "已移入废品库", "product_no": p.product_no}
+
+
+@router.post("/{product_id}/restore")
+def restore_product(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id, Product.is_archived == True).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="废品库中没有该产品")
+    p.is_archived = False
+    p.archived_at = None
+    db.commit()
+    return {"detail": "已恢复", "product_no": p.product_no}
 
 
 @router.get("/stats/dashboard")
 def dashboard(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    base = db.query(Product).filter(Product.store_id == store_id)
+    active = (Product.is_archived == False)
+    base = db.query(Product).filter(Product.store_id == store_id, active)
     total = base.count()
     data_incomplete = db.query(Product).filter(
         Product.store_id == store_id,
+        active,
         Product.selection_status == SelectionStatus.DATA_INCOMPLETE.value
     ).count()
     category_pending = db.query(Product).filter(
         Product.store_id == store_id,
+        active,
         Product.selection_status == SelectionStatus.CATEGORY_PENDING.value
     ).count()
     qualified = db.query(Product).filter(
         Product.store_id == store_id,
+        active,
         Product.selection_status == SelectionStatus.QUALIFIED.value
     ).count()
     not_recommended = db.query(Product).filter(
         Product.store_id == store_id,
+        active,
         Product.selection_status == SelectionStatus.NOT_RECOMMENDED.value
     ).count()
 
     # 平均利润率(仅已计算的产品)
-    products_with_margin = db.query(Product).filter(Product.store_id == store_id, Product.profit_margin != None).all()
+    products_with_margin = db.query(Product).filter(Product.store_id == store_id, active, Product.profit_margin != None).all()
     avg_margin = (
         sum(p.profit_margin for p in products_with_margin) / len(products_with_margin)
         if products_with_margin
@@ -622,7 +637,7 @@ def dashboard(db: Session = Depends(get_db), store_id: str = Depends(get_store_i
     # 利润率最高的产品
     top = (
         db.query(Product)
-        .filter(Product.store_id == store_id, Product.profit_margin != None)
+        .filter(Product.store_id == store_id, active, Product.profit_margin != None)
         .order_by(Product.profit_margin.desc())
         .first()
     )
