@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     InventoryAdjustment, PackingProduct, ProcurementRecord, Product,
-    Shipment, ShipmentLine, SystemSettings,
+    Shipment, ShipmentLine, Store, SystemSettings,
 )
 from services.inbound_excel import generate_inbound
 from api.store_routes import get_store_id
@@ -139,6 +139,31 @@ def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_st
                 "is_primary_variant": idx == 0,
             })
     return rows
+
+
+@router.get("/stores-overview")
+def stores_inventory_overview(db: Session = Depends(get_db)):
+    """管理视角的跨店库存摘要；不改变当前店铺请求作用域。"""
+    result = []
+    for store in db.query(Store).order_by(Store.created_at.asc()).all():
+        rows = list_inventory(db=db, store_id=store.id)
+        purchased = sum(row["purchased"] for row in rows)
+        adjusted = sum(row["adjusted"] for row in rows)
+        shipped = sum(row["shipped"] for row in rows)
+        available = sum(row["available"] for row in rows)
+        result.append({
+            "store_id": store.id,
+            "store_name": store.name,
+            "status": store.status,
+            "sku_count": sum(1 for row in rows if row["sku"]),
+            "purchased": purchased,
+            "adjusted": adjusted,
+            "shipped": shipped,
+            "available": available,
+            "exception_count": sum(1 for row in rows if row["sku"] and row["available"] <= 0),
+            "last_synced_at": store.last_synced_at.isoformat() if store.last_synced_at else None,
+        })
+    return result
 
 
 class AdjustmentIn(BaseModel):
