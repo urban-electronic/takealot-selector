@@ -310,7 +310,7 @@ export default function Packing() {
   };
 
   const selectedRows = useMemo(
-    () => selected.size === 0 ? [] : products.filter(p => selected.has(p.sku)),
+    () => selected.size === 0 ? [] : Array.from(selected).map(sku => products.find(p => p.sku === sku)).filter((p): p is PackingProduct => Boolean(p)),
     [selected, products],
   );
 
