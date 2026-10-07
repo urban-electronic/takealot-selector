@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord, Store } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -39,6 +39,15 @@ const getApiKey = (): string => {
   }
 };
 
+export const getActiveStoreId = (): string => {
+  try { return localStorage.getItem('active_store_id') || 'default-store'; }
+  catch { return 'default-store'; }
+};
+
+export const setActiveStoreId = (storeId: string): void => {
+  try { localStorage.setItem('active_store_id', storeId); } catch { /* ignore */ }
+};
+
 const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {
   const baseUrl = getBaseUrl();
   const url = `${baseUrl}${path}`;
@@ -47,6 +56,7 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
     headers: {
       'Content-Type': 'application/json',
       'X-API-Key': getApiKey(),
+      'X-Store-ID': getActiveStoreId(),
       ...options.headers,
     },
   });
@@ -67,6 +77,10 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
   if (!text) return undefined as unknown as T;
   return JSON.parse(text) as T;
 };
+
+export const getStores = (): Promise<Store[]> => request<Store[]>('/api/stores');
+export const createStore = (data: { name: string; owner_name?: string; platform?: string }): Promise<Store> =>
+  request<Store>('/api/stores', { method: 'POST', body: JSON.stringify(data) });
 
 export const openUrl = (url: string): void => {
   if (url && url !== '#') {
@@ -284,7 +298,7 @@ export const voidShipment = (id: string, reason: string): Promise<{ ok: boolean 
 export const exportInboundTemplate = async (shipmentIds: string[]): Promise<Blob> => {
   const res = await fetch(`${getBaseUrl()}/api/inventory/shipments/inbound-template`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey() },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey(), 'X-Store-ID': getActiveStoreId() },
     body: JSON.stringify({ shipment_ids: shipmentIds }),
   });
   if (!res.ok) {
@@ -343,6 +357,7 @@ export const exportPacking = async (payload: PackingExportPayload): Promise<Blob
     headers: {
       'Content-Type': 'application/json',
       'X-API-Key': getApiKey(),
+      'X-Store-ID': getActiveStoreId(),
     },
     body: JSON.stringify(payload),
   });
@@ -366,7 +381,7 @@ export const exportPacking = async (payload: PackingExportPayload): Promise<Blob
 /** 装箱单图片访问（img 标签无法带 X-API-Key header，改用 fetch blob） */
 export const fetchPackingImageBlob = async (filename: string): Promise<Blob> => {
   const res = await fetch(`${getBaseUrl()}/api/packing/images/${encodeURIComponent(filename)}`, {
-    headers: { 'X-API-Key': getApiKey() },
+    headers: { 'X-API-Key': getApiKey(), 'X-Store-ID': getActiveStoreId() },
   });
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${res.statusText}`);
