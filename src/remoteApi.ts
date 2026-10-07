@@ -48,6 +48,26 @@ export const setActiveStoreId = (storeId: string): void => {
   try { localStorage.setItem('active_store_id', storeId); } catch { /* ignore */ }
 };
 
+/** Store-scoped browser state prevents drafts and selections leaking across shops. */
+export const getStoreStorageKey = (baseKey: string): string => `${baseKey}:${getActiveStoreId()}`;
+
+export const readStoreStorage = (baseKey: string): string | null => {
+  try {
+    const scopedKey = getStoreStorageKey(baseKey);
+    const scoped = localStorage.getItem(scopedKey);
+    if (scoped !== null) return scoped;
+    // One-time compatibility migration for the original single-store browser data.
+    if (getActiveStoreId() === 'default-store') {
+      const legacy = localStorage.getItem(baseKey);
+      if (legacy !== null) {
+        localStorage.setItem(scopedKey, legacy);
+        return legacy;
+      }
+    }
+    return null;
+  } catch { return null; }
+};
+
 const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {
   const baseUrl = getBaseUrl();
   const url = `${baseUrl}${path}`;
