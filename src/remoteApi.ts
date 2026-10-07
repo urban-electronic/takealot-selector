@@ -148,16 +148,13 @@ export const updateProduct = async (id: string, data: Partial<Product>): Promise
 };
 
 export const deleteProduct = async (id: string): Promise<string> => {
-  // 先获取产品信息以拿到 takealot_url
-  const product = await getProduct(id);
-  const result = await request<string>(`/api/products/${encodeURIComponent(id)}`, {
+  return request<string>(`/api/products/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
-  if (product.takealot_url) {
-    syncToLocal('sync_delete_product', { takealotUrl: product.takealot_url });
-  }
-  return result;
 };
+
+export const restoreProduct = (id: string): Promise<string> =>
+  request<string>(`/api/products/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 
 export const refreshPrice = (id: string): Promise<Record<string, unknown>> =>
   request<Record<string, unknown>>(`/api/products/${encodeURIComponent(id)}/refresh-price`, {

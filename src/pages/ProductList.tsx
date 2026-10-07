@@ -231,6 +231,7 @@ export default function ProductList() {
   const multiSkuOnly = searchParams.get('multi_sku') === '1';
   const duplicateSkuOnly = searchParams.get('duplicate_sku') === '1';
   const taskMode = searchParams.get('task') || '';
+  const archivedMode = searchParams.get('archived') === '1';
   const [searchInput, setSearchInput] = useState(searchText);
 
   // URL 与输入框双向同步；输入停止 300ms 后再请求，避免每个按键都刷新列表
@@ -335,6 +336,7 @@ export default function ProductList() {
     if (missingField) params.missing_field = missingField;
     if (multiSkuOnly) params.multi_sku = '1';
     if (duplicateSkuOnly) params.duplicate_sku = '1';
+    if (archivedMode) params.archived = 'true';
 
     api.getProducts(params)
       .then(setProducts)
@@ -344,7 +346,7 @@ export default function ProductList() {
 
   useEffect(() => {
     fetchProducts();
-  }, [statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly]);
+  }, [statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly, archivedMode]);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -357,9 +359,18 @@ export default function ProductList() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!window.confirm(`确定删除「${name}」？`)) return;
+    if (!window.confirm(`确定将「${name}」移入废品库？产品序号会永久保留。`)) return;
     try {
       await api.deleteProduct(id);
+      fetchProducts();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  };
+
+  const handleRestore = async (id: string) => {
+    try {
+      await api.restoreProduct(id);
       fetchProducts();
     } catch (e: any) {
       alert(e.message);
@@ -719,6 +730,9 @@ export default function ProductList() {
         return <span className={`status-badge status-${cls}`}>{status?.label || p.selection_status}</span>;
       }
       case 'actions':
+        if (archivedMode) {
+          return <button className="btn btn-primary btn-sm" onClick={() => handleRestore(p.id)}>恢复产品</button>;
+        }
         return (
           <>
             <Link to={`/products/${p.id}${taskMode ? '?edit=1&from=task' : ''}`} className={`btn btn-sm ${taskMode ? 'btn-primary' : 'btn-outline'}`}>{taskMode ? '修改资料' : '详情'}</Link>
@@ -789,9 +803,11 @@ export default function ProductList() {
   return (
     <div className="product-list-page">
       <div className="product-list-header">
-        <h2>产品列表 ({products.length})</h2>
-        <Link to="/create" className="btn btn-primary">+ 新建产品</Link>
+        <h2>{archivedMode ? '废品库' : '产品列表'} ({products.length})</h2>
+        {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
+
+      {archivedMode && <div className="product-task-banner"><div><strong>这里保存已删除产品</strong><span>原序号永久保留；恢复后仍使用原序号，新建产品继续按历史最大序号往后增加。</span></div></div>}
 
       {taskMode && (
         <div className="product-task-banner">

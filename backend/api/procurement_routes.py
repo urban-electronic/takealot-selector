@@ -112,6 +112,7 @@ def _find_product_by_no(db: Session, product_no: int, store_id: str):
         db.query(Product)
         .filter(
             Product.store_id == store_id,
+            Product.is_archived == False,
             or_(
                 Product.product_no == int(product_no),
                 cast(Product.product_no, String) == str(product_no),
@@ -137,7 +138,7 @@ def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depen
     product_id = data.product_id
     product = None
     if product_id:
-        product = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
+        product = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id, Product.is_archived == False).first()
         if not product:
             raise HTTPException(status_code=400, detail=f"产品不存在（id: {product_id}）")
     elif data.product_no is not None:

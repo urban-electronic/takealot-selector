@@ -193,7 +193,7 @@ def _parse_migration_zip(content: bytes) -> tuple:
 
 @router.get('/products')
 def list_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    store_products = db.query(Product).filter(Product.store_id == store_id).all()
+    store_products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all()
     store_skus = {sku for product in store_products for sku in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if sku}
     rows = db.query(PackingProduct).filter(PackingProduct.sku.in_(store_skus)).order_by(PackingProduct.sku).all() if store_skus else []
     rows.sort(key=lambda p: (p.variant_group or p.sku, 0 if p.is_primary_variant else 1, p.sku))
@@ -218,7 +218,7 @@ def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(ge
     只补充尚不存在的 SKU，不覆盖装箱单中的人工编辑；图片直接由列表接口
     回退到产品库图片，避免批量下载图片导致请求超时。
     """
-    products = db.query(Product).filter(Product.store_id == store_id).order_by(Product.created_at.asc()).all()
+    products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).order_by(Product.created_at.asc()).all()
     existing = {sku for (sku,) in db.query(PackingProduct.sku).all()}
     imported = skipped_no_sku = duplicate_sku = 0
     seen = set(existing)
@@ -361,10 +361,10 @@ def _fetch_takealot_image(url: str) -> str:
 
 def _catalog_product_for_sku(db: Session, sku: str, store_id: str) -> Optional[Product]:
     """按独立 SKU 或历史多 SKU 字段找到选品库产品。"""
-    exact = db.query(Product).filter(Product.store_id == store_id, Product.sku == sku).first()
+    exact = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku == sku).first()
     if exact:
         return exact
-    for candidate in db.query(Product).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
+    for candidate in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku.isnot(None)).all():
         variants = [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]
         if sku in variants:
             return candidate
@@ -394,7 +394,7 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
     imported = skipped = 0
     failed = []
     for pid in data.product_ids:
-        prod = db.query(Product).filter(Product.id == pid, Product.store_id == store_id).first()
+        prod = db.query(Product).filter(Product.id == pid, Product.store_id == store_id, Product.is_archived == False).first()
         if prod is None:
             failed.append({'sku': '', 'reason': f'选品产品 {pid} 不存在'})
             continue
@@ -459,9 +459,9 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db),
     updated = 0
     failed = []
     for p in pending:
-        prod = db.query(Product).filter(Product.store_id == store_id, Product.sku == p.sku).first()
+        prod = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku == p.sku).first()
         if prod is None:
-            for candidate in db.query(Product).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
+            for candidate in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku.isnot(None)).all():
                 if p.sku in [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]:
                     prod = candidate
                     break
@@ -495,7 +495,7 @@ async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depend
     from services.takealot_scraper import scrape_product
     limit = max(1, min(int(data.limit or 20), 50))
     candidates = []
-    for product in db.query(Product).filter(Product.store_id == store_id, Product.takealot_url.isnot(None), Product.sku.isnot(None)).all():
+    for product in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.takealot_url.isnot(None), Product.sku.isnot(None)).all():
         skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
         if len(skus) > 1 and product.takealot_url:
             candidates.append((product, skus))
