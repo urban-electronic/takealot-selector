@@ -4,6 +4,7 @@
 
 from datetime import datetime
 from typing import Optional, List
+import asyncio
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -499,7 +500,10 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db)):
 
     from services.takealot_scraper import scrape_product
 
-    result = await scrape_product(p.takealot_url)
+    try:
+        result = await asyncio.wait_for(scrape_product(p.takealot_url), timeout=45)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="官网抓取超时，已跳过该产品")
 
     updated = {}
     official_name = (result.get("product_name") or "").strip()
