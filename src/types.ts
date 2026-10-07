@@ -212,6 +212,16 @@ export interface ShipmentRecord {
   lines: Array<{ sku: string; name: string; cartons: number; count_per_carton: number; total_quantity: number }>;
 }
 
+export interface Store {
+  id: string;
+  name: string;
+  platform: string;
+  status: string;
+  owner_name: string;
+  sync_method: string;
+  last_synced_at: string | null;
+}
+
 export const SELECTION_STATUS_MAP: Record<string, { label: string; color: string }> = {
   '数据待补充': { label: '数据待补充', color: '#faad14' },
   '待确认品类': { label: '待确认品类', color: '#1677ff' },
