@@ -43,6 +43,10 @@ from services import packing_excel as px
 
 router = APIRouter(prefix="/api/packing", tags=["packing"])
 
+# 临时旧库存处理规则：允许确认发货后库存为负数。
+# 老库存清理完成后改回 False，即恢复“库存不足时禁止发货”。
+TEMP_ALLOW_NEGATIVE_INVENTORY_SHIPMENTS = True
+
 SKU_RE = re.compile(r'[A-Za-z0-9_-]{1,50}')
 PUBLIC_FIELDS = (
     'sku', 'name_zh', 'name_en', 'unit', 'weight', 'material', 'brand',
@@ -572,7 +576,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db)):
         total_quantity = int(cartons) * int(count)
         requested_by_sku[p.sku] = requested_by_sku.get(p.sku, 0) + total_quantity
         items.append((public(p), cartons, count))
-    if not existing_shipment:
+    if not existing_shipment and not TEMP_ALLOW_NEGATIVE_INVENTORY_SHIPMENTS:
         for sku, requested in requested_by_sku.items():
             available = inventory_balance_for_sku(db, sku)
             if available < requested:
