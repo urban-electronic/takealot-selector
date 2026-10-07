@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { getInventory, getShipments, syncPackingVariantsFromTakealot } from '../remoteApi';
+import { getInventory, getShipments } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
 
@@ -14,9 +14,6 @@ export default function Dashboard() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [officialCheck, setOfficialCheck] = useState('');
-  const [officialChecking, setOfficialChecking] = useState(false);
-  const stopOfficialCheck = useRef(false);
 
   useEffect(() => {
     Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
@@ -61,41 +58,6 @@ export default function Dashboard() {
     { step: 7, count: overview.zeroOrNegative, label: '零库存产品', detail: '补录采购或进行库存调整', to: '/inventory?stock=zero', tone: 'purple' },
   ];
 
-  const runOfficialCheck = async () => {
-    if (officialChecking) {
-      stopOfficialCheck.current = true;
-      setOfficialCheck('正在停止自检...');
-      return;
-    }
-    const candidates = products.filter(product => product.takealot_url && (!product.sku || !product.fee_category_confirmed || !product.product_image_url || !product.product_name || product.actual_sale_price_zar == null)).slice(0, 30);
-    stopOfficialCheck.current = false;
-    setOfficialChecking(true);
-    let repaired = 0;
-    for (let index = 0; index < candidates.length && !stopOfficialCheck.current; index += 3) {
-      const batch = candidates.slice(index, index + 3);
-      setOfficialCheck(`官网自检 ${Math.min(index + batch.length, candidates.length)}/${candidates.length}（可停止）`);
-      await Promise.all(batch.map(async product => {
-        try {
-          const result = await api.refreshPrice(product.id);
-          setProducts(prev => prev.map(row => row.id === product.id ? { ...row, ...result } as Product : row));
-          repaired += 1;
-        } catch { /* 超时或失败时跳过，继续下一项 */ }
-      }));
-    }
-    if (stopOfficialCheck.current) {
-      setOfficialCheck(`官网自检已停止：更新 ${repaired} 项`);
-      setOfficialChecking(false);
-      return;
-    }
-    let variantNote = '';
-    try {
-      const variants = await syncPackingVariantsFromTakealot(30);
-      variantNote = `，确认 ${variants.matched} 个规格`;
-    } catch { variantNote = '，规格核对暂未完成'; }
-    setOfficialCheck(`官网自检完成：更新 ${repaired} 项${variantNote}`);
-    setOfficialChecking(false);
-  };
-
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
   if (error) return <div className="alert alert-error">仪表盘加载失败：{error}</div>;
   if (!stats) return <div className="loading">暂无数据</div>;
@@ -119,7 +81,7 @@ export default function Dashboard() {
 
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-tasks">
-          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" onClick={runOfficialCheck}>{officialChecking ? (officialCheck || '停止官网自检') : (officialCheck || '官网自检可修复项')}</button></div>
+          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled title="Takealot 商品页不公开可验证 SKU；请使用卖家后台导出或人工填写">官网 SKU 自检暂不可用</button></div>
           <div className="dashboard-task-grid">
             {tasks.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
               <em>第 {task.step} 步</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
