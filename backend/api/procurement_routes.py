@@ -103,7 +103,7 @@ def list_procurement_records(db: Session = Depends(get_db), store_id: str = Depe
     return [_to_out(r) for r in records]
 
 
-def _find_product_by_no(db: Session, product_no: int):
+def _find_product_by_no(db: Session, product_no: int, store_id: str):
     """按 product_no 查找产品，兼容远程库 INTEGER / REAL / TEXT 三种存储类型：
     - INTEGER/REAL（372 / 372.0）：数值比较命中
     - TEXT（'372'）：cast 字符串比较命中
@@ -111,6 +111,7 @@ def _find_product_by_no(db: Session, product_no: int):
     return (
         db.query(Product)
         .filter(
+            Product.store_id == store_id,
             or_(
                 Product.product_no == int(product_no),
                 cast(Product.product_no, String) == str(product_no),
@@ -121,9 +122,9 @@ def _find_product_by_no(db: Session, product_no: int):
 
 
 @router.get("/by-no/{product_no}", response_model=List[ProductBriefOut])
-def search_product_by_no(product_no: int, db: Session = Depends(get_db)):
+def search_product_by_no(product_no: int, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """按 product_no 搜索产品（采购表单自动带出名称），对齐本地 search_products_by_no"""
-    p = _find_product_by_no(db, product_no)
+    p = _find_product_by_no(db, product_no, store_id)
     if not p:
         return []
     return [ProductBriefOut(id=p.id, product_no=p.product_no, product_name=p.product_name or "")]
@@ -136,11 +137,11 @@ def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depen
     product_id = data.product_id
     product = None
     if product_id:
-        product = db.query(Product).filter(Product.id == product_id).first()
+        product = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
         if not product:
             raise HTTPException(status_code=400, detail=f"产品不存在（id: {product_id}）")
     elif data.product_no is not None:
-        product = _find_product_by_no(db, data.product_no)
+        product = _find_product_by_no(db, data.product_no, store_id)
         if not product:
             raise HTTPException(status_code=400, detail=f"产品不存在（序号: {data.product_no}）")
         product_id = product.id

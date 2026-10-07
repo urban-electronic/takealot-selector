@@ -51,6 +51,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
     product_no = Column(Integer, autoincrement=True)
     recorded_at = Column(DateTime, default=datetime.utcnow)
     note = Column(Text, default="")
