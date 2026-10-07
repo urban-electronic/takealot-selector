@@ -1,6 +1,8 @@
 export interface Product {
   id: string;
   product_no: number | null;
+  is_archived?: boolean;
+  archived_at?: string | null;
   recorded_at: string | null;
   note: string | null;
   takealot_url: string | null;
