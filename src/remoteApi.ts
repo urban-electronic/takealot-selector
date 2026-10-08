@@ -123,6 +123,12 @@ export const openUrl = (url: string): void => {
 };
 
 // Products
+export interface SkuAuditResult {
+  source: string; total: number; verified: number; missing: number; mismatch: number; unmatched: number;
+  issues: { product_id: string; product_no: number; status: string; current_skus: string[]; reference_skus: string[] }[];
+}
+export const auditProductSkus = (): Promise<SkuAuditResult> => request<SkuAuditResult>('/api/products/sku-audit');
+
 export const getProducts = (params?: Record<string, string>): Promise<Product[]> => {
   const searchParams = new URLSearchParams();
   if (params) {
