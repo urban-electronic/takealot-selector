@@ -203,7 +203,7 @@ def generate(items, date, mark, shipping, address, output):
                 c.set('r', re.sub(r'\d+$', str(rn), c.get('r')))
             name = ' / '.join(x for x in [p['name_zh'], p['name_en']] if x)
             values = {
-                'A': mark if i == 0 else '',
+                'A': p.get('box_no') or (mark if i == 0 else ''),
                 'B': p['sku'],
                 'C': name,
                 'D': cartons,
