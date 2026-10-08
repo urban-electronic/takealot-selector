@@ -31,12 +31,6 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db)):
 
     result = await scrape_product(url)
 
-    if not result["success"] and not result["product_name"]:
-        raise HTTPException(
-            status_code=422,
-            detail=f"无法抓取该商品信息: {'; '.join(result['warnings'])}",
-        )
-
     # 匹配 Fee 品类
     fee_match = match_fee_category(
         db,
@@ -45,6 +39,10 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db)):
     )
 
     return {
+        "success": result.get("success", False),
+        "data_source": result.get("data_source", "takealot" if result.get("success") else "manual"),
+        "variants": result.get("variants", []),
+        "in_stock_price": result.get("in_stock_price"),
         "normalized_url": result["normalized_url"],
         "tsin": result.get("tsin"),
         "product_name": result.get("product_name"),
