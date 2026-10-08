@@ -102,7 +102,8 @@ export default function App() {
               aria-haspopup="menu"
               onClick={() => setManagementOpen(open => !open)}
             >
-              更多管理 <span>⌄</span>
+              <span className="management-menu-icon" aria-hidden="true"><i /><i /><i /><i /></span>
+              管理工具
             </button>
             {managementOpen && <div className="management-menu-panel" role="menu">
               {['资料维护', '系统管理'].map(group => <div className="management-menu-group" key={group}>

@@ -11,6 +11,8 @@ export default function Procurement() {
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [savingNoteIds, setSavingNoteIds] = useState<Set<string>>(new Set());
 
   // form state
   const [showForm, setShowForm] = useState(false);
@@ -153,6 +155,21 @@ export default function Procurement() {
 
   const handleDelete = async (r: ProcurementRecord) => {
     setDeleteTarget(r);
+  };
+
+  const saveInlineNote = async (record: ProcurementRecord) => {
+    const nextNote = (noteDrafts[record.id] ?? record.notes ?? '').trim();
+    if (nextNote === (record.notes ?? '').trim() || savingNoteIds.has(record.id)) return;
+    setSavingNoteIds(prev => new Set(prev).add(record.id));
+    try {
+      const updated = await api.updateProcurementRecord(record.id, { notes: nextNote });
+      setRecords(prev => prev.map(row => row.id === record.id ? updated : row));
+      setNoteDrafts(prev => { const next = { ...prev }; delete next[record.id]; return next; });
+    } catch (e: any) {
+      setError(typeof e === 'string' ? e : e.message || '备注保存失败');
+    } finally {
+      setSavingNoteIds(prev => { const next = new Set(prev); next.delete(record.id); return next; });
+    }
   };
 
   const confirmDelete = async () => {
@@ -352,8 +369,23 @@ export default function Procurement() {
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>{r.quantity}</td>
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatPrice(r.total_amount)}</td>
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatPrice(r.unit_price)}</td>
-                <td style={{ padding: '8px 12px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {r.notes || '-'}
+                <td style={{ padding: '6px 12px', width: 210 }}>
+                  <div className="procurement-note-cell">
+                    <input
+                      value={noteDrafts[r.id] ?? r.notes ?? ''}
+                      placeholder="直接填写备注…"
+                      aria-label={`产品 ${r.product_no} 的采购备注`}
+                      onChange={event => setNoteDrafts(prev => ({ ...prev, [r.id]: event.target.value }))}
+                      onBlur={() => saveInlineNote(r)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                    {savingNoteIds.has(r.id) && <small>保存中</small>}
+                  </div>
                 </td>
                 <td style={{ padding: '8px 12px' }}>
                   <button className="btn btn-sm" onClick={() => startEdit(r)} style={{ marginRight: 6 }}>编辑</button>

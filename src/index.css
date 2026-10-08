@@ -87,14 +87,21 @@ button {
 .management-menu { position: relative; }
 .management-menu-trigger { display: flex; align-items: center; gap: 5px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: transparent; color: #aebfd6; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .management-menu.open .management-menu-trigger, .management-menu-trigger:hover { color: #fff; background: rgba(255,255,255,.1); }
-.management-menu-trigger span { transition: transform .16s ease; }
-.management-menu.open .management-menu-trigger span { transform: rotate(180deg); }
+.management-menu-icon { display: grid; grid-template-columns: repeat(2, 3px); gap: 3px; width: 9px; }
+.management-menu-icon i { width: 3px; height: 3px; border-radius: 1px; background: currentColor; }
 .management-menu-panel { position: absolute; top: calc(100% + 10px); right: 0; width: 218px; padding: 8px; border: 1px solid #dce4ee; border-radius: 12px; background: #fff; box-shadow: 0 14px 34px rgba(9,32,67,.2); }
 .management-menu-group + .management-menu-group { margin-top: 5px; padding-top: 5px; border-top: 1px solid #edf0f4; }
 .management-menu-group > strong { display: block; padding: 7px 10px 5px; color: #8b99ab; font-size: 10px; letter-spacing: .1em; }
 .management-menu-panel a { display: flex; flex-direction: column; gap: 2px; padding: 9px 10px; border-radius: 8px; color: #263b57; text-decoration: none; }
 .management-menu-panel a:hover, .management-menu-panel a.active { background: #f0f5fb; color: #0b5ed7; }
 .management-menu-panel a small { color: #8b99ab; font-size: 10px; }
+
+.procurement-note-cell { position: relative; min-width: 150px; }
+.procurement-note-cell input { width: 100%; height: 30px; padding: 4px 9px; border: 1px solid transparent; border-radius: 6px; background: #f5f7fa; color: #26364d; font: inherit; font-size: 12px; transition: border-color .15s, background .15s, box-shadow .15s; }
+.procurement-note-cell input::placeholder { color: #a3adba; }
+.procurement-note-cell input:hover { border-color: #ced8e5; background: #fff; }
+.procurement-note-cell input:focus { border-color: #4f8edc; background: #fff; outline: none; box-shadow: 0 0 0 3px rgba(36,112,212,.1); }
+.procurement-note-cell small { position: absolute; right: 7px; top: 7px; color: #718096; font-size: 10px; background: #fff; }
 
 .app-header nav a {
   padding: 8px 16px;
