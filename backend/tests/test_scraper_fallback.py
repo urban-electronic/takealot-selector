@@ -129,3 +129,52 @@ def test_catalog_only_used_after_both_renderers_fail():
     assert calls == ['Firefox', 'Chromium']
     assert result['data_source'] == 'offer_catalog'
     assert result['success'] is False
+
+
+def test_wait_for_actual_product_not_early_generic_jsonld():
+    class Page:
+        ready = False
+        async def goto(self, *args, **kwargs):
+            pass
+        async def title(self):
+            return 'Takealot.com: Online Shopping'
+        async def wait_for_selector(self, *args, **kwargs):
+            # Generic ViewAction script exists before the product is loaded.
+            pass
+        async def wait_for_function(self, predicate, timeout):
+            assert timeout >= 30000
+            assert 'h1' in predicate and 'media.takealot.com' in predicate
+            self.ready = True
+    class Browser:
+        async def close(self):
+            pass
+    page = Page()
+    async def launcher(p):
+        return Browser(), page
+    async def extract(page, url, normalized):
+        return {'product_name': 'Actual loaded product' if page.ready else None}
+    with patch.object(scraper, '_extract_data', extract):
+        data, error = asyncio.run(scraper._try_scrape_with_browser(None, 'test', launcher, URL, URL))
+    assert data['product_name'] == 'Actual loaded product'
+    assert error == ''
+
+
+def test_current_product_markup_ignores_ad_price_and_navigation():
+    soup = BeautifulSoup('''<nav><a>Electronics</a></nav>
+        <script type="application/ld+json">{"@type":"ViewAction"}</script>
+        <main><h1>Zenty Electronic High-Voltage Mouse Trap, Electric Rodent Zapper</h1>
+        <img src="https://media.takealot.com/covers_images/f963b6ce9d8548c482498c469b968f03/s-thumbnail.file">
+        <div data-ref="price"><span class="currency whitespace-nowrap plus">R 699</span></div>
+        <aside>Buy using takealot.credit R 66 p/m</aside><article>Sponsored R 11,999</article>
+        <p>Supplier out of stock</p><table><tbody><tr class="product-info-row-undefined">
+        <td class="title-cell">Categories</td><td><ul><li><a href="/pool-garden">Garden, Pool &amp; Patio</a> / <a href="/pool-garden/garden-25905">Garden</a> / <a href="/pool-garden/weed-and-pest-control-25938">Weed &amp; Pest Control</a></li></ul></td></tr></tbody></table></main>''', 'lxml')
+    fields = scraper._page_product_fields(soup)
+    assert fields['actual_sale_price_zar'] == 699
+    assert fields['in_stock_price'] is None
+    assert fields['product_image_url'].endswith('s-pdpxl.file')
+    assert fields['takealot_category_path'] == 'Garden, Pool & Patio > Garden > Weed & Pest Control'
+
+
+def test_generic_empty_shell_has_no_product_fields():
+    soup = BeautifulSoup('<title>Takealot.com: Online Shopping</title><script type="application/ld+json">{"@type":"ViewAction"}</script>', 'lxml')
+    assert scraper._page_product_fields(soup) == {}
