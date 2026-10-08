@@ -18,6 +18,7 @@ from models import (
     Shipment, ShipmentLine, Store, SystemSettings,
 )
 from services.inbound_excel import generate_inbound
+from services.operation_log import record_operation
 from api.store_routes import get_store_id
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
@@ -34,6 +35,7 @@ def _procurement_by_product(db: Session, store_id: str) -> dict:
     for product_id, quantity in (
         db.query(ProcurementRecord.product_id, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
         .filter(ProcurementRecord.store_id == store_id)
+        .filter(ProcurementRecord.status == "received")
         .filter(ProcurementRecord.product_id.isnot(None))
         .filter(ProcurementRecord.recorded_at >= start_date)
         .group_by(ProcurementRecord.product_id)
@@ -62,6 +64,7 @@ def inventory_balance_for_sku(db: Session, sku: str, store_id: str) -> int:
         purchased = int(
             db.query(func.coalesce(func.sum(ProcurementRecord.quantity), 0))
             .filter(ProcurementRecord.store_id == store_id)
+            .filter(ProcurementRecord.status == "received")
             .filter(
                 (ProcurementRecord.product_id == product.id)
                 | ((ProcurementRecord.product_id.is_(None)) & (ProcurementRecord.product_no == product.product_no))
@@ -93,6 +96,19 @@ def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_st
     purchased_by_no = dict(
         db.query(ProcurementRecord.product_no, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
         .filter(ProcurementRecord.store_id == store_id, ProcurementRecord.product_id.is_(None), ProcurementRecord.product_no.isnot(None))
+        .filter(ProcurementRecord.status == "received")
+        .filter(ProcurementRecord.recorded_at >= start_date)
+        .group_by(ProcurementRecord.product_no).all()
+    )
+    in_transit_by_id = dict(
+        db.query(ProcurementRecord.product_id, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
+        .filter(ProcurementRecord.store_id == store_id, ProcurementRecord.status == "in_transit", ProcurementRecord.product_id.isnot(None))
+        .filter(ProcurementRecord.recorded_at >= start_date)
+        .group_by(ProcurementRecord.product_id).all()
+    )
+    in_transit_by_no = dict(
+        db.query(ProcurementRecord.product_no, func.coalesce(func.sum(ProcurementRecord.quantity), 0))
+        .filter(ProcurementRecord.store_id == store_id, ProcurementRecord.status == "in_transit", ProcurementRecord.product_id.is_(None), ProcurementRecord.product_no.isnot(None))
         .filter(ProcurementRecord.recorded_at >= start_date)
         .group_by(ProcurementRecord.product_no).all()
     )
@@ -121,6 +137,7 @@ def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_st
                 seen_skus.add(sku)
             # 多颜色历史记录无法可靠分摊采购总数，分支库存从人工调整开始，避免重复放大库存。
             purchased = 0 if len(variants) > 1 else int(purchased_by_id.get(product.id, 0) or 0) + int(purchased_by_no.get(product.product_no, 0) or 0)
+            in_transit = 0 if len(variants) > 1 else int(in_transit_by_id.get(product.id, 0) or 0) + int(in_transit_by_no.get(product.product_no, 0) or 0)
             adjusted = int(adjusted_by_sku.get(sku, 0) or 0) if sku else 0
             shipped = int(shipped_by_sku.get(sku, 0) or 0) if sku else 0
             variant_name = zh_names[idx] if len(zh_names) == len(variants) else (product.chinese_product_name or product.product_name or "未命名产品")
@@ -132,6 +149,7 @@ def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_st
                 "name_en": product.product_name or "",
                 "image_url": product.product_image_url or "",
                 "purchased": purchased,
+                "in_transit": in_transit,
                 "adjusted": adjusted,
                 "shipped": shipped,
                 "available": purchased + adjusted - shipped,
@@ -195,6 +213,9 @@ def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db), store_i
         occurred_at=data.occurred_at or dt.date.today().isoformat(),
     )
     db.add(row)
+    record_operation(db, store_id, "inventory", row.id, "adjust", f"{sku} 库存调整 {data.quantity_delta:+d}", {
+        "sku": sku, "quantity_delta": data.quantity_delta, "reason": row.reason,
+    })
     db.commit()
     return {"ok": True, "id": row.id, "available": inventory_balance_for_sku(db, sku, store_id)}
 
@@ -231,6 +252,7 @@ def reverse_adjustment(adjustment_id: str, db: Session = Depends(get_db), store_
     db.add(reversal)
     db.flush()
     original.reversed_by = reversal.id
+    record_operation(db, store_id, "inventory", original.id, "reverse", f"撤销 {original.sku} 库存调整 {original.quantity_delta:+d}")
     db.commit()
     return {"ok": True}
 
@@ -298,5 +320,6 @@ def void_shipment(shipment_id: str, data: VoidIn, db: Session = Depends(get_db),
     row.status = "void"
     row.void_reason = data.reason.strip()
     row.voided_at = dt.datetime.utcnow()
+    record_operation(db, store_id, "shipment", row.id, "void", f"撤回发货单 {row.shipment_no}", {"reason": row.void_reason})
     db.commit()
     return {"ok": True}
