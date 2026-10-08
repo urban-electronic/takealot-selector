@@ -24,6 +24,7 @@ export default function Procurement() {
     quantity: '',
     total_amount: '',
     notes: '',
+    status: 'in_transit',
     recorded_at: new Date().toISOString().slice(0, 10),
   });
 
@@ -108,7 +109,7 @@ export default function Procurement() {
   })();
 
   const resetForm = () => {
-    setForm({ product_no: '', product_name: '', product_id: '', quantity: '', total_amount: '', notes: '', recorded_at: new Date().toISOString().slice(0, 10) });
+    setForm({ product_no: '', product_name: '', product_id: '', quantity: '', total_amount: '', notes: '', status: 'in_transit', recorded_at: new Date().toISOString().slice(0, 10) });
     setEditingId(null);
     setShowForm(false);
     setProductSearch('');
@@ -124,6 +125,7 @@ export default function Procurement() {
       quantity: parseInt(form.quantity) || 0,
       total_amount: parseFloat(form.total_amount) || 0,
       notes: form.notes,
+      status: form.status as ProcurementRecord['status'],
       recorded_at: form.recorded_at,
     };
     try {
@@ -147,6 +149,7 @@ export default function Procurement() {
       quantity: String(r.quantity ?? ''),
       total_amount: String(r.total_amount ?? ''),
       notes: r.notes ?? '',
+      status: r.status ?? 'received',
       recorded_at: r.recorded_at ?? '',
     });
     setEditingId(r.id);
@@ -169,6 +172,22 @@ export default function Procurement() {
       setError(typeof e === 'string' ? e : e.message || '备注保存失败');
     } finally {
       setSavingNoteIds(prev => { const next = new Set(prev); next.delete(record.id); return next; });
+    }
+  };
+
+  const changeProcurementStatus = async (record: ProcurementRecord, status: ProcurementRecord['status']) => {
+    if (status === record.status) return;
+    const message = status === 'received'
+      ? '确认已到仓？确认后该采购数量会计入可用库存。'
+      : status === 'cancelled'
+        ? '确认取消这条采购？该数量不会计入库存。'
+        : '确认改回在途？已计入的库存数量会自动移出可用库存。';
+    if (!window.confirm(message)) return;
+    try {
+      const updated = await api.updateProcurementRecord(record.id, { status });
+      setRecords(prev => prev.map(row => row.id === record.id ? updated : row));
+    } catch (e: any) {
+      setError(typeof e === 'string' ? e : e.message || '采购状态更新失败');
     }
   };
 
@@ -306,6 +325,14 @@ export default function Procurement() {
                   onChange={e => setForm(prev => ({ ...prev, notes: e.target.value }))}
                   style={{ width: '100%', boxSizing: 'border-box' }} />
               </div>
+              <div>
+                <label>入库状态</label>
+                <select value={form.status} onChange={e => setForm(prev => ({ ...prev, status: e.target.value }))} style={{ width: '100%' }}>
+                  <option value="in_transit">在途（暂不增加库存）</option>
+                  <option value="received">已入库（增加可用库存）</option>
+                  <option value="cancelled">已取消</option>
+                </select>
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 8 }}>
@@ -357,6 +384,7 @@ export default function Procurement() {
               <th style={{ padding: '8px 12px', textAlign: 'right' }}>采购总金额</th>
               <th style={{ padding: '8px 12px', textAlign: 'right' }}>单价</th>
               <th style={{ padding: '8px 12px' }}>备注</th>
+              <th style={{ padding: '8px 12px' }}>入库状态</th>
               <th style={{ padding: '8px 12px' }}>操作</th>
             </tr>
           </thead>
@@ -386,6 +414,11 @@ export default function Procurement() {
                     />
                     {savingNoteIds.has(r.id) && <small>保存中</small>}
                   </div>
+                </td>
+                <td style={{ padding: '6px 12px' }}>
+                  <select className={`procurement-status ${r.status || 'received'}`} value={r.status || 'received'} onChange={event => changeProcurementStatus(r, event.target.value as ProcurementRecord['status'])}>
+                    <option value="in_transit">在途</option><option value="received">已入库</option><option value="cancelled">已取消</option>
+                  </select>
                 </td>
                 <td style={{ padding: '8px 12px' }}>
                   <button className="btn btn-sm" onClick={() => startEdit(r)} style={{ marginRight: 6 }}>编辑</button>
