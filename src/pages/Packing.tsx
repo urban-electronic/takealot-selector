@@ -104,7 +104,7 @@ const PACKING_DRAFT_KEY = 'packingDraftV1';
 const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 
 type PackingLines = Record<string, { cartons: string; count: string }>;
-type PackingExportForm = { date: string; mark: string; shipping: string; address: string };
+type PackingExportForm = { date: string; mark: string; shipping: string; address: string; record_shipment?: boolean };
 type PackingDraft = { selected: string[]; lines: PackingLines; exportForm: Partial<PackingExportForm>; draftKey: string };
 const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -463,6 +463,7 @@ export default function Packing() {
         shipping: exportForm.shipping,
         address: exportForm.address,
         draft_key: draftKey,
+        record_shipment: exportForm.record_shipment !== false,
         items: rows.map(p => ({
           sku: p.sku,
           cartons: lines[p.sku]?.cartons || '1',
@@ -810,6 +811,7 @@ export default function Packing() {
             <input type="text" value={exportForm.address} onChange={e => setExportForm(prev => ({ ...prev, address: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
           </div>
         </div>
+        <label style={{ display: 'block', marginTop: 12 }}><input type="checkbox" checked={exportForm.record_shipment === false} onChange={e => setExportForm(prev => ({ ...prev, record_shipment: !e.target.checked }))} /> 老库存清理：仅导出，不登记发货、不扣库存</label>
         <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
