@@ -212,7 +212,23 @@ class ProcurementRecord(Base):
     total_amount = Column(Float, default=0.0)
     unit_price = Column(Float, default=0.0)
     notes = Column(String, default="")
+    status = Column(String, default="received", nullable=False)  # in_transit / received / cancelled
+    status_updated_at = Column(DateTime, default=datetime.utcnow)
     recorded_at = Column(String, default="")
+
+
+class OperationLog(Base):
+    """店铺级关键操作日志，用于追踪库存和业务状态变化。"""
+    __tablename__ = "operation_logs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
+    entity_type = Column(String, nullable=False, index=True)
+    entity_id = Column(String, default="")
+    action = Column(String, nullable=False)
+    summary = Column(String, default="")
+    details = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class PackingProduct(Base):
