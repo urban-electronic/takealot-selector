@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { DataSourceProvider } from './DataSourceContext';
 import { getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
@@ -22,15 +22,17 @@ const primaryNavItems = [
 ];
 
 const secondaryNavItems = [
-  { path: '/products?archived=1', label: '废品库', hint: '查看与恢复已移除产品' },
-  { path: '/stores', label: '店铺管理' },
-  { path: '/procurement', label: '采购记录' },
-  { path: '/settings', label: '系统设置' },
+  { path: '/products?archived=1', label: '废品库', hint: '查看与恢复已移除产品', group: '资料维护' },
+  { path: '/procurement', label: '采购记录', hint: '查询和补录历史采购', group: '资料维护' },
+  { path: '/stores', label: '店铺管理', hint: '管理店铺与库存隔离', group: '系统管理' },
+  { path: '/settings', label: '系统设置', hint: '费率、接口和基础参数', group: '系统管理' },
 ];
 
 export default function App() {
   const [stores, setStores] = useState<Store[]>([]);
   const [activeStore, setActiveStore] = useState(getActiveStoreId());
+  const [managementOpen, setManagementOpen] = useState(false);
+  const managementMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getStores().then(rows => {
@@ -42,6 +44,22 @@ export default function App() {
       }
     }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', allow_negative_inventory_shipments: true, last_synced_at: null }]));
   }, [activeStore]);
+
+  useEffect(() => {
+    if (!managementOpen) return;
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!managementMenuRef.current?.contains(event.target as Node)) setManagementOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setManagementOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [managementOpen]);
 
   const switchStore = (storeId: string) => {
     setActiveStoreId(storeId);
@@ -76,18 +94,28 @@ export default function App() {
           </select>
           </div>
           <NavLink to="/create" className="header-create-button">＋ 新建产品</NavLink>
-          <details className="management-menu">
-            <summary>更多管理 <span>⌄</span></summary>
-            <div className="management-menu-panel">
-              <strong>管理工具</strong>
-              {secondaryNavItems.map(item => (
-                <NavLink key={item.path} to={item.path}>
-                  <span>{item.label}</span>
-                  {item.hint && <small>{item.hint}</small>}
-                </NavLink>
-              ))}
-            </div>
-          </details>
+          <div className={`management-menu ${managementOpen ? 'open' : ''}`} ref={managementMenuRef}>
+            <button
+              type="button"
+              className="management-menu-trigger"
+              aria-expanded={managementOpen}
+              aria-haspopup="menu"
+              onClick={() => setManagementOpen(open => !open)}
+            >
+              更多管理 <span>⌄</span>
+            </button>
+            {managementOpen && <div className="management-menu-panel" role="menu">
+              {['资料维护', '系统管理'].map(group => <div className="management-menu-group" key={group}>
+                <strong>{group}</strong>
+                {secondaryNavItems.filter(item => item.group === group).map(item => (
+                  <NavLink key={item.path} to={item.path} role="menuitem" onClick={() => setManagementOpen(false)}>
+                    <span>{item.label}</span>
+                    <small>{item.hint}</small>
+                  </NavLink>
+                ))}
+              </div>)}
+            </div>}
+          </div>
         </div>
       </header>
 
