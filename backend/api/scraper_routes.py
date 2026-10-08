@@ -53,4 +53,5 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db)):
         "fee_category_confidence": fee_match["confidence"],
         "fee_match_reason": fee_match.get("match_reason", ""),
         "warnings": result.get("warnings", []),
+        "diagnostics": result.get("diagnostics", []),
     }

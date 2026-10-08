@@ -760,6 +760,7 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         "variants": [],
         "warnings": [],
         "success": False,
+        "diagnostics": [],
     }
 
     if not validate_takealot_url(url):
@@ -771,6 +772,28 @@ async def scrape_product(url: str) -> Dict[str, Any]:
     if plid_match:
         result["tsin"] = f"PLID{plid_match.group(1)}"
     errors = []
+
+    def diagnostic(stage, error):
+        # 只返回白名单错误类别，不暴露路径、代理凭据或任意异常文本。
+        text = (error or '').lower()
+        if 'cloudflare' in text:
+            reason = 'verification_failed'
+        elif 'http ' in text:
+            match = re.search(r'http\s+(\d{3})', text)
+            reason = 'http_' + match.group(1) if match else 'http_error'
+        elif "executable doesn't exist" in text or 'playwright install' in text:
+            reason = 'browser_executable_missing'
+        elif 'not installed' in text or 'unavailable' in text:
+            reason = 'runtime_unavailable'
+        elif 'timeout' in text or 'timed out' in text:
+            reason = 'timeout'
+        elif 'net::' in text or 'connection' in text or 'ssl' in text:
+            reason = 'network_error'
+        elif not error or 'no product data' in text:
+            reason = 'no_product_content'
+        else:
+            reason = 'scraper_error'
+        result['diagnostics'].append({'stage': stage, 'reason': reason})
 
     def retain(data):
         # 后续来源的空字段不覆盖已取得的真实字段。
@@ -802,11 +825,13 @@ async def scrape_product(url: str) -> Dict[str, Any]:
             return finish_official()
     if err:
         errors.append(err)
+    diagnostic('http', err)
 
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         errors.append("Playwright unavailable")
+        diagnostic('browser_runtime', 'unavailable')
     else:
         try:
             async with async_playwright() as p:
@@ -818,8 +843,10 @@ async def scrape_product(url: str) -> Dict[str, Any]:
                             return finish_official()
                     if err:
                         errors.append(err)
+                    diagnostic(name, err)
         except Exception:
             errors.append("Browser runtime unavailable")
+            diagnostic('browser_runtime', 'unavailable')
 
     # 卖家表只在官网各抓取步骤完成后补缺，不能提前截断官网渲染。
     catalog = _catalog_fallback(url)
