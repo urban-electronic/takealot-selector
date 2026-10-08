@@ -27,10 +27,11 @@ export default function Dashboard() {
   const overview = useMemo(() => {
     const validInventory = inventory.filter(row => row.sku);
     const skuOwners = new Map<string, Set<string>>();
-    let multiSkuProducts = 0;
+    let unresolvedMultiSkuProducts = 0;
     products.forEach(product => {
       const tokens = (product.sku || '').split(/[\s,，;；]+/).map(value => value.trim()).filter(Boolean);
-      if (tokens.length > 1) multiSkuProducts += 1;
+      const labels = (product.chinese_product_name || '').split(/[\r\n]+/).map(value => value.trim()).filter(Boolean);
+      if (tokens.length > 1 && (labels.length !== tokens.length || labels.some(label => /待识别|待确认|历史分支/.test(label)))) unresolvedMultiSkuProducts += 1;
       new Set(tokens).forEach(sku => {
         if (!skuOwners.has(sku)) skuOwners.set(sku, new Set());
         skuOwners.get(sku)!.add(product.id);
@@ -41,21 +42,29 @@ export default function Dashboard() {
       zeroOrNegative: validInventory.filter(row => row.available <= 0).length,
       missingSku: inventory.filter(row => !row.sku).length,
       missingImage: products.filter(row => !row.product_image_url && !row.product_image_path).length,
-      multiSkuProducts,
+      unresolvedMultiSkuProducts,
       duplicateSkuProducts: new Set(Array.from(skuOwners.values()).filter(ids => ids.size > 1).flatMap(ids => Array.from(ids))).size,
       confirmedShipments: shipments.filter(row => row.status === 'confirmed'),
       purchasedUnits: procurements.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
+      inTransitUnits: procurements.filter(row => row.status === 'in_transit').reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
     };
   }, [inventory, shipments, procurements, products]);
 
-  const tasks = [
-    { step: 1, count: overview.missingSku, label: '产品缺少 SKU', detail: 'SKU 是库存与装箱匹配的基础', to: '/products?missing_field=sku&task=第1步：补充SKU', tone: 'red' },
-    { step: 2, count: stats?.data_incomplete || 0, label: '产品资料待补充', detail: '补齐成本、尺寸和物流信息', to: '/products?selection_status=数据待补充&task=第2步：补充产品资料', tone: 'orange' },
-    { step: 3, count: stats?.category_pending || 0, label: '品类待确认', detail: '确认 Fee 品类后重新计算利润', to: '/products?selection_status=待确认品类&task=第3步：确认产品品类', tone: 'blue' },
-    { step: 4, count: overview.multiSkuProducts, label: '多款 SKU 待确认', detail: '区分同商品的颜色、款式分支', to: '/products?multi_sku=1&task=第4步：确认主商品与款式分支', tone: 'blue' },
-    { step: 5, count: overview.duplicateSkuProducts, label: '重复 SKU 冲突', detail: '同一 SKU 出现在多个商品中', to: '/products?duplicate_sku=1&task=第5步：处理重复SKU', tone: 'red' },
-    { step: 6, count: overview.missingImage, label: '产品缺少图片', detail: '完整产品库检查，补图后同步至装箱单', to: '/products?missing_field=image&task=第6步：补充产品图片', tone: 'purple' },
-    { step: 7, count: overview.zeroOrNegative, label: '零库存产品', detail: '补录采购或进行库存调整', to: '/inventory?stock=zero', tone: 'purple' },
+  const taskGroups = [
+    { label: '阻塞处理', detail: '会影响装箱、库存或发货', items: [
+      { count: overview.missingSku, label: '产品缺少 SKU', detail: 'SKU 是库存与装箱匹配的基础', to: '/products?missing_field=sku&task=补充SKU', tone: 'red' },
+      { count: overview.duplicateSkuProducts, label: '重复 SKU 冲突', detail: '同一 SKU 出现在多个商品中', to: '/products?duplicate_sku=1&task=处理重复SKU', tone: 'red' },
+    ] },
+    { label: '资料完善', detail: '不阻塞操作，可逐步处理', items: [
+      { count: stats?.data_incomplete || 0, label: '产品资料待补充', detail: '补齐成本、尺寸和物流信息', to: '/products?selection_status=数据待补充&task=补充产品资料', tone: 'orange' },
+      { count: stats?.category_pending || 0, label: '品类待确认', detail: '只显示真正没有有效 Fee 类型的产品', to: '/products?selection_status=待确认品类&task=确认产品品类', tone: 'blue' },
+      { count: overview.unresolvedMultiSkuProducts, label: '规格仍待识别', detail: '已识别真实颜色、尺码的产品不会计入', to: '/products?multi_sku=1&task=确认未识别规格', tone: 'blue' },
+      { count: overview.missingImage, label: '产品缺少图片', detail: '补图后同步至装箱单', to: '/products?missing_field=image&task=补充产品图片', tone: 'purple' },
+    ] },
+    { label: '运营提醒', detail: '属于库存状态，不算资料错误', items: [
+      { count: overview.inTransitUnits, label: '在途采购', detail: '到仓确认后才增加可用库存', to: '/procurement', tone: 'orange' },
+      { count: overview.zeroOrNegative, label: '零/负库存', detail: '按需要补货或进行盘点调整', to: '/inventory?stock=zero', tone: 'purple' },
+    ] },
   ];
 
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
@@ -75,17 +84,20 @@ export default function Dashboard() {
       <section className="dashboard-metrics">
         <Link to="/products"><span>产品总数</span><strong>{stats.total}</strong><small>{stats.qualified} 个合格选品</small></Link>
         <Link to="/inventory"><span>可用库存</span><strong>{overview.available}</strong><small>自 2026-09-24 起计算</small></Link>
-        <Link to="/procurement"><span>累计采购件数</span><strong>{overview.purchasedUnits}</strong><small>{procurements.length} 条采购记录</small></Link>
+        <Link to="/procurement"><span>采购状态</span><strong>{overview.inTransitUnits}</strong><small>在途 · 累计采购 {overview.purchasedUnits} 件</small></Link>
         <Link to="/inventory"><span>有效发货单</span><strong>{overview.confirmedShipments.length}</strong><small>{overview.confirmedShipments.reduce((s, x) => s + x.total_quantity, 0)} 件已发货</small></Link>
       </section>
 
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-tasks">
           <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled title="Takealot 商品页不公开可验证 SKU；请使用卖家后台导出或人工填写">官网 SKU 自检暂不可用</button></div>
-          <div className="dashboard-task-grid">
-            {tasks.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
-              <em>第 {task.step} 步</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
-            </Link>)}
+          <div className="dashboard-task-sections">
+            {taskGroups.map(group => <div className="dashboard-task-section" key={group.label}>
+              <div className="dashboard-task-section-title"><strong>{group.label}</strong><span>{group.detail}</span></div>
+              <div className="dashboard-task-grid">{group.items.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone} ${task.count === 0 ? 'resolved' : ''}`}>
+                <em>{task.count === 0 ? '已完成' : '待处理'}</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>{task.count === 0 ? '查看 →' : '进入处理 →'}</b>
+              </Link>)}</div>
+            </div>)}
           </div>
         </section>
 
