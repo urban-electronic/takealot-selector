@@ -434,7 +434,9 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    result.update(_structured_product_fields(BeautifulSoup(await page.content(), "lxml")))
+    soup = BeautifulSoup(await page.content(), "lxml")
+    result.update(_page_product_fields(soup))
+    result.update(_structured_product_fields(soup))
     return result
 
 
@@ -445,11 +447,6 @@ async def _try_scrape_with_browser(p, launcher_name: str, launcher, url: str, no
         browser, page = await launcher(p)
 
         await page.goto(normalized_url, timeout=25000, wait_until="domcontentloaded")
-        try:
-            await page.wait_for_selector('[class*="price-buybox"], script[type="application/ld+json"]', timeout=5000)
-        except Exception:
-            pass
-
         title = await page.title()
         if "Just a moment" in title or title == "":
             await page.wait_for_timeout(8000)
@@ -457,6 +454,14 @@ async def _try_scrape_with_browser(p, launcher_name: str, launcher, url: str, no
 
         if "Just a moment" in title:
             return None, f"Cloudflare blocked {launcher_name}"
+
+        # 通用 JSON-LD（如 ViewAction）在空壳页面已存在，不能作为商品加载成功的信号。
+        # 等待实际商品标题、主图和商品价格，而非广告价格、分期价格或脚本标签。
+        try:
+            await page.wait_for_function(PRODUCT_READY_JS, timeout=45000)
+        except Exception:
+            # 商品可能下架或只有部分字段；仍尝试提取，而不是吞掉可用资料。
+            pass
 
         data = await _extract_data(page, url, normalized_url)
         if not _has_product_data(data):
@@ -619,11 +624,41 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
                 except (ValueError, TypeError):
                     pass
 
+        data.update(_page_product_fields(soup))
         data.update(_structured_product_fields(soup))
         return data, ""
 
     except Exception as e:
         return None, f"curl_cffi error: {str(e)}"
+
+
+def _page_product_fields(soup) -> Dict[str, Any]:
+    """从真实商品区域提取，不扫描推荐商品、广告、导航菜单或分期价格。"""
+    main = soup.select_one('main')
+    if not main:
+        return {}
+    fields = {}
+    title = main.select_one('h1')
+    if title and title.get_text(strip=True):
+        fields['product_name'] = title.get_text(strip=True)
+    image = main.select_one('img[src*="media.takealot.com/covers_images"]')
+    if image and image.get('src'):
+        fields['product_image_url'] = image['src'].replace('s-thumbnail', 's-pdpxl')
+    price = main.select_one('[data-ref="price"] .currency, [class*="price-buybox"] .currency')
+    if price:
+        match = re.search(r'R\s*([\d,]+(?:\.\d+)?)', price.get_text(' ', strip=True))
+        if match:
+            fields['actual_sale_price_zar'] = float(match.group(1).replace(',', ''))
+    for row in main.select('table tr'):
+        cells = row.select('td')
+        if len(cells) >= 2 and cells[0].get_text(strip=True).lower() == 'categories':
+            categories = [a.get_text(' ', strip=True) for a in cells[1].select('a')]
+            if categories:
+                fields['takealot_category_path'] = ' > '.join(categories)
+            break
+    if re.search(r'\b(supplier out of stock|out of stock)\b', main.get_text(' ', strip=True), re.I):
+        fields['in_stock_price'] = None
+    return fields
 
 
 def _structured_product_fields(soup) -> Dict[str, Any]:
@@ -674,6 +709,16 @@ def _structured_product_fields(soup) -> Dict[str, Any]:
 def _has_product_data(data: Optional[Dict[str, Any]]) -> bool:
     name = (data or {}).get("product_name") or ""
     return bool(name and not name.lower().startswith(("takealot.com:", "just a moment", "access denied")))
+
+
+PRODUCT_READY_JS = """() => {
+    const main = document.querySelector('main');
+    if (!main) return false;
+    const title = main.querySelector('h1')?.textContent?.trim();
+    const image = main.querySelector('img[src*="media.takealot.com/covers_images"]');
+    const price = main.querySelector('[data-ref="price"] .currency, [class*="price-buybox"] .currency, [class*="price-buybox"]');
+    return !!(title && image?.getAttribute('src') && /R\\s*[\\d,]+/.test(price?.textContent || ''));
+}"""
 
 
 def _catalog_fallback(url: str) -> Optional[Dict[str, Any]]:
