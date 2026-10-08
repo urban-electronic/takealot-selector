@@ -1,5 +1,7 @@
 import asyncio
 from unittest.mock import patch
+import sys
+from types import ModuleType
 
 import pytest
 from bs4 import BeautifulSoup
@@ -74,3 +76,56 @@ def test_route_still_rejects_invalid_url():
     with pytest.raises(HTTPException) as error:
         asyncio.run(routes.scrape_takealot(routes.ScrapeRequest(url='https://evil.test'), db=None))
     assert error.value.status_code == 400
+
+
+def _fake_playwright():
+    class Runtime:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+    module = ModuleType('playwright.async_api')
+    module.async_playwright = Runtime
+    return {'playwright': ModuleType('playwright'), 'playwright.async_api': module}
+
+
+def test_catalog_must_not_skip_rendered_scrape():
+    calls = []
+    async def rendered(p, name, launcher, url, normalized):
+        calls.append(name)
+        return {'product_name': 'Live title', 'actual_sale_price_zar': 499.0,
+                'product_image_url': 'https://media.takealot.com/live.jpg'}, ''
+    with patch.dict(sys.modules, _fake_playwright()), patch.object(scraper, '_scrape_with_curl_cffi', return_value=(None, 'HTTP failed')), patch.object(scraper, '_try_scrape_with_browser', rendered):
+        result = asyncio.run(scraper.scrape_product(URL))
+    assert calls == ['Firefox']
+    assert result['data_source'] == 'takealot'
+    assert result['actual_sale_price_zar'] == 499.0
+    assert result['tsin'] == '105708156'
+    assert result['variants'][0]['sku'] == '9902591488780'
+
+
+def test_partial_http_data_continues_and_is_preserved():
+    calls = []
+    async def rendered(p, name, launcher, url, normalized):
+        calls.append(name)
+        return {'product_name': 'Live title', 'actual_sale_price_zar': 499.0,
+                'product_image_url': None}, ''
+    partial = {'product_name': 'HTTP title', 'actual_sale_price_zar': None,
+               'product_image_url': 'https://media.takealot.com/http.jpg'}
+    with patch.dict(sys.modules, _fake_playwright()), patch.object(scraper, '_scrape_with_curl_cffi', return_value=(partial, '')), patch.object(scraper, '_try_scrape_with_browser', rendered):
+        result = asyncio.run(scraper.scrape_product(URL))
+    assert calls == ['Firefox']
+    assert result['actual_sale_price_zar'] == 499.0
+    assert result['product_image_url'].endswith('http.jpg')
+
+
+def test_catalog_only_used_after_both_renderers_fail():
+    calls = []
+    async def rendered(p, name, launcher, url, normalized):
+        calls.append(name)
+        return None, 'blocked'
+    with patch.dict(sys.modules, _fake_playwright()), patch.object(scraper, '_scrape_with_curl_cffi', return_value=(None, 'blocked')), patch.object(scraper, '_try_scrape_with_browser', rendered):
+        result = asyncio.run(scraper.scrape_product(URL))
+    assert calls == ['Firefox', 'Chromium']
+    assert result['data_source'] == 'offer_catalog'
+    assert result['success'] is False
