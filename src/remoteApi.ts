@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -314,6 +314,9 @@ export const createInventoryAdjustment = (data: {
 
 export const getInventoryAdjustments = (): Promise<InventoryAdjustment[]> =>
   request<InventoryAdjustment[]>('/api/inventory/adjustments');
+
+export const getOperationLogs = (): Promise<OperationLog[]> =>
+  request<OperationLog[]>('/api/activity?limit=200');
 
 export const reverseInventoryAdjustment = (id: string): Promise<{ ok: boolean }> =>
   request(`/api/inventory/adjustments/${encodeURIComponent(id)}/reverse`, { method: 'POST', body: '{}' });
