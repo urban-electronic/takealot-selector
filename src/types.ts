@@ -169,6 +169,7 @@ export interface PackingExportLine {
 }
 
 export interface PackingExportPayload {
+  record_shipment?: boolean;
   date: string;
   mark: string;
   shipping: string;
