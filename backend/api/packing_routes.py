@@ -41,6 +41,7 @@ from models import PackingProduct, Product, Shipment, ShipmentLine, Store
 from api.inventory_routes import inventory_balance_for_sku
 from api.store_routes import get_store_id
 from services import packing_excel as px
+from services.operation_log import record_operation
 
 router = APIRouter(prefix="/api/packing", tags=["packing"])
 
@@ -652,6 +653,11 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 count_per_carton=int(count),
                 total_quantity=int(cartons) * int(count),
             ))
+        record_operation(db, store_id, "shipment", shipment.id, "confirm", f"确认发货单 {shipment.shipment_no}", {
+            "shipment_date": shipment.shipment_date,
+            "sku_count": len(items),
+            "total_quantity": sum(int(cartons) * int(count) for _, cartons, count in items),
+        })
         db.commit()
     return Response(
         content=content,
