@@ -102,11 +102,13 @@ class SyncVariantsIn(BaseModel):
 
 class ExportLine(BaseModel):
     sku: str = ''
+    box_no: str = ''
     cartons: str = '1'
     count: str = '1'
 
 
 class ExportIn(BaseModel):
+    record_shipment: bool = True
     date: str = ''
     mark: str = 'KPLDJ'
     shipping: str = '空'
@@ -607,11 +609,13 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             return fail(400, '箱数和每箱件数须为正整数')
         total_quantity = int(cartons) * int(count)
         requested_by_sku[p.sku] = requested_by_sku.get(p.sku, 0) + total_quantity
-        items.append((public(p), cartons, count))
+        row = public(p)
+        row['box_no'] = line.box_no.strip()
+        items.append((row, cartons, count))
     db.commit()
     store = db.query(Store).filter(Store.id == store_id).first()
     allow_negative_inventory = bool(store and store.allow_negative_inventory_shipments)
-    if not existing_shipment and not allow_negative_inventory:
+    if data.record_shipment and not existing_shipment and not allow_negative_inventory:
         for sku, requested in requested_by_sku.items():
             available = inventory_balance_for_sku(db, sku, store_id)
             if available < requested:
@@ -625,7 +629,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         return fail(400, str(e))
     except Exception as e:
         return fail(400, f'生成失败：{e}')
-    if not existing_shipment:
+    if data.record_shipment and not existing_shipment:
         # shipment_no 当前是全局唯一；按全局日序号生成，避免未来不同店铺同日编号冲突。
         day_count = db.query(Shipment).filter(Shipment.shipment_date == date.isoformat()).count()
         shipment = Shipment(
