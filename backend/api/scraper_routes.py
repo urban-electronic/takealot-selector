@@ -14,15 +14,22 @@ router = APIRouter(prefix="/api/products", tags=["scraper"])
 
 
 class ScrapeRequest(BaseModel):
-    url: str
+    # 同时兼容旧前端 productUrl 与新前端 url，避免部署先后造成抓取中断。
+    url: str = ""
+    productUrl: str = ""
+
+    @property
+    def effective_url(self) -> str:
+        return (self.url or self.productUrl or "").strip()
 
 
 @router.post("/scrape-takealot")
 async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db)):
-    if not validate_takealot_url(data.url):
+    url = data.effective_url
+    if not validate_takealot_url(url):
         raise HTTPException(status_code=400, detail="请提供有效的 takealot.com 链接")
 
-    result = await scrape_product(data.url)
+    result = await scrape_product(url)
 
     if not result["success"] and not result["product_name"]:
         raise HTTPException(
