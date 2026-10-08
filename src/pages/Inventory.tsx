@@ -95,7 +95,7 @@ export default function Inventory() {
 
   const totalAvailable = rows.reduce((sum, row) => sum + row.available, 0);
   const totalInTransit = rows.reduce((sum, row) => sum + (row.in_transit || 0), 0);
-  const lowStock = rows.filter(row => row.sku && row.available <= 0).length;
+  const lowStock = rows.filter(row => row.sku && row.available < 0).length;
 
   return (
     <div className="page inventory-page">
@@ -105,7 +105,7 @@ export default function Inventory() {
           <span><strong>{totalAvailable}</strong> 可用库存</span>
           <span><strong>{totalInTransit}</strong> 在途库存</span>
           <span><strong>{shipments.filter(x => x.status === 'confirmed').length}</strong> 已发货单</span>
-          <span className={lowStock ? 'warning' : ''}><strong>{lowStock}</strong> 零/负库存</span>
+          {lowStock > 0 && <span className="warning"><strong>{lowStock}</strong> 负库存</span>}
         </div>
       </div>
       <div className="inventory-tabs">
@@ -139,7 +139,7 @@ export default function Inventory() {
             <td><div className="inventory-product">{row.image_url ? <img src={getImageUrl(row.image_url)} alt="" /> : <span className="inventory-no-image">无图</span>}<div><strong>{row.variant_group && <span className={row.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{row.is_primary_variant ? '主' : '分支'}</span>}{row.name}</strong><small>{row.name_en}</small></div></div></td>
             <td className="mono">{row.sku || <span className="muted">缺少 SKU</span>}</td>
             <td className="stock-transit">{row.in_transit || 0}</td><td>{row.purchased}</td><td>{row.adjusted > 0 ? `+${row.adjusted}` : row.adjusted}</td><td>{row.shipped}</td>
-            <td><strong className={row.available <= 0 ? 'stock-danger' : 'stock-value'}>{row.available}</strong></td>
+            <td><strong className={row.available < 0 ? 'stock-danger' : 'stock-value'}>{row.available}</strong></td>
             <td><button className="btn btn-sm" disabled={!row.sku} onClick={() => setAdjustSku(row.sku)}>调整库存</button></td>
           </tr>)}</tbody>
         </table></div>

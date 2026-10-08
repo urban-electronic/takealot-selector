@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { getInventory, getShipments } from '../remoteApi';
+import { auditProductSkus, getInventory, getShipments } from '../remoteApi';
+import type { SkuAuditResult } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
 
@@ -14,6 +15,15 @@ export default function Dashboard() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [auditing, setAuditing] = useState(false);
+  const [audit, setAudit] = useState<SkuAuditResult | null>(null);
+  const [auditError, setAuditError] = useState('');
+  const checkSkus = async () => {
+    setAuditing(true); setAuditError('');
+    try { setAudit(await auditProductSkus()); }
+    catch (e: unknown) { setAuditError(e instanceof Error ? e.message : String(e)); }
+    finally { setAuditing(false); }
+  };
 
   useEffect(() => {
     Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
@@ -39,7 +49,7 @@ export default function Dashboard() {
     });
     return {
       available: validInventory.reduce((sum, row) => sum + row.available, 0),
-      zeroOrNegative: validInventory.filter(row => row.available <= 0).length,
+      negative: validInventory.filter(row => row.available < 0).length,
       missingSku: inventory.filter(row => !row.sku).length,
       missingImage: products.filter(row => !row.product_image_url && !row.product_image_path).length,
       unresolvedMultiSkuProducts,
@@ -63,7 +73,7 @@ export default function Dashboard() {
     ] },
     { label: '运营提醒', detail: '属于库存状态，不算资料错误', items: [
       { count: overview.inTransitUnits, label: '在途采购', detail: '到仓确认后才增加可用库存', to: '/procurement', tone: 'orange' },
-      { count: overview.zeroOrNegative, label: '零/负库存', detail: '按需要补货或进行盘点调整', to: '/inventory?stock=zero', tone: 'purple' },
+      { count: overview.negative, label: '负库存', detail: '核对发货或进行盘点调整', to: '/inventory?stock=negative', tone: 'purple' },
     ] },
   ];
   const visibleTaskGroups = taskGroups
@@ -93,7 +103,12 @@ export default function Dashboard() {
 
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-tasks">
-          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled title="Takealot 商品页不公开可验证 SKU；请使用卖家后台导出或人工填写">官网 SKU 自检暂不可用</button></div>
+          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled={auditing} onClick={checkSkus} title="按已导入的Takealot卖家导出表核对SKU，不修改产品或库存">{auditing ? '核对中...' : 'SKU 自检'}</button></div>
+          {auditError && <div className="alert alert-error">SKU 自检失败：{auditError} <button className="btn btn-sm" onClick={checkSkus} disabled={auditing}>重试</button></div>}
+          {audit && <div className="alert">依据{audit.source}：已核对 {audit.total} 个产品，匹配 {audit.verified}，缺少 SKU {audit.missing}，不匹配 {audit.mismatch}，导出表未覆盖 {audit.unmatched}。本次仅核对，未修改记录。
+            {audit.issues.filter(item => item.status === 'mismatch').map(item => <div key={item.product_id}><Link to={`/products/${item.product_id}`}>产品 {item.product_no}</Link>：当前 {item.current_skus.join('、')}；导出表 {item.reference_skus.join('、')}</div>)}
+            {audit.missing > 0 && <Link to="/products?missing_field=sku&task=补充SKU">处理缺少 SKU 的产品 →</Link>}
+          </div>}
           <div className="dashboard-task-sections">
             {visibleTaskGroups.length === 0 ? <div className="dashboard-all-clear"><strong>当前无待处理问题</strong><span>出现新的资料、库存或发货异常后，会自动显示在这里。</span></div> : visibleTaskGroups.map(group => <div className="dashboard-task-section" key={group.label}>
               <div className="dashboard-task-section-title"><strong>{group.label}</strong><span>{group.detail}</span></div>

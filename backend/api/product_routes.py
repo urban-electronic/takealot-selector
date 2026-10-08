@@ -327,6 +327,13 @@ def list_products(
         products = [product for product in products if any(sku in conflicting for sku in sku_tokens(product.sku))]
     return products
 
+@router.get("/sku-audit")
+def sku_audit(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    from services.sku_audit import audit_skus
+    products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all()
+    return audit_skus(products)
+
+
 @router.get("/{product_id}", response_model=ProductOut)
 def get_product(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
