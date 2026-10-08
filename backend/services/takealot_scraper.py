@@ -727,61 +727,67 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         result["tsin"] = f"PLID{plid_match.group(1)}"
     errors = []
 
-    # 策略 0: curl_cffi (最快，模拟浏览器 TLS 指纹)
-    print(f"[scraper] Trying curl_cffi for {normalized_url}", flush=True)
-    data, err = await asyncio.to_thread(_scrape_with_curl_cffi, url, normalized_url)
-    # 校验：如果没拿到真实价格或拿到了 Cloudflare 占位页面，视为失败
-    if _has_product_data(data):
-        result.update(data)
-        result["data_source"] = "takealot"
+    def retain(data):
+        # 后续来源的空字段不覆盖已取得的真实字段。
+        for key, value in data.items():
+            if value is not None and value != [] and value != "":
+                result[key] = value
+
+    def complete():
+        return (_has_product_data(result)
+                and result.get("actual_sale_price_zar") is not None
+                and bool(result.get("product_image_url")))
+
+    def finish_official():
         result["success"] = True
-        if result.get("actual_sale_price_zar") is None:
-            result["warnings"].append("已获取商品资料，但未获取当前售价，请补填。")
+        result["data_source"] = "takealot"
+        catalog = _catalog_fallback(url)
+        if catalog:
+            if not result.get("variants"):
+                result["variants"] = catalog["variants"]
+            if catalog.get("tsin"):
+                result["tsin"] = catalog["tsin"]
         return result
-    if data is not None:
-        print(f"[scraper] curl_cffi got placeholder, falling back to Playwright", flush=True)
-    else:
-        print(f"[scraper] curl_cffi FAILED: {err}", flush=True)
+
+    # HTTP 的部分资料先保留；缺失价格或图片时继续渲染商品页。
+    data, err = await asyncio.to_thread(_scrape_with_curl_cffi, url, normalized_url)
+    if _has_product_data(data):
+        retain(data)
+        if complete():
+            return finish_official()
     if err:
         errors.append(err)
-
-    catalog = _catalog_fallback(url)
-    if catalog:
-        result.update(catalog)
-        result["warnings"].append("官网未返回有效商品资料；已从卖家导出表补充标题、SKU 和 TSIN。当前售价与图片未获取，请补填。")
-        return result
 
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        result["warnings"].append("官网抓取不可用，且未匹配到卖家表资料。可直接手动填写商品信息。")
+        errors.append("Playwright unavailable")
+    else:
+        try:
+            async with async_playwright() as p:
+                for name, launcher in (("Firefox", _launch_firefox), ("Chromium", _launch_chromium)):
+                    data, err = await _try_scrape_with_browser(p, name, launcher, url, normalized_url)
+                    if _has_product_data(data):
+                        retain(data)
+                        if complete():
+                            return finish_official()
+                    if err:
+                        errors.append(err)
+        except Exception:
+            errors.append("Browser runtime unavailable")
+
+    # 卖家表只在官网各抓取步骤完成后补缺，不能提前截断官网渲染。
+    catalog = _catalog_fallback(url)
+    if _has_product_data(result):
+        finish_official()
+        missing = [label for key, label in (("actual_sale_price_zar", "当前售价"), ("product_image_url", "图片")) if result.get(key) is None]
+        if missing:
+            result["warnings"].append("已获取官网部分资料，但未获取" + "、".join(missing) + "。")
         return result
-
-    async with async_playwright() as p:
-        # 策略 1: Firefox
-        print(f"[scraper] Trying Firefox...", flush=True)
-        data, err = await _try_scrape_with_browser(
-            p, "Firefox", _launch_firefox, url, normalized_url
-        )
-        if data is not None:
-            result.update(data)
-            result["success"] = True
-            return result
-        if err:
-            errors.append(err)
-
-        # 策略 2: Chromium + stealth
-        data, err = await _try_scrape_with_browser(
-            p, "Chromium", _launch_chromium, url, normalized_url
-        )
-        if data is not None:
-            result.update(data)
-            result["success"] = True
-            return result
-        if err:
-            errors.append(err)
-
-    # 所有策略均失败
-    blocked = any("Cloudflare" in error or "HTTP 403" in error for error in errors)
-    result["warnings"].append("官网安全验证未通过，可直接手动填写商品信息。" if blocked else "官网未返回有效商品资料，可直接手动填写商品信息。")
+    if catalog:
+        retain(catalog)
+        result["warnings"].append("官网抓取未成功；已从卖家导出表补充标题、SKU 和 TSIN。当前售价与图片未获取。")
+    else:
+        blocked = any("Cloudflare" in error or "HTTP 403" in error for error in errors)
+        result["warnings"].append("官网安全验证未通过。" if blocked else "官网未返回有效商品资料。")
     return result
