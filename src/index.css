@@ -76,8 +76,24 @@ button {
   flex: 1;
 }
 
-.store-switcher { display: flex; align-items: center; gap: 7px; min-width: 180px; color: #cbd8ea; font-size: 11px; }
-.store-switcher select { width: 120px; height: 32px; padding: 0 28px 0 9px; border: 1px solid rgba(255,255,255,.24); border-radius: 6px; background: #fff; color: #183354; font-size: 12px; }
+.header-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.store-switcher { display: flex; align-items: center; gap: 6px; color: #9fb3ce; font-size: 11px; }
+.store-switcher select { width: 112px; height: 34px; padding: 0 26px 0 9px; border: 1px solid rgba(255,255,255,.18); border-radius: 8px; background: rgba(255,255,255,.08); color: #eaf1fa; font-size: 12px; }
+.store-switcher select option { color: #183354; background: #fff; }
+
+.header-create-button { padding: 8px 13px; border-radius: 8px; background: #f4c542; color: #173154; font-size: 13px; font-weight: 700; white-space: nowrap; text-decoration: none; }
+.header-create-button:hover { background: #ffd55d; color: #102947; text-decoration: none; }
+
+.management-menu { position: relative; }
+.management-menu summary { display: flex; align-items: center; gap: 5px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; color: #aebfd6; font-size: 12px; cursor: pointer; list-style: none; white-space: nowrap; }
+.management-menu summary::-webkit-details-marker { display: none; }
+.management-menu[open] summary, .management-menu summary:hover { color: #fff; background: rgba(255,255,255,.1); }
+.management-menu[open] summary span { transform: rotate(180deg); }
+.management-menu-panel { position: absolute; top: calc(100% + 10px); right: 0; width: 218px; padding: 8px; border: 1px solid #dce4ee; border-radius: 12px; background: #fff; box-shadow: 0 14px 34px rgba(9,32,67,.2); }
+.management-menu-panel > strong { display: block; padding: 7px 10px 5px; color: #8b99ab; font-size: 11px; letter-spacing: .08em; }
+.management-menu-panel a { display: flex; flex-direction: column; gap: 2px; padding: 9px 10px; border-radius: 8px; color: #263b57; text-decoration: none; }
+.management-menu-panel a:hover, .management-menu-panel a.active { background: #f0f5fb; color: #0b5ed7; }
+.management-menu-panel a small { color: #8b99ab; font-size: 10px; }
 
 .app-header nav a {
   padding: 8px 16px;
@@ -1543,6 +1559,18 @@ table tbody tr:hover {
   .app-header { gap: 12px; padding: 0 14px; }
   .app-header nav a { padding: 8px 10px; font-size: 12px; }
   .app-brand h1 { display: none; }
+  .store-switcher span { display: none; }
+  .header-create-button { padding: 8px 10px; font-size: 0; }
+  .header-create-button::after { content: '＋'; font-size: 17px; }
+}
+
+@media (max-width: 680px) {
+  .app-header { height: auto; min-height: 60px; flex-wrap: wrap; padding: 6px 10px; gap: 5px 10px; }
+  .app-brand img { width: 36px; height: 42px; }
+  .primary-nav { order: 3; width: 100%; overflow-x: auto; }
+  .primary-nav a { flex: 1; text-align: center; }
+  .header-tools { flex: 1; justify-content: flex-end; }
+  .store-switcher select { width: 92px; }
 }
 
 @media (max-width: 680px) {
