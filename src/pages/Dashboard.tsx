@@ -66,6 +66,9 @@ export default function Dashboard() {
       { count: overview.zeroOrNegative, label: '零/负库存', detail: '按需要补货或进行盘点调整', to: '/inventory?stock=zero', tone: 'purple' },
     ] },
   ];
+  const visibleTaskGroups = taskGroups
+    .map(group => ({ ...group, items: group.items.filter(task => task.count > 0) }))
+    .filter(group => group.items.length > 0);
 
   if (loading) return <div className="loading">正在汇总经营数据...</div>;
   if (error) return <div className="alert alert-error">仪表盘加载失败：{error}</div>;
@@ -92,10 +95,10 @@ export default function Dashboard() {
         <section className="dashboard-panel dashboard-tasks">
           <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled title="Takealot 商品页不公开可验证 SKU；请使用卖家后台导出或人工填写">官网 SKU 自检暂不可用</button></div>
           <div className="dashboard-task-sections">
-            {taskGroups.map(group => <div className="dashboard-task-section" key={group.label}>
+            {visibleTaskGroups.length === 0 ? <div className="dashboard-all-clear"><strong>当前无待处理问题</strong><span>出现新的资料、库存或发货异常后，会自动显示在这里。</span></div> : visibleTaskGroups.map(group => <div className="dashboard-task-section" key={group.label}>
               <div className="dashboard-task-section-title"><strong>{group.label}</strong><span>{group.detail}</span></div>
-              <div className="dashboard-task-grid">{group.items.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone} ${task.count === 0 ? 'resolved' : ''}`}>
-                <em>{task.count === 0 ? '已完成' : '待处理'}</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>{task.count === 0 ? '查看 →' : '进入处理 →'}</b>
+              <div className="dashboard-task-grid">{group.items.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
+                <em>待处理</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
               </Link>)}</div>
             </div>)}
           </div>
