@@ -85,12 +85,13 @@ button {
 .header-create-button:hover { background: #ffd55d; color: #102947; text-decoration: none; }
 
 .management-menu { position: relative; }
-.management-menu summary { display: flex; align-items: center; gap: 5px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; color: #aebfd6; font-size: 12px; cursor: pointer; list-style: none; white-space: nowrap; }
-.management-menu summary::-webkit-details-marker { display: none; }
-.management-menu[open] summary, .management-menu summary:hover { color: #fff; background: rgba(255,255,255,.1); }
-.management-menu[open] summary span { transform: rotate(180deg); }
+.management-menu-trigger { display: flex; align-items: center; gap: 5px; padding: 8px 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: transparent; color: #aebfd6; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.management-menu.open .management-menu-trigger, .management-menu-trigger:hover { color: #fff; background: rgba(255,255,255,.1); }
+.management-menu-trigger span { transition: transform .16s ease; }
+.management-menu.open .management-menu-trigger span { transform: rotate(180deg); }
 .management-menu-panel { position: absolute; top: calc(100% + 10px); right: 0; width: 218px; padding: 8px; border: 1px solid #dce4ee; border-radius: 12px; background: #fff; box-shadow: 0 14px 34px rgba(9,32,67,.2); }
-.management-menu-panel > strong { display: block; padding: 7px 10px 5px; color: #8b99ab; font-size: 11px; letter-spacing: .08em; }
+.management-menu-group + .management-menu-group { margin-top: 5px; padding-top: 5px; border-top: 1px solid #edf0f4; }
+.management-menu-group > strong { display: block; padding: 7px 10px 5px; color: #8b99ab; font-size: 10px; letter-spacing: .1em; }
 .management-menu-panel a { display: flex; flex-direction: column; gap: 2px; padding: 9px 10px; border-radius: 8px; color: #263b57; text-decoration: none; }
 .management-menu-panel a:hover, .management-menu-panel a.active { background: #f0f5fb; color: #0b5ed7; }
 .management-menu-panel a small { color: #8b99ab; font-size: 10px; }
