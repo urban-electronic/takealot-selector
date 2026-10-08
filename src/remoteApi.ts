@@ -86,7 +86,17 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
     try {
       const body = await res.json();
       if (body && body.detail) {
-        detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+        if (typeof body.detail === 'string') {
+          detail = body.detail;
+        } else if (Array.isArray(body.detail)) {
+          detail = body.detail.map((item: any) => {
+            const field = Array.isArray(item?.loc) ? item.loc[item.loc.length - 1] : '';
+            if (item?.type === 'missing') return `缺少必要参数${field ? `：${field}` : ''}`;
+            return item?.msg || '提交的数据格式不正确';
+          }).join('；');
+        } else {
+          detail = '服务器无法识别提交的数据，请刷新页面后重试';
+        }
       }
     } catch {
       // 响应体非 JSON 时保持默认错误
@@ -165,7 +175,7 @@ export const refreshPrice = (id: string): Promise<Record<string, unknown>> =>
 export const scrapeTakealot = (productUrl: string): Promise<ScrapeResult> =>
   request<ScrapeResult>('/api/products/scrape-takealot', {
     method: 'POST',
-    body: JSON.stringify({ productUrl }),
+    body: JSON.stringify({ url: productUrl }),
   });
 
 // Dashboard
