@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from database import get_db
 from models import ProcurementRecord, Product
 from api.store_routes import get_store_id
+from services.operation_log import record_operation
 
 router = APIRouter(prefix="/api/procurement", tags=["procurement"])
 
@@ -33,6 +34,7 @@ class ProcurementRecordCreate(BaseModel):
     quantity: int = 1
     total_amount: float = 0.0
     notes: Optional[str] = ""
+    status: str = "in_transit"
     recorded_at: Optional[str] = None
 
 
@@ -43,6 +45,7 @@ class ProcurementRecordUpdate(BaseModel):
     quantity: Optional[int] = None
     total_amount: Optional[float] = None
     notes: Optional[str] = None
+    status: Optional[str] = None
     recorded_at: Optional[str] = None
 
 
@@ -55,6 +58,8 @@ class ProcurementRecordOut(BaseModel):
     total_amount: float = 0.0
     unit_price: float = 0.0
     notes: str = ""
+    status: str = "received"
+    status_updated_at: Optional[str] = None
     recorded_at: str = ""
 
 
@@ -76,6 +81,8 @@ def _to_out(rec: ProcurementRecord) -> ProcurementRecordOut:
         total_amount=rec.total_amount or 0.0,
         unit_price=rec.unit_price or 0.0,
         notes=rec.notes or "",
+        status=rec.status or "received",
+        status_updated_at=rec.status_updated_at.isoformat() if rec.status_updated_at else None,
         recorded_at=rec.recorded_at or "",
     )
 
@@ -149,6 +156,7 @@ def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depen
     else:
         raise HTTPException(status_code=400, detail="请选择产品")
 
+    status = data.status if data.status in {"in_transit", "received", "cancelled"} else "in_transit"
     rec = ProcurementRecord(
         id=str(uuid.uuid4()),
         store_id=store_id,
@@ -159,9 +167,13 @@ def create_procurement_record(data: ProcurementRecordCreate, db: Session = Depen
         total_amount=data.total_amount or 0.0,
         unit_price=_calc_unit_price(data.quantity, data.total_amount),
         notes=data.notes or "",
+        status=status,
+        status_updated_at=datetime.utcnow(),
         recorded_at=_now_str(),
     )
     db.add(rec)
+    status_label = {"in_transit": "在途", "received": "已入库", "cancelled": "已取消"}[status]
+    record_operation(db, store_id, "procurement", rec.id, "create", f"新增采购：{rec.product_name} × {rec.quantity}（{status_label}）")
     db.commit()
     db.refresh(rec)
     return _to_out(rec)
@@ -190,9 +202,21 @@ def update_procurement_record(
         rec.total_amount = data.total_amount
     if data.notes is not None:
         rec.notes = data.notes
+    previous_status = rec.status
+    if data.status is not None:
+        if data.status not in {"in_transit", "received", "cancelled"}:
+            raise HTTPException(status_code=400, detail="采购状态无效")
+        if data.status != rec.status:
+            rec.status = data.status
+            rec.status_updated_at = datetime.utcnow()
     # recorded_at 不更新（对齐本地 Rust update 行为）
 
     rec.unit_price = _calc_unit_price(rec.quantity, rec.total_amount)
+    if rec.status != previous_status:
+        status_label = {"in_transit": "在途", "received": "确认入库", "cancelled": "取消"}[rec.status]
+        record_operation(db, store_id, "procurement", rec.id, "status", f"采购 {rec.product_name}：{status_label}", {
+            "from": previous_status, "to": rec.status, "quantity": rec.quantity,
+        })
     db.commit()
     db.refresh(rec)
     return _to_out(rec)
@@ -203,6 +227,7 @@ def delete_procurement_record(record_id: str, db: Session = Depends(get_db), sto
     rec = db.query(ProcurementRecord).filter(ProcurementRecord.id == record_id, ProcurementRecord.store_id == store_id).first()
     if not rec:
         raise HTTPException(status_code=404, detail="采购记录不存在")
+    record_operation(db, store_id, "procurement", rec.id, "delete", f"删除采购记录：{rec.product_name} × {rec.quantity}")
     db.delete(rec)
     db.commit()
     return "已删除"

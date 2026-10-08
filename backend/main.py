@@ -12,7 +12,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base, SessionLocal, get_db
 from models import DEFAULT_STORE_ID, FeeCategory, FeeMappingRule, Store, SystemSettings
-from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes, store_routes
+from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes, store_routes, activity_routes
 from migrate import migrate_from_dump
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
@@ -98,6 +98,7 @@ app.include_router(procurement_routes.router)
 app.include_router(packing_routes.router)
 app.include_router(inventory_routes.router)
 app.include_router(store_routes.router)
+app.include_router(activity_routes.router)
 app.include_router(packing_routes.ui_router)
 
 
@@ -261,6 +262,15 @@ def _ensure_columns():
                     conn.execute(text(f"UPDATE {table_name} SET store_id = '{DEFAULT_STORE_ID}' WHERE store_id IS NULL OR store_id = ''"))
                     print(f"[startup] {table_name} 表已补列 store_id", flush=True)
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_store_id ON {table_name} (store_id)"))
+        if "procurement_records" in insp.get_table_names():
+            procurement_cols = {c["name"] for c in insp.get_columns("procurement_records")}
+            with engine.begin() as conn:
+                if "status" not in procurement_cols:
+                    conn.execute(text("ALTER TABLE procurement_records ADD COLUMN status TEXT DEFAULT 'received'"))
+                    conn.execute(text("UPDATE procurement_records SET status = 'received' WHERE status IS NULL OR status = ''"))
+                    print("[startup] 历史采购记录已标记为已入库", flush=True)
+                if "status_updated_at" not in procurement_cols:
+                    conn.execute(text("ALTER TABLE procurement_records ADD COLUMN status_updated_at DATETIME"))
     except Exception as e:
         print(f"[startup] _ensure_columns 迁移失败: {e}", flush=True)
 

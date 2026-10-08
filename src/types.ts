@@ -135,6 +135,8 @@ export interface ProcurementRecord {
   total_amount: number;
   unit_price: number | null;
   notes: string | null;
+  status: 'in_transit' | 'received' | 'cancelled';
+  status_updated_at?: string | null;
   recorded_at: string;
 }
 
@@ -181,11 +183,22 @@ export interface InventoryRow {
   name_en: string;
   image_url: string;
   purchased: number;
+  in_transit: number;
   adjusted: number;
   shipped: number;
   available: number;
   variant_group?: string;
   is_primary_variant?: boolean;
+}
+
+export interface OperationLog {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  summary: string;
+  details: string;
+  created_at: string;
 }
 
 export interface InventoryAdjustment {
