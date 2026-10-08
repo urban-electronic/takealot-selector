@@ -71,6 +71,8 @@ export interface Product {
 }
 
 export interface ScrapeResult {
+  data_source?: 'takealot' | 'offer_catalog' | 'manual';
+  variants?: { sku: string; label: string; image_url: string }[];
   normalized_url: string;
   tsin: string | null;
   product_name: string | null;

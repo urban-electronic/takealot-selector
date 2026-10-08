@@ -12,6 +12,22 @@ export default function ProductCreate() {
   const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
   const [error, setError] = useState('');
   const [feeCategories, setFeeCategories] = useState<FeeCategory[]>([]);
+  const [productName, setProductName] = useState('');
+  const [productImage, setProductImage] = useState('');
+  const [salePrice, setSalePrice] = useState('');
+
+  const startManual = () => {
+    try {
+      const parsed = new URL(url.trim());
+      if (!['http:', 'https:'].includes(parsed.protocol) || !['takealot.com', 'www.takealot.com'].includes(parsed.hostname) || parsed.username || parsed.password) throw new Error();
+      setScrapeResult({ normalized_url: `${parsed.origin}${parsed.pathname}`, tsin: parsed.pathname.match(/PLID\d+/i)?.[0].toUpperCase() || null,
+        product_name: null, product_image_url: null, actual_sale_price_zar: null, in_stock_price: null,
+        takealot_category_path: null, warnings: ['手动录入：请填写标题和售价，选择 Fee 品类。'], success: false, data_source: 'manual' });
+      setError('');
+    } catch {
+      setError('请提供有效的 takealot.com 链接');
+    }
+  };
 
   // Form fields
   const [feeCategory, setFeeCategory] = useState('');
@@ -40,9 +56,20 @@ export default function ProductCreate() {
     if (!url.trim()) return;
     setScraping(true);
     setError('');
+    setScrapeResult(null);
+    setProductName('');
+    setProductImage('');
+    setSalePrice('');
+    setSku('');
+    setFeeCategory('');
+    setFeeConfirmed(false);
     try {
       const result: ScrapeResult = await api.scrapeTakealot(url.trim());
       setScrapeResult(result);
+      setProductName(result.product_name || '');
+      setProductImage(result.product_image_url || '');
+      setSalePrice(result.actual_sale_price_zar != null ? String(result.actual_sale_price_zar) : '');
+      if (result.variants?.length) setSku(result.variants.map(item => item.sku).join('\n'));
       if (result.recommended_fee_category) {
         setFeeCategory(result.recommended_fee_category);
       }
@@ -69,15 +96,16 @@ export default function ProductCreate() {
   };
 
   const handleSave = async () => {
-    const selectedFee = feeCategories.find((f) => f.name === feeCategory);
+    if (!productName.trim()) { setError('请填写商品标题'); return; }
+    if (salePrice && (!Number.isFinite(Number(salePrice)) || Number(salePrice) <= 0)) { setError('售价必须大于 0'); return; }
     setSaving(true);
     try {
       const product: Product = await api.createProduct({
         takealot_url: scrapeResult?.normalized_url || url.trim(),
         tsin: scrapeResult?.tsin || '',
-        product_name: scrapeResult?.product_name || '',
-        product_image_url: scrapeResult?.product_image_url || '',
-        actual_sale_price_zar: scrapeResult?.actual_sale_price_zar || null,
+        product_name: productName.trim(),
+        product_image_url: productImage.trim(),
+        actual_sale_price_zar: salePrice ? Number(salePrice) : null,
         fee_category: feeCategory || null,
         fee_category_confirmed: feeConfirmed,
         note: note,
@@ -118,9 +146,10 @@ export default function ProductCreate() {
         <div style={{ display: 'flex', gap: 12 }}>
           <input
             type="url"
+            disabled={scraping}
             placeholder="https://www.takealot.com/..."
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(e) => { setUrl(e.target.value); setScrapeResult(null); setProductName(''); setProductImage(''); setSalePrice(''); setSku(''); setFeeCategory(''); setFeeConfirmed(false); }}
             style={{ flex: 1 }}
             onKeyDown={(e) => e.key === 'Enter' && handleScrape()}
           />
@@ -128,12 +157,13 @@ export default function ProductCreate() {
             {scraping ? '抓取中...' : '抓取产品信息'}
           </button>
         </div>
+        <button className="btn" style={{ marginTop: 12 }} onClick={startManual} disabled={scraping || !url.trim()}>直接手动填写</button>
       </div>
 
       {/* Scrape Result */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title">Step 2: 抓取结果</div>
+          <div className="card-title">Step 2: 确认商品信息{scrapeResult.data_source === 'offer_catalog' ? '（卖家表资料）' : ''}</div>
           {scrapeResult.warnings.length > 0 && (
             <div className="alert alert-warning">
               {scrapeResult.warnings.map((w, i) => <div key={i}>{w}</div>)}
@@ -142,24 +172,23 @@ export default function ProductCreate() {
 
           <div className="two-col">
             <div>
-              {scrapeResult.product_image_url && (
-                <img src={api.getImageUrl(scrapeResult.product_image_url)} alt="" className="image-preview" />
+              {productImage && (
+                <img src={api.getImageUrl(productImage)} alt="" className="image-preview" />
               )}
+              <div className="form-group"><label>商品图片链接</label><input type="url" value={productImage} onChange={(e) => setProductImage(e.target.value)} placeholder="未获取时可粘贴图片链接" /></div>
             </div>
             <div>
               <div className="form-group">
                 <label>商品标题</label>
-                <div style={{ fontSize: 15, fontWeight: 600 }}>{scrapeResult.product_name || '(未获取到)'}</div>
+                <input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="请填写或核对商品标题" />
               </div>
               <div className="form-row">
                 <div className="form-group">
                   <label>售价 (ZAR)</label>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-primary)' }}>
-                    {scrapeResult.actual_sale_price_zar ? `R ${scrapeResult.actual_sale_price_zar.toFixed(2)}` : '-'}
-                  </div>
+                  <input type="number" min="0.01" step="0.01" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} placeholder="当前售价未获取，请补填" />
                 </div>
                 <div className="form-group">
-                  <label>TSIN</label>
+                  <label>TSIN / PLID</label>
                   <div>{scrapeResult.tsin || '(未获取到)'}</div>
                 </div>
               </div>

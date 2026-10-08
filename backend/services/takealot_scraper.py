@@ -5,6 +5,7 @@ Takealot 商品信息抓取服务
 """
 
 import os
+import asyncio
 import re
 import json
 import random
@@ -52,7 +53,8 @@ def validate_takealot_url(url: str) -> bool:
     """验证链接是否属于 takealot.com"""
     try:
         parsed = urlparse(url)
-        return "takealot.com" in parsed.netloc
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme in ("http", "https") and (host == "takealot.com" or host == "www.takealot.com") and parsed.username is None and parsed.password is None
     except Exception:
         return False
 
@@ -432,6 +434,7 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
     except Exception:
         pass
 
+    result.update(_structured_product_fields(BeautifulSoup(await page.content(), "lxml")))
     return result
 
 
@@ -441,7 +444,11 @@ async def _try_scrape_with_browser(p, launcher_name: str, launcher, url: str, no
     try:
         browser, page = await launcher(p)
 
-        await page.goto(normalized_url, timeout=60000, wait_until="networkidle")
+        await page.goto(normalized_url, timeout=25000, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_selector('[class*="price-buybox"], script[type="application/ld+json"]', timeout=5000)
+        except Exception:
+            pass
 
         title = await page.title()
         if "Just a moment" in title or title == "":
@@ -452,6 +459,8 @@ async def _try_scrape_with_browser(p, launcher_name: str, launcher, url: str, no
             return None, f"Cloudflare blocked {launcher_name}"
 
         data = await _extract_data(page, url, normalized_url)
+        if not _has_product_data(data):
+            return None, f"{launcher_name} returned no product data"
         return data, ""
 
     except Exception as e:
@@ -610,10 +619,80 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
                 except (ValueError, TypeError):
                     pass
 
+        data.update(_structured_product_fields(soup))
         return data, ""
 
     except Exception as e:
         return None, f"curl_cffi error: {str(e)}"
+
+
+def _structured_product_fields(soup) -> Dict[str, Any]:
+    """支持页面布局变化后的 schema.org Product，忽略网站通用元数据。"""
+    fields = {}
+    def walk(value):
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif isinstance(value, dict):
+            types = value.get("@type", [])
+            if isinstance(types, str):
+                types = [types]
+            if "Product" in types:
+                if isinstance(value.get("name"), str):
+                    fields["product_name"] = value["name"].strip()
+                image = value.get("image")
+                if isinstance(image, list):
+                    image = image[0] if image else None
+                if isinstance(image, dict):
+                    image = image.get("url")
+                if isinstance(image, str) and image.startswith("https://"):
+                    fields["product_image_url"] = image
+                offers = value.get("offers", [])
+                if isinstance(offers, dict):
+                    offers = [offers]
+                if isinstance(offers, list):
+                    for offer in offers:
+                        if not isinstance(offer, dict) or offer.get("priceCurrency") != "ZAR":
+                            continue
+                        try:
+                            price = float(str(offer.get("price", offer.get("lowPrice"))).replace(",", ""))
+                            if 0 < price < float("inf"):
+                                fields["actual_sale_price_zar"] = price
+                                break
+                        except (ValueError, TypeError):
+                            pass
+            if "@graph" in value:
+                walk(value["@graph"])
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            walk(json.loads(script.get_text()))
+        except (ValueError, TypeError):
+            pass
+    return fields
+
+
+def _has_product_data(data: Optional[Dict[str, Any]]) -> bool:
+    name = (data or {}).get("product_name") or ""
+    return bool(name and not name.lower().startswith(("takealot.com:", "just a moment", "access denied")))
+
+
+def _catalog_fallback(url: str) -> Optional[Dict[str, Any]]:
+    """只按 PLID 精确匹配卖家导出表；表中未提供的价格、图片不推断。"""
+    from services.offer_catalog_backfill import load_offer_catalog, _plid
+    try:
+        group = load_offer_catalog().get(_plid(url))
+    except (OSError, ValueError, KeyError):
+        return None
+    if not group:
+        return None
+    variants = group.get("variants", [])
+    name = next((item.get("title") for item in variants if item.get("title")), None)
+    if not name:
+        return None
+    return {"product_name": name, "tsin": group.get("tsin"),
+            "variants": [{"sku": item.get("sku"), "label": item.get("title"), "image_url": ""}
+                         for item in variants if item.get("sku")],
+            "data_source": "offer_catalog"}
 
 
 async def scrape_product(url: str) -> Dict[str, Any]:
@@ -642,25 +721,22 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         result["warnings"].append("URL 不属于 takealot.com 域名")
         return result
 
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        result["warnings"].append("Playwright 未安装,无法执行页面抓取")
-        return result
-
     normalized_url = result["normalized_url"]
+    plid_match = re.search(r'PLID(\d+)', url, re.IGNORECASE)
+    if plid_match:
+        result["tsin"] = f"PLID{plid_match.group(1)}"
     errors = []
 
     # 策略 0: curl_cffi (最快，模拟浏览器 TLS 指纹)
     print(f"[scraper] Trying curl_cffi for {normalized_url}", flush=True)
-    data, err = _scrape_with_curl_cffi(url, normalized_url)
+    data, err = await asyncio.to_thread(_scrape_with_curl_cffi, url, normalized_url)
     # 校验：如果没拿到真实价格或拿到了 Cloudflare 占位页面，视为失败
-    cf_title = data.get("product_name", "") if data else ""
-    if data is not None and data.get("actual_sale_price_zar") is not None \
-       and not cf_title.startswith("Takealot.com:"):
-        print(f"[scraper] curl_cffi SUCCESS (price={data['actual_sale_price_zar']})", flush=True)
+    if _has_product_data(data):
         result.update(data)
+        result["data_source"] = "takealot"
         result["success"] = True
+        if result.get("actual_sale_price_zar") is None:
+            result["warnings"].append("已获取商品资料，但未获取当前售价，请补填。")
         return result
     if data is not None:
         print(f"[scraper] curl_cffi got placeholder, falling back to Playwright", flush=True)
@@ -668,6 +744,18 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         print(f"[scraper] curl_cffi FAILED: {err}", flush=True)
     if err:
         errors.append(err)
+
+    catalog = _catalog_fallback(url)
+    if catalog:
+        result.update(catalog)
+        result["warnings"].append("官网未返回有效商品资料；已从卖家导出表补充标题、SKU 和 TSIN。当前售价与图片未获取，请补填。")
+        return result
+
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        result["warnings"].append("官网抓取不可用，且未匹配到卖家表资料。可直接手动填写商品信息。")
+        return result
 
     async with async_playwright() as p:
         # 策略 1: Firefox
@@ -694,5 +782,6 @@ async def scrape_product(url: str) -> Dict[str, Any]:
             errors.append(err)
 
     # 所有策略均失败
-    result["warnings"].append("Cloudflare 安全验证未通过,请稍后重试")
+    blocked = any("Cloudflare" in error or "HTTP 403" in error for error in errors)
+    result["warnings"].append("官网安全验证未通过，可直接手动填写商品信息。" if blocked else "官网未返回有效商品资料，可直接手动填写商品信息。")
     return result
