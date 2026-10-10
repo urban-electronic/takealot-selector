@@ -1691,3 +1691,6 @@ input, select, textarea { font-family: inherit; }
 .seller-assist-body details { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: var(--surface-soft); color: #4d6684; }
 .seller-assist-body summary { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+/* Unwrapped inputs also use the same control treatment. */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']), select, textarea { border: 1px solid var(--surface-border); border-radius: var(--radius-control); background: #fbfdff; color: #253d58; }
+.alert-info { background: var(--surface-soft); border-color: var(--surface-border); color: #365879; }
