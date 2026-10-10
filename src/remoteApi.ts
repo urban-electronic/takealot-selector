@@ -428,3 +428,12 @@ export const fetchPackingImageBlob = async (filename: string): Promise<Blob> => 
   }
   return await res.blob();
 };
+
+export interface SellerAssistItem {
+  id: string; product_no: number; name: string; token: string;
+  changes: { field: string; label: string; value: string | number }[];
+  differences: string[]; warnings: string[]; manual: string[];
+}
+export interface SellerAssistResult { items: SellerAssistItem[]; fillable: number }
+export const previewSellerAssist = (ids: string[]) => request<SellerAssistResult>('/api/products/seller-assist/preview', { method: 'POST', body: JSON.stringify({ ids }) });
+export const applySellerAssist = (items: SellerAssistItem[]) => request<SellerAssistResult>('/api/products/seller-assist/apply', { method: 'POST', body: JSON.stringify({ ids: items.map(i => i.id), tokens: Object.fromEntries(items.map(i => [i.id, i.token])) }) });
