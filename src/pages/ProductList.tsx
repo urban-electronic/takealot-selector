@@ -637,7 +637,7 @@ export default function ProductList() {
             }}
           />
         ) : (
-          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 11 }}>无图</div>
+          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 11 }}>无图</div>
         );
       case 'product_name':
         return (
@@ -767,7 +767,7 @@ export default function ProductList() {
             style={{
               width: '100%', padding: '2px 4px', fontSize: 12,
               background: LINK_STATUS_MAP[p.link_status || '未购买']?.color || '#999',
-              color: '#fff', border: 'none', borderRadius: 4,
+              color: '#fff', border: 'none', borderRadius: 8,
             }}
           >
             {LINK_STATUS_OPTIONS.map((s) => (
