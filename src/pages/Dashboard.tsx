@@ -5,6 +5,7 @@ import { auditProductSkus, getInventory, getShipments } from '../remoteApi';
 import type { SkuAuditResult } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
+import { missingSkuTasks } from '../utils/dashboardTasks';
 
 export default function Dashboard() {
   const api = useApi();
@@ -50,7 +51,8 @@ export default function Dashboard() {
     return {
       available: validInventory.reduce((sum, row) => sum + row.available, 0),
       negative: validInventory.filter(row => row.available < 0).length,
-      missingSku: inventory.filter(row => !row.sku).length,
+      missingSku: missingSkuTasks(inventory, products).blocking,
+      unpurchasedMissingSku: missingSkuTasks(inventory, products).unpurchased,
       missingImage: products.filter(row => !row.product_image_url && !row.product_image_path).length,
       unresolvedMultiSkuProducts,
       duplicateSkuProducts: new Set(Array.from(skuOwners.values()).filter(ids => ids.size > 1).flatMap(ids => Array.from(ids))).size,
@@ -66,6 +68,7 @@ export default function Dashboard() {
       { count: overview.duplicateSkuProducts, label: '重复 SKU 冲突', detail: '同一 SKU 出现在多个商品中', to: '/products?duplicate_sku=1&task=处理重复SKU', tone: 'red' },
     ] },
     { label: '资料完善', detail: '不阻塞操作，可逐步处理', items: [
+      { count: overview.unpurchasedMissingSku, label: '未购选品尚无 SKU', detail: '未购买且无库存活动；采购或上架前再补充', to: '/products?missing_field=sku&task=未购选品SKU', tone: 'blue' },
       { count: stats?.data_incomplete || 0, label: '产品资料待补充', detail: '补齐成本、尺寸和物流信息', to: '/products?selection_status=数据待补充&task=补充产品资料', tone: 'orange' },
       { count: stats?.category_pending || 0, label: '品类待确认', detail: '只显示真正没有有效 Fee 类型的产品', to: '/products?selection_status=待确认品类&task=确认产品品类', tone: 'blue' },
       { count: overview.unresolvedMultiSkuProducts, label: '规格仍待识别', detail: '已识别真实颜色、尺码的产品不会计入', to: '/products?multi_sku=1&task=确认未识别规格', tone: 'blue' },
