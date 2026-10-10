@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 import asyncio
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -247,6 +247,68 @@ def _apply_calculated_fields(db: Session, p: Product):
     p.exchange_rate_used = exchange_rate
     p.fee_rate_used = p.success_fee_rate
     p.selection_status = determine_selection_status(product_dict, calculated)
+
+
+class AssistRequest(BaseModel):
+    ids: List[str] = Field(min_length=1, max_length=500)
+    tokens: Optional[dict[str, str]] = None
+
+
+@router.post('/seller-assist/preview')
+@router.post('/seller-assist/apply')
+def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    from services.takealot_seller_api import configured_key, _load_offers, offer_plan
+    if store_id != 'default-store':
+        raise HTTPException(400, '当前店铺尚未接入卖家资料')
+    key = configured_key(db)
+    if not key:
+        raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
+    try:
+        offers = _load_offers(key)
+    except Exception:
+        raise HTTPException(503, '卖家资料暂时无法读取，请稍后重试')
+    ids = set(data.ids)
+    products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.id.in_(ids)).all()
+    if len(products) != len(ids):
+        raise HTTPException(409, '产品已删除或属于其他店铺，请刷新列表')
+    plans = [offer_plan(p, offers) for p in products]
+    # A blank SKU must not introduce a duplicate identity into this store.
+    occupied = {}
+    for other in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all():
+        for sku in re.split(r'[\s,，;；]+', other.sku or ''):
+            if sku:
+                occupied.setdefault(sku, set()).add(other.id)
+    for plan in plans:
+        for change in list(plan['changes']):
+            if change['field'] != 'sku':
+                continue
+            proposed = change['value'].split()
+            if any(occupied.get(sku, set()) - {plan['id']} for sku in proposed):
+                plan['changes'].remove(change)
+                plan['warnings'].append('SKU 已被其他产品使用，请人工核对重复记录。')
+            else:
+                for sku in proposed:
+                    occupied.setdefault(sku, set()).add(plan['id'])
+    import hashlib
+    for plan in plans:
+        plan['token'] = hashlib.sha256(repr((plan['token'], plan['changes'])).encode()).hexdigest()
+    if request.url.path.endswith('/apply'):
+        if not data.tokens or any(data.tokens.get(p['id']) != p['token'] for p in plans):
+            raise HTTPException(409, '资料已变更，请重新预览后再补齐')
+        for product, plan in zip(products, plans):
+            values = {change['field']: change['value'] for change in plan['changes']}
+            if not values:
+                continue
+            # Conditional update protects concurrent edits after the preview check.
+            count = db.query(Product).filter(Product.id == product.id, Product.store_id == store_id, Product.updated_at == product.updated_at).update({**values, 'updated_at': datetime.utcnow()}, synchronize_session=False)
+            if count != 1:
+                db.rollback()
+                raise HTTPException(409, '同事刚修改了资料，请重新预览')
+            db.refresh(product)
+            if any(field in values for field in ('length_mm', 'width_mm', 'height_mm', 'actual_weight_kg')):
+                _apply_calculated_fields(db, product)
+        db.commit()
+    return {'items': plans, 'fillable': sum(bool(p['changes']) for p in plans)}
 
 
 @router.get("", response_model=List[ProductOut])
