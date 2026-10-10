@@ -6,7 +6,7 @@ const source = fs.readFileSync('src/takealotPageImport.ts', 'utf8');
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
 const module = { exports: {} };
 vm.runInNewContext(code, { exports: module.exports, module, URL });
-const { captureTakealotPage, makeTakealotBookmarklet, parseTakealotPageImport } = module.exports;
+const { captureTakealotPage, makeTakealotBookmarklet, parseTakealotPageImport, importSavedTakealotPage } = module.exports;
 const url = 'https://www.takealot.com/test/PLID104063259';
 const payload = { version: 1, url, title: '5-Pack Zenty Dust Bags', image: 'https://media.takealot.com/covers_images/real/s-pdpxl.file', price: 599, category: 'Home & Kitchen', outOfStock: true };
 const imported = parseTakealotPageImport(JSON.stringify(payload));
@@ -34,4 +34,25 @@ const result = parseTakealotPageImport(decodeURIComponent(opened.split('#takealo
 assert.equal(result.product_name, payload.title);
 assert.equal(result.actual_sale_price_zar, 1599);
 assert.equal(result.in_stock_price, null);
+const savedDoc = {
+  querySelector(selector) {
+    if (selector === 'link[rel="canonical"]') return { getAttribute: () => url };
+    if (selector === 'main h1') return { textContent: payload.title };
+    if (selector === 'meta[property="og:image"]') return { getAttribute: () => payload.image };
+    if (selector === 'main') return { ...main, querySelectorAll: () => [] };
+    return null;
+  },
+};
+const saved = importSavedTakealotPage(savedDoc, url);
+assert.equal(saved.product_image_url, payload.image); // Saved local image uses original metadata instead.
+assert.equal(saved.actual_sale_price_zar, 1599);
+assert.equal(saved.in_stock_price, null);
+assert.throws(() => importSavedTakealotPage(savedDoc, 'https://www.takealot.com/wrong/PLID999'));
+const metaOnly = { querySelector: selector => selector === 'meta[property="og:title"]' ? { getAttribute: () => payload.title } : selector === 'meta[property="og:image"]' ? { getAttribute: () => payload.image } : null };
+const partial = importSavedTakealotPage(metaOnly, url);
+assert.equal(partial.product_name, payload.title);
+assert.equal(partial.actual_sale_price_zar, null);
+assert.equal(partial.success, false);
+assert.throws(() => importSavedTakealotPage({ querySelector: () => null }, url));
+assert.throws(() => importSavedTakealotPage(metaOnly, 'https://evil.test/PLID1'));
 console.log('Page capture, bookmarklet handoff, import validation and out-of-stock tests passed.');

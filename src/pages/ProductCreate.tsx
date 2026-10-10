@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import type { ScrapeResult, FeeCategory, Product } from '../types';
 import { SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
-import { makeTakealotBookmarklet, parseTakealotPageImport } from '../takealotPageImport';
+import { importSavedTakealotPage, makeTakealotBookmarklet, parseTakealotPageImport } from '../takealotPageImport';
 
 export default function ProductCreate() {
   const navigate = useNavigate();
@@ -18,6 +18,19 @@ export default function ProductCreate() {
   const [salePrice, setSalePrice] = useState('');
   const importerLink = useRef<HTMLAnchorElement>(null);
   const [showImporter, setShowImporter] = useState(false);
+  const [importingFile, setImportingFile] = useState(false);
+
+  const importPageFile = async (file: File) => {
+    setError(''); setImportingFile(true);
+    try {
+      if (!/\.html?$/i.test(file.name)) throw new Error('请选择浏览器保存的 .html 或 .htm 网页文件。');
+      if (file.size > 15 * 1024 * 1024) throw new Error('网页文件过大，请保存为“网页，仅 HTML”。');
+      // DOMParser reads an inert document; never mount its HTML or execute its scripts.
+      const result = importSavedTakealotPage(new DOMParser().parseFromString(await file.text(), 'text/html'), url);
+      applyImportedResult(result);
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : '网页文件导入失败'); }
+    finally { setImportingFile(false); }
+  };
 
   const startManual = () => {
     try {
@@ -59,11 +72,9 @@ export default function ProductCreate() {
     if (importerLink.current) importerLink.current.href = makeTakealotBookmarklet('https://urban-electronic.github.io/takealot-selector/create');
   }, [showImporter]);
 
-  useEffect(() => {
-    if (!window.location.hash.startsWith('#takealot-import=')) return;
-    try {
-      const result = parseTakealotPageImport(decodeURIComponent(window.location.hash.slice('#takealot-import='.length)));
+  const applyImportedResult = (result: ScrapeResult) => {
       setUrl(result.normalized_url); setScrapeResult(result);
+      setError(''); setSku(''); setFeeCategory(''); setFeeConfirmed(false); setChineseName('');
       setProductName(result.product_name || ''); setProductImage(result.product_image_url || '');
       setSalePrice(result.actual_sale_price_zar !== null ? String(result.actual_sale_price_zar) : '');
       api.getFeeMappingRules().then(rules => {
@@ -71,6 +82,12 @@ export default function ProductCreate() {
         if (match) { setFeeCategory(match.fee_category); setScrapeResult(prev => prev ? { ...prev, recommended_fee_category: match.fee_category, fee_category_confidence: 'high', fee_match_reason: `官网页面分类匹配：${match.takealot_category_pattern}` } : prev); }
       }).catch(() => {});
       if (result.product_name) api.translateProductName(result.product_name).then(res => { if (res.chinese_name) setChineseName(res.chinese_name); }).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!window.location.hash.startsWith('#takealot-import=')) return;
+    try {
+      applyImportedResult(parseTakealotPageImport(decodeURIComponent(window.location.hash.slice('#takealot-import='.length))));
     } catch (e: unknown) { setError(e instanceof Error ? e.message : '页面导入失败'); }
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }, [api]);
@@ -184,10 +201,17 @@ export default function ProductCreate() {
         <button className="btn" style={{ marginTop: 12 }} onClick={startManual} disabled={scraping || !url.trim()}>直接手动填写</button>
         <button className="btn btn-outline" style={{ marginTop: 12, marginLeft: 12 }} onClick={() => setShowImporter(prev => !prev)}>从已打开的官网页面导入</button>
         {showImporter && <div className="alert alert-info" style={{ marginTop: 12 }}>
-          <p>首次使用：把下面的“导入 Takealot 商品”拖到浏览器书签栏。</p>
+          <p><strong>推荐：导入保存的网页，无需书签</strong></p>
+          <p>在官网等商品标题、价格显示后，按 Ctrl+S，保存类型选“网页，仅 HTML”或“网页，全部”。回到这里选择保存的 .html 文件，不需要上传配套文件夹。</p>
+          <label>选择官网商品网页 <input type="file" accept=".html,.htm,text/html" disabled={importingFile} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void importPageFile(file); }} /></label>
+          {importingFile && <p>正在读取网页…</p>}
+          <p>程序自动填写能核实的商品信息，未读取到的字段会提示补充。请核对后保存。</p>
+          <details><summary>其他方式：书签导入</summary>
+          <p>把下面的“导入 Takealot 商品”拖到浏览器书签栏。</p>
           <a ref={importerLink} className="btn btn-primary" draggable onClick={e => { e.preventDefault(); setError('请先将此按钮拖到书签栏，再到官网商品详情页点击该书签。'); }}>导入 Takealot 商品</a>
           <p>打开官网商品页，等标题、图片和价格显示后，点击该书签。程序会自动打开并填入商品信息，核对后再保存。</p>
           <small>仅读取当前页的商品标题、图片、售价和分类；不读取账号或登录信息。</small>
+          </details>
         </div>}
       </div>
 
