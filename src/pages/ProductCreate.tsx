@@ -218,7 +218,7 @@ export default function ProductCreate() {
       {/* Scrape Result */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title">Step 2: 确认商品信息{scrapeResult.data_source === 'offer_catalog' ? '（卖家表资料）' : scrapeResult.data_source === 'browser_page' ? '（已打开的官网页面）' : ''}</div>
+          <div className="card-title">Step 2: 确认商品信息{scrapeResult.data_source === 'seller_api' ? '（本店卖家 API）' : scrapeResult.data_source === 'offer_catalog' ? '（卖家表资料）' : scrapeResult.data_source === 'browser_page' ? '（已打开的官网页面）' : ''}</div>
           {scrapeResult.warnings.length > 0 && (
             <div className="alert alert-warning">
               {scrapeResult.warnings.map((w, i) => <div key={i}>{w}</div>)}
