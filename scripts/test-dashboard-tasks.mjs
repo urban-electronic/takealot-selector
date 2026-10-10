@@ -1,0 +1,16 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+import assert from 'node:assert/strict';
+const module = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/utils/dashboardTasks.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { module, exports: module.exports });
+const { missingSkuTasks } = module.exports;
+const products = [{ id: 'a', link_status: '未购买' }, { id: 'b', link_status: '已购买' }];
+const row = { product_id: 'a', sku: '', purchased: 0, in_transit: 0, adjusted: 0, shipped: 0, available: 0 };
+assert.equal(missingSkuTasks([row], products).blocking, 0);
+assert.equal(missingSkuTasks([row], products).unpurchased, 1);
+for (const field of ['purchased', 'in_transit', 'adjusted', 'shipped', 'available']) assert.equal(missingSkuTasks([{ ...row, [field]: 1 }], products).blocking, 1);
+assert.equal(missingSkuTasks([{ ...row, available: -1 }], products).blocking, 1);
+assert.equal(missingSkuTasks([{ ...row, product_id: 'b:0' }], products).blocking, 1);
+assert.equal(missingSkuTasks([{ ...row, sku: 'confirmed' }], products).blocking, 0);
+console.log('Unpurchased items, purchasing, inventory activity and negative balance checks passed.');
