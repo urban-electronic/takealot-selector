@@ -32,7 +32,7 @@ export function productLabels(title: string | null, chineseName?: string | null)
   if (size) { englishSpecs.push(size[1].toUpperCase()); chineseSpecs.push(size[1].toUpperCase() + '码'); }
   const matchedColors = colors.filter(([pattern]) => pattern.test(text));
   if (matchedColors.length <= 2) for (const [, en, zh] of matchedColors) { englishSpecs.push(en); chineseSpecs.push(zh + '色'); }
-  for (const [pattern, feature] of [[/\bmagnetic\b/i, '磁吸'], [/\bwireless\b/i, '无线'], [/noise (?:reduction|cancell)/i, '降噪'], [/high.voltage/i, '高压'], [/\bHDMI\b/i, 'HDMI'], [/USB[ -]?C|Type[ -]?C/i, 'USB-C'], [/electric|electronic|zapper/i, '电动'], [/\b100W\b/i, '100W'], [/real elements?/i, '实物元素']] as [RegExp, string][]) {
+  for (const [pattern, feature] of [[/\bmagnetic\b/i, '磁吸'], [/\bwireless\b/i, '无线'], [/noise (?:reduction|cancell)/i, '降噪'], [/high.voltage/i, '高压'], [/\bHDMI\b/i, 'HDMI'], [/USB[ -]?C|Type[ -]?C/i, 'USB-C'], [/zapper|(?:electric|electronic).*?(?:mouse|rodent).*?trap/i, '电击'], [/\b100W\b/i, '100W'], [/real elements?/i, '实物元素']] as [RegExp, string][]) {
     if (pattern.test(text) && !chineseSpecs.includes(feature)) chineseSpecs.push(feature);
   }
   const elements = text.match(/(\d+)\s+(?:real\s+)?elements?/i);
