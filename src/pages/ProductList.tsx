@@ -109,6 +109,7 @@ export default function ProductList() {
   const [error, setError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const [priceSource, setPriceSource] = useState<'official' | 'seller'>(getActiveStoreId() === 'default-store' ? 'seller' : 'official');
+  const [refreshDetail, setRefreshDetail] = useState<{ id: string; message: string } | null>(null);
   const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
   const batchStop = useRef(false);
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
@@ -659,7 +660,7 @@ export default function ProductList() {
         );
       case 'actual_sale_price_zar':
         return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div className="price-refresh-cell">
             {editingPriceId === p.id ? (
               <input
                 type="number" step="0.01"
@@ -683,7 +684,7 @@ export default function ProductList() {
             >
               {isRefreshing ? '读取中' : '↻'}
             </button>
-            {refreshMessages[p.id] && <small style={{ maxWidth: 190, fontSize: 11, color: '#516078' }} role="status">{refreshMessages[p.id]}</small>}
+            {refreshMessages[p.id] && <button type="button" className="price-refresh-status" title="点击查看刷新结果和说明" onClick={() => setRefreshDetail({ id: p.id, message: refreshMessages[p.id] })}>{refreshMessages[p.id].includes('已更新') ? '已更新 ⓘ' : '读取失败 ⓘ'}</button>}
           </div>
         );
       case 'fee_category':
@@ -845,6 +846,10 @@ export default function ProductList() {
       {!archivedMode && dataSource === 'remote' && <div className="product-task-banner">
         <div><strong>卖家资料核对与补齐</strong><span>核对当前列表，预览后仅补空白资料；已有内容保留。采购成本、品类和运输方式请人工填写。</span></div>
         <button className="btn btn-outline" disabled={assistBusy || !products.length || products.length > 500} onClick={previewAssist}>{assistBusy ? '正在处理…' : '核对与补齐资料'}</button>
+      </div>}
+      {refreshDetail && <div className="refresh-detail-panel" role="status">
+        <div style={{ flex: 1, minWidth: 0 }}><strong>#{products.find(p => p.id === refreshDetail.id)?.product_no ?? ''} 售价刷新结果</strong><p>{refreshDetail.message}</p></div>
+        <button className="btn btn-outline btn-sm" onClick={() => setRefreshDetail(null)}>关闭</button>
       </div>}
       {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
       {assist && <div role="dialog" aria-modal="true" aria-label="卖家资料补齐预览" style={{ position: 'fixed', inset: 0, background: '#0008', zIndex: 2000, display: 'grid', placeItems: 'center' }}>
