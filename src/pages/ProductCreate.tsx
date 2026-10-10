@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import type { ScrapeResult, FeeCategory, Product } from '../types';
 import { SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
+import { makeTakealotBookmarklet, parseTakealotPageImport } from '../takealotPageImport';
 
 export default function ProductCreate() {
   const navigate = useNavigate();
@@ -15,6 +16,8 @@ export default function ProductCreate() {
   const [productName, setProductName] = useState('');
   const [productImage, setProductImage] = useState('');
   const [salePrice, setSalePrice] = useState('');
+  const importerLink = useRef<HTMLAnchorElement>(null);
+  const [showImporter, setShowImporter] = useState(false);
 
   const startManual = () => {
     try {
@@ -52,6 +55,26 @@ export default function ProductCreate() {
     api.getFeeCategories().then(setFeeCategories).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (importerLink.current) importerLink.current.href = makeTakealotBookmarklet('https://urban-electronic.github.io/takealot-selector/create');
+  }, [showImporter]);
+
+  useEffect(() => {
+    if (!window.location.hash.startsWith('#takealot-import=')) return;
+    try {
+      const result = parseTakealotPageImport(decodeURIComponent(window.location.hash.slice('#takealot-import='.length)));
+      setUrl(result.normalized_url); setScrapeResult(result);
+      setProductName(result.product_name || ''); setProductImage(result.product_image_url || '');
+      setSalePrice(result.actual_sale_price_zar !== null ? String(result.actual_sale_price_zar) : '');
+      api.getFeeMappingRules().then(rules => {
+        const match = rules.filter(rule => rule.active && rule.takealot_category_pattern && result.takealot_category_path?.toLowerCase().includes(rule.takealot_category_pattern.toLowerCase())).sort((a, b) => b.priority - a.priority)[0];
+        if (match) { setFeeCategory(match.fee_category); setScrapeResult(prev => prev ? { ...prev, recommended_fee_category: match.fee_category, fee_category_confidence: 'high', fee_match_reason: `官网页面分类匹配：${match.takealot_category_pattern}` } : prev); }
+      }).catch(() => {});
+      if (result.product_name) api.translateProductName(result.product_name).then(res => { if (res.chinese_name) setChineseName(res.chinese_name); }).catch(() => {});
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : '页面导入失败'); }
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }, [api]);
+
   const handleScrape = async () => {
     if (!url.trim()) return;
     setScraping(true);
@@ -65,6 +88,7 @@ export default function ProductCreate() {
     setFeeConfirmed(false);
     try {
       const result: ScrapeResult = await api.scrapeTakealot(url.trim());
+      if (!result.success) setShowImporter(true);
       setScrapeResult(result);
       setProductName(result.product_name || '');
       setProductImage(result.product_image_url || '');
@@ -158,12 +182,19 @@ export default function ProductCreate() {
           </button>
         </div>
         <button className="btn" style={{ marginTop: 12 }} onClick={startManual} disabled={scraping || !url.trim()}>直接手动填写</button>
+        <button className="btn btn-outline" style={{ marginTop: 12, marginLeft: 12 }} onClick={() => setShowImporter(prev => !prev)}>从已打开的官网页面导入</button>
+        {showImporter && <div className="alert alert-info" style={{ marginTop: 12 }}>
+          <p>首次使用：把下面的“导入 Takealot 商品”拖到浏览器书签栏。</p>
+          <a ref={importerLink} className="btn btn-primary" draggable onClick={e => { e.preventDefault(); setError('请先将此按钮拖到书签栏，再到官网商品详情页点击该书签。'); }}>导入 Takealot 商品</a>
+          <p>打开官网商品页，等标题、图片和价格显示后，点击该书签。程序会自动打开并填入商品信息，核对后再保存。</p>
+          <small>仅读取当前页的商品标题、图片、售价和分类；不读取账号或登录信息。</small>
+        </div>}
       </div>
 
       {/* Scrape Result */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title">Step 2: 确认商品信息{scrapeResult.data_source === 'offer_catalog' ? '（卖家表资料）' : ''}</div>
+          <div className="card-title">Step 2: 确认商品信息{scrapeResult.data_source === 'offer_catalog' ? '（卖家表资料）' : scrapeResult.data_source === 'browser_page' ? '（已打开的官网页面）' : ''}</div>
           {scrapeResult.warnings.length > 0 && (
             <div className="alert alert-warning">
               {scrapeResult.warnings.map((w, i) => <div key={i}>{w}</div>)}
