@@ -22,8 +22,9 @@ const primaryNavItems = [
 ];
 
 const secondaryNavItems = [
-  { path: '/products?archived=1', label: '废品库', hint: '查看与恢复已移除产品', group: '资料维护' },
-  { path: '/procurement', label: '采购记录', hint: '查询和补录历史采购', group: '资料维护' },
+  { path: '/products?maintenance=1', label: '资料维护', hint: '核对缺字段与补充商品资料', group: '资料与记录' },
+  { path: '/products?archived=1', label: '废品库', hint: '查看与恢复已移除产品', group: '资料与记录' },
+  { path: '/procurement', label: '采购记录', hint: '查询和补录历史采购', group: '资料与记录' },
   { path: '/stores', label: '店铺管理', hint: '管理店铺与库存隔离', group: '系统管理' },
   { path: '/settings', label: '系统设置', hint: '费率、接口和基础参数', group: '系统管理' },
 ];
@@ -34,8 +35,8 @@ function WorldClocks() {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
-  const format = (zone: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: zone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(now);
-  return <div className="world-clocks" aria-label="中国与南非时间" title="中国时间比南非快 6 小时；按设备时钟实时显示">
+  const format = (zone: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+  return <div className="world-clocks" aria-label="中国与南非时间" title={`中国 ${now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })} · 南非 ${now.toLocaleDateString('zh-CN', { timeZone: 'Africa/Johannesburg' })}；中国快 6 小时`}>
     <div><span>中国</span><time dateTime={now.toISOString()}>{format('Asia/Shanghai')}</time></div>
     <div><span>南非</span><time dateTime={now.toISOString()}>{format('Africa/Johannesburg')}</time></div>
   </div>;
@@ -120,7 +121,7 @@ export default function App() {
               管理工具
             </button>
             {managementOpen && <div className="management-menu-panel" role="menu">
-              {['资料维护', '系统管理'].map(group => <div className="management-menu-group" key={group}>
+              {['资料与记录', '系统管理'].map(group => <div className="management-menu-group" key={group}>
                 <strong>{group}</strong>
                 {secondaryNavItems.filter(item => item.group === group).map(item => (
                   <NavLink key={item.path} to={item.path} role="menuitem" onClick={() => setManagementOpen(false)}>
