@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useApi } from '../DataSourceContext';
+import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, previewSellerAssist, applySellerAssist, type SellerAssistResult } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 
@@ -82,6 +82,26 @@ function variantSpec(label: string, allLabels: string[]): string {
 
 export default function ProductList() {
   const api = useApi();
+  const { dataSource } = useDataSource();
+  const [assist, setAssist] = useState<SellerAssistResult | null>(null);
+  const [assistBusy, setAssistBusy] = useState(false);
+  const [assistError, setAssistError] = useState('');
+  const previewAssist = async () => {
+    setAssistBusy(true); setAssistError('');
+    try { setAssist(await previewSellerAssist(products.map(p => p.id))); }
+    catch (e) { setAssistError(e instanceof Error ? e.message : '读取失败，请重试'); }
+    finally { setAssistBusy(false); }
+  };
+  const applyAssist = async () => {
+    if (!assist) return;
+    setAssistBusy(true); setAssistError('');
+    try {
+      const result = await applySellerAssist(assist.items.filter(i => i.changes.length));
+      setAssist(null); fetchProducts();
+      alert(`已补齐 ${result.fillable} 个产品。尺寸和重量补齐后已重新计算物流费用与利润。`);
+    } catch (e) { setAssistError(e instanceof Error ? e.message : '补齐失败，请重新预览'); }
+    finally { setAssistBusy(false); }
+  };
   const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -806,6 +826,28 @@ export default function ProductList() {
         <h2>{archivedMode ? '废品库' : '产品列表'} ({products.length})</h2>
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
+
+      {!archivedMode && dataSource === 'remote' && <div className="product-task-banner">
+        <div><strong>卖家资料核对与补齐</strong><span>核对当前列表，预览后仅补空白资料；已有内容保留。采购成本、品类和运输方式请人工填写。</span></div>
+        <button className="btn btn-outline" disabled={assistBusy || !products.length || products.length > 500} onClick={previewAssist}>{assistBusy ? '正在处理…' : '核对与补齐资料'}</button>
+      </div>}
+      {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
+      {assist && <div role="dialog" aria-modal="true" aria-label="卖家资料补齐预览" style={{ position: 'fixed', inset: 0, background: '#0008', zIndex: 2000, display: 'grid', placeItems: 'center' }}>
+        <div style={{ background: 'var(--color-bg, white)', padding: 24, borderRadius: 12, width: 'min(1000px, 94vw)', maxHeight: '85vh', overflow: 'auto' }}>
+          <h3>补齐预览：{assist.fillable} 个产品可以补齐</h3>
+          <p>来源：本店卖家 API。仅补空白 SKU、图片、标题、TSIN、尺寸和重量。尺寸或重量补齐后会重新计算费用与利润，人工成本覆盖值保留。</p>
+          <table style={{ width: '100%' }}><thead><tr><th>产品</th><th>将补齐</th><th>需要核对 / 人工填写</th></tr></thead><tbody>{assist.items.map(item => <tr key={item.id}>
+            <td>#{item.product_no} {item.name}<br/><Link to={`/products/${item.id}`} onClick={() => setAssist(null)}>修改资料</Link></td>
+            <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : String(c.value)}</div>) : '无需补齐'}</td>
+            <td>{[...item.warnings, ...item.differences, ...(item.manual.length ? ['需填写：' + item.manual.join('、')] : [])].map((message, i) => <div key={i}>{message}</div>)}</td>
+          </tr>)}</tbody></table>
+          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+            <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>确认仅补空白资料 ({assist.fillable})</button>
+            <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新核对</button>
+            <button className="btn btn-outline" disabled={assistBusy} onClick={() => setAssist(null)}>关闭</button>
+          </div>
+        </div>
+      </div>}
 
       {archivedMode && <div className="product-task-banner"><div><strong>这里保存已删除产品</strong><span>原序号永久保留；恢复后仍使用原序号，新建产品继续按历史最大序号往后增加。</span></div></div>}
 
