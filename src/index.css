@@ -1694,3 +1694,8 @@ input, select, textarea { font-family: inherit; }
 /* Unwrapped inputs also use the same control treatment. */
 input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']), select, textarea { border: 1px solid var(--surface-border); border-radius: var(--radius-control); background: #fbfdff; color: #253d58; }
 .alert-info { background: var(--surface-soft); border-color: var(--surface-border); color: #365879; }
+
+.procurement-product-label { display: grid; gap: 3px; max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
+.procurement-product-label strong { color: #183354; font-size: 14px; font-weight: 600; }
+.procurement-product-label strong span { color: #627894; font-size: 12px; font-weight: 400; }
+.procurement-product-label small { color: #71829a; font-size: 12px; line-height: 1.35; }
