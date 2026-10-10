@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, previewSellerAssist, applySellerAssist, type SellerAssistResult } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, type SellerAssistResult } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 
@@ -84,6 +84,7 @@ export default function ProductList() {
   const api = useApi();
   const { dataSource } = useDataSource();
   const [assist, setAssist] = useState<SellerAssistResult | null>(null);
+  const [assistOnlyTasks, setAssistOnlyTasks] = useState(true);
   const [assistBusy, setAssistBusy] = useState(false);
   const [assistError, setAssistError] = useState('');
   const previewAssist = async () => {
@@ -107,6 +108,9 @@ export default function ProductList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
+  const [priceSource, setPriceSource] = useState<'official' | 'seller'>(getActiveStoreId() === 'default-store' ? 'seller' : 'official');
+  const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
+  const batchStop = useRef(false);
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [imageBatchProgress, setImageBatchProgress] = useState('');
   const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
@@ -416,14 +420,19 @@ export default function ProductList() {
   };
 
   const handleRefreshPrice = async (id: string) => {
+    setRefreshMessages(prev => ({ ...prev, [id]: '' }));
     setRefreshingIds((prev) => new Set(prev).add(id));
     try {
-      const result: Record<string, any> = await api.refreshPrice(id);
+      const result: Record<string, any> = await api.refreshPrice(id, dataSource === 'remote' ? priceSource : 'official');
+      setRefreshMessages(prev => ({ ...prev, [id]: `${result.data_source === 'seller_api' ? '本店报价' : '官网售价'}已更新 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}${(result.warnings || []).length ? '；' + result.warnings.join('；') : ''}` }));
       setProducts((prev) =>
         prev.map((p) => {
           if (p.id !== id) return p;
           return {
             ...p,
+            sku: result.sku ?? p.sku,
+            fee_category: result.fee_category ?? p.fee_category,
+            fee_category_confirmed: result.fee_category_confirmed ?? p.fee_category_confirmed,
             product_name: result.product_name ?? p.product_name,
             chinese_product_name: result.chinese_product_name ?? p.chinese_product_name,
             actual_sale_price_zar: result.actual_sale_price_zar ?? p.actual_sale_price_zar,
@@ -442,7 +451,7 @@ export default function ProductList() {
         })
       );
     } catch (e: any) {
-      alert(e.message);
+      setRefreshMessages(prev => ({ ...prev, [id]: e.message || '读取失败，原售价保留' }));
     } finally {
       setRefreshingIds((prev) => {
         const next = new Set(prev);
@@ -453,28 +462,33 @@ export default function ProductList() {
   };
 
   const handleRefetchMissingImages = async () => {
-    const pending = products.filter(product => !product.product_image_url && product.takealot_url);
+    const pending = products.filter(product => !product.product_image_url && !product.product_image_path && product.takealot_url);
     if (pending.length === 0) {
       alert('当前缺图产品没有可用的 Takealot 官网链接。');
       return;
     }
-    let success = 0;
+    let success = 0; let processed = 0;
+    const failures: string[] = [];
+    batchStop.current = false;
     for (let index = 0; index < pending.length; index += 1) {
+      if (batchStop.current) break;
       const product = pending[index];
-      setImageBatchProgress(`正在从官网抓图 ${index + 1}/${pending.length}`);
+      processed += 1;
+      setImageBatchProgress(`正在补充图片 ${index + 1}/${pending.length}`);
       setRefreshingIds(prev => new Set(prev).add(product.id));
       try {
-        const result: Record<string, any> = await api.refreshPrice(product.id);
+        const result: Record<string, any> = await api.refreshPrice(product.id, 'details');
         if (result.product_image_url) success += 1;
-      } catch {
-        // 单个链接失败不阻断整批，结束后仍保留在缺图任务中。
+        else failures.push(`#${product.product_no}：未获取图片，请人工上传`);
+      } catch (e) {
+        failures.push(`#${product.product_no}：${e instanceof Error ? e.message : '读取失败'}`);
       } finally {
         setRefreshingIds(prev => { const next = new Set(prev); next.delete(product.id); return next; });
       }
     }
     setImageBatchProgress('');
     await fetchProducts();
-    alert(`官网资料回抓完成：图片成功 ${success} 个，英文标题已按官网更新，中文空缺已自动补全；仍缺图 ${pending.length - success} 个。`);
+    setAssistError(`图片处理${batchStop.current ? '已停止' : '完成'}：成功 ${success} 个，已处理 ${processed}/${pending.length}，未获取图片 ${processed - success} 个。${failures.join('；')}`);
   };
 
   const saveVariant = async () => {
@@ -664,11 +678,12 @@ export default function ProductList() {
             <button
               onClick={() => handleRefreshPrice(p.id)}
               disabled={isRefreshing || !p.takealot_url}
-              title="刷新 Takealot 售价"
+              title={dataSource === 'remote' ? (priceSource === 'seller' ? '刷新本店报价（不是官网最低价）' : '刷新官网售价') : '刷新官网售价'}
               style={{ fontSize: 11, padding: '1px 5px', cursor: isRefreshing ? 'wait' : 'pointer', opacity: isRefreshing ? 0.5 : 1, border: '1px solid #d9d9d9', borderRadius: 3, background: '#fff', lineHeight: '18px' }}
             >
-              {isRefreshing ? '...' : '↻'}
+              {isRefreshing ? '读取中' : '↻'}
             </button>
+            {refreshMessages[p.id] && <small style={{ maxWidth: 190, fontSize: 11, color: '#516078' }} role="status">{refreshMessages[p.id]}</small>}
           </div>
         );
       case 'fee_category':
@@ -836,7 +851,8 @@ export default function ProductList() {
         <div style={{ background: 'var(--color-bg, white)', padding: 24, borderRadius: 12, width: 'min(1000px, 94vw)', maxHeight: '85vh', overflow: 'auto' }}>
           <h3>补齐预览：{assist.fillable} 个产品可以补齐</h3>
           <p>来源：本店卖家 API。仅补空白 SKU、图片、标题、TSIN、尺寸和重量。尺寸或重量补齐后会重新计算费用与利润，人工成本覆盖值保留。</p>
-          <table style={{ width: '100%' }}><thead><tr><th>产品</th><th>将补齐</th><th>需要核对 / 人工填写</th></tr></thead><tbody>{assist.items.map(item => <tr key={item.id}>
+          <label style={{ display: 'block', marginBottom: 12 }}><input type="checkbox" checked={assistOnlyTasks} onChange={e => setAssistOnlyTasks(e.target.checked)} /> 只显示需要处理的产品（可补齐、待核对或需人工填写）</label>
+          <table style={{ width: '100%' }}><thead><tr><th>产品</th><th>将补齐</th><th>需要核对 / 人工填写</th></tr></thead><tbody>{assist.items.filter(item => !assistOnlyTasks || item.changes.length || item.differences.length || item.warnings.length || item.manual.length).map(item => <tr key={item.id}>
             <td>#{item.product_no} {item.name}<br/><Link to={`/products/${item.id}`} onClick={() => setAssist(null)}>修改资料</Link></td>
             <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : String(c.value)}</div>) : '无需补齐'}</td>
             <td>{[...item.warnings, ...item.differences, ...(item.manual.length ? ['需填写：' + item.manual.join('、')] : [])].map((message, i) => <div key={i}>{message}</div>)}</td>
@@ -863,13 +879,19 @@ export default function ProductList() {
 
       {missingField === 'image' && (
         <div className="image-recovery-bar">
-          <div><strong>官网资料自动修复</strong><span>沿用蓝色 Takealot 链接回抓主图和英文标题；中文为空时自动翻译，已有人工分支名保持不变。</span></div>
+          <div><strong>图片与资料补充</strong><span>优先读取本店卖家资料，未匹配时读取官网；不修改售价和采购成本。</span></div>
           <button className="btn btn-primary btn-sm" disabled={!!imageBatchProgress} onClick={handleRefetchMissingImages}>
-            {imageBatchProgress || `从官网抓取缺图 (${products.filter(p => !p.product_image_url && p.takealot_url).length})`}
+            {imageBatchProgress || `补充缺图 (${products.filter(p => !p.product_image_url && p.takealot_url).length})`}
           </button>
+          {imageBatchProgress && <button className="btn btn-outline btn-sm" onClick={() => { batchStop.current = true; setImageBatchProgress('正在结束当前产品，随后停止…'); }}>停止后续处理</button>}
         </div>
       )}
 
+      {dataSource === 'remote' && !archivedMode && <div className="product-task-banner">
+        <label>售价刷新来源：<select value={priceSource} onChange={e => setPriceSource(e.target.value as 'official' | 'seller')} disabled={refreshingIds.size > 0}>
+          <option value="seller">本店报价（卖家 API）</option><option value="official">官网售价（网页读取）</option>
+        </select></label><span>本店报价与官网售价不同；来源不会自动切换。点击售价可人工修改。</span>
+      </div>}
       <div className="filters-bar">
         <select value={statusFilter} onChange={(e) => setFilter('selection_status', e.target.value)}>
           <option value="">全部状态</option>
