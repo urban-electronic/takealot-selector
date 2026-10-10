@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 from database import get_db
 from services.takealot_scraper import scrape_product, validate_takealot_url
 from services.fee_category_matcher import match_fee_category
+from services.takealot_seller_api import configured_key, seller_product
+from fastapi import Request
+import asyncio
 
 router = APIRouter(prefix="/api/products", tags=["scraper"])
 
@@ -24,12 +27,25 @@ class ScrapeRequest(BaseModel):
 
 
 @router.post("/scrape-takealot")
-async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db)):
+async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db), request: Request = None):
     url = data.effective_url
     if not validate_takealot_url(url):
         raise HTTPException(status_code=400, detail="请提供有效的 takealot.com 链接")
 
-    result = await scrape_product(url)
+    result = None
+    seller_warning = None
+    # This key belongs to the existing Urban Electronics store only.
+    if db is not None and request is not None and request.headers.get('X-Store-Id', 'default-store') == 'default-store':
+        key = configured_key(db)
+        if key:
+            try:
+                result = await asyncio.to_thread(seller_product, url, key)
+            except Exception:
+                seller_warning = '卖家 API 暂时不可用，已暂停重复请求；改用现有资料来源。'
+    if result is None:
+        result = await scrape_product(url)
+    if seller_warning:
+        result.setdefault('warnings', []).append(seller_warning)
 
     # 匹配 Fee 品类
     fee_match = match_fee_category(
