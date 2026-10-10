@@ -417,11 +417,13 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
         "manual_fulfillment_fee_zar",
         "manual_total_cost_zar",
     ]
-    for mf in manual_fields:
-        if mf not in update_data:
-            setattr(p, mf, None)
-
-    _apply_calculated_fields(db, p)
+    metadata_fields = {'sku', 'chinese_product_name', 'product_name', 'product_image_url',
+                       'product_image_path', 'takealot_url', 'tsin', 'note'}
+    if not set(update_data).issubset(metadata_fields):
+        for mf in manual_fields:
+            if mf not in update_data:
+                setattr(p, mf, None)
+        _apply_calculated_fields(db, p)
     db.commit()
     db.refresh(p)
 
