@@ -28,6 +28,19 @@ const secondaryNavItems = [
   { path: '/settings', label: '系统设置', hint: '费率、接口和基础参数', group: '系统管理' },
 ];
 
+function WorldClocks() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const format = (zone: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: zone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(now);
+  return <div className="world-clocks" aria-label="中国与南非时间" title="中国时间比南非快 6 小时；按设备时钟实时显示">
+    <div><span>中国</span><time dateTime={now.toISOString()}>{format('Asia/Shanghai')}</time></div>
+    <div><span>南非</span><time dateTime={now.toISOString()}>{format('Africa/Johannesburg')}</time></div>
+  </div>;
+}
+
 export default function App() {
   const [stores, setStores] = useState<Store[]>([]);
   const [activeStore, setActiveStore] = useState(getActiveStoreId());
@@ -87,6 +100,7 @@ export default function App() {
           ))}
         </nav>
         <div className="header-tools">
+          <WorldClocks />
           <div className="store-switcher">
           <span>店铺</span>
           <select value={activeStore} onChange={event => switchStore(event.target.value)}>
