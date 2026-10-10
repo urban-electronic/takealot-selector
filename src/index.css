@@ -1597,3 +1597,35 @@ table tbody tr:hover {
   .stores-heading { flex-direction: column; }
   .store-kpis, .store-form-grid { grid-template-columns: 1fr; }
 }
+
+
+/* SKU audit: translate technical comparisons into an actionable review flow. */
+.sku-audit-panel { margin: 12px 0 18px; padding: 16px; border: 1px solid #d9e2ef; border-radius: 12px; background: #f8fbff; }
+.sku-audit-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.sku-audit-heading > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.sku-audit-heading strong { color: #183354; }
+.sku-audit-heading span { color: #65758b; font-size: 12px; }
+.sku-audit-summary { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.sku-audit-summary span { padding: 3px 8px; border-radius: 999px; font-weight: 700; }
+.sku-audit-summary .ok { color: #287044; background: #e8f6ed; }
+.sku-audit-summary .warn { color: #9a6200; background: #fff3d6; }
+.sku-audit-summary .danger { color: #a33b3b; background: #fdeaea; }
+.sku-audit-help { display: flex; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: #fff8e7; color: #75551a; font-size: 12px; }
+.sku-audit-issues { display: grid; gap: 9px; margin-top: 12px; }
+.sku-audit-issue { display: grid; grid-template-columns: minmax(110px, .6fr) minmax(360px, 2fr) auto; align-items: center; gap: 14px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }
+.sku-audit-product { display: flex; flex-direction: column; }
+.sku-audit-product span, .sku-audit-values small { color: #8490a1; font-size: 11px; }
+.sku-audit-values { display: grid; grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr); align-items: center; gap: 7px; }
+.sku-audit-values div { display: flex; min-width: 0; flex-direction: column; }
+.sku-audit-values span { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.sku-audit-values b { color: #9aa6b5; text-align: center; }
+.sku-audit-actions { display: flex; gap: 7px; white-space: nowrap; }
+.sku-audit-footer, .sku-audit-clear { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 12px; }
+.sku-audit-clear { color: #287044; justify-content: center; }
+@media (max-width: 900px) {
+  .sku-audit-heading, .sku-audit-help { flex-direction: column; }
+  .sku-audit-summary { justify-content: flex-start; }
+  .sku-audit-issue { grid-template-columns: 1fr; }
+  .sku-audit-values { grid-template-columns: 1fr; }
+  .sku-audit-values b { transform: rotate(90deg); }
+}
