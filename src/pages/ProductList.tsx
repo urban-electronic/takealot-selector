@@ -20,7 +20,7 @@ const allColumns: ColumnDef[] = [
   { key: 'image', label: '图片', defaultWidth: 80 },
   { key: 'product_name', label: '标题', defaultWidth: 200 },
   { key: 'chinese_product_name', label: '中文品名', defaultWidth: 120 },
-  { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 100 },
+  { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 132 },
   { key: 'fee_category', label: 'Fee品类', defaultWidth: 140 },
   { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
@@ -321,7 +321,7 @@ export default function ProductList() {
   };
 
   const getColWidth = (colKey: string, defaultWidth: number): number =>
-    colWidths[colKey] || defaultWidth;
+    colKey === 'actual_sale_price_zar' ? Math.max(132, colWidths[colKey] || defaultWidth) : colWidths[colKey] || defaultWidth;
 
   // --- 列可见性 ---
   const toggleColumn = (key: string) => {
@@ -679,12 +679,14 @@ export default function ProductList() {
             <button
               onClick={() => handleRefreshPrice(p.id)}
               disabled={isRefreshing || !p.takealot_url}
+              className="price-refresh-button"
+              aria-busy={isRefreshing}
+              aria-label={isRefreshing ? '正在读取售价' : '刷新售价'}
               title={dataSource === 'remote' ? (priceSource === 'seller' ? '刷新本店报价（不是官网最低价）' : '刷新官网售价') : '刷新官网售价'}
-              style={{ fontSize: 11, padding: '1px 5px', cursor: isRefreshing ? 'wait' : 'pointer', opacity: isRefreshing ? 0.5 : 1, border: '1px solid #d9d9d9', borderRadius: 3, background: '#fff', lineHeight: '18px' }}
             >
-              {isRefreshing ? '读取中' : '↻'}
+              <span aria-hidden="true">↻</span>
             </button>
-            {refreshMessages[p.id] && <button type="button" className="price-refresh-status" title="点击查看刷新结果和说明" onClick={() => setRefreshDetail({ id: p.id, message: refreshMessages[p.id] })}>{refreshMessages[p.id].includes('已更新') ? '已更新 ⓘ' : '读取失败 ⓘ'}</button>}
+            {refreshMessages[p.id] && <button type="button" className="price-refresh-status" data-result={refreshMessages[p.id].includes('已更新') ? 'success' : 'error'} aria-label={refreshMessages[p.id].includes('已更新') ? '售价已更新，查看说明' : '读取失败，查看原因'} title={refreshMessages[p.id].includes('已更新') ? '已更新，点击查看说明' : '读取失败，点击查看原因'} onClick={() => setRefreshDetail({ id: p.id, message: refreshMessages[p.id] })}>{refreshMessages[p.id].includes('已更新') ? '✓' : '!'}</button>}
           </div>
         );
       case 'fee_category':
