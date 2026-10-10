@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { auditProductSkus, getInventory, getShipments } from '../remoteApi';
+import { auditProductSkus, getInventory, getShipments, updateProduct } from '../remoteApi';
 import type { SkuAuditResult } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
@@ -19,11 +19,28 @@ export default function Dashboard() {
   const [auditing, setAuditing] = useState(false);
   const [audit, setAudit] = useState<SkuAuditResult | null>(null);
   const [auditError, setAuditError] = useState('');
+  const [fixingProductId, setFixingProductId] = useState('');
+  const [auditMessage, setAuditMessage] = useState('');
   const checkSkus = async () => {
-    setAuditing(true); setAuditError('');
+    setAuditing(true); setAuditError(''); setAuditMessage('');
     try { setAudit(await auditProductSkus()); }
     catch (e: unknown) { setAuditError(e instanceof Error ? e.message : String(e)); }
     finally { setAuditing(false); }
+  };
+
+  const applyReferenceSku = async (issue: SkuAuditResult['issues'][number]) => {
+    const nextSku = issue.reference_skus.join('\n');
+    if (!nextSku || !window.confirm(`确认把产品 ${issue.product_no} 的 SKU 改为卖家导出表中的值？\n\n${issue.reference_skus.join('、')}\n\n修改后原有 SKU 会被替换。`)) return;
+    setFixingProductId(issue.product_id); setAuditError(''); setAuditMessage('');
+    try {
+      await updateProduct(issue.product_id, { sku: nextSku });
+      setAuditMessage(`产品 ${issue.product_no} 已按卖家表修正 SKU`);
+      setAudit(await auditProductSkus());
+    } catch (e: unknown) {
+      setAuditError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFixingProductId('');
+    }
   };
 
   useEffect(() => {
@@ -107,10 +124,25 @@ export default function Dashboard() {
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-tasks">
           <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled={auditing} onClick={checkSkus} title="按已导入的Takealot卖家导出表核对SKU，不修改产品或库存">{auditing ? '核对中...' : 'SKU 自检'}</button></div>
-          {auditError && <div className="alert alert-error">SKU 自检失败：{auditError} <button className="btn btn-sm" onClick={checkSkus} disabled={auditing}>重试</button></div>}
-          {audit && <div className="alert">依据{audit.source}：已核对 {audit.total} 个产品，匹配 {audit.verified}，缺少 SKU {audit.missing}，不匹配 {audit.mismatch}，导出表未覆盖 {audit.unmatched}。本次仅核对，未修改记录。
-            {audit.issues.filter(item => item.status === 'mismatch').map(item => <div key={item.product_id}><Link to={`/products/${item.product_id}`}>产品 {item.product_no}</Link>：当前 {item.current_skus.join('、')}；导出表 {item.reference_skus.join('、')}</div>)}
-            {audit.missing > 0 && <Link to="/products?missing_field=sku&task=补充SKU">处理缺少 SKU 的产品 →</Link>}
+          {auditError && <div className="alert alert-error">处理失败：{auditError} <button className="btn btn-sm" onClick={checkSkus} disabled={auditing}>重新检查</button></div>}
+          {auditMessage && <div className="alert alert-success">{auditMessage}</div>}
+          {audit && <div className="sku-audit-panel">
+            <div className="sku-audit-heading">
+              <div><strong>SKU 核对结果</strong><span>这是资料核对提示，不是程序故障。系统正在比较产品库与 {audit.source}。</span></div>
+              <div className="sku-audit-summary"><span className="ok">{audit.verified} 个一致</span>{audit.mismatch > 0 && <span className="warn">{audit.mismatch} 个需要核对</span>}{audit.missing > 0 && <span className="danger">{audit.missing} 个缺少 SKU</span>}</div>
+            </div>
+            {audit.issues.filter(item => item.status === 'mismatch').length > 0 && <div className="sku-audit-help">
+              <strong>为什么会出现？</strong><span>这些产品在系统里保存了多个 SKU，但卖家导出表只确认了其中一部分。请判断多出的 SKU 是旧数据，还是仍在使用的颜色/规格。</span>
+            </div>}
+            <div className="sku-audit-issues">
+              {audit.issues.filter(item => item.status === 'mismatch').map(item => <div className="sku-audit-issue" key={item.product_id}>
+                <div className="sku-audit-product"><strong>产品 {item.product_no}</strong><span>SKU 记录不一致</span></div>
+                <div className="sku-audit-values"><div><small>系统当前记录</small><span>{item.current_skus.join('、') || '未填写'}</span></div><b>→</b><div><small>卖家表建议值</small><span>{item.reference_skus.join('、') || '未找到'}</span></div></div>
+                <div className="sku-audit-actions"><Link className="btn btn-sm" to={`/products/${item.product_id}`}>打开产品核对</Link><button className="btn btn-primary btn-sm" disabled={fixingProductId === item.product_id || item.reference_skus.length === 0} onClick={() => applyReferenceSku(item)}>{fixingProductId === item.product_id ? '修正中...' : '按卖家表修正'}</button></div>
+              </div>)}
+            </div>
+            {audit.missing > 0 && <div className="sku-audit-footer"><span>另有 {audit.missing} 个产品没有填写 SKU。</span><Link to="/products?missing_field=sku&task=补充SKU">去补充 SKU →</Link></div>}
+            {audit.mismatch === 0 && audit.missing === 0 && <div className="sku-audit-clear">SKU 核对完成，当前没有需要处理的问题。</div>}
           </div>}
           <div className="dashboard-task-sections">
             {visibleTaskGroups.length === 0 ? <div className="dashboard-all-clear"><strong>当前无待处理问题</strong><span>出现新的资料、库存或发货异常后，会自动显示在这里。</span></div> : visibleTaskGroups.map(group => <div className="dashboard-task-section" key={group.label}>
