@@ -1,5 +1,26 @@
 import type { ScrapeResult } from './types';
 
+export function importSavedTakealotPage(doc: Document, enteredUrl: string): ScrapeResult {
+  const canonical = doc.querySelector('link[rel="canonical"]')?.getAttribute('href') || doc.querySelector('meta[property="og:url"]')?.getAttribute('content') || '';
+  const pageUrl = canonical || enteredUrl.trim();
+  const parsed = new URL(pageUrl);
+  if (parsed.protocol !== 'https:' || !['takealot.com', 'www.takealot.com'].includes(parsed.hostname) || parsed.username || parsed.password || !/PLID\d+/i.test(parsed.pathname)) throw new Error('请填写该文件对应的 Takealot 商品链接。');
+  if (enteredUrl.trim() && canonical) {
+    const expected = new URL(enteredUrl.trim());
+    if (expected.pathname.match(/PLID\d+/i)?.[0].toUpperCase() !== parsed.pathname.match(/PLID\d+/i)?.[0].toUpperCase()) throw new Error('网页文件与填写的商品链接不一致，请选择对应商品的文件。');
+  }
+  const title = doc.querySelector('main h1')?.textContent?.trim() || doc.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim() || '';
+  if (!title || /just a moment|access denied|verify you are human|security verification/i.test(title)) throw new Error('文件没有商品标题，请等官网正常显示商品后重新保存网页。');
+  let captured;
+  try { captured = captureTakealotPage(doc, pageUrl); } catch { captured = { version: 1, url: pageUrl, title, image: '', price: null, category: '', outOfStock: false }; }
+  const metaImage = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || '';
+  // Browsers rewrite visible image URLs to local files when saving a complete page.
+  if (!captured.image && metaImage.startsWith('https://media.takealot.com/covers_images/')) captured.image = metaImage;
+  const result = parseTakealotPageImport(JSON.stringify(captured));
+  result.warnings.unshift('已读取保存的网页；文件可能过期，请核对当前售价。');
+  return result;
+}
+
 export function captureTakealotPage(doc: Document, pageUrl: string) {
   const url = new URL(pageUrl);
   if (!['takealot.com', 'www.takealot.com'].includes(url.hostname) || !/^https?:$/.test(url.protocol) || url.username || url.password || !/PLID\d+/i.test(url.pathname)) throw new Error('请在正常打开的 Takealot 商品详情页点击此书签。');
