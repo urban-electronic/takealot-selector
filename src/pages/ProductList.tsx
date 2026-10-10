@@ -84,6 +84,14 @@ export default function ProductList() {
   const api = useApi();
   const { dataSource } = useDataSource();
   const [assist, setAssist] = useState<SellerAssistResult | null>(null);
+  useEffect(() => {
+    if (!assist) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setAssist(null); };
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', close);
+    return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', close); };
+  }, [assist]);
   const [assistOnlyTasks, setAssistOnlyTasks] = useState(true);
   const [assistBusy, setAssistBusy] = useState(false);
   const [assistError, setAssistError] = useState('');
@@ -452,7 +460,9 @@ export default function ProductList() {
         })
       );
     } catch (e: any) {
-      setRefreshMessages(prev => ({ ...prev, [id]: e.message || '读取失败，原售价保留' }));
+      const message = e.message || '读取失败，原售价保留';
+      setRefreshMessages(prev => ({ ...prev, [id]: message }));
+      setRefreshDetail({ id, message });
     } finally {
       setRefreshingIds((prev) => {
         const next = new Set(prev);
@@ -854,8 +864,10 @@ export default function ProductList() {
         <button className="btn btn-outline btn-sm" onClick={() => setRefreshDetail(null)}>关闭</button>
       </div>}
       {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
-      {assist && <div role="dialog" aria-modal="true" aria-label="卖家资料补齐预览" style={{ position: 'fixed', inset: 0, background: '#0008', zIndex: 2000, display: 'grid', placeItems: 'center' }}>
-        <div style={{ background: 'var(--color-bg, white)', padding: 24, borderRadius: 12, width: 'min(1000px, 94vw)', maxHeight: '85vh', overflow: 'auto' }}>
+      {assist && <div role="dialog" aria-modal="true" aria-label="卖家资料补齐预览" onClick={e => { if (e.target === e.currentTarget) setAssist(null); }} style={{ position: 'fixed', inset: 0, background: '#0008', zIndex: 2000, display: 'grid', placeItems: 'center' }}>
+        <div className="seller-assist-dialog">
+          <div className="seller-assist-header"><strong>卖家资料核对</strong><button className="btn btn-outline btn-sm" onClick={() => setAssist(null)}>关闭 ×</button></div>
+          <div className="seller-assist-body">
           <h3>补齐预览：{assist.fillable} 个产品可以补齐</h3>
           <p>来源：本店卖家 API。仅补空白 SKU、图片、标题、TSIN、尺寸和重量。尺寸或重量补齐后会重新计算费用与利润，人工成本覆盖值保留。</p>
           <label style={{ display: 'block', marginBottom: 12 }}><input type="checkbox" checked={assistOnlyTasks} onChange={e => setAssistOnlyTasks(e.target.checked)} /> 只显示需要处理的产品（可补齐、待核对或需人工填写）</label>
@@ -864,10 +876,11 @@ export default function ProductList() {
             <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : String(c.value)}</div>) : '无需补齐'}</td>
             <td>{[...item.warnings, ...item.differences, ...(item.manual.length ? ['需填写：' + item.manual.join('、')] : [])].map((message, i) => <div key={i}>{message}</div>)}</td>
           </tr>)}</tbody></table>
-          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+          </div>
+          <div className="seller-assist-footer">
             <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>确认仅补空白资料 ({assist.fillable})</button>
             <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新核对</button>
-            <button className="btn btn-outline" disabled={assistBusy} onClick={() => setAssist(null)}>关闭</button>
+            <button className="btn btn-outline" onClick={() => setAssist(null)}>关闭</button>
           </div>
         </div>
       </div>}
