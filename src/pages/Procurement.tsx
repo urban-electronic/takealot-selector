@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { productLabels } from '../utils/productLabels';
 import { useApi } from '../DataSourceContext';
 import type { ProcurementRecord, Product } from '../types';
 
 export default function Procurement() {
   const navigate = useNavigate();
   const api = useApi();
+  const [productNames, setProductNames] = useState<Record<string, string>>({});
   const [records, setRecords] = useState<ProcurementRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -51,6 +53,13 @@ export default function Procurement() {
   }, []);
 
   useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => {
+    let active = true;
+    api.getProducts().then(products => {
+      if (active) setProductNames(Object.fromEntries(products.map(p => [p.id, p.chinese_product_name || ''])));
+    }).catch(() => { /* Rule-based labels remain available without the catalog. */ });
+    return () => { active = false; };
+  }, [api]);
 
   const handleSyncToRemote = async () => {
     const baseUrl = localStorage.getItem('api_base_url') || 'https://takealot-selector-production.up.railway.app';
@@ -366,7 +375,7 @@ export default function Procurement() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <input type="text" placeholder="输入产品序号筛选采购记录..." value={filterProductNo}
           onChange={e => setFilterProductNo(e.target.value)}
-          style={{ padding: '6px 12px', borderRadius: 4, border: '1px solid #ccc', width: 240 }} />
+          style={{ padding: '6px 12px', borderRadius: 10, border: '1px solid #d6e3f3', width: 240 }} />
         {filterProductNo.trim() && (
           <button className="btn btn-sm" onClick={() => setFilterProductNo('')}>清除筛选</button>
         )}
@@ -393,7 +402,9 @@ export default function Procurement() {
               <tr key={r.id} style={{ borderBottom: '1px solid #eee' }}>
                 <td style={{ padding: '8px 12px' }}>{r.recorded_at}</td>
                 <td style={{ padding: '8px 12px' }}>{r.product_no}</td>
-                <td style={{ padding: '8px 12px' }}>{r.product_name}</td>
+                <td style={{ padding: '8px 12px', maxWidth: 360 }} title={r.product_name || ''}>
+                  {(() => { const label = productLabels(r.product_name, productNames[r.product_id || '']); return <div className="procurement-product-label"><strong>{label.chinese}{label.features && <span> · {label.features}</span>}</strong><small>{label.english}</small></div>; })()}
+                </td>
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>{r.quantity}</td>
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatPrice(r.total_amount)}</td>
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>{formatPrice(r.unit_price)}</td>

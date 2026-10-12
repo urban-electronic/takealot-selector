@@ -60,7 +60,7 @@ def _load_offers(key):
                     time.sleep(10)
                 params = [('limit', '1000')] if token is None else [('continuation_token', token)]
                 if token is None:
-                    params += [('fields', field) for field in ('title', 'image_url', 'sku', 'tsin_id', 'productline_id', 'selling_price', 'status')]
+                    params += [('fields', field) for field in ('title', 'image_url', 'sku', 'tsin_id', 'productline_id', 'selling_price', 'status', 'length_cm', 'width_cm', 'height_cm', 'weight_grams')]
                 response = client.get('https://marketplace-api.takealot.com/v1/offers', params=params, headers={'X-API-Key': key})
                 if response.status_code != 200:
                     if response.status_code == 429:
@@ -120,3 +120,60 @@ def seller_product(url, key):
             'variants': [{'sku': r.get('sku'), 'label': r.get('title'), 'image_url': image or ''} for r in rows if r.get('sku')],
             'warnings': warnings, 'success': bool(image and prices), 'data_source': 'seller_api',
             'diagnostics': [{'stage': 'seller_api', 'reason': 'exact_productline_match'}]}
+
+
+ASSIST_FIELDS = {'sku': 'SKU', 'product_name': '英文标题', 'product_image_url': '图片', 'tsin': 'TSIN',
+                 'length_mm': '长度(mm)', 'width_mm': '宽度(mm)', 'height_mm': '高度(mm)', 'actual_weight_kg': '重量(kg)'}
+
+
+def offer_plan(product, offers):
+    """Exact identity only; never infer seller identity from a title."""
+    skus = re.split(r'[\s,，;；]+', (product.sku or '').strip()) if product.sku else []
+    match = re.search(r'PLID(\d+)', product.takealot_url or '', re.I)
+    candidates = [r for r in offers if str(r.get('productline_id')) == match[1]] if match else []
+    if skus:
+        exact = [r for r in offers if str(r.get('sku')) in skus]
+        # All existing SKUs must map; decorated historical SKUs require manual review.
+        if set(str(r.get('sku')) for r in exact) == set(skus):
+            if candidates and any(r not in candidates for r in exact):
+                candidates = []
+            else:
+                candidates = exact
+        else:
+            candidates = []
+    proposed = {}; warnings = []
+    if candidates:
+        if not skus:
+            proposed['sku'] = '\n'.join(sorted(set(str(r['sku']) for r in candidates if r.get('sku'))))
+        for field, source in [('product_name', 'title'), ('tsin', 'tsin_id'), ('product_image_url', 'image_url')]:
+            vals = {str(r[source]) for r in candidates if r.get(source)}
+            if len(vals) == 1:
+                value = vals.pop()
+                if field == 'product_image_url':
+                    parsed = urlparse(value)
+                    if parsed.hostname not in ('takealot.s3.amazonaws.com', 'media.takealot.com') or parsed.scheme not in ('https', 'http') or not parsed.path.startswith('/covers_images/'):
+                        continue
+                    value = value.replace('http://', 'https://', 1)
+                proposed[field] = value
+        for field, source, factor in [('length_mm', 'length_cm', 10), ('width_mm', 'width_cm', 10), ('height_mm', 'height_cm', 10), ('actual_weight_kg', 'weight_grams', .001)]:
+            vals = [r.get(source) for r in candidates]
+            if all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0 for v in vals) and len(set(vals)) == 1:
+                proposed[field] = round(vals[0] * factor, 6)
+        if len(candidates) > 1:
+            warnings.append('多规格商品仅补齐所有匹配规格一致的资料；尺寸有差异时请人工核对。')
+    else:
+        warnings.append('本店卖家资料无精确匹配，请人工补充；不会猜测 SKU。')
+    changes = []; differences = []
+    for field, value in proposed.items():
+        current = getattr(product, field)
+        empty = current is None or current == ''
+        if field == 'product_image_url' and product.product_image_path:
+            continue
+        if value and empty:
+            changes.append({'field': field, 'label': ASSIST_FIELDS[field], 'value': value})
+        elif current != value:
+            differences.append(ASSIST_FIELDS[field] + '与卖家资料不同，保留现有值')
+    manual = [label for field, label in [('purchase_cost_cny', '采购成本'), ('fee_category', 'Fee品类'), ('shipping_method', '运输方式')] if not getattr(product, field)]
+    fingerprint = hashlib.sha256(repr((product.id, product.store_id, product.updated_at, changes)).encode()).hexdigest()
+    return {'id': product.id, 'product_no': product.product_no, 'name': product.product_name or '未命名',
+            'changes': changes, 'differences': differences, 'warnings': warnings, 'manual': manual, 'token': fingerprint}

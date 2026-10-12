@@ -73,12 +73,16 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
   const url = `${baseUrl}${path}`;
   const res = await fetch(url, {
     ...options,
+    signal: options.signal ?? AbortSignal.timeout(90000),
     headers: {
       'Content-Type': 'application/json',
       'X-API-Key': getApiKey(),
       'X-Store-ID': getActiveStoreId(),
       ...options.headers,
     },
+  }).catch((e: unknown) => {
+    if (e instanceof DOMException && e.name === 'TimeoutError') throw new Error('请求等待超时，请稍后刷新列表确认结果，避免重复提交。');
+    throw e;
   });
   if (!res.ok) {
     // 优先透传后端 detail，避免丢失真实错误原因
@@ -172,8 +176,8 @@ export const deleteProduct = async (id: string): Promise<string> => {
 export const restoreProduct = (id: string): Promise<string> =>
   request<string>(`/api/products/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 
-export const refreshPrice = (id: string): Promise<Record<string, unknown>> =>
-  request<Record<string, unknown>>(`/api/products/${encodeURIComponent(id)}/refresh-price`, {
+export const refreshPrice = (id: string, source: 'official' | 'seller' | 'details' = 'official'): Promise<Record<string, unknown>> =>
+  request<Record<string, unknown>>(`/api/products/${encodeURIComponent(id)}/refresh-price?source=${source}`, {
     method: 'POST',
   });
 
@@ -428,3 +432,12 @@ export const fetchPackingImageBlob = async (filename: string): Promise<Blob> => 
   }
   return await res.blob();
 };
+
+export interface SellerAssistItem {
+  id: string; product_no: number; name: string; token: string;
+  changes: { field: string; label: string; value: string | number }[];
+  differences: string[]; warnings: string[]; manual: string[];
+}
+export interface SellerAssistResult { items: SellerAssistItem[]; fillable: number }
+export const previewSellerAssist = (ids: string[]) => request<SellerAssistResult>('/api/products/seller-assist/preview', { method: 'POST', body: JSON.stringify({ ids }) });
+export const applySellerAssist = (items: SellerAssistItem[]) => request<SellerAssistResult>('/api/products/seller-assist/apply', { method: 'POST', body: JSON.stringify({ ids: items.map(i => i.id), tokens: Object.fromEntries(items.map(i => [i.id, i.token])) }) });

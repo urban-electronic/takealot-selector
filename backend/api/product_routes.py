@@ -3,10 +3,10 @@
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 import asyncio
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -249,6 +249,68 @@ def _apply_calculated_fields(db: Session, p: Product):
     p.selection_status = determine_selection_status(product_dict, calculated)
 
 
+class AssistRequest(BaseModel):
+    ids: List[str] = Field(min_length=1, max_length=500)
+    tokens: Optional[dict[str, str]] = None
+
+
+@router.post('/seller-assist/preview')
+@router.post('/seller-assist/apply')
+def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    from services.takealot_seller_api import configured_key, _load_offers, offer_plan
+    if store_id != 'default-store':
+        raise HTTPException(400, '当前店铺尚未接入卖家资料')
+    key = configured_key(db)
+    if not key:
+        raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
+    try:
+        offers = _load_offers(key)
+    except Exception:
+        raise HTTPException(503, '卖家资料暂时无法读取，请稍后重试')
+    ids = set(data.ids)
+    products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.id.in_(ids)).all()
+    if len(products) != len(ids):
+        raise HTTPException(409, '产品已删除或属于其他店铺，请刷新列表')
+    plans = [offer_plan(p, offers) for p in products]
+    # A blank SKU must not introduce a duplicate identity into this store.
+    occupied = {}
+    for other in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all():
+        for sku in re.split(r'[\s,，;；]+', other.sku or ''):
+            if sku:
+                occupied.setdefault(sku, set()).add(other.id)
+    for plan in plans:
+        for change in list(plan['changes']):
+            if change['field'] != 'sku':
+                continue
+            proposed = change['value'].split()
+            if any(occupied.get(sku, set()) - {plan['id']} for sku in proposed):
+                plan['changes'].remove(change)
+                plan['warnings'].append('SKU 已被其他产品使用，请人工核对重复记录。')
+            else:
+                for sku in proposed:
+                    occupied.setdefault(sku, set()).add(plan['id'])
+    import hashlib
+    for plan in plans:
+        plan['token'] = hashlib.sha256(repr((plan['token'], plan['changes'])).encode()).hexdigest()
+    if request.url.path.endswith('/apply'):
+        if not data.tokens or any(data.tokens.get(p['id']) != p['token'] for p in plans):
+            raise HTTPException(409, '资料已变更，请重新预览后再补齐')
+        for product, plan in zip(products, plans):
+            values = {change['field']: change['value'] for change in plan['changes']}
+            if not values:
+                continue
+            # Conditional update protects concurrent edits after the preview check.
+            count = db.query(Product).filter(Product.id == product.id, Product.store_id == store_id, Product.updated_at == product.updated_at).update({**values, 'updated_at': datetime.utcnow()}, synchronize_session=False)
+            if count != 1:
+                db.rollback()
+                raise HTTPException(409, '同事刚修改了资料，请重新预览')
+            db.refresh(product)
+            if any(field in values for field in ('length_mm', 'width_mm', 'height_mm', 'actual_weight_kg')):
+                _apply_calculated_fields(db, product)
+        db.commit()
+    return {'items': plans, 'fillable': sum(bool(p['changes']) for p in plans)}
+
+
 @router.get("", response_model=List[ProductOut])
 def list_products(
     selection_status: Optional[str] = Query(None),
@@ -479,6 +541,9 @@ def batch_import(data: List[ProductCreate], db: Session = Depends(get_db), store
 
 
 class PriceRefreshOut(BaseModel):
+    data_source: str = "takealot"
+    warnings: List[str] = Field(default_factory=list)
+    price_updated: bool = False
     sku: Optional[str] = None
     fee_category: Optional[str] = None
     fee_category_confirmed: Optional[bool] = None
@@ -500,7 +565,7 @@ class PriceRefreshOut(BaseModel):
 
 
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)
-async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id), source: Literal['official', 'seller', 'details'] = 'official'):
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="产品不存在")
@@ -508,13 +573,53 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id
         raise HTTPException(status_code=400, detail="产品没有 Takealot 链接")
 
     from services.takealot_scraper import scrape_product
+    from services.takealot_seller_api import configured_key, seller_product, _load_offers
+    import math
+    result = None
+    if source in ('seller', 'details') and store_id == 'default-store':
+        key = configured_key(db)
+        if key:
+            try:
+                result = await asyncio.wait_for(asyncio.to_thread(seller_product, p.takealot_url, key), timeout=30)
+                if result and source == 'seller':
+                    rows = await asyncio.to_thread(_load_offers, key)
+                    match = re.search(r'PLID(\d+)', p.takealot_url, re.I)
+                    rows = [row for row in rows if match and str(row.get('productline_id')) == match[1]]
+                    skus = set(re.split(r'[\s,，;；]+', (p.sku or '').strip())) - {''}
+                    if skus:
+                        rows = [row for row in rows if str(row.get('sku')) in skus]
+                        if {str(row.get('sku')) for row in rows} != skus:
+                            raise HTTPException(409, '现有 SKU 与本店卖家资料不完全匹配，请先核对规格；原售价保留')
+                    prices = [row.get('selling_price') for row in rows]
+                    if not prices or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0 for v in prices) or len(set(prices)) != 1:
+                        raise HTTPException(409, '卖家报价缺失或不同规格报价不一致，请人工核对；原售价保留')
+                    result['actual_sale_price_zar'] = prices[0]
+                    result.setdefault('warnings', []).append('卖家资料最多缓存 30 分钟；本次读取不代表官网实时最低价。')
+            except HTTPException:
+                raise
+            except Exception:
+                if source == 'seller':
+                    raise HTTPException(503, '本店报价暂时无法读取，请稍后重试；原售价保留')
+        elif source == 'seller':
+            raise HTTPException(400, '当前店铺尚未接入卖家 API，请选择官网售价')
+    if source == 'seller' and result is None:
+        raise HTTPException(404, '本店卖家资料没有此商品，请选择官网售价或人工填写；原售价保留')
+    if result is None:
+        try:
+            result = await asyncio.wait_for(scrape_product(p.takealot_url), timeout=45)
+        except asyncio.TimeoutError:
+            raise HTTPException(504, '官网读取超时，请稍后重试或选择本店报价；原售价保留')
+        except Exception:
+            raise HTTPException(502, '官网资料暂时无法读取；原售价保留')
+    price = result.get('actual_sale_price_zar')
+    valid_price = isinstance(price, (int, float)) and not isinstance(price, bool) and math.isfinite(price) and price > 0
+    if source != 'details' and not valid_price:
+        reason = '；'.join(result.get('warnings', [])) or '未获得有效售价'
+        raise HTTPException(502, reason + ' 原售价保留。可选择本店报价或人工填写。')
+    if source == 'details' and not any(result.get(f) for f in ('product_name', 'product_image_url', 'tsin', 'variants')):
+        raise HTTPException(502, '；'.join(result.get('warnings', [])) or '未获取商品资料，请人工补充')
 
-    try:
-        result = await asyncio.wait_for(scrape_product(p.takealot_url), timeout=45)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="官网抓取超时，已跳过该产品")
-
-    updated = {}
+    updated = {'data_source': result.get('data_source') or 'takealot', 'warnings': result.get('warnings', []), 'price_updated': source != 'details' and valid_price}
     official_name = (result.get("product_name") or "").strip()
     if official_name:
         # 英文标题以官网为准；中文人工分支名若已有则保留，避免覆盖颜色/规格信息。
@@ -547,11 +652,11 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id
             p.success_fee_rate = _get_fee_rate(db, p.fee_category)
             updated["fee_category"] = p.fee_category
             updated["fee_category_confirmed"] = True
-    if result.get("actual_sale_price_zar") is not None:
+    if source != "details" and valid_price:
         p.actual_sale_price_zar = result["actual_sale_price_zar"]
         updated["actual_sale_price_zar"] = result["actual_sale_price_zar"]
 
-    if result.get("in_stock_price") is not None:
+    if source != "details" and result.get("in_stock_price") is not None:
         updated["in_stock_price"] = result["in_stock_price"]
 
     if result.get("product_image_url") and not p.product_image_url:
