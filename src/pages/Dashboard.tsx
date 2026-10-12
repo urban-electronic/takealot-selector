@@ -105,8 +105,8 @@ export default function Dashboard() {
       </section>
 
       <div className="dashboard-grid">
-        {visibleTaskGroups.length > 0 && <section className="dashboard-panel dashboard-tasks">
-          <div className="dashboard-panel-title"><div><h2>待处理事项</h2></div><button className="btn btn-outline btn-sm" disabled={auditing} onClick={checkSkus} title="按已导入的Takealot卖家导出表核对SKU，不修改产品或库存">{auditing ? '核对中...' : 'SKU 自检'}</button></div>
+        <section className="dashboard-panel dashboard-tasks">
+          <div className="dashboard-panel-title"><div><h2>待处理事项</h2><p>优先解决会阻塞采购、库存和发货的问题。</p></div><button className="btn btn-outline btn-sm" disabled={auditing} onClick={checkSkus} title="按已导入的Takealot卖家导出表核对SKU，不修改产品或库存">{auditing ? '核对中...' : 'SKU 自检'}</button></div>
           {auditError && <div className="alert alert-error">SKU 自检失败：{auditError} <button className="btn btn-sm" onClick={checkSkus} disabled={auditing}>重试</button></div>}
           {audit && <div className="alert">依据{audit.source}：已核对 {audit.total} 个产品，匹配 {audit.verified}，缺少 SKU {audit.missing}，不匹配 {audit.mismatch}，导出表未覆盖 {audit.unmatched}。本次仅核对，未修改记录。
             {audit.issues.filter(item => item.status === 'mismatch').map(item => <div key={item.product_id}><Link to={`/products/${item.product_id}`}>产品 {item.product_no}</Link>：当前 {item.current_skus.join('、')}；导出表 {item.reference_skus.join('、')}</div>)}
@@ -114,13 +114,13 @@ export default function Dashboard() {
           </div>}
           <div className="dashboard-task-sections">
             {visibleTaskGroups.length === 0 ? <div className="dashboard-all-clear"><strong>当前无待处理问题</strong><span>出现新的资料、库存或发货异常后，会自动显示在这里。</span></div> : visibleTaskGroups.map(group => <div className="dashboard-task-section" key={group.label}>
-              <div className="dashboard-task-section-title"><strong>{group.label}</strong></div>
+              <div className="dashboard-task-section-title"><strong>{group.label}</strong><span>{group.detail}</span></div>
               <div className="dashboard-task-grid">{group.items.map(task => <Link to={task.to} key={task.label} className={`dashboard-task ${task.tone}`}>
-                <strong>{task.count}</strong><span>{task.label}</span><b>去处理 →</b>
+                <em>待处理</em><strong>{task.count}</strong><span>{task.label}</span><small>{task.detail}</small><b>进入处理 →</b>
               </Link>)}</div>
             </div>)}
           </div>
-        </section>}
+        </section>
 
         <section className="dashboard-panel dashboard-profit">
           <div className="dashboard-panel-title"><div><h2>选品质量</h2><p>快速判断产品池健康度。</p></div><Link to="/products">查看产品</Link></div>
