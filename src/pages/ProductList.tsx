@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useApi } from '../DataSourceContext';
+import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, type SellerAssistResult } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 
@@ -20,7 +20,7 @@ const allColumns: ColumnDef[] = [
   { key: 'image', label: '图片', defaultWidth: 80 },
   { key: 'product_name', label: '标题', defaultWidth: 200 },
   { key: 'chinese_product_name', label: '中文品名', defaultWidth: 120 },
-  { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 100 },
+  { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 132 },
   { key: 'fee_category', label: 'Fee品类', defaultWidth: 140 },
   { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
@@ -82,11 +82,45 @@ function variantSpec(label: string, allLabels: string[]): string {
 
 export default function ProductList() {
   const api = useApi();
+  const { dataSource } = useDataSource();
+  const [assist, setAssist] = useState<SellerAssistResult | null>(null);
+  useEffect(() => {
+    if (!assist) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setAssist(null); };
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', close);
+    return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', close); };
+  }, [assist]);
+  const [assistOnlyTasks, setAssistOnlyTasks] = useState(true);
+  const [assistBusy, setAssistBusy] = useState(false);
+  const [assistError, setAssistError] = useState('');
+  const previewAssist = async () => {
+    setAssistBusy(true); setAssistError('');
+    try { setAssist(await previewSellerAssist(products.map(p => p.id))); }
+    catch (e) { setAssistError(e instanceof Error ? e.message : '读取失败，请重试'); }
+    finally { setAssistBusy(false); }
+  };
+  const applyAssist = async () => {
+    if (!assist) return;
+    setAssistBusy(true); setAssistError('');
+    try {
+      const result = await applySellerAssist(assist.items.filter(i => i.changes.length));
+      setAssist(null); fetchProducts();
+      alert(`已补齐 ${result.fillable} 个产品。尺寸和重量补齐后已重新计算物流费用与利润。`);
+    } catch (e) { setAssistError(e instanceof Error ? e.message : '补齐失败，请重新预览'); }
+    finally { setAssistBusy(false); }
+  };
   const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
+  const [refreshDetail, setRefreshDetail] = useState<{ id: string; message: string } | null>(null);
+  const [refreshMessages, setRefreshMessages] = useState<Record<string, string>>({});
+  const batchStop = useRef(false);
+  const refreshTimers = useRef<Record<string, number>>({});
+  useEffect(() => () => { Object.values(refreshTimers.current).forEach(timer => window.clearTimeout(timer)); }, []);
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [imageBatchProgress, setImageBatchProgress] = useState('');
   const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
@@ -232,6 +266,7 @@ export default function ProductList() {
   const duplicateSkuOnly = searchParams.get('duplicate_sku') === '1';
   const taskMode = searchParams.get('task') || '';
   const archivedMode = searchParams.get('archived') === '1';
+  const maintenanceMode = searchParams.get('maintenance') === '1';
   const [searchInput, setSearchInput] = useState(searchText);
 
   // URL 与输入框双向同步；输入停止 300ms 后再请求，避免每个按键都刷新列表
@@ -296,7 +331,7 @@ export default function ProductList() {
   };
 
   const getColWidth = (colKey: string, defaultWidth: number): number =>
-    colWidths[colKey] || defaultWidth;
+    colKey === 'actual_sale_price_zar' ? Math.max(132, colWidths[colKey] || defaultWidth) : colWidths[colKey] || defaultWidth;
 
   // --- 列可见性 ---
   const toggleColumn = (key: string) => {
@@ -395,15 +430,22 @@ export default function ProductList() {
     }
   };
 
-  const handleRefreshPrice = async (id: string) => {
+  const handleRefreshPrice = async (id: string, source: 'official' | 'seller' = getActiveStoreId() === 'default-store' ? 'seller' : 'official') => {
+    window.clearTimeout(refreshTimers.current[id]);
+    setRefreshMessages(prev => ({ ...prev, [id]: '' }));
     setRefreshingIds((prev) => new Set(prev).add(id));
     try {
-      const result: Record<string, any> = await api.refreshPrice(id);
+      const result: Record<string, any> = await api.refreshPrice(id, dataSource === 'remote' ? source : 'official');
+      setRefreshMessages(prev => ({ ...prev, [id]: `${result.data_source === 'seller_api' ? '本店报价' : '官网售价'}已更新 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}${(result.warnings || []).length ? '；' + result.warnings.join('；') : ''}` }));
+      refreshTimers.current[id] = window.setTimeout(() => setRefreshMessages(prev => prev[id]?.includes('已更新') ? { ...prev, [id]: '' } : prev), 6000);
       setProducts((prev) =>
         prev.map((p) => {
           if (p.id !== id) return p;
           return {
             ...p,
+            sku: result.sku ?? p.sku,
+            fee_category: result.fee_category ?? p.fee_category,
+            fee_category_confirmed: result.fee_category_confirmed ?? p.fee_category_confirmed,
             product_name: result.product_name ?? p.product_name,
             chinese_product_name: result.chinese_product_name ?? p.chinese_product_name,
             actual_sale_price_zar: result.actual_sale_price_zar ?? p.actual_sale_price_zar,
@@ -422,7 +464,8 @@ export default function ProductList() {
         })
       );
     } catch (e: any) {
-      alert(e.message);
+      const message = e.message || '读取失败，原售价保留';
+      setRefreshMessages(prev => ({ ...prev, [id]: message }));
     } finally {
       setRefreshingIds((prev) => {
         const next = new Set(prev);
@@ -433,28 +476,33 @@ export default function ProductList() {
   };
 
   const handleRefetchMissingImages = async () => {
-    const pending = products.filter(product => !product.product_image_url && product.takealot_url);
+    const pending = products.filter(product => !product.product_image_url && !product.product_image_path && product.takealot_url);
     if (pending.length === 0) {
       alert('当前缺图产品没有可用的 Takealot 官网链接。');
       return;
     }
-    let success = 0;
+    let success = 0; let processed = 0;
+    const failures: string[] = [];
+    batchStop.current = false;
     for (let index = 0; index < pending.length; index += 1) {
+      if (batchStop.current) break;
       const product = pending[index];
-      setImageBatchProgress(`正在从官网抓图 ${index + 1}/${pending.length}`);
+      processed += 1;
+      setImageBatchProgress(`正在补充图片 ${index + 1}/${pending.length}`);
       setRefreshingIds(prev => new Set(prev).add(product.id));
       try {
-        const result: Record<string, any> = await api.refreshPrice(product.id);
+        const result: Record<string, any> = await api.refreshPrice(product.id, 'details');
         if (result.product_image_url) success += 1;
-      } catch {
-        // 单个链接失败不阻断整批，结束后仍保留在缺图任务中。
+        else failures.push(`#${product.product_no}：未获取图片，请人工上传`);
+      } catch (e) {
+        failures.push(`#${product.product_no}：${e instanceof Error ? e.message : '读取失败'}`);
       } finally {
         setRefreshingIds(prev => { const next = new Set(prev); next.delete(product.id); return next; });
       }
     }
     setImageBatchProgress('');
     await fetchProducts();
-    alert(`官网资料回抓完成：图片成功 ${success} 个，英文标题已按官网更新，中文空缺已自动补全；仍缺图 ${pending.length - success} 个。`);
+    setAssistError(`图片处理${batchStop.current ? '已停止' : '完成'}：成功 ${success} 个，已处理 ${processed}/${pending.length}，未获取图片 ${processed - success} 个。${failures.join('；')}`);
   };
 
   const saveVariant = async () => {
@@ -589,7 +637,7 @@ export default function ProductList() {
             }}
           />
         ) : (
-          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 11 }}>无图</div>
+          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 11 }}>无图</div>
         );
       case 'product_name':
         return (
@@ -625,7 +673,7 @@ export default function ProductList() {
         );
       case 'actual_sale_price_zar':
         return (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div className="price-refresh-cell">
             {editingPriceId === p.id ? (
               <input
                 type="number" step="0.01"
@@ -644,11 +692,14 @@ export default function ProductList() {
             <button
               onClick={() => handleRefreshPrice(p.id)}
               disabled={isRefreshing || !p.takealot_url}
-              title="刷新 Takealot 售价"
-              style={{ fontSize: 11, padding: '1px 5px', cursor: isRefreshing ? 'wait' : 'pointer', opacity: isRefreshing ? 0.5 : 1, border: '1px solid #d9d9d9', borderRadius: 3, background: '#fff', lineHeight: '18px' }}
+              className="price-refresh-button"
+              aria-busy={isRefreshing}
+              aria-label={isRefreshing ? '正在读取售价' : '刷新售价'}
+              title={dataSource === 'remote' ? (getActiveStoreId() === 'default-store' ? '刷新本店报价；官网读取在更多菜单中' : '刷新官网售价') : '刷新官网售价'}
             >
-              {isRefreshing ? '...' : '↻'}
+              <span aria-hidden="true">↻</span>
             </button>
+            {refreshMessages[p.id] && <button type="button" className="price-refresh-status" data-result={refreshMessages[p.id].includes('已更新') ? 'success' : 'error'} aria-label={refreshMessages[p.id].includes('已更新') ? '售价已更新，查看说明' : '读取失败，查看原因'} title={refreshMessages[p.id].includes('已更新') ? '已更新，点击查看说明' : '读取失败，点击查看原因'} onClick={() => setRefreshDetail({ id: p.id, message: refreshMessages[p.id] })}>{refreshMessages[p.id].includes('已更新') ? '✓' : '!'}</button>}
           </div>
         );
       case 'fee_category':
@@ -716,7 +767,7 @@ export default function ProductList() {
             style={{
               width: '100%', padding: '2px 4px', fontSize: 12,
               background: LINK_STATUS_MAP[p.link_status || '未购买']?.color || '#999',
-              color: '#fff', border: 'none', borderRadius: 4,
+              color: '#fff', border: 'none', borderRadius: 8,
             }}
           >
             {LINK_STATUS_OPTIONS.map((s) => (
@@ -736,7 +787,7 @@ export default function ProductList() {
         return (
           <>
             <Link to={`/products/${p.id}${taskMode ? '?edit=1&from=task' : ''}`} className={`btn btn-sm ${taskMode ? 'btn-primary' : 'btn-outline'}`}>{taskMode ? '修改资料' : '详情'}</Link>
-            <button className="btn btn-danger btn-sm" style={{ marginLeft: 4 }} onClick={() => handleDelete(p.id, p.product_name || '')}>删除</button>
+            <button className="btn btn-outline btn-sm" style={{ marginLeft: 4 }} aria-label="更多产品操作" onClick={e => { e.stopPropagation(); setContextProduct({ id: p.id, x: Math.max(8, Math.min(e.clientX, window.innerWidth - 210)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 210)) }); }}>⋯</button>
           </>
         );
       default:
@@ -803,9 +854,36 @@ export default function ProductList() {
   return (
     <div className="product-list-page">
       <div className="product-list-header">
-        <h2>{archivedMode ? '废品库' : '产品列表'} ({products.length})</h2>
+        <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
+        {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || !products.length || products.length > 500} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
+
+      {refreshDetail && <div className="refresh-detail-panel" role="status">
+        <div style={{ flex: 1, minWidth: 0 }}><strong>#{products.find(p => p.id === refreshDetail.id)?.product_no ?? ''} 售价刷新结果</strong><p>{refreshDetail.message}</p></div>
+        <button className="btn btn-outline btn-sm" onClick={() => setRefreshDetail(null)}>关闭</button>
+      </div>}
+      {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
+      {assist && <div role="dialog" aria-modal="true" aria-label="卖家资料补齐预览" onClick={e => { if (e.target === e.currentTarget) setAssist(null); }} style={{ position: 'fixed', inset: 0, background: '#0008', zIndex: 2000, display: 'grid', placeItems: 'center' }}>
+        <div className="seller-assist-dialog">
+          <div className="seller-assist-header"><strong>卖家资料核对</strong><button className="btn btn-outline btn-sm" onClick={() => setAssist(null)}>关闭 ×</button></div>
+          <div className="seller-assist-body">
+          <h3>补齐预览：{assist.fillable} 个产品可以补齐</h3>
+          <p>来源：本店卖家 API。仅补空白 SKU、图片、标题、TSIN、尺寸和重量。尺寸或重量补齐后会重新计算费用与利润，人工成本覆盖值保留。</p>
+          <label style={{ display: 'block', marginBottom: 12 }}><input type="checkbox" checked={assistOnlyTasks} onChange={e => setAssistOnlyTasks(e.target.checked)} /> 只显示缺字段的产品</label>
+          <table style={{ width: '100%' }}><thead><tr><th>产品</th><th>将补齐</th><th>需要核对 / 人工填写</th></tr></thead><tbody>{assist.items.filter(item => !assistOnlyTasks || item.changes.length || item.manual.length || products.some(p => p.id === item.id && (!p.sku || !p.product_name || (!p.product_image_url && !p.product_image_path) || p.length_mm == null || p.width_mm == null || p.height_mm == null || p.actual_weight_kg == null))).map(item => <tr key={item.id}>
+            <td>#{item.product_no} {item.name}<br/><Link to={`/products/${item.id}`} onClick={() => setAssist(null)}>修改资料</Link></td>
+            <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : String(c.value)}</div>) : '无需补齐'}</td>
+            <td>{[...item.warnings, ...(item.manual.length ? ['需填写：' + item.manual.join('、')] : [])].map((message, i) => <div key={i}>{message}</div>)}{item.differences.length > 0 && <details><summary>查看已有资料差异 ({item.differences.length})</summary>{item.differences.map((message, i) => <div key={i}>{message}</div>)}</details>}</td>
+          </tr>)}</tbody></table>
+          </div>
+          <div className="seller-assist-footer">
+            <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>确认仅补空白资料 ({assist.fillable})</button>
+            <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新核对</button>
+            <button className="btn btn-outline" onClick={() => setAssist(null)}>关闭</button>
+          </div>
+        </div>
+      </div>}
 
       {archivedMode && <div className="product-task-banner"><div><strong>这里保存已删除产品</strong><span>原序号永久保留；恢复后仍使用原序号，新建产品继续按历史最大序号往后增加。</span></div></div>}
 
@@ -821,10 +899,11 @@ export default function ProductList() {
 
       {missingField === 'image' && (
         <div className="image-recovery-bar">
-          <div><strong>官网资料自动修复</strong><span>沿用蓝色 Takealot 链接回抓主图和英文标题；中文为空时自动翻译，已有人工分支名保持不变。</span></div>
+          <div><strong>图片与资料补充</strong><span>优先读取本店卖家资料，未匹配时读取官网；不修改售价和采购成本。</span></div>
           <button className="btn btn-primary btn-sm" disabled={!!imageBatchProgress} onClick={handleRefetchMissingImages}>
-            {imageBatchProgress || `从官网抓取缺图 (${products.filter(p => !p.product_image_url && p.takealot_url).length})`}
+            {imageBatchProgress || `补充缺图 (${products.filter(p => !p.product_image_url && p.takealot_url).length})`}
           </button>
+          {imageBatchProgress && <button className="btn btn-outline btn-sm" onClick={() => { batchStop.current = true; setImageBatchProgress('正在结束当前产品，随后停止…'); }}>停止后续处理</button>}
         </div>
       )}
 
@@ -1071,7 +1150,8 @@ export default function ProductList() {
       </div>}
       {contextProduct && <div className="product-context-menu" style={{ left: contextProduct.x, top: contextProduct.y }} onClick={e => e.stopPropagation()}>
         <button onClick={() => navigate(`/products/${contextProduct.id}?edit=1&from=list`)}>修改资料</button>
-        <button onClick={() => navigate(`/products/${contextProduct.id}`)}>查看详情</button>
+        <button disabled={refreshingIds.has(contextProduct.id)} onClick={() => { const id = contextProduct.id; setContextProduct(null); handleRefreshPrice(id, 'official'); }}>读取官网售价</button>
+        <button onClick={() => { const product = products.find(p => p.id === contextProduct.id); setContextProduct(null); if (product) handleDelete(product.id, product.product_name || ''); }}>移入废品库</button>
       </div>}
     </div>
   );
