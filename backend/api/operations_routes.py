@@ -1,7 +1,8 @@
 """Store-scoped saved operations profiles; recalculated on every read without AI."""
 import json
 import re
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -38,7 +39,7 @@ class Profile(BaseModel):
 
     @model_validator(mode='after')
     def validate_dates(self):
-        today = date.today()
+        today = datetime.now(ZoneInfo('Asia/Shanghai')).date()
         if self.stock_date > today or self.observed_from > self.stock_date or self.air_days >= self.sea_days:
             raise ValueError('观测开始不得晚于库存日期，日期不得在未来，空运时效须短于海运')
         if any(s.date < self.observed_from or s.date > today for s in self.sales):

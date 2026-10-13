@@ -1,10 +1,11 @@
 """Deterministic air/sea pipeline planning. No AI, network or database mutation."""
 import math
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 
 def plan(profile, purchases, today=None):
-    today = today or date.today()
+    today = today or datetime.now(ZoneInfo('Asia/Shanghai')).date()
     observed = date.fromisoformat(profile['observed_from'])
     snapshot = date.fromisoformat(profile['stock_date'])
     elapsed = (today - snapshot).days
