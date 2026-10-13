@@ -92,9 +92,27 @@ async def collect(product, offer):
         try:
             context = await browser.new_context(locale='en-ZA', timezone_id='Africa/Johannesburg')
             page = await context.new_page()
-            return await scrape_product(page, {'url': url, 'productId': product.id, 'sku': offer['sku'],
+            from services.collection_diagnostics import safe_url, classify
+            responses=[]
+            def on_response(response):
+                if response.request.resource_type=='document': responses.append(response.status)
+            page.on('response', on_response)
+            snapshot=await scrape_product(page, {'url': url, 'productId': product.id, 'sku': offer['sku'],
                 'name': offer.get('title') or product.product_name, 'myPrice': offer['selling_price'],
                 'myStock': offer.get('stock_at_takealot_total'), 'shopId': DEFAULT_STORE_ID})
+            diagnostics={'http_status':responses[-1] if responses else None,'requested_url':safe_url(url),'final_url':safe_url(page.url)}
+            try:
+                diagnostics['page_title']=(await page.title())[:160]
+                text=(await page.locator('body').inner_text(timeout=2000)).lower()
+                markers=['verify you are human','checking your browser','automated traffic','unusual traffic','complete the captcha']
+                diagnostics['block_reason']=next((m for m in markers if m in text),None)
+                diagnostics['buybox_cards']=await page.locator('[data-ref="buybox-offer"]').count()
+            except Exception: pass
+            diagnostics['raw_error']=str(snapshot.get('error') or '')[:200]
+            snapshot['diagnostics']=diagnostics
+            code,message=classify(snapshot)
+            if code: snapshot.update(error=code,error_message=message)
+            return snapshot
         finally: await browser.close()
 
 def official_offer(client, key, offer_id):

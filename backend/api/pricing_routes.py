@@ -53,7 +53,7 @@ def preview(product_id: str, offer_id: str, db: Session = Depends(get_db), store
         return {'current_price': own['selling_price'], 'stock': own['stock_at_takealot_total'],
                 'collector_ready': not bool(snapshot.get('error')) and bool(snapshot.get('offers')),
                 'offer_count': len(snapshot.get('offers', [])), 'error': '公开页暂不可采集；保持原价，不会改价' if snapshot.get('error') or not snapshot.get('offers') else '',
-                'enabled': False, 'price_changed': False}
+                'diagnostics':snapshot.get('diagnostics',{}), 'error_code':snapshot.get('error',''), 'error_message':snapshot.get('error_message',''), 'enabled': False, 'price_changed': False}
     except Exception as error:
         return {'collector_ready': False, 'error': str(error) if isinstance(error, ValueError) else '读取或浏览器暂不可用，未改价', 'price_changed': False, 'enabled': False}
 
@@ -182,7 +182,8 @@ def reconcile(product_id: str, offer_id: str, db: Session = Depends(get_db), sto
 
 class MonitorConfig(BaseModel):
     enabled: bool = False
-    interval_minutes: int = Field(default=30, ge=15, le=1440)
+    interval_minutes: int = Field(default=5, ge=5, le=1440)
+    segment: str = Field(default='', max_length=60)
 
 class MonitorBulk(MonitorConfig):
     items: list[Item] = Field(min_length=1, max_length=2000)
@@ -197,7 +198,7 @@ def save_monitors(data, db, store):
         item=catalog.get((product_id,offer_id))
         if not item or not item['url']: raise HTTPException(400, '选中SKU未匹配或缺少公开页，本次未更改')
         old=item['monitor'];value={**old,'product_id':product_id,'offer_id':offer_id,'sku':item['sku'],
-            'enabled':data.enabled, 'interval_minutes':data.interval_minutes, 'request_once':data.request_once,
+            'enabled':data.enabled, 'interval_minutes':data.interval_minutes, 'segment':data.segment.strip() or old.get('segment','未分段'), 'request_once':data.request_once,
             'revision':old.get('revision',0)+1,'next_due':0 if data.enabled or data.request_once else old.get('next_due',0),
             'status':'queued' if data.enabled or data.request_once else 'paused'}
         staged.append((MONITOR_PREFIX+store+':'+product_id+':'+offer_id,value))
@@ -221,4 +222,4 @@ def collect_now(product_id:str,offer_id:str,db:Session=Depends(get_db),store:str
     if not item: raise HTTPException(404,'SKU未匹配')
     old=item['monitor']
     return save_monitors(MonitorBulk(items=[Item(product_id=product_id,offer_id=offer_id)], enabled=old.get('enabled',False),
-                                    interval_minutes=old.get('interval_minutes',30),request_once=True),db,store)
+                                    interval_minutes=old.get('interval_minutes',5),segment=old.get('segment',''),request_once=True),db,store)

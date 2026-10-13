@@ -74,3 +74,15 @@ def test_monitor_bulk_validation_is_atomic_and_store_scoped(monkeypatch):
         with pytest.raises(HTTPException):routes.monitor_bulk(data,db,DEFAULT_STORE_ID)
         assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(monitor.PREFIX)).count()
         with pytest.raises(HTTPException):routes.monitor_configure('one','one',routes.MonitorConfig(enabled=True),db,'other-store')
+
+def test_five_minute_segment_settings_do_not_activate_pricing(monkeypatch):
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    with route_db()as db:
+        data=routes.MonitorBulk(enabled=True,interval_minutes=5,segment='第一段',items=[{'product_id':'two','offer_id':'two'}])
+        routes.monitor_bulk(data,db,DEFAULT_STORE_ID)
+        item=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows']if r['product_id']=='two')
+        assert item['monitor']['interval_minutes']==5 and item['monitor']['segment']=='第一段'
+        assert not item['rule'].get('enabled')
+        routes.monitor_configure('two','two',routes.MonitorConfig(enabled=False),db,DEFAULT_STORE_ID)
+        item=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows']if r['product_id']=='two')
+        assert item['monitor']['segment']=='第一段' and not item['monitor']['enabled']

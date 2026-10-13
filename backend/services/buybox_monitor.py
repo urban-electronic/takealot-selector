@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime, timezone
 import httpx
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from models import Product, SystemSettings, DEFAULT_STORE_ID
 from services.automatic_pricing import collect, official_offer
 from services.takealot_seller_api import configured_key
@@ -22,35 +23,55 @@ def process(row_id):
         config = json.loads(row.value)
         if not (config.get('enabled') or config.get('request_once')) or config.get('next_due', 0) > time.time(): return
         original = row.value
+        started_at=time.time()
         config.update(status='running', next_due=time.time()+300)
         claim = json.dumps(config, ensure_ascii=False)
         if db.query(SystemSettings).filter(SystemSettings.key==row_id, SystemSettings.value==original).update({'value':claim}) != 1:
             db.rollback(); return
         db.commit(); result = dict(config)
+        stage='catalog'
         try:
             product = db.query(Product).filter(Product.id==config['product_id'], Product.store_id==DEFAULT_STORE_ID, Product.is_archived==False).first()
             if not product: raise ValueError('商品已归档或不属于本店')
             key = configured_key(db)
             if not key: raise ValueError('卖家接口未配置')
-            with httpx.Client(timeout=25, follow_redirects=False) as client:
-                own = official_offer(client, key, config['offer_id'])
+            stage='seller_api'
+            profile_row=db.query(SystemSettings).filter(SystemSettings.key==f'operations_profile:{DEFAULT_STORE_ID}:{product.id}').first()
+            profile=json.loads(profile_row.value) if profile_row else {}
+            cached=next((o for o in profile.get('offers',[]) if str(o.get('id'))==str(config['offer_id']) and o.get('sku')==config['sku']),{})
+            try: age=time.time()-datetime.fromisoformat(profile['synced_at']).timestamp()
+            except (KeyError,ValueError): age=math.inf
+            if profile.get('data_source')=='seller_api' and 0<=age<3900 and isinstance(cached.get('price'),(int,float)) and cached['price']>0 and isinstance(cached.get('stock'),(int,float)):
+                own={'offer_id':config['offer_id'],'sku':config['sku'],'selling_price':cached['price'],'stock_at_takealot_total':cached['stock'],'title':cached.get('title')}
+                result['own_price_source']='official_snapshot';result['own_price_asof']=profile['synced_at']
+            else:
+                with httpx.Client(timeout=25, follow_redirects=False) as client:
+                    own = official_offer(client, key, config['offer_id'])
+                result['own_price_source']='official_live';result['own_price_asof']=datetime.now(timezone.utc).isoformat()
             if own.get('sku') != config['sku']: raise ValueError('卖家SKU已变更，需重新绑定')
+            stage='public_page'
             snapshot = asyncio.run(collect(product, own))
+            from services.collection_diagnostics import classify
+            result['diagnostics']=snapshot.get('diagnostics', {})
+            code,message=classify(snapshot)
+            result['error_code']=code
             bb = snapshot.get('buyboxPrice')
             if snapshot.get('error') or isinstance(bb,bool) or not isinstance(bb,(int,float)) or not math.isfinite(bb) or bb<=0:
-                raise ValueError('公开报价页暂不可采集，保留上次报价；未改价')
+                raise ValueError(snapshot.get('error_message') or message or '未读取到有效Buybox报价')
             competitors=[o['price'] for o in snapshot.get('offers',[]) if o.get('status')=='in_stock' and not o.get('isMine') and not isinstance(o.get('price'),bool) and isinstance(o.get('price'),(int,float)) and math.isfinite(o['price']) and o['price']>0]
             # A price match alone is not proof of seller identity; use collector evidence.
             result.update(status='success', buybox_price=bb, competitor_price=min(competitors, default=None),
                           holding_buybox=False if abs(bb-own['selling_price'])>=.01 else None, price_matches_buybox=abs(bb-own['selling_price'])<.01, current_price=own['selling_price'],
-                          stock=own['stock_at_takealot_total'], last_success_at=datetime.now(timezone.utc).isoformat(), error='', failures=0)
+                          stock=own['stock_at_takealot_total'], last_success_at=datetime.now(timezone.utc).isoformat(), error='', error_code='', error_stage='', failures=0)
         except Exception as error:
-            result.update(status='error', error=str(error) if isinstance(error,ValueError) else '采集或接口暂不可用；未改价', failures=config.get('failures',0)+1)
+            result.update(status='error', error_stage=stage, error_code=result.get('error_code') or ('seller_read_failed' if stage=='seller_api' else type(error).__name__), error=str(error) if isinstance(error,ValueError) else '采集或接口暂不可用；未改价', failures=config.get('failures',0)+1)
         finally:
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat())
-            delay=config.get('interval_minutes',30)*60
-            if result.get('status')=='error': delay=min(6*3600, delay*2**min(result['failures']-1,4))
-            result['next_due']=time.time()+delay
+            delay=config.get('interval_minutes',5)*60
+            if result.get('status')=='error':
+                delay=min(6*3600,max(300, delay*2**min(result['failures']-1,4)))
+                if result.get('error_code') in ('site_challenge','rate_limited','http_forbidden'): delay=max(delay,1800)
+            result['next_due']=time.time()+delay if result.get('status')=='error' else max(time.time()+10,started_at+delay)
             db.expire_all()
             # Keep a concurrent stop or changed schedule intact.
             db.query(SystemSettings).filter(SystemSettings.key==row_id,SystemSettings.value==claim).update({'value':json.dumps(result,ensure_ascii=False)})
@@ -69,10 +90,18 @@ def start_worker():
                     for row in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+DEFAULT_STORE_ID+':')).all():
                         value=json.loads(row.value)
                         if (value.get('enabled') or value.get('request_once')) and value.get('next_due',0)<=time.time(): jobs.append((value.get('next_due',0),row.key))
-                for _,key in sorted(jobs):
-                    if _stop.is_set(): break
-                    process(key)
-                    if _stop.wait(10): break  # pace official reads and browser work
+                # Two bounded jobs; never open an unbounded browser fleet.
+                with ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read') as pool:
+                    pending=set()
+                    for _,key in sorted(jobs):
+                        if _stop.is_set(): break
+                        while len(pending)>=2 and not _stop.is_set():
+                            done,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
+                            for finished in done: finished.result()
+                        if _stop.is_set(): break
+                        pending.add(pool.submit(process,key))
+                        if _stop.wait(2): break
+                    for future in pending: future.result()
             except Exception:
                 print('Buybox collection worker unavailable; retry scheduled',flush=True)
             _stop.wait(10)
