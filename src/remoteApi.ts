@@ -450,3 +450,13 @@ export interface SellerAssistItem {
 export interface SellerAssistResult { items: SellerAssistItem[]; fillable: number }
 export const previewSellerAssist = (ids: string[]) => request<SellerAssistResult>('/api/products/seller-assist/preview', { method: 'POST', body: JSON.stringify({ ids }) });
 export const applySellerAssist = (items: SellerAssistItem[]) => request<SellerAssistResult>('/api/products/seller-assist/apply', { method: 'POST', body: JSON.stringify({ ids: items.map(i => i.id), tokens: Object.fromEntries(items.map(i => [i.id, i.token])) }) });
+
+export const getAutomaticPricing = (): Promise<any> => request('/api/automatic-pricing');
+export const configureAutomaticPricing = (product: string, offer: string, rule: unknown): Promise<any> => request(`/api/automatic-pricing/${product}/${offer}`, { method: 'PUT', body: JSON.stringify(rule) });
+export const pauseAutomaticPricing = (product: string, offer: string): Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/pause`, { method: 'POST' });
+
+export const reconcileAutomaticPricing = (product: string, offer: string): Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/reconcile`, { method: 'POST' });
+
+export const bulkAutomaticPricing = (payload: unknown): Promise<any> => request('/api/automatic-pricing/bulk', { method: 'POST', body: JSON.stringify(payload) });
+
+export const pauseAllAutomaticPricing = (): Promise<any> => request('/api/automatic-pricing/pause-all', { method: 'POST' });

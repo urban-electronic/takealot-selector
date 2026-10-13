@@ -4,7 +4,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 
-def plan(profile, purchases, today=None):
+def plan(profile, purchases, today=None, economics=None):
     today = today or datetime.now(ZoneInfo('Asia/Shanghai')).date()
     observed = date.fromisoformat(profile['observed_from'])
     snapshot = date.fromisoformat(profile['stock_date'])
@@ -26,6 +26,8 @@ def plan(profile, purchases, today=None):
     air = profile['air_days']; sea = profile['sea_days']
     cycle = profile['cycle_days']; safety = profile['safety_days']
     horizon = sea + cycle + safety
+    latest_sale = max((date.fromisoformat(s['date']) for s in sales if date.fromisoformat(s['date']) <= today), default=None)
+    common = dict(units_window=units(days), units_recent=units(min(7, days)), observed_days=days, days_since_last_sale=(today-latest_sale).days if latest_sale else None, trend='rising' if recent > baseline * 1.5 else 'falling' if baseline and recent < baseline * .5 else 'flat')
     arrivals = {}
     overdue = []; pending = {'air': 0, 'sea': 0}; unmapped = []
     mapping = {p['procurement_id']: p for p in profile.get('allocations', [])}
@@ -48,7 +50,7 @@ def plan(profile, purchases, today=None):
     if velocity <= 0:
         return dict(air_quantity=0, sea_quantity=0, velocity=0, stock=stock, cover_days=None,
                     pending=pending, overdue=overdue, unmapped=unmapped, stale=elapsed > 3,
-                    pre_air_shortage=0, next_review_days=cycle, timeline=[], reason='观测期零成交，不自动补货')
+                    pre_air_shortage=0, next_review_days=cycle, timeline=[], reason='观测期零成交，不自动补货', level='slow_moving' if stock and days >= 30 else 'no_data', daily_loss_zar=0, **common)
     def deficit(end, planned=None):
         balance = stock; worst = 0
         extra = planned or {}
@@ -68,15 +70,25 @@ def plan(profile, purchases, today=None):
             if day >= start: worst = max(worst, -balance)
             elif balance < 0: balance = 0  # lost sales before delivery are not backorders
         return max(0, math.ceil(worst - 1e-9))
-    air_qty = required_after(air, sea + safety)
+    air_qty = required_after(air, sea)
+    blocked = []
+    if economics and economics.get('available') and economics['air']['profit_margin'] < economics['minimum_margin']:
+        if air_qty: blocked.append('空运利润率低于补货门槛，不建议亏薄利抢补；优先海运')
+        air_qty = 0
     sea_qty = required_after(sea, horizon, {air: air_qty})
+    if economics and economics.get('available') and economics['sea']['profit_margin'] < economics['minimum_margin']:
+        if sea_qty: blocked.append('海运利润率也低于补货门槛，暂停建议，先检查成本或售价')
+        sea_qty = 0
     timeline = []; balance = stock
     for day in range(horizon):
         received = arrivals.get(day, 0) + (air_qty if day == air else 0) + (sea_qty if day == sea else 0)
         balance += received - velocity
         if day in {0, air - 1, air, sea - 1, sea, horizon - 1}:
             timeline.append({'day': day + 1, 'balance': round(balance, 1), 'arrivals': received})
-    return dict(air_quantity=air_qty, sea_quantity=sea_qty, velocity=round(velocity, 3), stock=stock,
+    cover = stock / velocity
+    level = 'out_of_stock' if stock == 0 else 'urgent' if cover <= air else 'watch' if cover <= sea else 'healthy'
+    return dict(level=level, daily_loss_zar=round(velocity * (profile.get('current_price') or 0), 2) if stock == 0 else 0, **common, air_quantity=air_qty, sea_quantity=sea_qty, velocity=round(velocity, 3), stock=stock,
                 cover_days=round(stock / velocity, 1), pending=pending, overdue=overdue,
                 unmapped=unmapped, stale=elapsed > 3, pre_air_shortage=pre_air,
-                next_review_days=cycle, timeline=timeline, reason='空运补到海运接力；海运覆盖后续采购周期，按预计到货日扣除已购数量')
+                next_review_days=cycle, timeline=timeline, blocked=blocked,
+                reason='；'.join(blocked) if blocked else '海运为主，空运只补海运到货前的必要缺口；安全库存放在海运周期内')

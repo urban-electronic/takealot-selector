@@ -15,6 +15,7 @@ from models import DEFAULT_STORE_ID, FeeCategory, FeeMappingRule, Store, SystemS
 from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes, store_routes, activity_routes
 from migrate import migrate_from_dump
 from api import operations_routes
+from api import pricing_routes
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -101,6 +102,7 @@ app.include_router(inventory_routes.router)
 app.include_router(store_routes.router)
 app.include_router(activity_routes.router)
 app.include_router(operations_routes.router)
+app.include_router(pricing_routes.router)
 app.include_router(packing_routes.ui_router)
 
 
@@ -446,9 +448,13 @@ def root():
 def start_operations_sync():
     from services.seller_operations_sync import start_worker
     start_worker()
+    from services.automatic_pricing import start_worker as start_pricing
+    start_pricing()
 
 
 @app.on_event('shutdown')
 def stop_operations_sync():
     from services.seller_operations_sync import stop_worker
     stop_worker()
+    from services.automatic_pricing import stop_worker as stop_pricing
+    stop_pricing()

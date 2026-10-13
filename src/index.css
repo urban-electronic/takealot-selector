@@ -1985,3 +1985,15 @@ table tbody tr:hover { background: #f2f5f1; }
   .dashboard-sidebar { grid-template-columns: 1fr; }
   .dashboard-simple .dashboard-panel { padding: 15px; }
 }
+
+.replenishment-overlay { position: fixed; inset: 0; background: rgba(20,40,44,.35); z-index: 1200; display: flex; justify-content: flex-end; }
+.replenishment-panel { background: var(--color-bg, #f4f7f5); width: min(880px, 100vw); height: 100%; overflow-y: auto; padding: 24px; box-shadow: -12px 0 40px rgba(0,0,0,.12); }
+.replenishment-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+.replenishment-panel .form-row { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.replenishment-panel .card { margin-bottom: 12px; }
+@media (max-width: 600px) { .replenishment-panel { padding: 16px; } .replenishment-panel .form-row { grid-template-columns: 1fr; } }
+
+.replenishment-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
+.replenishment-metrics .card strong { display: block; font-size: 28px; margin-top: 12px; color: var(--color-primary); }
+.replenishment-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+@media (max-width: 900px) { .replenishment-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }

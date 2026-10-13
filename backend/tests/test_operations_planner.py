@@ -13,7 +13,7 @@ def profile(**kwargs):
 def test_new_product_uses_three_day_observation():
     r = plan(profile(), [], TODAY)
     assert r['velocity'] == 1.667
-    assert r['air_quantity'] > r['sea_quantity'] > 0
+    assert r['sea_quantity'] > r['air_quantity'] > 0
     assert r['pre_air_shortage'] == 15
 
 def test_purchased_air_sea_hide_only_covered_reminders():
@@ -52,6 +52,6 @@ def test_unmapped_purchase_not_silently_assigned():
     assert r['unmapped'] == ['a'] and r['air_quantity'] > 0
 
 def test_validation_rejects_reversed_lead_time_and_duplicate_allocation():
-    with pytest.raises(ValueError): Profile(**{**profile(), 'air_days': 60})
+    with pytest.raises(ValueError): Profile(**{**profile(), 'air_head_days': 60})
     a = {'procurement_id': 'a', 'mode': 'air', 'eta': '2026-10-28'}
     with pytest.raises(ValueError): Profile(**{**profile(), 'allocations': [a, a]})

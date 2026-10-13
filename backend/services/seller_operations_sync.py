@@ -45,13 +45,18 @@ def read_pages(client, key, kind):
         if len(rows) < 100 or (isinstance(total, int) and total > 0 and len(out) >= total): return out
     raise ValueError('卖家接口超过同步页数上限，未保存不完整数据')
 
-def sale_day(raw):
+def sale_timestamp(raw):
     if not isinstance(raw, str): raise ValueError('订单日期无效')
     try: dt = datetime.strptime(raw, '%d %b %Y %H:%M:%S').replace(tzinfo=ZoneInfo('Africa/Johannesburg'))
     except ValueError:
-        dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        try: dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        except ValueError: raise ValueError('订单日期格式无效') from None
         if dt.tzinfo is None: dt = dt.replace(tzinfo=ZoneInfo('Africa/Johannesburg'))
-    return dt.astimezone(ZoneInfo('Asia/Shanghai')).date()
+    return dt.timestamp()
+
+def sale_day(raw):
+    return datetime.fromtimestamp(sale_timestamp(raw), ZoneInfo('Asia/Shanghai')).date()
+
 
 def apply_snapshot(db, offers, sales, now=None):
     now = now or datetime.now(ZoneInfo('Asia/Shanghai'))
@@ -73,7 +78,7 @@ def apply_snapshot(db, offers, sales, now=None):
     for o in offers:
         if o.get('sku'): offer_map[str(o['sku'])].append(o)
     by_offer = {str(o.get('offer_id')): str(o.get('sku') or '') for o in offers if o.get('offer_id') is not None}
-    daily = defaultdict(Counter); seen = set()
+    daily = defaultdict(Counter); seen = set(); latest_sale = {}
     for s in sales:
         oid = str(s.get('order_item_id') or '')
         if not oid: raise ValueError('订单缺少唯一编号，未保存销量快照')
@@ -84,7 +89,10 @@ def apply_snapshot(db, offers, sales, now=None):
         if isinstance(q, bool) or not isinstance(q, (int, float)) or not math.isfinite(q) or q < 0 or q != int(q):
             raise ValueError('订单数量无效，未保存销量快照')
         sku = str(s.get('sku') or by_offer.get(str(s.get('offer_id')), '')).strip()
-        if start <= day <= today: daily[sku][day.isoformat()] += int(q)
+        if start <= day <= today:
+            daily[sku][day.isoformat()] += int(q)
+            timestamp = sale_timestamp(s.get('order_date'))
+            latest_sale[sku] = max(latest_sale.get(sku, 0), timestamp)
     updated = 0; unmatched = 0
     for p in products:
         if not eligible(db, DEFAULT_STORE_ID, p): continue
@@ -108,7 +116,9 @@ def apply_snapshot(db, offers, sales, now=None):
         observed = start
         created = [sale_day(o['date_created']) for o in matches if o.get('date_created')]
         if len(created) == len(matches): observed = max(start, min(today, min(created)))
-        profile.update(stock=stock, stock_date=today.isoformat(), observed_from=observed.isoformat(),
+        profile.update(current_price=min((o.get('selling_price') for o in matches if isinstance(o.get('selling_price'), (int, float)) and o['selling_price'] > 0), default=None),
+            offers=[{'id': str(o['offer_id']), 'sku': str(o['sku']), 'title': o.get('title') or p.product_name, 'price': o.get('selling_price'), 'stock': o.get('stock_at_takealot_total'), 'status': o.get('status'), 'last_sale_epoch': latest_sale.get(str(o['sku']), 0)} for o in matches],
+            stock=stock, stock_date=today.isoformat(), observed_from=observed.isoformat(),
             sales=[{'date': d, 'quantity': q} for d, q in sorted(counts.items()) if q > 0],
             data_source='seller_api', synced_at=now.isoformat(), offer_ids=[str(o['offer_id']) for o in matches],
             platform_on_way=sum(int(o.get('total_stock_on_way') or 0) for o in matches))
@@ -122,14 +132,14 @@ def sync_once():
     with SessionLocal() as db:
         row = db.query(SystemSettings).filter(SystemSettings.key == STATE_KEY).first()
         now = time.time(); prior = json.loads(row.value) if row else {}
-        if prior.get('next_due', 0) > now: return
+        if prior.get('next_due', 0) > now and (prior.get('status') != 'success' or prior.get('schema_version') == 2): return
         key = configured_key(db)
         if not key:
             value = {'status': 'unconfigured', 'error': '尚未配置卖家接口密钥', 'next_due': now + 300}
             if row: row.value = json.dumps(value)
             else: db.add(SystemSettings(key=STATE_KEY, value=json.dumps(value)))
             db.commit(); return
-        lease = json.dumps({**prior, 'status': 'running', 'next_due': now + 3600, 'last_attempt': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat()})
+        lease = json.dumps({**prior, 'status': 'running', 'next_due': now + 3600, 'schema_version': 2, 'last_attempt': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat()})
         if row:
             old = row.value
             if db.query(SystemSettings).filter(SystemSettings.key == STATE_KEY, SystemSettings.value == old).update({'value': lease}) != 1:
@@ -141,12 +151,12 @@ def sync_once():
             with httpx.Client(timeout=25, follow_redirects=False) as client:
                 offers = read_pages(client, key, 'offers'); sales = read_pages(client, key, 'sales')
             result = apply_snapshot(db, offers, sales)
-            value = {**result, 'status': 'success', 'last_success': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(), 'error': '', 'next_due': time.time() + 3600}
+            value = {**result, 'schema_version': 2, 'status': 'success', 'last_success': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(), 'error': '', 'next_due': time.time() + 3600}
         except Exception as e:
             db.rollback()
             # Never persist third-party response bodies, URLs or credential-bearing exceptions.
             message = str(e) if isinstance(e, ValueError) else '卖家接口同步失败，保留上次成功数据，稍后自动重试'
-            value = {**prior, 'status': 'error', 'error': message, 'next_due': time.time() + 1800}
+            value = {**prior, 'schema_version': 2, 'status': 'error', 'error': message, 'next_due': time.time() + 1800}
         row = db.query(SystemSettings).filter(SystemSettings.key == STATE_KEY).first()
         row.value = json.dumps(value, ensure_ascii=False); db.commit()
 

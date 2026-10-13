@@ -11,6 +11,7 @@ from database import get_db
 from models import Product, ProcurementRecord, SystemSettings
 from api.store_routes import get_store_id
 from services.operations_planner import plan
+from services.replenishment_economics import logistics, profitable_plan
 from services.seller_operations_sync import eligible, status as sync_status
 
 router = APIRouter(prefix='/api/operations', tags=['operations'])
@@ -29,8 +30,12 @@ class Profile(BaseModel):
     stock: int = Field(ge=0, le=10000000)
     stock_date: date
     observed_from: date
-    air_days: int = Field(default=15, ge=1, le=180)
-    sea_days: int = Field(default=45, ge=2, le=365)
+    air_days: int = Field(default=17, ge=1, le=180)
+    air_head_days: int = Field(default=14, ge=1, le=180)
+    sea_head_days: int = Field(default=55, ge=2, le=365)
+    tail_days: int = Field(default=3, ge=2, le=3)
+    minimum_margin: float = Field(default=.15, ge=0, le=.8)
+    sea_days: int = Field(default=58, ge=2, le=365)
     safety_days: int = Field(default=7, ge=0, le=90)
     cycle_days: int = Field(default=30, ge=1, le=180)
     group: str = Field(default='', max_length=100)
@@ -40,6 +45,8 @@ class Profile(BaseModel):
 
     @model_validator(mode='after')
     def validate_dates(self):
+        self.air_days = self.air_head_days + self.tail_days
+        self.sea_days = self.sea_head_days + self.tail_days
         today = datetime.now(ZoneInfo('Asia/Shanghai')).date()
         if self.stock_date > today or self.observed_from > self.stock_date or self.air_days >= self.sea_days:
             raise ValueError('观测开始不得晚于库存日期，日期不得在未来，空运时效须短于海运')
@@ -56,7 +63,7 @@ def key(store, product):
 
 def profiles(db, store):
     prefix = f'operations_profile:{store}:'
-    return {r.key[len(prefix):]: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
+    return {r.key[len(prefix):]: logistics(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
 
 def purchases_for(db, store, product):
     return [dict(id=r.id, quantity=r.quantity or 0, status=r.status, recorded_at=r.recorded_at, notes=r.notes or '')
@@ -88,7 +95,7 @@ def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     for product in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         if not eligible(db, store, product): continue
         if product.id not in saved: continue
-        output = plan(saved[product.id], purchases_for(db, store, product.id))
+        output = profitable_plan(saved[product.id], purchases_for(db, store, product.id), product)
         for mode, field in [('air', 'air_quantity'), ('sea', 'sea_quantity')]:
             if output[field] > 0:
                 result.append(dict(product_id=product.id, name=product.chinese_product_name or product.product_name,
@@ -103,7 +110,7 @@ def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         if not eligible(db, store, p): continue
         profile = saved.get(p.id)
         rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
-            sku=p.sku, profile=profile, plan=plan(profile, purchases_for(db, store, p.id)) if profile else None))
+            sku=p.sku, profile=profile, plan=profitable_plan(profile, purchases_for(db, store, p.id), p) if profile else None))
     rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('air_quantity', 0), -(r['plan'] or {}).get('sea_quantity', 0)))
     return {'rows': rows, 'sync': sync_status(db, store)}
 
@@ -119,7 +126,7 @@ def get_profile(product_id: str, db: Session = Depends(get_db), store: str = Dep
     products = db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all()
     purchases = purchases_for(db, store, product_id)
     can_replenish = eligible(db, store, product)
-    return dict(profile=profile, eligible=can_replenish, plan=plan(profile, purchases) if profile and can_replenish else None, purchases=purchases,
+    return dict(profile=profile, eligible=can_replenish, plan=profitable_plan(profile, purchases, product) if profile and can_replenish else None, purchases=purchases,
                 recommendations=recommendations(product, profile or {}, products, saved))
 
 @router.put('/{product_id}')
@@ -135,7 +142,7 @@ def save_profile(product_id: str, data: Profile, db: Session = Depends(get_db), 
     if row:
         old = json.loads(row.value)
         if old.get('data_source') == 'seller_api':
-            for field in ('stock', 'stock_date', 'sales', 'observed_from', 'data_source', 'synced_at', 'offer_ids', 'platform_on_way'):
+            for field in ('stock', 'stock_date', 'sales', 'observed_from', 'data_source', 'synced_at', 'offer_ids', 'platform_on_way', 'current_price', 'offers'):
                 if field in old: profile[field] = old[field]
     value = json.dumps(profile, ensure_ascii=False)
     if row: row.value = value
