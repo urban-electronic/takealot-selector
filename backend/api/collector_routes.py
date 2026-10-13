@@ -15,19 +15,29 @@ from services.buybox_monitor import PREFIX, catalog
 
 router = APIRouter(prefix='/api/collector', tags=['collector'])
 HEARTBEAT = '_buybox_local_collector'
+BROWSER_HEARTBEAT = '_buybox_browser_collector'
 CLAIM_PREFIX = '_buybox_collector_claim:'
 
 def connected(db):
-    row=db.query(SystemSettings).filter_by(key=HEARTBEAT).first()
-    return bool(row and json.loads(row.value).get('expires_at',0)>time.time())
+    now=time.time()
+    return any(row and json.loads(row.value).get('expires_at',0)>now for row in (
+        db.query(SystemSettings).filter_by(key=HEARTBEAT).first(),
+        db.query(SystemSettings).filter_by(key=BROWSER_HEARTBEAT).first()))
+
+def collector_source(db):
+    now=time.time()
+    for key,kind in ((HEARTBEAT,'local_collector'),(BROWSER_HEARTBEAT,'browser_extension')):
+        row=db.query(SystemSettings).filter_by(key=key).first()
+        if row and json.loads(row.value).get('expires_at',0)>now: return kind
+    return 'cloud_browser'
 
 def touch(db, kind=None):
-    row=db.query(SystemSettings).filter_by(key=HEARTBEAT).first()
-    previous=json.loads(row.value) if row else {}
-    mode=kind or previous.get('kind','local_collector')
+    mode=kind if kind in ('local_collector','browser_extension') else 'local_collector'
+    key=BROWSER_HEARTBEAT if mode=='browser_extension' else HEARTBEAT
+    row=db.query(SystemSettings).filter_by(key=key).first()
     value=json.dumps({'kind':mode,'last_seen_at':datetime.now(timezone.utc).isoformat(),'expires_at':time.time()+(90 if mode=='browser_extension' else 900)})
     if row: row.value=value
-    else: db.add(SystemSettings(key=HEARTBEAT,value=value))
+    else: db.add(SystemSettings(key=key,value=value))
 
 def collector_kind(value):
     """Legacy PricePilot sends no marker; only the bundled extension identifies itself."""

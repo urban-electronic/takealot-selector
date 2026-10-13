@@ -101,9 +101,8 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
                 stock=stock, suggested_min=suggested_min,
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
-    from api.collector_routes import connected
-    connection=db.query(SystemSettings).filter_by(key='_buybox_local_collector').first()
-    source=json.loads(connection.value).get('kind','local_collector') if connection and connected(db) else 'cloud_browser'
+    from api.collector_routes import collector_source
+    source=collector_source(db)
     return {'collector_source': source, 'rows': rows, 'configured': bool(configured_key(db)) if store == DEFAULT_STORE_ID else False}
 
 @router.post('/bulk')
