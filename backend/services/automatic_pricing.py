@@ -100,7 +100,8 @@ async def collect(product, offer):
 def official_offer(client, key, offer_id):
     response = client.get(f'https://seller-api.takealot.com/v2/offers/offer/ID{offer_id}', headers={'Authorization': f'Key {key}'})
     if response.status_code != 200: raise ValueError('卖家报价读取失败，暂停本轮调价')
-    data = response.json().get('offer')
+    payload = response.json()
+    data = payload.get('offer', payload) if isinstance(payload, dict) else None
     if not isinstance(data, dict) or str(data.get('offer_id')) != str(offer_id): raise ValueError('卖家商品身份核对失败')
     for field in ['selling_price', 'stock_at_takealot_total']:
         if isinstance(data.get(field), bool) or not isinstance(data.get(field), (int, float)) or not math.isfinite(data[field]):
