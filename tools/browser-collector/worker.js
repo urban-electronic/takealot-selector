@@ -24,6 +24,14 @@ async function run() {
   let config;let leased=[];
   try {
     config=await attached();if(!config)return;
+    if(state.status==='verification'&&state.tabId){
+      const tab=await chrome.tabs.get(state.tabId).catch(()=>null);
+      if(tab){
+        const check=await chrome.scripting.executeScript({target:{tabId:state.tabId},func:()=>/^(just a moment\.?\.?\.?|attention required!)/i.test(document.title)||/verify you are human|checking your browser|complete the captcha/i.test(document.body?.innerText||'')}).catch(()=>[]);
+        if(check[0]?.result){await api(config,'/api/collector/web-open','POST',{heartbeat_only:true});return;}
+      }
+      state={status:'waiting',message:'验证页面已完成或已关闭，继续到期任务'};
+    }
     await api(config,'/api/collector/web-open','POST',{initial:!!config.initial});
     if(config.initial){config.initial=false;await chrome.storage.session.set({client:config});}
     const batch=await api(config,'/api/collector/products');

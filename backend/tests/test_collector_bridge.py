@@ -76,3 +76,10 @@ def test_web_open_respects_explicit_per_sku_pause(monkeypatch):
         bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
         value=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
         assert value['status']=='paused' and not value['request_once'] and not value['enabled']
+
+
+def test_waiting_for_browser_verification_only_updates_heartbeat():
+    with database() as db:
+        result=bridge.web_open(bridge.WebOpen(heartbeat_only=True),db,DEFAULT_STORE_ID)
+        assert result['queued']==0 and bridge.connected(db)
+        assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX)).count()
