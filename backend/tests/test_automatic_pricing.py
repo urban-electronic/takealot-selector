@@ -28,7 +28,7 @@ def test_holding_rebound_ceiling_and_cooldown():
     assert pricing.decide(100, 5, {**RULE, 'max_price': 105}, {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(120)]})[0] == 105
     assert pricing.decide(100, 5, {**RULE, 'last_changed_epoch': pricing.time.time()}, {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(120)]})[0] is None
 
-def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89, pause_before_patch=False):
+def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89, pause_before_patch=False, pause_all_before_patch=False):
     engine = create_engine('sqlite://'); Base.metadata.create_all(engine); factory = sessionmaker(bind=engine)
     key = pricing.PREFIX + DEFAULT_STORE_ID + ':p:1'
     with factory() as db:
@@ -45,6 +45,9 @@ def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89, pause_be
                 row=db.query(SystemSettings).filter_by(key=key).first()
                 value=json.loads(row.value);value.update(enabled=False,revision=2)
                 row.value=json.dumps(value);db.commit()
+        if pause_all_before_patch and len(sleeps)==2:
+            from api import pricing_routes
+            with factory() as db: pricing_routes.pause_all(db,DEFAULT_STORE_ID)
     monkeypatch.setattr(pricing.time, 'sleep', delay)
     client = MagicMock(); monkeypatch.setattr(pricing.httpx, 'Client', lambda **kwargs: client)
     client.__enter__.return_value = client
@@ -112,3 +115,9 @@ def test_price_match_does_not_prove_buybox_ownership():
 def test_pause_after_persisting_intent_prevents_patch(monkeypatch):
     client,rule=run_cycle(monkeypatch,pause_before_patch=True)
     assert not client.patch.called and not rule['enabled'] and rule['revision']==2
+
+
+def test_global_emergency_stop_invalidates_pending_patch(monkeypatch):
+    client,rule=run_cycle(monkeypatch,pause_all_before_patch=True)
+    assert not client.patch.called and not rule['enabled'] and rule['write_pending']
+    assert rule['revision']==2 and '待核验' in rule['last_result']
