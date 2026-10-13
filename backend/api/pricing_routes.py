@@ -192,7 +192,8 @@ class MonitorBulk(MonitorConfig):
 
 def save_monitors(data, db, store):
     if store != DEFAULT_STORE_ID or not configured_key(db): raise HTTPException(400, '本店未绑定采集接口')
-    catalog={(r['product_id'],r['offer_id']):r for r in listing(db,store)['rows']}
+    from services.buybox_monitor import catalog as collection_catalog
+    catalog={(r['product_id'],r['offer_id']):r for r in collection_catalog(db,store)}
     staged=[]
     for product_id,offer_id in dict.fromkeys((i.product_id,i.offer_id) for i in data.items):
         item=catalog.get((product_id,offer_id))
@@ -218,7 +219,8 @@ def monitor_configure(product_id:str,offer_id:str,data:MonitorConfig,db:Session=
 
 @router.post('/{product_id}/{offer_id}/collect-now')
 def collect_now(product_id:str,offer_id:str,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
-    item=next((r for r in listing(db,store)['rows'] if r['product_id']==product_id and r['offer_id']==offer_id),None)
+    from services.buybox_monitor import catalog as collection_catalog
+    item=next((r for r in collection_catalog(db,store) if r['product_id']==product_id and r['offer_id']==offer_id),None)
     if not item: raise HTTPException(404,'SKU未匹配')
     old=item['monitor']
     return save_monitors(MonitorBulk(items=[Item(product_id=product_id,offer_id=offer_id)], enabled=old.get('enabled',False),

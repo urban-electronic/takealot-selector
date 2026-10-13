@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { DataSourceProvider } from './DataSourceContext';
 import { getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
 import type { Store } from './types';
@@ -14,15 +14,13 @@ const Packing = lazy(() => import('./pages/Packing'));
 const Inventory = lazy(() => import('./pages/Inventory'));
 const Stores = lazy(() => import('./pages/Stores'));
 const Replenishment = lazy(() => import('./pages/Replenishment'));
-const Buybox = lazy(() => import('./pages/Buybox'));
 const AutoPricing = lazy(() => import('./pages/AutoPricing'));
 
 const primaryNavItems = [
   { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
   { path: '/inventory', label: '库存' },
-  { path: '/buybox', label: 'Buybox采集' },
-  { path: '/auto-pricing', label: '自动调价' },
+  { path: '/auto-pricing', label: 'Buybox与调价' },
   { path: '/replenishment', label: '补货计划' },
   { path: '/packing', label: '装箱单' },
 ];
@@ -147,7 +145,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<ProductList />} />
           <Route path="/inventory" element={<Inventory />} />
-          <Route path="/buybox" element={<Buybox />} />
+          <Route path="/buybox" element={<Navigate to="/auto-pricing" replace />} />
           <Route path="/auto-pricing" element={<AutoPricing />} />
           <Route path="/replenishment" element={<Replenishment />} />
           <Route path="/create" element={<ProductCreate />} />

@@ -86,3 +86,12 @@ def test_five_minute_segment_settings_do_not_activate_pricing(monkeypatch):
         routes.monitor_configure('two','two',routes.MonitorConfig(enabled=False),db,DEFAULT_STORE_ID)
         item=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows']if r['product_id']=='two')
         assert item['monitor']['segment']=='第一段' and not item['monitor']['enabled']
+
+def test_buybox_catalog_does_not_read_price_settings_or_compute_floors(monkeypatch):
+    monkeypatch.setattr(routes,'system_floor',lambda product:(_ for _ in ()).throw(AssertionError('no pricing calculation allowed')))
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    with route_db()as db:
+        info=monitor.catalog(db,DEFAULT_STORE_ID)
+        assert len(info)==2 and all(r['rule']=={}for r in info)
+        routes.monitor_configure('two','two',routes.MonitorConfig(enabled=True,interval_minutes=5),db,DEFAULT_STORE_ID)
+        assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(routes.PREFIX)).count()

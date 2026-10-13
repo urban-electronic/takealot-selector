@@ -1,2 +1,2 @@
-import AutoPricing from './AutoPricing';
-export default function Buybox(){return <AutoPricing buyboxOnly />;}
+import { Navigate } from 'react-router-dom';
+export default function Buybox(){return <Navigate to="/auto-pricing" replace />;}
