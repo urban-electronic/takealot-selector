@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { auditProductSkus, getInventory, updateProduct } from '../remoteApi';
+import { auditProductSkus, getInventory, getShipments, updateProduct } from '../remoteApi';
 import type { SkuAuditResult } from '../remoteApi';
-import type { DashboardStats, InventoryRow, Product } from '../types';
+import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
+import { formatPercent } from '../types';
 import { missingSkuTasks } from '../utils/dashboardTasks';
 
 export default function Dashboard() {
@@ -11,6 +12,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [procurements, setProcurements] = useState<ProcurementRecord[]>([]);
+  const [shipments, setShipments] = useState<ShipmentRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [auditing, setAuditing] = useState(false);
@@ -44,9 +47,9 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    Promise.all([api.getDashboard(), getInventory(), api.getProducts()])
-      .then(([dashboard, inventoryRows, productRows]) => {
-        setStats(dashboard); setInventory(inventoryRows); setProducts(productRows);
+    Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
+      .then(([dashboard, inventoryRows, shipmentRows, procurementRows, productRows]) => {
+        setStats(dashboard); setInventory(inventoryRows); setShipments(shipmentRows); setProcurements(procurementRows); setProducts(productRows);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -65,13 +68,16 @@ export default function Dashboard() {
       });
     });
     return {
+      available: inventory.filter(row => row.sku).reduce((sum, row) => sum + row.available, 0),
+      inTransitUnits: procurements.filter(row => row.status === 'in_transit').reduce((sum, row) => sum + (Number(row.quantity) || 0), 0),
+      confirmedShipments: shipments.filter(row => row.status === 'confirmed'),
       missingSku: missingSkuTasks(inventory, products).blocking,
       missingImage: products.filter(row => !row.product_image_url && !row.product_image_path).length,
       unresolvedMultiSkuProducts,
       duplicateSkuProducts: new Set(Array.from(skuOwners.values()).filter(ids => ids.size > 1).flatMap(ids => Array.from(ids))).size,
       negative: inventory.filter(row => row.sku && row.available < 0).length,
     };
-  }, [inventory, products]);
+  }, [inventory, products, procurements, shipments]);
 
   const taskGroups = [
     { label: '影响库存与发货', items: [
@@ -89,7 +95,7 @@ export default function Dashboard() {
   const visibleTaskGroups = taskGroups
     .map(group => ({ ...group, items: group.items.filter(task => task.count > 0) }))
     .filter(group => group.items.length > 0);
-  const issueCount = visibleTaskGroups.reduce((total, group) => total + group.items.length, 0);
+  const issueCount = visibleTaskGroups.reduce((total, group) => total + group.items.reduce((subtotal, task) => subtotal + task.count, 0), 0);
 
   if (loading) return <div className="loading">正在检查待处理事项...</div>;
   if (error) return <div className="alert alert-error">主页加载失败：{error}</div>;
@@ -98,12 +104,19 @@ export default function Dashboard() {
   return (
     <div className="dashboard-page dashboard-simple">
       <div className="dashboard-heading">
-        <div><h1>运营工作台</h1><p>只列出需要你处理的事项。点开即可进入对应页面。</p></div>
+        <div><h1>运营工作台</h1><p>待处理事项、选品表现和近期发货，一页掌握。</p></div>
       </div>
 
+      <section className="dashboard-summary-metrics" aria-label="经营概览">
+        <Link to="/products" className="dashboard-summary-card"><span>产品总数</span><strong>{stats.total}</strong><small>{stats.qualified} 个合格选品</small></Link>
+        <Link to="/inventory" className="dashboard-summary-card"><span>可用库存</span><strong>{overview.available}</strong><small>{overview.negative ? overview.negative + ' 个 SKU 数量异常' : '库存状态正常'}</small></Link>
+        <Link to="/procurement" className="dashboard-summary-card"><span>采购在途</span><strong>{overview.inTransitUnits}</strong><small>件等待入库确认</small></Link>
+      </section>
+
+      <div className="dashboard-grid">
       <section className="dashboard-panel dashboard-tasks">
         <div className="dashboard-panel-title">
-          <div><h2>待处理事项 <span className="dashboard-issue-count">{issueCount}</span></h2><p>{issueCount ? '按影响库存、发货和选品资料排序' : '目前没有需要处理的问题'}</p></div>
+          <div><h2>待处理事项 {issueCount > 0 && <span className="dashboard-issue-count">{issueCount} 项</span>}</h2><p>{issueCount ? '优先显示会影响库存、发货和利润判断的问题' : '目前没有需要处理的问题'}</p></div>
           <button className="btn btn-outline btn-sm" disabled={auditing} onClick={checkSkus} title="按已导入的 Takealot 卖家导出表核对 SKU，不会自动修改资料">
             {auditing ? '核对中...' : '核对 SKU'}
           </button>
@@ -143,6 +156,29 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+
+      <aside className="dashboard-sidebar">
+        <section className="dashboard-panel dashboard-profit">
+          <div className="dashboard-panel-title"><div><h2>选品表现</h2><p>快速查看产品池整体情况</p></div><Link to="/products">查看产品</Link></div>
+          <div className="dashboard-profit-row">
+            <div><span>平均利润率</span><strong>{formatPercent(stats.avg_profit_margin)}</strong></div>
+            <div><span>合格选品</span><strong>{stats.qualified}</strong></div>
+            <div><span>不建议</span><strong>{stats.not_recommended}</strong></div>
+          </div>
+          <Link to="/products" className="dashboard-best"><span>利润率最高</span><strong>{stats.top_product_name || '暂无数据'}</strong><em>{formatPercent(stats.top_profit_margin)}</em></Link>
+        </section>
+
+        <section className="dashboard-panel dashboard-recent">
+          <div className="dashboard-panel-title"><div><h2>最近发货</h2><p>显示最近 3 张已确认发货单</p></div><Link to="/inventory">全部记录</Link></div>
+          {overview.confirmedShipments.length === 0 ? <div className="dashboard-empty">暂无已确认发货记录</div> : (
+            <div className="dashboard-recent-list">{overview.confirmedShipments.slice(0, 3).map(row => <div className="dashboard-recent-item" key={row.id}>
+              <div><strong>{row.shipment_no}</strong><span>{row.shipment_date}</span></div>
+              <div><b>{row.total_quantity} 件</b><small>{row.total_skus} 个 SKU</small></div>
+            </div>)}</div>
+          )}
+        </section>
+      </aside>
+      </div>
     </div>
   );
 }
