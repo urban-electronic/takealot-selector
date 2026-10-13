@@ -1820,3 +1820,11 @@ table tbody tr:hover { background: #f2f5f1; }
   .container { padding: 16px 12px; }
   .card { padding: 18px; }
 }
+
+.cost-copy-button { margin-left: auto; flex: 0 0 auto; }
+.cost-copy-notice { margin: -8px 0 14px 42px; color: #426b58; font-size: 13px; line-height: 1.5; }
+@media (max-width: 620px) {
+  .create-step-title { flex-wrap: wrap; }
+  .cost-copy-button { margin-left: 42px; }
+  .cost-copy-notice { margin-left: 0; }
+}

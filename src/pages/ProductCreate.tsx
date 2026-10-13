@@ -63,9 +63,29 @@ export default function ProductCreate() {
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [linkStatus, setLinkStatus] = useState('未购买');
+  const [lastCostProduct, setLastCostProduct] = useState<Product | null>(null);
+  const [costCopyNotice, setCostCopyNotice] = useState('');
 
   useEffect(() => {
     api.getFeeCategories().then(setFeeCategories).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    api.getProducts({ sort_by: 'created_at', sort_order: 'desc' })
+      .then((products: Product[]) => {
+        const source = products.find((product) =>
+          !product.is_archived && (
+            product.unit_price_cny != null || product.purchase_cost_cny != null ||
+            product.purchase_shipping_cny != null || product.packaging_cost_per_unit_cny != null ||
+            product.length_mm != null || product.width_mm != null || product.height_mm != null ||
+            product.actual_weight_kg != null || product.shipping_method
+          ),
+        );
+        if (active) setLastCostProduct(source || null);
+      })
+      .catch(() => {});
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -134,6 +154,40 @@ export default function ProductCreate() {
 
   const handleConfirmFee = () => {
     setFeeConfirmed(true);
+  };
+
+  const applyLastProductCosts = () => {
+    if (!lastCostProduct) return;
+    const source = lastCostProduct;
+    const sourceUnitPrice = source.unit_price_cny ?? (
+      source.purchase_cost_cny != null && source.purchase_quantity > 0
+        ? source.purchase_cost_cny / source.purchase_quantity
+        : null
+    );
+    let copied = 0;
+    const copyIfEmpty = (current: string, value: number | null | undefined, setter: (next: string) => void) => {
+      if (!current.trim() && value != null) {
+        setter(String(value));
+        copied += 1;
+      }
+    };
+
+    copyIfEmpty(unitPrice, sourceUnitPrice, setUnitPrice);
+    copyIfEmpty(purchaseShipping, source.purchase_shipping_cny, setPurchaseShipping);
+    copyIfEmpty(packagingCost, source.packaging_cost_per_unit_cny, setPackagingCost);
+    copyIfEmpty(length, source.length_mm, setLength);
+    copyIfEmpty(width, source.width_mm, setWidth);
+    copyIfEmpty(height, source.height_mm, setHeight);
+    copyIfEmpty(weight, source.actual_weight_kg, setWeight);
+    if (!shippingMethod && source.shipping_method) {
+      setShippingMethod(source.shipping_method);
+      copied += 1;
+    }
+
+    const sourceName = source.chinese_product_name || source.product_name || `商品 #${source.product_no ?? ''}`;
+    setCostCopyNotice(copied
+      ? `已从“${sourceName}”填入 ${copied} 项空白成本；已有内容未覆盖。请核对采购价、尺寸和重量。`
+      : '本页成本项已有内容，未覆盖任何字段。');
   };
 
   const handleSave = async () => {
@@ -299,7 +353,10 @@ export default function ProductCreate() {
       {/* Purchase & Dimensions Form */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title create-step-title"><span>04</span><div><strong>填写采购与物流</strong><small>补充成本、尺寸和运输方式</small></div></div>
+          <div className="card-title create-step-title"><span>04</span><div><strong>填写采购与物流</strong><small>补充成本、尺寸和运输方式</small></div>
+            {lastCostProduct && <button type="button" className="btn btn-outline btn-sm cost-copy-button" onClick={applyLastProductCosts}>沿用上一件成本</button>}
+          </div>
+          {costCopyNotice && <p className="cost-copy-notice" role="status">{costCopyNotice}</p>}
 
           <div className="section">
             <div className="section-title">采购信息</div>
