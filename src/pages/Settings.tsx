@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
+import { getSellerApiStatus } from '../remoteApi';
 
 export default function Settings() {
   const api = useApi();
@@ -21,6 +22,7 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [sellerApiStatus, setSellerApiStatus] = useState<'checking' | 'configured' | 'missing' | 'unavailable' | 'local'>('checking');
 
   // Fee mapping rule form
   const [rulePattern, setRulePattern] = useState('');
@@ -38,6 +40,24 @@ export default function Settings() {
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const refreshSellerApiStatus = async () => {
+    setSellerApiStatus('checking');
+    try {
+      const status = await getSellerApiStatus();
+      setSellerApiStatus(status.configured ? 'configured' : 'missing');
+    } catch {
+      setSellerApiStatus('unavailable');
+    }
+  };
+
+  useEffect(() => {
+    if (dataSource !== 'remote') {
+      setSellerApiStatus('local');
+      return;
+    }
+    void refreshSellerApiStatus();
+  }, [dataSource]);
 
   const handleSaveExchange = async () => {
     try {
@@ -213,6 +233,18 @@ export default function Settings() {
           </>
         )}
       </div>
+
+      <section className="card integration-status-card" aria-live="polite">
+        <div className="integration-status-copy">
+          <div className="card-title">Takealot 本店资料 API</div>
+          <p>用于读取默认主店的商品资料和报价，帮助核对、补齐选品信息；密钥已配置不代表接口实时可用。</p>
+        </div>
+        <span className={`integration-status-badge ${sellerApiStatus}`}>
+          <i aria-hidden="true" />
+          {{checking: '检查中', configured: '密钥已配置', missing: '未配置', unavailable: '暂时无法检查', local: '本地模式'}[sellerApiStatus]}
+        </span>
+        <button className="btn btn-outline btn-sm" disabled={dataSource !== 'remote' || sellerApiStatus === 'checking'} onClick={refreshSellerApiStatus}>重新检查</button>
+      </section>
 
       {/* Exchange Rate */}
       <div className="card">

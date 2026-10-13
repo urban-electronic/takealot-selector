@@ -82,7 +82,11 @@ def test_secret_encrypted_hidden_immutable_and_requires_auth():
     body = {'api_key': KEY}
     assert client.post('/api/integrations/takealot-seller', json=body).status_code == 403
     headers = {'X-API-Key': MASTER}
+    status = client.get('/api/integrations/takealot-seller/status')
+    assert status.status_code == 200 and status.json() == {'configured': False, 'mode': 'product_read_only'}
     assert client.post('/api/integrations/takealot-seller', headers=headers, json=body).status_code == 200
+    status = client.get('/api/integrations/takealot-seller/status')
+    assert status.status_code == 200 and status.json() == {'configured': True, 'mode': 'product_read_only'}
     assert client.post('/api/integrations/takealot-seller', headers=headers, json=body).status_code == 409
     assert seller.SECRET_SETTING not in client.get('/api/settings').json()
     for method in ('patch', 'put'):

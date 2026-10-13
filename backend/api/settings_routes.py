@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from database import get_db
 from models import SystemSettings
-from services.takealot_seller_api import SECRET_SETTING, encrypt_key
+from services.takealot_seller_api import SECRET_SETTING, encrypt_key, configured_key
 from fastapi import Request
 import hmac
 import os
@@ -24,6 +24,12 @@ class SettingsOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+@router.get('/integrations/takealot-seller/status')
+def seller_api_status(db: Session = Depends(get_db)):
+    """Expose connection state only; never return the seller API key."""
+    return {'configured': bool(configured_key(db)), 'mode': 'product_read_only'}
 
 
 class SettingsUpdate(BaseModel):

@@ -112,6 +112,10 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
   return JSON.parse(text) as T;
 };
 
+export interface SellerApiStatus { configured: boolean; mode: 'product_read_only' }
+export const getSellerApiStatus = (): Promise<SellerApiStatus> =>
+  request<SellerApiStatus>('/api/integrations/takealot-seller/status');
+
 export const getStores = (): Promise<Store[]> => request<Store[]>('/api/stores');
 export const createStore = (data: Partial<Store> & { name: string }): Promise<Store> =>
   request<Store>('/api/stores', { method: 'POST', body: JSON.stringify(data) });

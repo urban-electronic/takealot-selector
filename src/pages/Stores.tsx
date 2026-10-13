@@ -87,9 +87,10 @@ export default function Stores({ onStoresChanged }: Props) {
         <label>平台<select value={form.platform} onChange={e => setForm({ ...form, platform: e.target.value })}><option>Takealot</option><option>其他平台</option></select></label>
         <label>负责人<input value={form.owner_name} onChange={e => setForm({ ...form, owner_name: e.target.value })} placeholder="可暂不填写" /></label>
         <label>平台店铺识别号<input value={form.external_store_ref} onChange={e => setForm({ ...form, external_store_ref: e.target.value })} placeholder="后续对接时使用" /></label>
-        <label>同步方式<select value={form.sync_method} onChange={e => setForm({ ...form, sync_method: e.target.value })}><option value="manual">手动维护</option><option value="import">文件导入</option><option value="api">API 自动同步（预留）</option></select></label>
+        <label>同步方式<select value={form.sync_method} onChange={e => setForm({ ...form, sync_method: e.target.value })}><option value="manual">手动维护</option><option value="import">文件导入</option><option value="api">API 读取（仅主店商品资料）</option></select></label>
         <label>同步间隔<select value={form.sync_interval_minutes} disabled={form.sync_method === 'manual'} onChange={e => setForm({ ...form, sync_interval_minutes: Number(e.target.value) })}><option value={30}>30 分钟</option><option value={60}>1 小时</option><option value={360}>6 小时</option><option value={1440}>每天</option></select></label>
       </div>
+      {form.sync_method === 'api' && <p className="store-api-note">目前仅默认店铺可读取商品资料；库存自动同步尚未开放。</p>}
       <label className={form.allow_negative_inventory_shipments ? 'store-risk-toggle enabled' : 'store-risk-toggle'}>
         <input type="checkbox" checked={form.allow_negative_inventory_shipments} onChange={e => setForm({ ...form, allow_negative_inventory_shipments: e.target.checked })} />
         <span><strong>旧库存过渡：允许库存不足时发货</strong><small>开启后库存可能出现负数。老库存处理完成后请关闭；新店铺默认关闭。</small></span>

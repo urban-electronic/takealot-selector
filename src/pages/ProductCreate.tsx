@@ -176,14 +176,14 @@ export default function ProductCreate() {
   const selectedFee = feeCategories.find((f) => f.name === feeCategory);
 
   return (
-    <div>
-      <h2 style={{ marginBottom: 20 }}>新建产品</h2>
+    <div className="product-create-page">
+      <div className="create-page-heading"><div><span className="create-eyebrow">选品工作台</span><h2>新建产品</h2><p>粘贴 Takealot 链接，先识别商品，再核对采购与物流成本。</p></div><span className="create-flow-chip">识别商品 <b>›</b> 核对成本 <b>›</b> 计算利润</span></div>
 
       {error && <div className="alert alert-error">{error}</div>}
 
       {/* Takealot URL Input */}
       <div className="card">
-        <div className="card-title">Step 1: 输入 Takealot 链接</div>
+        <div className="card-title create-step-title"><span>01</span><div><strong>识别 Takealot 商品</strong><small>粘贴商品链接，自动读取可用资料</small></div></div>
         <div style={{ display: 'flex', gap: 12 }}>
           <input
             type="url"
@@ -218,7 +218,7 @@ export default function ProductCreate() {
       {/* Scrape Result */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title">Step 2: 确认商品信息{scrapeResult.data_source === 'seller_api' ? '（本店卖家 API）' : scrapeResult.data_source === 'offer_catalog' ? '（卖家表资料）' : scrapeResult.data_source === 'browser_page' ? '（已打开的官网页面）' : ''}</div>
+          <div className="card-title create-step-title"><span>02</span><div><strong>核对商品资料</strong><small>{scrapeResult.data_source === 'seller_api' ? '来源：本店 Seller API' : scrapeResult.data_source === 'offer_catalog' ? '来源：卖家资料表' : scrapeResult.data_source === 'browser_page' ? '来源：已打开的官网页面' : '请核对识别结果'}</small></div></div>
           {scrapeResult.warnings.length > 0 && (
             <div className="alert alert-warning">
               {scrapeResult.warnings.map((w, i) => <div key={i}>{w}</div>)}
@@ -261,7 +261,7 @@ export default function ProductCreate() {
       {/* Fee Category */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title">Step 3: 确认 Fee 品类</div>
+          <div className="card-title create-step-title"><span>03</span><div><strong>确认平台费率</strong><small>确认 Fee 品类后计算利润</small></div></div>
           <div className="alert alert-info">
             系统推荐: <strong>{scrapeResult.recommended_fee_category || '无推荐'}</strong>
             {scrapeResult.fee_match_reason && ` (${scrapeResult.fee_match_reason})`}
@@ -299,7 +299,7 @@ export default function ProductCreate() {
       {/* Purchase & Dimensions Form */}
       {scrapeResult && (
         <div className="card">
-          <div className="card-title">Step 4: 填写采购、尺寸和物流信息</div>
+          <div className="card-title create-step-title"><span>04</span><div><strong>填写采购与物流</strong><small>补充成本、尺寸和运输方式</small></div></div>
 
           <div className="section">
             <div className="section-title">采购信息</div>
