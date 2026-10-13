@@ -87,6 +87,10 @@ def start_worker():
         while not _stop.is_set():
             try:
                 with SessionLocal() as db:
+                    from api.collector_routes import connected
+                    if connected(db):
+                        _stop.wait(10)
+                        continue
                     jobs=[]
                     for row in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+DEFAULT_STORE_ID+':')).all():
                         value=json.loads(row.value)

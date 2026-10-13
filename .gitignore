@@ -13,3 +13,6 @@ src-tauri/target/
 
 # 装箱单本地图片缓存（生产用 Railway 卷）
 backend/packing_images/
+
+# Private collector browser sessions
+**/buybox_browser_profile/

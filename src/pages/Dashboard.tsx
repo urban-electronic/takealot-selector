@@ -104,7 +104,6 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-page dashboard-simple">
-      <ReplenishmentAlerts />
       <div className="dashboard-heading">
         <div><h1>运营工作台</h1><p>待处理事项、选品表现和近期发货，一页掌握。</p></div>
       </div>
@@ -114,6 +113,8 @@ export default function Dashboard() {
         <Link to="/inventory" className="dashboard-summary-card"><span>可用库存</span><strong>{overview.available}</strong><small>{overview.negative ? overview.negative + ' 个 SKU 数量异常' : '库存状态正常'}</small></Link>
         <Link to="/procurement" className="dashboard-summary-card"><span>采购在途</span><strong>{overview.inTransitUnits}</strong><small>件等待入库确认</small></Link>
       </section>
+
+      <ReplenishmentAlerts />
 
       <div className="dashboard-grid">
       <section className="dashboard-panel dashboard-tasks">

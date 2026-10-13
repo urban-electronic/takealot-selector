@@ -81,16 +81,15 @@ def decide(current, stock, rule, snapshot):
     return target, '按 PricePilot 现货 Buybox 规则调价'
 
 async def collect(product, offer):
-    from playwright.async_api import async_playwright
+    from services.quote_browser import quote_context
     from services.pricepilot_collector import scrape_product
     url = product.takealot_url or ''
     parsed = urlparse(url)
     if parsed.scheme != 'https' or parsed.hostname not in ('www.takealot.com', 'takealot.com') or not re.search(r'PLID\d+', parsed.path, re.I):
         return {'error': 'invalid_url', 'offers': []}
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+    async with quote_context() as context:
+        page = None
         try:
-            context = await browser.new_context(locale='en-ZA', timezone_id='Africa/Johannesburg')
             page = await context.new_page()
             from services.collection_diagnostics import safe_url, classify
             responses=[]
@@ -113,7 +112,8 @@ async def collect(product, offer):
             code,message=classify(snapshot)
             if code: snapshot.update(error=code,error_message=message)
             return snapshot
-        finally: await browser.close()
+        finally:
+            if page is not None: await page.close()
 
 def official_offer(client, key, offer_id):
     response = client.get(f'https://seller-api.takealot.com/v2/offers/offer/ID{offer_id}', headers={'Authorization': f'Key {key}'})
