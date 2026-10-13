@@ -157,7 +157,18 @@ def start_worker():
     def run():
         while not _stop.is_set():
             try: sync_once()
-            except Exception: pass  # transient DB failure; next tick retries, never print secrets
+            except Exception as error:
+                # Surface startup/DB dependency failures without exception messages or secrets.
+                try:
+                    from database import SessionLocal
+                    with SessionLocal() as db:
+                        row = db.query(SystemSettings).filter(SystemSettings.key == STATE_KEY).first()
+                        value = json.dumps({'status': 'error', 'error': f'后台同步启动异常（{type(error).__name__}），稍后重试', 'next_due': time.time() + 300})
+                        if row: row.value = value
+                        else: db.add(SystemSettings(key=STATE_KEY, value=value))
+                        db.commit()
+                except Exception:
+                    print('Seller operations sync: database unavailable; retrying next minute', flush=True)
             _stop.wait(60)
     _thread = threading.Thread(target=run, daemon=True, name='seller-operations-sync'); _thread.start()
 
