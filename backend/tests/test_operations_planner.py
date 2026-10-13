@@ -11,7 +11,8 @@ PROFITABLE = {'available': True, 'minimum_margin': .15,
 def profile(**kwargs):
     return {**dict(stock=10, stock_date='2026-10-13', observed_from='2026-10-11',
                    sales=[{'date': '2026-10-12', 'quantity': 5}], air_days=15, sea_days=45,
-                   cycle_days=30, safety_days=7, allocations=[]), **kwargs}
+                   cycle_days=30, safety_days=7, allocations=[], emergency_air_days=7,
+                   dispatch_policy='balanced' if kwargs.get('allow_emergency_air') else 'sea_only'), **kwargs}
 
 def test_new_product_uses_three_day_observation_and_defaults_to_sea_only():
     r = plan(profile(), [], TODAY, PROFITABLE)
@@ -61,7 +62,7 @@ def test_validation_rejects_reversed_lead_time_and_duplicate_allocation():
     a = {'procurement_id':'a','mode':'air','eta':'2026-10-28'}
     with pytest.raises(ValueError): Profile(**profile(allocations=[a,a]))
     with pytest.raises(ValueError): Profile(**profile(emergency_air_days=15))
-    assert Profile(**profile()).allow_emergency_air is False
+    assert Profile(**profile()).dispatch_policy == 'sea_only'
 
 def test_multiple_sea_batches_continuously_cover_demand_after_first_arrival():
     p = profile(air_days=17, sea_days=58)
@@ -122,3 +123,47 @@ def test_existing_air_still_counts_when_new_air_is_disabled():
     r=plan(p,[{'id':'a','status':'in_transit','quantity':50}],TODAY)
     assert r['air_quantity']==0 and r['pending']['air']==50
     assert r['pre_sea_shortage']==15
+
+def test_balanced_hundred_units_can_dispatch_twenty_sixty_twenty():
+    p=profile(dispatch_policy='balanced', allow_emergency_air=True, emergency_air_days=14,
+              batch_quantity=100, stock=0, air_days=17, sea_days=58,
+              sales=[{'date':'2026-10-12','quantity':6}])
+    r=plan(p,[],TODAY,PROFITABLE)
+    first=[b for b in r['schedule'] if b['batch_id']=='2026-10-13-0']
+    assert [(b['mode'],b['quantity'])for b in first]==[('air',20),('sea',60),('sea',20)]
+    assert first[1]['departure_date']=='2026-10-13'
+    assert first[2]['purchase_date']=='2026-10-13'  # same purchase, retained before departure
+    assert first[2]['departure_date']=='2026-10-28'
+    assert first[2]['arrival_date']=='2026-12-25'
+    assert r['initial_batch_quantity']==100 and r['initial_air_share']==.2
+    assert r['pre_sea_shortage']>0  # twenty units cannot cover forty-one days at two/day
+
+def test_balanced_reduces_air_when_stock_already_covers_early_demand():
+    p=profile(dispatch_policy='balanced',allow_emergency_air=True,emergency_air_days=14,stock=100)
+    r=plan(p,[],TODAY,PROFITABLE)
+    assert r['air_quantity']==0
+    assert r['sea_quantity']>0
+
+def test_sea_split_is_advanced_if_deferral_would_cause_stockout():
+    p=profile(dispatch_policy='balanced',allow_emergency_air=False,batch_quantity=25,
+              stock=0,sea_split_days=15,sales=[{'date':'2026-10-12','quantity':6}])
+    r=plan(p,[],TODAY,PROFITABLE)
+    first=[b for b in r['schedule']if b['batch_id']=='2026-10-13-0']
+    assert [(b['mode'],b['quantity'])for b in first]==[('sea',25)]
+    assert r['shortage_windows']  # insufficient budget is shown, never assumed covered
+
+def test_balanced_stock_and_air_can_cover_lead_time_while_sea_batches_take_over():
+    p=profile(dispatch_policy='balanced',allow_emergency_air=True,emergency_air_days=14,
+              batch_quantity=100,stock=96,air_days=17,sea_days=58,
+              sales=[{'date':'2026-10-12','quantity':6}])
+    r=plan(p,[],TODAY,PROFITABLE)
+    assert r['air_quantity']==20 and r['pre_sea_shortage']==0 and r['shortage_windows']==[]
+    by_day={}
+    for b in r['schedule']:
+        day=(date.fromisoformat(b['arrival_date'])-TODAY).days
+        by_day[day]=by_day.get(day,0)+b['quantity']
+    balance=96
+    for day in range(58+90+67):
+        balance+=by_day.get(day,0)
+        assert balance >= 2
+        balance-=2

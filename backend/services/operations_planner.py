@@ -28,8 +28,11 @@ def plan(profile, purchases, today=None, economics=None):
     cycle = profile['cycle_days']; safety = profile['safety_days']
     coverage = max(profile.get('sea_coverage_days', 60), cycle, profile['air_days'])
     planning_days = profile.get('planning_days', 120)
-    emergency_air = profile.get('allow_emergency_air', False)
-    emergency_days = profile.get('emergency_air_days', 7)
+    policy = profile.get('dispatch_policy', 'balanced')
+    emergency_air = profile.get('allow_emergency_air', policy == 'balanced') and policy != 'sea_only'
+    emergency_days = profile.get('emergency_air_days', 14)
+    split_days = profile.get('sea_split_days', 15) if policy == 'balanced' else 0
+    manual_batch = profile.get('batch_quantity')
     horizon = sea + ((planning_days - 1) // cycle) * cycle + coverage + safety
     latest_sale = max((date.fromisoformat(s['date']) for s in sales if date.fromisoformat(s['date']) <= today), default=None)
     common = dict(units_window=units(days), units_recent=units(min(7, days)), observed_days=days, days_since_last_sale=(today-latest_sale).days if latest_sale else None, trend='rising' if recent > baseline * 1.5 else 'falling' if baseline and recent < baseline * .5 else 'flat')
@@ -77,7 +80,13 @@ def plan(profile, purchases, today=None, economics=None):
             elif balance < 0: balance = 0  # lost sales before delivery are not backorders
         return max(0, math.ceil(worst - 1e-9))
     air_gap_need = required_after(air, sea)
+    initial_sea_need = required_after(sea, sea + coverage + safety)
     air_limit = math.ceil(velocity * emergency_days - 1e-9)
+    if policy == 'balanced':
+        share = profile.get('air_share_cap', .2)
+        sea_basis = initial_sea_need + min(pending['sea'], math.ceil(velocity * coverage))
+        ratio_limit = math.floor(manual_batch * share) if manual_batch else math.floor(sea_basis * share / (1 - share))
+        air_limit = min(air_limit, ratio_limit)
     air_budget = max(0, air_limit - pending_air_before_sea)
     air_qty = min(air_gap_need, air_budget) if emergency_air else 0
     blocked = []
@@ -88,26 +97,43 @@ def plan(profile, purchases, today=None, economics=None):
         blocked.append('空运利润率低于补货门槛，暂停应急空运建议')
         air_qty = 0
     sea_allowed = not (economics and economics.get('available') and economics['sea']['profit_margin'] < economics['minimum_margin'])
+    if policy == 'balanced' and not sea_allowed and air_qty:
+        blocked.append('海运利润未达标，暂停本轮混合补货')
+        air_qty = 0
     planned = {air: air_qty} if air_qty else {}
     schedule = []
-    def entry(mode, quantity, purchase_day, eta):
-        departure = purchase_day + prep
+    def entry(mode, quantity, purchase_day, eta, delay=0):
+        departure = purchase_day + prep + delay
         cost = economics[mode].get('total_cost_zar') if economics and economics.get('available') else None
         return dict(mode=mode, quantity=quantity,
                     purchase_date=(today + timedelta(days=purchase_day)).isoformat(),
                     departure_date=(today + timedelta(days=departure)).isoformat(),
                     arrival_date=(today + timedelta(days=eta)).isoformat(),
                     coverage_until=(today + timedelta(days=eta + (coverage + safety if mode == 'sea' else math.ceil(quantity / velocity)) - 1)).isoformat(),
-                    conditional=purchase_day > 0, estimated_cost_zar=round(cost * quantity, 2) if cost is not None else None)
+                    conditional=purchase_day > 0 or delay > 0, batch_id=f'{today.isoformat()}-{purchase_day}', deferred_dispatch=delay > 0, estimated_cost_zar=round(cost * quantity, 2) if cost is not None else None)
     if air_qty: schedule.append(entry('air', air_qty, 0, air))
-    sea_qty = 0
+    sea_qty = 0; initial_total = 0
     for purchase_day in range(0, planning_days, cycle):
         eta = sea + purchase_day
         quantity = required_after(eta, eta + coverage + safety, planned)
+        if purchase_day == 0 and manual_batch is not None:
+            quantity = min(quantity, max(0, manual_batch - air_qty))
         if purchase_day == 0 and quantity and not sea_allowed:
-            blocked.append('海运利润率也低于补货门槛，暂停建议，先检查成本或售价')
+            blocked.append('海运利润率低于补货门槛，暂停建议，先检查成本或售价')
         if not sea_allowed: quantity = 0
-        if purchase_day == 0: sea_qty = quantity
+        if purchase_day == 0:
+            sea_qty = quantity; initial_total = air_qty + quantity
+            if quantity and split_days:
+                # Never defer units needed before the second sea arrival.
+                first_needed = required_after(eta, eta + split_days, planned)
+                first = min(quantity, max(first_needed, math.ceil(quantity * profile.get('first_sea_share', .75))))
+                second = quantity - first
+                planned[eta] = planned.get(eta, 0) + first
+                schedule.append(entry('sea', first, purchase_day, eta))
+                if second:
+                    planned[eta+split_days] = planned.get(eta+split_days, 0) + second
+                    schedule.append(entry('sea', second, purchase_day, eta+split_days, delay=split_days))
+                continue
         if quantity:
             planned[eta] = planned.get(eta, 0) + quantity
             schedule.append(entry('sea', quantity, purchase_day, eta))
@@ -144,10 +170,11 @@ def plan(profile, purchases, today=None, economics=None):
                 cover_days=round(stock / velocity, 1), pending=pending, overdue=overdue,
                 unmapped=unmapped, stale=elapsed > 3, pre_air_shortage=pre_air,
                 next_review_days=cycle, timeline=timeline, blocked=blocked, schedule=schedule,
+                dispatch_policy=policy, initial_batch_quantity=initial_total, initial_air_share=round(air_qty/initial_total,3) if initial_total else 0,
                 air_gap_need=air_gap_need, pre_sea_shortage=math.ceil(pre_sea_lost - 1e-9),
                 shortage_windows=shortage_windows, sea_start_date=(today+timedelta(days=sea)).isoformat(),
                 emergency_air_limit=air_limit, emergency_air_budget_remaining=air_budget, allow_emergency_air=emergency_air, emergency_air_days=emergency_days,
                 sea_coverage_days=coverage, planning_days=planning_days, total_sea_quantity=total_sea,
                 sea_share=round(total_sea / (total_sea+total_air), 3) if total_sea+total_air else 0,
                 estimated_transport_saving_zar=savings, provisional=days < 14 or elapsed > 3,
-                reason='；'.join(blocked) if blocked else f'海运覆盖{coverage}天销量＋{safety}天安全库存，每{cycle}天滚动复核；默认仅安排多批海运持续衔接；空运需按商品开启且限量，首批前缺口单独提示，未来批次须按最新销量确认')
+                reason='；'.join(blocked) if blocked else f'海运覆盖{coverage}天销量＋{safety}天安全库存，每{cycle}天滚动复核；少量空运启动，首批海运为主、第二批错峰发运；缺口和利润单独核验，后续海运持续衔接')

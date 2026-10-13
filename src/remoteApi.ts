@@ -460,3 +460,7 @@ export const reconcileAutomaticPricing = (product: string, offer: string): Promi
 export const bulkAutomaticPricing = (payload: unknown): Promise<any> => request('/api/automatic-pricing/bulk', { method: 'POST', body: JSON.stringify(payload) });
 
 export const pauseAllAutomaticPricing = (): Promise<any> => request('/api/automatic-pricing/pause-all', { method: 'POST' });
+
+export const configureBuyboxMonitor = (product:string, offer:string, settings:unknown):Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/monitor`,{method:'PUT',body:JSON.stringify(settings)});
+export const collectBuyboxNow = (product:string, offer:string):Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/collect-now`,{method:'POST'});
+export const bulkBuyboxMonitor = (payload:unknown):Promise<any> => request('/api/automatic-pricing/monitor/bulk',{method:'POST',body:JSON.stringify(payload)});

@@ -38,8 +38,13 @@ class Profile(BaseModel):
     sea_days: int = Field(default=58, ge=2, le=365)
     safety_days: int = Field(default=7, ge=0, le=90)
     cycle_days: int = Field(default=30, ge=1, le=180)
-    allow_emergency_air: bool = False
-    emergency_air_days: int = Field(default=7, ge=1, le=14)
+    dispatch_policy: Literal['balanced', 'sea_only'] = 'balanced'
+    air_share_cap: float = Field(default=.2, ge=0, le=.4)
+    first_sea_share: float = Field(default=.75, ge=.5, le=1)
+    sea_split_days: int = Field(default=15, ge=1, le=30)
+    batch_quantity: int | None = Field(default=None, ge=1, le=1000000)
+    allow_emergency_air: bool = True
+    emergency_air_days: int = Field(default=14, ge=1, le=14)
     sea_coverage_days: int = Field(default=60, ge=17, le=180)
     planning_days: int = Field(default=120, ge=30, le=180)
     procurement_days: int = Field(default=0, ge=0, le=90)

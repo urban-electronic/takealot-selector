@@ -450,6 +450,8 @@ def start_operations_sync():
     start_worker()
     from services.automatic_pricing import start_worker as start_pricing
     start_pricing()
+    from services.buybox_monitor import start_worker as start_monitor
+    start_monitor()
 
 
 @app.on_event('shutdown')
@@ -458,3 +460,5 @@ def stop_operations_sync():
     stop_worker()
     from services.automatic_pricing import stop_worker as stop_pricing
     stop_pricing()
+    from services.buybox_monitor import stop_worker as stop_monitor
+    stop_monitor()

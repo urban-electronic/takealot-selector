@@ -9,6 +9,7 @@ from database import get_db
 from models import Product, SystemSettings, DEFAULT_STORE_ID
 from api.store_routes import get_store_id
 from services.automatic_pricing import PREFIX
+from services.buybox_monitor import PREFIX as MONITOR_PREFIX
 from services.takealot_seller_api import configured_key
 from services.replenishment_economics import system_floor
 
@@ -61,6 +62,7 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     prefix = PREFIX + store + ':'
     rules = {r.key: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
     groups = {r.key: json.loads(r.value).get('group', '') for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
+    monitors = {r.key: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
     rows = []
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         setting = db.query(SystemSettings).filter(SystemSettings.key == f'operations_profile:{store}:{p.id}').first()
@@ -76,6 +78,7 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
             rows.append(dict(product_id=p.id, product_no=p.product_no, offer_id=offer['id'], sku=offer['sku'],
                 name=offer.get('title') or p.product_name, url=p.takealot_url, price=rule.get('current_price', offer.get('price')),
                 stock=rule.get('stock', offer.get('stock')), suggested_min=suggested_min,
+                monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
     return {'rows': rows, 'configured': bool(configured_key(db)) if store == DEFAULT_STORE_ID else False}
 
@@ -175,3 +178,47 @@ def reconcile(product_id: str, offer_id: str, db: Session = Depends(get_db), sto
     value.update(current_price=actual['selling_price'], enabled=False, write_pending=False,
         revision=value.get('revision', 0) + 1, last_result=f'已核验平台现价 R {actual["selling_price"]}，保持暂停；需要时重新启动')
     row.value = json.dumps(value, ensure_ascii=False); db.commit(); return value
+
+
+class MonitorConfig(BaseModel):
+    enabled: bool = False
+    interval_minutes: int = Field(default=30, ge=15, le=1440)
+
+class MonitorBulk(MonitorConfig):
+    items: list[Item] = Field(min_length=1, max_length=2000)
+    request_once: bool = False
+
+
+def save_monitors(data, db, store):
+    if store != DEFAULT_STORE_ID or not configured_key(db): raise HTTPException(400, '本店未绑定采集接口')
+    catalog={(r['product_id'],r['offer_id']):r for r in listing(db,store)['rows']}
+    staged=[]
+    for product_id,offer_id in dict.fromkeys((i.product_id,i.offer_id) for i in data.items):
+        item=catalog.get((product_id,offer_id))
+        if not item or not item['url']: raise HTTPException(400, '选中SKU未匹配或缺少公开页，本次未更改')
+        old=item['monitor'];value={**old,'product_id':product_id,'offer_id':offer_id,'sku':item['sku'],
+            'enabled':data.enabled, 'interval_minutes':data.interval_minutes, 'request_once':data.request_once,
+            'revision':old.get('revision',0)+1,'next_due':0 if data.enabled or data.request_once else old.get('next_due',0),
+            'status':'queued' if data.enabled or data.request_once else 'paused'}
+        staged.append((MONITOR_PREFIX+store+':'+product_id+':'+offer_id,value))
+    for key,value in staged:
+        row=db.query(SystemSettings).filter(SystemSettings.key==key).first()
+        if row: row.value=json.dumps(value,ensure_ascii=False)
+        else: db.add(SystemSettings(key=key,value=json.dumps(value,ensure_ascii=False)))
+    db.commit();return {'updated':len(staged),'price_changed':False}
+
+@router.post('/monitor/bulk')
+def monitor_bulk(data: MonitorBulk, db: Session=Depends(get_db), store:str=Depends(get_store_id)):
+    return save_monitors(data,db,store)
+
+@router.put('/{product_id}/{offer_id}/monitor')
+def monitor_configure(product_id:str,offer_id:str,data:MonitorConfig,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
+    return save_monitors(MonitorBulk(**data.model_dump(),items=[Item(product_id=product_id,offer_id=offer_id)]),db,store)
+
+@router.post('/{product_id}/{offer_id}/collect-now')
+def collect_now(product_id:str,offer_id:str,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
+    item=next((r for r in listing(db,store)['rows'] if r['product_id']==product_id and r['offer_id']==offer_id),None)
+    if not item: raise HTTPException(404,'SKU未匹配')
+    old=item['monitor']
+    return save_monitors(MonitorBulk(items=[Item(product_id=product_id,offer_id=offer_id)], enabled=old.get('enabled',False),
+                                    interval_minutes=old.get('interval_minutes',30),request_once=True),db,store)
