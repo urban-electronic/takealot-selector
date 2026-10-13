@@ -85,6 +85,22 @@ def test_waiting_for_browser_verification_only_updates_heartbeat():
         assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX)).count()
 
 
+def test_legacy_and_browser_clients_keep_their_own_heartbeat_lease():
+    import time
+    with database() as db:
+        bridge.web_open(bridge.WebOpen(heartbeat_only=True),db,DEFAULT_STORE_ID)
+        browser=json.loads(db.query(SystemSettings).filter_by(key=bridge.HEARTBEAT).first().value)
+        assert browser['kind']=='browser_extension' and 80 < browser['expires_at']-time.time() <= 90
+
+        bridge.products(db,DEFAULT_STORE_ID)
+        local=json.loads(db.query(SystemSettings).filter_by(key=bridge.HEARTBEAT).first().value)
+        assert local['kind']=='local_collector' and 890 < local['expires_at']-time.time() <= 900
+
+        bridge.products(db,DEFAULT_STORE_ID,'browser_extension')
+        browser=json.loads(db.query(SystemSettings).filter_by(key=bridge.HEARTBEAT).first().value)
+        assert browser['kind']=='browser_extension' and 80 < browser['expires_at']-time.time() <= 90
+
+
 def age_lease(db,item,seconds):
     import time
     lease=db.query(SystemSettings).filter_by(key=bridge.CLAIM_PREFIX+item['productId']).first()
