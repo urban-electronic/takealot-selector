@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi import HTTPException
@@ -17,7 +18,7 @@ def test_saved_plan_store_isolation_procurement_and_recommendations():
         db.add(ProcurementRecord(id='purchase', store_id='a', product_id='p', quantity=10000, status='in_transit'))
         db.add(ProcurementRecord(id='foreign-purchase', store_id='b', product_id='foreign', quantity=10000, status='in_transit'))
         db.commit()
-        day = date.today().isoformat()
+        day = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
         payload = dict(stock=0, stock_date=day, observed_from=day, sales=[{'date': day, 'quantity': 5}], group='cable', related_groups=['charger'])
         save_profile('same', Profile(**payload), db, 'a')
         save_profile('related', Profile(**{**payload, 'group': 'charger'}), db, 'a')
@@ -40,7 +41,7 @@ def test_split_receipts_cannot_exceed_the_single_purchase_quantity():
     with sessionmaker(bind=engine)()as db:
         db.add(Product(id='p',store_id='a',product_name='p',link_status='已购买'))
         db.add(ProcurementRecord(id='order',store_id='a',product_id='p',quantity=100,status='in_transit'));db.commit()
-        day=date.today().isoformat()
+        day=datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
         payload=dict(stock=0,stock_date=day,observed_from=day,sales=[],allocations=[
           {'procurement_id':'order','mode':'air','quantity':20,'eta':day},
           {'procurement_id':'order','mode':'sea','quantity':80,'eta':day}])

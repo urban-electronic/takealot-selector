@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Takealot 网页采集助手",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "打开选品系统后读取本机Takealot商品页，回传Buybox行情；不提交价格修改。",
   "permissions": ["tabs", "scripting", "storage", "alarms"],
   "host_permissions": ["https://www.takealot.com/*", "https://takealot.com/*", "https://takealot-selector-production.up.railway.app/*"],

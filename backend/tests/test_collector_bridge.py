@@ -83,3 +83,62 @@ def test_waiting_for_browser_verification_only_updates_heartbeat():
         result=bridge.web_open(bridge.WebOpen(heartbeat_only=True),db,DEFAULT_STORE_ID)
         assert result['queued']==0 and bridge.connected(db)
         assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX)).count()
+
+
+def age_lease(db,item,seconds):
+    import time
+    lease=db.query(SystemSettings).filter_by(key=bridge.CLAIM_PREFIX+item['productId']).first()
+    job=json.loads(lease.value);job.update(claimed_at=time.time()-seconds,expires_at=time.time()-seconds+900)
+    config=json.loads(job['claim']);config['next_due']=job['expires_at'];job['claim']=json.dumps(config,ensure_ascii=False)
+    db.query(SystemSettings).filter_by(key=job['monitor_key']).first().value=job['claim']
+    lease.value=json.dumps(job);db.commit()
+
+
+def test_buffered_legacy_quote_is_not_freshened_at_receipt(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch);age_lease(db,item,660)
+        result=bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99}]),db,DEFAULT_STORE_ID)
+        assert result['processed']==1
+        assert shared_snapshot(db,'one','one','one').get('error')
+
+
+def test_bounded_per_item_timestamp_keeps_recent_quote_usable(monkeypatch):
+    from datetime import datetime,timezone
+    with database() as db:
+        item=setup(db,monkeypatch);age_lease(db,item,660)
+        bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'collectedAt':datetime.now(timezone.utc).isoformat()}]),db,DEFAULT_STORE_ID)
+        assert shared_snapshot(db,'one','one','one')['buyboxPrice']==99
+
+
+def test_future_timestamp_cannot_make_old_quote_fresh(monkeypatch):
+    from datetime import datetime,timezone,timedelta
+    with database() as db:
+        item=setup(db,monkeypatch);age_lease(db,item,660)
+        bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'collectedAt':(datetime.now(timezone.utc)+timedelta(minutes=5)).isoformat()}]),db,DEFAULT_STORE_ID)
+        assert shared_snapshot(db,'one','one','one').get('error')
+
+
+def test_wrong_sku_report_does_not_consume_the_valid_job(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch)
+        assert bridge.offers(bridge.Report(items=[{**item,'sku':'wrong','buyboxPrice':99}]),db,DEFAULT_STORE_ID)['skipped']==1
+        assert bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99}]),db,DEFAULT_STORE_ID)['processed']==1
+
+
+def test_expired_job_is_recovered_and_late_report_is_ignored(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch);age_lease(db,item,901)
+        bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
+        next_item=next(r for r in bridge.products(db,DEFAULT_STORE_ID)['items'] if r['sku']=='one')
+        assert next_item['productId']!=item['productId']
+        assert bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':70}]),db,DEFAULT_STORE_ID)['skipped']==1
+        assert bridge.offers(bridge.Report(items=[{**next_item,'buyboxPrice':99}]),db,DEFAULT_STORE_ID)['processed']==1
+
+
+def test_expired_job_cannot_restore_a_concurrent_pause(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch);age_lease(db,item,901)
+        pricing_routes.monitor_configure('one','one',pricing_routes.MonitorConfig(enabled=False),db,DEFAULT_STORE_ID)
+        bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
+        value=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
+        assert value['status']=='paused' and not value['enabled'] and not value['request_once']

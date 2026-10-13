@@ -15,6 +15,8 @@ assert.equal(quote.buyboxPrice,120);
 assert.equal(quote.offers[1].status,'pre_order');
 assert.equal(quote.offers[0].offerType,'fastest');
 assert.equal(quote.productId,'job-token');
+assert.ok(Number.isFinite(Date.parse(quote.collectedAt)));
+assert.ok(Date.now()-Date.parse(quote.collectedAt)<5000);
 assert.equal((await run({cards:[{price:120,text:'in stock'}],variants:[{getClientRects:()=>[{}]}]})).variantSwitchFailed,true);
 console.log('Browser collector parser checks passed: challenge, missing quotes, delivery stock, job identity and ambiguous variants.');
 const workerSource=await readFile('tools/browser-collector/worker.js','utf8');

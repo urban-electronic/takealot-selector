@@ -56,5 +56,6 @@ globalThis.collectTakealotQuote = async function(item) {
   // Only inspect offer-specific containers; never harvest recommendations/ad prices.
   const other=[...document.querySelectorAll('[data-ref="other-offer"],[data-ref="other-seller-offer"],[class*="other-offer"]')].filter(visible);
   for(const el of other){const value=price(el);if(value!==null)result.offers.push({price:value,status:stock(el.innerText||''),offerType:'other',isMine:false});}
+  result.collectedAt=new Date().toISOString();
   return result;
 };
