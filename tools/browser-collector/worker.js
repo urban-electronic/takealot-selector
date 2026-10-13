@@ -4,7 +4,7 @@ let working=false;
 let state={status:'waiting',message:'等待系统网页'};
 const trusted = sender => sender.tab?.url?.startsWith(SITE);
 const api = async (config,path,method='GET',body) => {
-  const response=await fetch(BASE+path,{method,headers:{'X-API-Key':config.apiKey,'X-Store-ID':'default-store','Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
+  const response=await fetch(BASE+path,{method,headers:{'X-API-Key':config.apiKey,'X-Store-ID':'default-store','X-Collector-Client':'browser_extension','Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(30000)});
   if(!response.ok)throw new Error(`服务连接失败 HTTP ${response.status}`);
   return response.json();
 };

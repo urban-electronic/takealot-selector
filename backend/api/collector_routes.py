@@ -4,7 +4,8 @@ import math
 import time
 import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from database import get_db
@@ -27,6 +28,10 @@ def touch(db, kind=None):
     value=json.dumps({'kind':mode,'last_seen_at':datetime.now(timezone.utc).isoformat(),'expires_at':time.time()+(90 if mode=='browser_extension' else 900)})
     if row: row.value=value
     else: db.add(SystemSettings(key=HEARTBEAT,value=value))
+
+def collector_kind(value):
+    """Legacy PricePilot sends no marker; only the bundled extension identifies itself."""
+    return 'browser_extension' if value == 'browser_extension' else 'local_collector'
 
 def assert_default(store):
     if store != DEFAULT_STORE_ID: raise HTTPException(400,'采集器仅绑定自营店铺')
@@ -57,8 +62,9 @@ def observation_time(item, job, received):
     return min(started,received), 'lease_start'
 
 @router.get('/products')
-def products(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
-    assert_default(store);touch(db)
+def products(db:Session=Depends(get_db),store:str=Depends(get_store_id),
+             x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client')):
+    assert_default(store);touch(db,collector_kind(x_collector_client))
     now=time.time();items=[]
     recover_expired(db,now)
     for item in sorted(catalog(db,store),key=lambda x:x['monitor'].get('next_due',0)):
@@ -110,8 +116,9 @@ class Report(BaseModel):
     items:list[dict]=Field(max_length=100)
 
 @router.post('/offers')
-def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
-    assert_default(store);touch(db);processed=skipped=0
+def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id),
+           x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client')):
+    assert_default(store);touch(db,collector_kind(x_collector_client));processed=skipped=0
     recover_expired(db,time.time())
     for item in data.items:
         lease=db.query(SystemSettings).filter_by(key=CLAIM_PREFIX+str(item.get('productId',''))).first()
