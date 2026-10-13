@@ -23,6 +23,7 @@ class Sale(BaseModel):
 class Allocation(BaseModel):
     procurement_id: str
     mode: Literal['air', 'sea']
+    quantity: int | None = Field(default=None, gt=0, le=1000000)
     eta: date
     included_in_stock: bool = False
 
@@ -67,8 +68,13 @@ class Profile(BaseModel):
             raise ValueError('销量日期必须在观测开始和今天之间')
         if any(a.included_in_stock and a.eta > self.stock_date for a in self.allocations):
             raise ValueError('晚于库存快照的到货不能标记已计入库存')
-        if len({a.procurement_id for a in self.allocations}) != len(self.allocations):
-            raise ValueError('一笔采购不能重复分配；拆分运输请建立两笔采购记录')
+        groups = {}
+        for a in self.allocations: groups.setdefault(a.procurement_id, []).append(a)
+        for batches in groups.values():
+            if len(batches) > 1 and any(a.quantity is None for a in batches):
+                raise ValueError('同一笔采购拆批时，每批必须填写数量')
+            if len({(a.mode, a.eta, a.included_in_stock) for a in batches}) != len(batches):
+                raise ValueError('相同运输、到货日期的批次请合并，避免重复分配')
         return self
 
 def key(store, product):
@@ -150,6 +156,11 @@ def save_profile(product_id: str, data: Profile, db: Session = Depends(get_db), 
     for a in data.allocations:
         if a.procurement_id not in purchases:
             raise HTTPException(400, '采购记录不存在或不属于此店铺商品')
+    allocated = {}
+    for a in data.allocations:
+        allocated[a.procurement_id] = allocated.get(a.procurement_id, 0) + (a.quantity if a.quantity is not None else purchases[a.procurement_id]['quantity'])
+    if any(q > purchases[id]['quantity'] for id, q in allocated.items()):
+        raise HTTPException(400, '发运批次总量不能超过该笔采购数量')
     row = db.query(SystemSettings).filter(SystemSettings.key == key(store, product_id)).first()
     profile = data.model_dump(mode='json')
     if row:

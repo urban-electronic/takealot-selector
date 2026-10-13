@@ -187,3 +187,19 @@ def test_adaptive_small_sea_batch_moves_second_departure_earlier():
     assert sum(b['quantity']for b in parts)==40
     later=next(b for b in parts if b['deferred_dispatch'])
     assert 0<(date.fromisoformat(later['departure_date'])-TODAY).days<15
+
+def test_single_purchase_splits_are_counted_once_by_actual_arrival_date():
+    p=profile(allocations=[{'procurement_id':'p','mode':'air','quantity':20,'eta':'2026-10-28'},
+                           {'procurement_id':'p','mode':'sea','quantity':60,'eta':'2026-11-27'},
+                           {'procurement_id':'p','mode':'sea','quantity':20,'eta':'2026-12-12'}])
+    r=plan(p,[{'id':'p','status':'in_transit','quantity':100}],TODAY)
+    assert r['pending']=={'air':20,'sea':80} and not r['unmapped']
+    assert r['pre_sea_shortage']==45
+    p['allocations'][0]['included_in_stock']=True
+    assert plan(p,[{'id':'p','status':'in_transit','quantity':100}],TODAY)['pending']=={'air':0,'sea':80}
+
+def test_stale_split_exceeding_purchase_quantity_does_not_inflate_stock():
+    p=profile(allocations=[{'procurement_id':'p','mode':'air','quantity':60,'eta':'2026-10-28'},
+                           {'procurement_id':'p','mode':'sea','quantity':60,'eta':'2026-11-27'}])
+    r=plan(p,[{'id':'p','status':'in_transit','quantity':100}],TODAY)
+    assert r['pending']=={'air':0,'sea':0} and r['unmapped']==['p']

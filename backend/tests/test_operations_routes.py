@@ -34,3 +34,18 @@ def test_saved_plan_store_isolation_procurement_and_recommendations():
         purchase = db.get(ProcurementRecord, 'purchase'); purchase.status = 'cancelled'; db.commit()
         assert any(a['product_id'] == 'p' for a in alerts(db, 'a'))
         assert alerts(db, 'b') == []
+
+def test_split_receipts_cannot_exceed_the_single_purchase_quantity():
+    engine=create_engine('sqlite://');Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)()as db:
+        db.add(Product(id='p',store_id='a',product_name='p',link_status='已购买'))
+        db.add(ProcurementRecord(id='order',store_id='a',product_id='p',quantity=100,status='in_transit'));db.commit()
+        day=date.today().isoformat()
+        payload=dict(stock=0,stock_date=day,observed_from=day,sales=[],allocations=[
+          {'procurement_id':'order','mode':'air','quantity':20,'eta':day},
+          {'procurement_id':'order','mode':'sea','quantity':80,'eta':day}])
+        result=save_profile('p',Profile(**payload),db,'a')
+        assert len(result['profile']['allocations'])==2
+        payload['allocations'][1]['quantity']=81
+        with pytest.raises(HTTPException):save_profile('p',Profile(**payload),db,'a')
+        assert sum(a['quantity']for a in get_profile('p',db,'a')['profile']['allocations'])==100

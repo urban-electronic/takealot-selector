@@ -44,24 +44,27 @@ def plan(profile, purchases, today=None, economics=None):
     common = dict(units_window=units(days), units_recent=units(min(7, days)), observed_days=days, days_since_last_sale=(today-latest_sale).days if latest_sale else None, trend='rising' if recent > baseline * 1.5 else 'falling' if baseline and recent < baseline * .5 else 'flat')
     arrivals = {}; pending_air_before_sea = 0
     overdue = []; pending = {'air': 0, 'sea': 0}; unmapped = []
-    mapping = {p['procurement_id']: p for p in profile.get('allocations', [])}
+    mapping = {}
+    for a in profile.get('allocations', []): mapping.setdefault(a['procurement_id'], []).append(a)
     for purchase in purchases:
-        if purchase['status'] == 'cancelled':
-            continue
-        allocation = mapping.get(purchase['id'])
-        if not allocation:
+        if purchase['status'] == 'cancelled': continue
+        batches = mapping.get(purchase['id'], [])
+        total = sum(a.get('quantity') if a.get('quantity') is not None else purchase['quantity'] for a in batches)
+        # A later purchase edit must never make stale splits inflate inventory.
+        if total > purchase['quantity']:
+            unmapped.append(purchase['id']); continue
+        if not batches or total < purchase['quantity']:
             if purchase['status'] == 'in_transit': unmapped.append(purchase['id'])
-            continue
-        if allocation.get('included_in_stock'):
-            continue
-        eta = date.fromisoformat(allocation['eta'])
-        offset = (eta - today).days
-        if offset < 0:
-            overdue.append(purchase['id'])
-            continue  # overdue is not usable stock until confirmed by a new snapshot
-        pending[allocation['mode']] += purchase['quantity']
-        if allocation['mode'] == 'air' and offset < sea: pending_air_before_sea += purchase['quantity']
-        arrivals[offset] = arrivals.get(offset, 0) + purchase['quantity']
+        for allocation in batches:
+            quantity = allocation.get('quantity') if allocation.get('quantity') is not None else purchase['quantity']
+            if allocation.get('included_in_stock'): continue
+            eta = date.fromisoformat(allocation['eta']); offset = (eta - today).days
+            if offset < 0:
+                if purchase['id'] not in overdue: overdue.append(purchase['id'])
+                continue
+            pending[allocation['mode']] += quantity
+            if allocation['mode'] == 'air' and offset < sea: pending_air_before_sea += quantity
+            arrivals[offset] = arrivals.get(offset, 0) + quantity
     if velocity <= 0:
         return dict(air_quantity=0, sea_quantity=0, velocity=0, stock=stock, cover_days=None,
                     pending=pending, overdue=overdue, unmapped=unmapped, stale=elapsed > 3,
