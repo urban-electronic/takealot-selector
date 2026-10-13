@@ -56,12 +56,15 @@ def products(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
 
 class WebOpen(BaseModel):
     initial:bool=False
+    heartbeat_only:bool=False
 
 @router.post('/web-open')
 def web_open(data:WebOpen,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
     """Page-attached read-only collection: refresh stocked SKUs, never enable pricing."""
     assert_default(store)
     touch(db, 'browser_extension')
+    if data.heartbeat_only:
+        db.commit();return {'queued':0,'price_changed':False}
     now=time.time();queued=0
     for item in catalog(db,store):
         stock=item.get('stock')
