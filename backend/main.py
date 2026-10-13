@@ -440,3 +440,15 @@ async def debug_scraper():
 @app.get("/")
 def root():
     return {"message": "Takealot 选品与利润测算系统 API", "version": "1.0.0"}
+
+
+@app.on_event('startup')
+def start_operations_sync():
+    from services.seller_operations_sync import start_worker
+    start_worker()
+
+
+@app.on_event('shutdown')
+def stop_operations_sync():
+    from services.seller_operations_sync import stop_worker
+    stop_worker()

@@ -4,7 +4,7 @@ import { getOperationsProfile, saveOperationsProfile } from '../remoteApi';
 import type { Product } from '../types';
 
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
-export default function PipelinePlan({ product }: { product: Product }) {
+export default function PipelinePlan({ product, open = false }: { product: Product; open?: boolean }) {
   const [data, setData] = useState<any>(null);
   const [form, setForm] = useState<any>(null);
   const [sales, setSales] = useState('');
@@ -37,14 +37,14 @@ export default function PipelinePlan({ product }: { product: Product }) {
       setData(d); setForm(d.profile); setMessage('已保存。网页会自动重算；采购记录变化后提醒同步更新。');
     } catch (e) { setMessage((e as Error).message); } finally { setBusy(false); }
   };
-  const field = (key: string, label: string, type = 'number') => <div className="form-group"><label>{label}</label><input type={type} value={form[key]} min={type === 'number' ? 0 : undefined} onChange={e => setForm({ ...form, [key]: type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value })} /></div>;
+  const field = (key: string, label: string, type = 'number') => <div className="form-group"><label>{label}</label><input type={type} value={form[key]} disabled={form.data_source === 'seller_api' && ['stock', 'stock_date', 'observed_from'].includes(key)} min={type === 'number' ? 0 : undefined} onChange={e => setForm({ ...form, [key]: type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value })} /></div>;
   const allocate = (id: string, key: string, value: any) => {
     const old = form.allocations.find((a: any) => a.procurement_id === id);
     const entry = { procurement_id: id, mode: 'air', eta: today(), included_in_stock: false, ...old, [key]: value };
     setForm({ ...form, allocations: [...form.allocations.filter((a: any) => a.procurement_id !== id), entry] });
   };
   const p = data?.plan;
-  return <details className="card"><summary style={{ fontWeight: 600, cursor: 'pointer' }}>空运 / 海运接力计划与自动选品</summary>
+  return <details className="card" open={open || undefined}><summary style={{ fontWeight: 600, cursor: 'pointer' }}>{product.chinese_product_name || product.product_name} · 计划参数与采购到货</summary>
     <p style={{ fontSize: 13 }}>一次录入并保存，后台固定规则重算，不调用 AI。空运填补海运前缺口，海运承担后续周期，不固定各一半。</p>
     {message && <div role="status" className="alert">{message}</div>}
     {p && <div style={{ padding: 16, borderRadius: 12, background: 'var(--color-bg)', marginBottom: 16 }}>
@@ -59,7 +59,7 @@ export default function PipelinePlan({ product }: { product: Product }) {
     </div>}
     {form && <><div className="form-row">{field('stock', '本店可售库存（非国内库存）')}{field('stock_date', '库存快照日期（该日结束库存）', 'date')}{field('observed_from', '完整销量观测开始（新品填实际首日）', 'date')}{field('air_days', '空运含处理时效（天）')}{field('sea_days', '海运含处理时效（天）')}{field('safety_days', '安全覆盖天数')}{field('cycle_days', '后续采购周期（天）')}{field('group', '细分品类（如 USB-C充电线，勿只填电子产品）', 'text')}</div>
       <div className="form-group"><label>关联品类（如 充电头，移动电源；逗号分隔）</label><input value={related} onChange={e => setRelated(e.target.value)} /></div>
-      <div className="form-group"><label>每日真实成交：YYYY-MM-DD | 数量；无成交日不填，完整观测期零销量可留空</label><textarea rows={4} style={{ width: '100%' }} value={sales} onChange={e => setSales(e.target.value)} /></div>
+      {form.data_source === 'seller_api' ? <p>库存与销量由卖家接口自动维护，无需手工录入。最近同步：{form.synced_at}</p> : <div className="form-group"><label>每日真实成交：YYYY-MM-DD | 数量；未能接入卖家接口时使用人工记录</label><textarea rows={4} style={{ width: '100%' }} value={sales} onChange={e => setSales(e.target.value)} /></div>}
       {!!data?.purchases.length && <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>采购</th><th>空/海</th><th>预计可售到货日</th><th>已计入库存快照</th></tr></thead><tbody>{data.purchases.filter((r: any) => r.status !== 'cancelled').map((r: any) => {
         const a = form.allocations.find((x: any) => x.procurement_id === r.id);
         return <tr key={r.id}><td>{r.quantity} 件 · {r.recorded_at}</td><td><select value={a?.mode || ''} onChange={e => e.target.value ? allocate(r.id, 'mode', e.target.value) : setForm({ ...form, allocations: form.allocations.filter((x: any) => x.procurement_id !== r.id) })}><option value="">待设置</option><option value="air">空运</option><option value="sea">海运</option></select></td><td><input type="date" value={a?.eta || ''} onChange={e => allocate(r.id, 'eta', e.target.value)} /></td><td><input type="checkbox" checked={a?.included_in_stock || false} onChange={e => allocate(r.id, 'included_in_stock', e.target.checked)} /></td></tr>;

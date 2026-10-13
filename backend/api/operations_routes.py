@@ -11,6 +11,7 @@ from database import get_db
 from models import Product, ProcurementRecord, SystemSettings
 from api.store_routes import get_store_id
 from services.operations_planner import plan
+from services.seller_operations_sync import eligible, status as sync_status
 
 router = APIRouter(prefix='/api/operations', tags=['operations'])
 
@@ -85,6 +86,7 @@ def recommendations(source, profile, products, saved):
 def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     saved = profiles(db, store); result = []
     for product in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
+        if not eligible(db, store, product): continue
         if product.id not in saved: continue
         output = plan(saved[product.id], purchases_for(db, store, product.id))
         for mode, field in [('air', 'air_quantity'), ('sea', 'sea_quantity')]:
@@ -94,6 +96,21 @@ def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
                                    pre_air_shortage=output['pre_air_shortage'], overdue=bool(output['overdue'])))
     return result
 
+@router.get('/overview')
+def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
+    saved = profiles(db, store); rows = []
+    for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
+        if not eligible(db, store, p): continue
+        profile = saved.get(p.id)
+        rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
+            sku=p.sku, profile=profile, plan=plan(profile, purchases_for(db, store, p.id)) if profile else None))
+    rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('air_quantity', 0), -(r['plan'] or {}).get('sea_quantity', 0)))
+    return {'rows': rows, 'sync': sync_status(db, store)}
+
+@router.get('/sync-status')
+def get_sync_status(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
+    return sync_status(db, store)
+
 @router.get('/{product_id}')
 def get_profile(product_id: str, db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     product = db.query(Product).filter(Product.id == product_id, Product.store_id == store, Product.is_archived == False).first()
@@ -101,7 +118,8 @@ def get_profile(product_id: str, db: Session = Depends(get_db), store: str = Dep
     saved = profiles(db, store); profile = saved.get(product_id)
     products = db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all()
     purchases = purchases_for(db, store, product_id)
-    return dict(profile=profile, plan=plan(profile, purchases) if profile else None, purchases=purchases,
+    can_replenish = eligible(db, store, product)
+    return dict(profile=profile, eligible=can_replenish, plan=plan(profile, purchases) if profile and can_replenish else None, purchases=purchases,
                 recommendations=recommendations(product, profile or {}, products, saved))
 
 @router.put('/{product_id}')
@@ -113,7 +131,13 @@ def save_profile(product_id: str, data: Profile, db: Session = Depends(get_db), 
         if a.procurement_id not in purchases:
             raise HTTPException(400, '采购记录不存在或不属于此店铺商品')
     row = db.query(SystemSettings).filter(SystemSettings.key == key(store, product_id)).first()
-    value = data.model_dump_json()
+    profile = data.model_dump(mode='json')
+    if row:
+        old = json.loads(row.value)
+        if old.get('data_source') == 'seller_api':
+            for field in ('stock', 'stock_date', 'sales', 'observed_from', 'data_source', 'synced_at', 'offer_ids', 'platform_on_way'):
+                if field in old: profile[field] = old[field]
+    value = json.dumps(profile, ensure_ascii=False)
     if row: row.value = value
     else: db.add(SystemSettings(key=key(store, product_id), value=value))
     db.commit()

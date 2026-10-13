@@ -12,7 +12,7 @@ def test_saved_plan_store_isolation_procurement_and_recommendations():
     engine = create_engine('sqlite://'); Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as db:
         for id, store in [('p', 'a'), ('same', 'a'), ('related', 'a'), ('foreign', 'b')]:
-            db.add(Product(id=id, store_id=store, product_name=id, actual_sale_price_zar=200,
+            db.add(Product(id=id, store_id=store, product_name=id, link_status='已购买', actual_sale_price_zar=200,
                            minimum_price_at_20_margin=150, profit_margin=.3, selection_status='合格选品'))
         db.add(ProcurementRecord(id='purchase', store_id='a', product_id='p', quantity=10000, status='in_transit'))
         db.add(ProcurementRecord(id='foreign-purchase', store_id='b', product_id='foreign', quantity=10000, status='in_transit'))

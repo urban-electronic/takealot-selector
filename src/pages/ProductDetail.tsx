@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import OperationsAssist from '../operations/OperationsAssist';
-import PipelinePlan from '../operations/PipelinePlan';
 import { openUrl } from '../api';
 import type { Product, FeeCategory } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
@@ -160,8 +158,6 @@ export default function ProductDetail() {
         </div>
       </div>
 
-      {!editMode && <OperationsAssist key={`${product.id}:${product.updated_at}`} product={product} />}
-      {!editMode && <PipelinePlan key={`pipeline:${product.id}`} product={product} />}
       {/* Takealot Info */}
       <div className="card">
         <div className="card-title">Takealot 信息</div>

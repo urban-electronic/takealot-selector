@@ -140,6 +140,7 @@ export const auditProductSkus = (): Promise<SkuAuditResult> => request<SkuAuditR
 export const getOperationsProfile = (id: string): Promise<any> => request(`/api/operations/${id}`);
 export const saveOperationsProfile = (id: string, profile: unknown): Promise<any> => request(`/api/operations/${id}`, { method: 'PUT', body: JSON.stringify(profile) });
 export const getOperationsAlerts = (): Promise<any[]> => request('/api/operations/alerts');
+export const getOperationsOverview = (): Promise<any> => request('/api/operations/overview');
 
 export const getProducts = (params?: Record<string, string>): Promise<Product[]> => {
   const searchParams = new URLSearchParams();
