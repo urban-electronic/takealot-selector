@@ -11,7 +11,7 @@ PROFITABLE = {'available': True, 'minimum_margin': .15,
 def profile(**kwargs):
     return {**dict(stock=10, stock_date='2026-10-13', observed_from='2026-10-11',
                    sales=[{'date': '2026-10-12', 'quantity': 5}], air_days=15, sea_days=45,
-                   cycle_days=30, safety_days=7, allocations=[], emergency_air_days=7,
+                   cycle_days=30, safety_days=7, allocations=[], emergency_air_days=7, adaptive_dispatch=False,
                    dispatch_policy='balanced' if kwargs.get('allow_emergency_air') else 'sea_only'), **kwargs}
 
 def test_new_product_uses_three_day_observation_and_defaults_to_sea_only():
@@ -61,7 +61,7 @@ def test_validation_rejects_reversed_lead_time_and_duplicate_allocation():
     with pytest.raises(ValueError): Profile(**profile(air_head_days=60))
     a = {'procurement_id':'a','mode':'air','eta':'2026-10-28'}
     with pytest.raises(ValueError): Profile(**profile(allocations=[a,a]))
-    with pytest.raises(ValueError): Profile(**profile(emergency_air_days=15))
+    with pytest.raises(ValueError): Profile(**profile(emergency_air_days=31))
     assert Profile(**profile()).dispatch_policy == 'sea_only'
 
 def test_multiple_sea_batches_continuously_cover_demand_after_first_arrival():
@@ -167,3 +167,23 @@ def test_balanced_stock_and_air_can_cover_lead_time_while_sea_batches_take_over(
         balance+=by_day.get(day,0)
         assert balance >= 2
         balance-=2
+
+def test_adaptive_air_ratio_responds_to_profit_instead_of_fixing_twenty_percent():
+    p=profile(dispatch_policy='balanced',adaptive_dispatch=True,allow_emergency_air=True,
+              emergency_air_days=30,batch_quantity=100,stock=0,air_days=17,sea_days=58,
+              sales=[{'date':'2026-10-12','quantity':6}])
+    low={**PROFITABLE,'air':{'profit_margin':.16,'total_cost_zar':100}}
+    high={**PROFITABLE,'air':{'profit_margin':.36,'total_cost_zar':100}}
+    a=plan(p,[],TODAY,low);b=plan(p,[],TODAY,high)
+    assert 20<a['air_quantity']<b['air_quantity']<=40
+    assert a['effective_air_share']<b['effective_air_share']
+    assert sum(x['quantity']for x in b['schedule']if x['batch_id']=='2026-10-13-0')==100
+
+def test_adaptive_small_sea_batch_moves_second_departure_earlier():
+    p=profile(dispatch_policy='balanced',adaptive_dispatch=True,allow_emergency_air=False,
+              batch_quantity=40,stock=0,sea_split_days=15,sales=[{'date':'2026-10-12','quantity':6}])
+    r=plan(p,[],TODAY,PROFITABLE)
+    parts=[b for b in r['schedule']if b['batch_id']=='2026-10-13-0']
+    assert sum(b['quantity']for b in parts)==40
+    later=next(b for b in parts if b['deferred_dispatch'])
+    assert 0<(date.fromisoformat(later['departure_date'])-TODAY).days<15

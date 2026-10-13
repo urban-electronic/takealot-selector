@@ -29,8 +29,14 @@ def plan(profile, purchases, today=None, economics=None):
     coverage = max(profile.get('sea_coverage_days', 60), cycle, profile['air_days'])
     planning_days = profile.get('planning_days', 120)
     policy = profile.get('dispatch_policy', 'balanced')
+    adaptive = profile.get('adaptive_dispatch', True)
+    effective_air_share = profile.get('air_share_cap', .2)
+    effective_first_share = profile.get('first_sea_share', .75)
+    if adaptive and policy == 'balanced':
+        if recent > baseline * 1.5: effective_first_share = min(.9, effective_first_share + .1)
+        elif baseline and recent < baseline * .5: effective_first_share = max(.5, effective_first_share - .1)
     emergency_air = profile.get('allow_emergency_air', policy == 'balanced') and policy != 'sea_only'
-    emergency_days = profile.get('emergency_air_days', 14)
+    emergency_days = profile.get('emergency_air_days', 21)
     split_days = profile.get('sea_split_days', 15) if policy == 'balanced' else 0
     manual_batch = profile.get('batch_quantity')
     horizon = sea + ((planning_days - 1) // cycle) * cycle + coverage + safety
@@ -83,7 +89,12 @@ def plan(profile, purchases, today=None, economics=None):
     initial_sea_need = required_after(sea, sea + coverage + safety)
     air_limit = math.ceil(velocity * emergency_days - 1e-9)
     if policy == 'balanced':
-        share = profile.get('air_share_cap', .2)
+        share = effective_air_share
+        if adaptive and economics and economics.get('available'):
+            urgency = min(1, air_gap_need / max(1, velocity * (sea - air)))
+            profitability = max(0, min(1, economics['air']['profit_margin'] / max(.01, economics['sea']['profit_margin'])))
+            effective_air_share = min(.4, max(0, share + .15 * urgency * profitability)) if share else 0
+            share = effective_air_share
         sea_basis = initial_sea_need + min(pending['sea'], math.ceil(velocity * coverage))
         ratio_limit = math.floor(manual_batch * share) if manual_batch else math.floor(sea_basis * share / (1 - share))
         air_limit = min(air_limit, ratio_limit)
@@ -123,16 +134,20 @@ def plan(profile, purchases, today=None, economics=None):
         if not sea_allowed: quantity = 0
         if purchase_day == 0:
             sea_qty = quantity; initial_total = air_qty + quantity
-            if quantity and split_days:
+            delay = split_days
+            if quantity and delay and adaptive:
+                seed = math.ceil(quantity * effective_first_share)
+                delay = min(delay, max(0, math.floor(seed / velocity) - safety))
+            if quantity and delay:
                 # Never defer units needed before the second sea arrival.
-                first_needed = required_after(eta, eta + split_days, planned)
-                first = min(quantity, max(first_needed, math.ceil(quantity * profile.get('first_sea_share', .75))))
+                first_needed = required_after(eta, eta + delay, planned)
+                first = min(quantity, max(first_needed, math.ceil(quantity * effective_first_share)))
                 second = quantity - first
                 planned[eta] = planned.get(eta, 0) + first
                 schedule.append(entry('sea', first, purchase_day, eta))
                 if second:
-                    planned[eta+split_days] = planned.get(eta+split_days, 0) + second
-                    schedule.append(entry('sea', second, purchase_day, eta+split_days, delay=split_days))
+                    planned[eta+delay] = planned.get(eta+delay, 0) + second
+                    schedule.append(entry('sea', second, purchase_day, eta+delay, delay=delay))
                 continue
         if quantity:
             planned[eta] = planned.get(eta, 0) + quantity
@@ -170,7 +185,7 @@ def plan(profile, purchases, today=None, economics=None):
                 cover_days=round(stock / velocity, 1), pending=pending, overdue=overdue,
                 unmapped=unmapped, stale=elapsed > 3, pre_air_shortage=pre_air,
                 next_review_days=cycle, timeline=timeline, blocked=blocked, schedule=schedule,
-                dispatch_policy=policy, initial_batch_quantity=initial_total, initial_air_share=round(air_qty/initial_total,3) if initial_total else 0,
+                dispatch_policy=policy, adaptive_dispatch=adaptive, effective_air_share=round(effective_air_share,3), effective_first_sea_share=effective_first_share, initial_batch_quantity=initial_total, initial_air_share=round(air_qty/initial_total,3) if initial_total else 0,
                 air_gap_need=air_gap_need, pre_sea_shortage=math.ceil(pre_sea_lost - 1e-9),
                 shortage_windows=shortage_windows, sea_start_date=(today+timedelta(days=sea)).isoformat(),
                 emergency_air_limit=air_limit, emergency_air_budget_remaining=air_budget, allow_emergency_air=emergency_air, emergency_air_days=emergency_days,
