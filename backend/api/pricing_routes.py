@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -14,6 +15,23 @@ from services.takealot_seller_api import configured_key
 from services.replenishment_economics import system_floor
 
 router = APIRouter(prefix='/api/automatic-pricing', tags=['automatic-pricing'])
+
+def _timestamp(value):
+    if not isinstance(value, str): return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None: return None
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+def _own_metrics(profile, offer, rule):
+    """Prefer the most recent official read; an old rule must not hide a stocked SKU."""
+    profile_time = _timestamp(profile.get('synced_at'))
+    rule_time = _timestamp(rule.get('last_evaluated_at'))
+    if rule_time is not None and (profile_time is None or rule_time > profile_time):
+        return rule.get('current_price', offer.get('price')), rule.get('stock', offer.get('stock'))
+    return offer.get('price'), offer.get('stock')
 
 class Rule(BaseModel):
     min_price: Optional[int] = Field(default=None, gt=0, le=1000000)
@@ -75,11 +93,12 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         suggested_min = system_floor(p)
         for offer in offers:
             rule = rules.get(prefix + p.id + ':' + offer['id'], {})
+            price, stock = _own_metrics(profile, offer, rule)
             if rule.get('holding_buybox') is True and not rule.get('holding_verified'):
                 rule = {**rule, 'holding_buybox':None, 'price_matches_buybox':True}
             rows.append(dict(product_id=p.id, product_no=p.product_no, offer_id=offer['id'], sku=offer['sku'],
-                name=offer.get('title') or p.product_name, url=p.takealot_url, price=rule.get('current_price', offer.get('price')),
-                stock=rule.get('stock', offer.get('stock')), suggested_min=suggested_min,
+                name=offer.get('title') or p.product_name, url=p.takealot_url, price=price,
+                stock=stock, suggested_min=suggested_min,
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
     from api.collector_routes import connected
@@ -180,7 +199,8 @@ def reconcile(product_id: str, offer_id: str, db: Session = Depends(get_db), sto
     try:
         with httpx.Client(timeout=25, follow_redirects=False) as client: actual = official_offer(client, key, offer_id)
     except Exception: raise HTTPException(503, '平台现价暂时无法读取，继续暂停，不重复提交')
-    value.update(current_price=actual['selling_price'], enabled=False, write_pending=False,
+    value.update(current_price=actual['selling_price'], stock=actual['stock_at_takealot_total'],
+        last_evaluated_at=datetime.now(timezone.utc).isoformat(), enabled=False, write_pending=False,
         revision=value.get('revision', 0) + 1, last_result=f'已核验平台现价 R {actual["selling_price"]}，保持暂停；需要时重新启动')
     row.value = json.dumps(value, ensure_ascii=False); db.commit(); return value
 
