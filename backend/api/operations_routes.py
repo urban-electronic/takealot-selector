@@ -38,6 +38,8 @@ class Profile(BaseModel):
     sea_days: int = Field(default=58, ge=2, le=365)
     safety_days: int = Field(default=7, ge=0, le=90)
     cycle_days: int = Field(default=30, ge=1, le=180)
+    allow_emergency_air: bool = False
+    emergency_air_days: int = Field(default=7, ge=1, le=14)
     sea_coverage_days: int = Field(default=60, ge=17, le=180)
     planning_days: int = Field(default=120, ge=30, le=180)
     procurement_days: int = Field(default=0, ge=0, le=90)
@@ -116,7 +118,7 @@ def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         profile = saved.get(p.id)
         rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
             sku=p.sku, profile=profile, plan=profitable_plan(profile, purchases_for(db, store, p.id), p) if profile else None))
-    rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('air_quantity', 0), -(r['plan'] or {}).get('sea_quantity', 0)))
+    rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('sea_quantity', 0), -(r['plan'] or {}).get('pre_sea_shortage', 0)))
     return {'rows': rows, 'sync': sync_status(db, store)}
 
 @router.get('/sync-status')

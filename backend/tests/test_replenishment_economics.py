@@ -20,10 +20,10 @@ def test_existing_cost_engine_shows_sea_profit_advantage_without_mutation():
 
 def test_air_below_margin_threshold_does_not_get_bulk_replenishment():
     e = {'available': True, 'minimum_margin': .15, 'air': {'profit_margin': .05}, 'sea': {'profit_margin': .30}}
-    r = plan(profile(), [], TODAY, economics=e)
+    r = plan({**profile(), 'allow_emergency_air': True}, [], TODAY, economics=e)
     assert r['air_quantity'] == 0 and r['sea_quantity'] > 0 and r['blocked']
 
 def test_both_modes_unprofitable_pause_purchase_suggestions():
     e = {'available': True, 'minimum_margin': .15, 'air': {'profit_margin': -.1}, 'sea': {'profit_margin': .05}}
-    r = plan(profile(), [], TODAY, economics=e)
+    r = plan({**profile(), 'allow_emergency_air': True}, [], TODAY, economics=e)
     assert r['air_quantity'] == r['sea_quantity'] == 0

@@ -5,6 +5,7 @@ def logistics(profile):
     p = dict(profile)
     p.setdefault('air_head_days', 14); p.setdefault('sea_head_days', 55)
     p.setdefault('tail_days', 3); p.setdefault('minimum_margin', .15)
+    p.setdefault('allow_emergency_air', False); p.setdefault('emergency_air_days', 7)
     p.setdefault('sea_coverage_days', 60); p.setdefault('planning_days', 120); p.setdefault('procurement_days', 0)
     p['air_days'] = p['air_head_days'] + p['tail_days']
     p['sea_days'] = p['sea_head_days'] + p['tail_days']

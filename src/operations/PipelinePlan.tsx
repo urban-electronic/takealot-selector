@@ -14,7 +14,7 @@ export default function PipelinePlan({ product, open = false }: { product: Produ
   const load = async (init = false) => {
     const d = await getOperationsProfile(product.id); setData(d);
     if (init) {
-      const p = d.profile || { stock: '', stock_date: today(), observed_from: today(), air_days: 17, sea_days: 58, air_head_days: 14, sea_head_days: 55, tail_days: 3, minimum_margin: .15, safety_days: 7, cycle_days: 30, sea_coverage_days: 60, planning_days: 120, procurement_days: 0, group: '', related_groups: [], allocations: [], sales: [] };
+      const p = d.profile || { stock: '', stock_date: today(), observed_from: today(), air_days: 17, sea_days: 58, air_head_days: 14, sea_head_days: 55, tail_days: 3, minimum_margin: .15, safety_days: 7, cycle_days: 30, sea_coverage_days: 60, planning_days: 120, procurement_days: 0, allow_emergency_air: false, emergency_air_days: 7, group: '', related_groups: [], allocations: [], sales: [] };
       setForm(p); setSales(p.sales.map((s: any) => `${s.date} | ${s.quantity}`).join('\n')); setRelated(p.related_groups.join('，'));
     }
   };
@@ -45,20 +45,21 @@ export default function PipelinePlan({ product, open = false }: { product: Produ
   };
   const p = data?.plan;
   return <details className="card" open={open || undefined}><summary style={{ fontWeight: 600, cursor: 'pointer' }}>{product.chinese_product_name || product.product_name} · 计划参数与采购到货</summary>
-    <p style={{ fontSize: 13 }}>一次录入并保存，后台固定规则重算，不调用 AI。空运14天头程＋2–3天尾程；海运55天头程＋2–3天尾程。海运为主，空运按利润只补必要缺口。</p>
+    <p style={{ fontSize: 13 }}>一次录入并保存，后台固定规则重算，不调用 AI。空运14天头程＋2–3天尾程；海运55天头程＋2–3天尾程。默认只安排滚动海运；应急空运须按商品开启，数量按天数上限和利润限制。</p>
     {message && <div role="status" className="alert">{message}</div>}
     {p && <div style={{ padding: 16, borderRadius: 12, background: 'var(--color-bg)', marginBottom: 16 }}>
       <strong>日均 {p.velocity} 件 · 可售 {p.cover_days ?? '—'} 天</strong>
       {p.economics?.available ? <p>空运单件利润 R {p.economics.air.profit_zar}（{(p.economics.air.profit_margin * 100).toFixed(1)}%）；海运 R {p.economics.sea.profit_zar}（{(p.economics.sea.profit_margin * 100).toFixed(1)}%）。</p> : <p>利润比较待核对：{p.economics?.reason}。以下数量仅为销量参考。</p>}
-      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 10 }}><span>空运：{p.air_quantity > 0 ? `待补 ${p.air_quantity} 件` : p.blocked?.length ? '利润门槛限制，暂停补货' : '已覆盖，提醒隐藏'}（已购待到 {p.pending.air} 件）</span><span>海运：{p.sea_quantity > 0 ? `待补 ${p.sea_quantity} 件` : p.blocked?.length ? '利润门槛限制，暂停补货' : '已覆盖，提醒隐藏'}（已购待到 {p.pending.sea} 件）</span></div>
-      {p.pre_air_shortage > 0 && <p>空运到货前仍有约 {p.pre_air_shortage} 件需求缺口，需加急或本地调货。</p>}
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 10 }}><span>空运：{!p.allow_emergency_air ? '未开启（仅海运）' : p.air_quantity > 0 ? `限量应急 ${p.air_quantity} 件` : p.blocked?.length ? '利润门槛限制，暂停补货' : '已覆盖，提醒隐藏'}（已购待到 {p.pending.air} 件）</span><span>海运：{p.sea_quantity > 0 ? `待补 ${p.sea_quantity} 件` : p.blocked?.length ? '利润门槛限制，暂停补货' : '已覆盖，提醒隐藏'}（已购待到 {p.pending.sea} 件）</span></div>
+      {p.pre_sea_shortage > 0 && <p>首批计划海运到货前仍有约 {p.pre_sea_shortage} 件需求无法覆盖。关闭或限制空运不会消除这段缺口。</p>}
+      {p.shortage_windows?.map((w:any)=><p key={w.start_date}>预计缺口：{w.start_date} 至 {w.end_date} · 约 {w.quantity} 件。</p>)}
       {p.stale && <p>库存快照超过3天，请更新库存和实际销量；当前为参考测算。</p>}
       {!!p.overdue.length && <p>有采购超过预计到货日，请更新到货日期或确认已纳入库存。</p>}
       {!!p.unmapped.length && <p>检测到 {p.unmapped.length} 笔采购尚未设置空/海及到货日，设置后自动扣除。</p>}
       <p>{p.reason}；采购复核周期 {p.next_review_days} 天。</p>
       {!!p.timeline.length && <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>计划节点</th><th>到货数量</th><th>预计结余</th></tr></thead><tbody>{p.timeline.map((r: any) => <tr key={r.day}><td>{r.date || `第${r.day}天`}</td><td>{r.arrivals}</td><td>{r.balance}</td></tr>)}</tbody></table></div>}
     </div>}
-    {form && <><div className="form-row">{field('stock', '本店可售库存（非国内库存）')}{field('stock_date', '库存快照日期（该日结束库存）', 'date')}{field('observed_from', '完整销量观测开始（新品填实际首日）', 'date')}{field('air_head_days', '空运头程（天）')}{field('sea_head_days', '海运头程（天）')}{field('tail_days', '尾程派送（2–3天）')}{field('minimum_margin', '最低补货利润率（0.15 = 15%）')}{field('safety_days', '安全覆盖天数')}{field('cycle_days', '滚动发运间隔（天）')}{field('sea_coverage_days', '海运到货后覆盖销量（天）')}{field('planning_days', '采购计划展望（天）')}{field('procurement_days', '采购至发运备货（天）')}{field('group', '细分品类（如 USB-C充电线，勿只填电子产品）', 'text')}</div>
+    {form && <><div className="form-group"><label><input type="checkbox" checked={form.allow_emergency_air || false} onChange={e=>setForm({...form,allow_emergency_air:e.target.checked})} /> 允许此商品少量应急空运（默认关闭）</label><small>只限制新建议，已采购空运仍按真实到货日计入库存。成本完整且利润达标后才建议应急量。</small></div><div className="form-row">{field('emergency_air_days', '应急空运最多覆盖天数（默认7，最多14）')}{field('stock', '本店可售库存（非国内库存）')}{field('stock_date', '库存快照日期（该日结束库存）', 'date')}{field('observed_from', '完整销量观测开始（新品填实际首日）', 'date')}{field('air_head_days', '空运头程（天）')}{field('sea_head_days', '海运头程（天）')}{field('tail_days', '尾程派送（2–3天）')}{field('minimum_margin', '最低补货利润率（0.15 = 15%）')}{field('safety_days', '安全覆盖天数')}{field('cycle_days', '滚动发运间隔（天）')}{field('sea_coverage_days', '海运到货后覆盖销量（天）')}{field('planning_days', '采购计划展望（天）')}{field('procurement_days', '采购至发运备货（天）')}{field('group', '细分品类（如 USB-C充电线，勿只填电子产品）', 'text')}</div>
       <div className="form-group"><label>关联品类（如 充电头，移动电源；逗号分隔）</label><input value={related} onChange={e => setRelated(e.target.value)} /></div>
       {form.data_source === 'seller_api' ? <p>库存与销量由卖家接口自动维护，无需手工录入。最近同步：{form.synced_at}</p> : <div className="form-group"><label>每日真实成交：YYYY-MM-DD | 数量；未能接入卖家接口时使用人工记录</label><textarea rows={4} style={{ width: '100%' }} value={sales} onChange={e => setSales(e.target.value)} /></div>}
       {!!data?.purchases.length && <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>采购</th><th>空/海</th><th>预计可售到货日</th><th>已计入库存快照</th></tr></thead><tbody>{data.purchases.filter((r: any) => r.status !== 'cancelled').map((r: any) => {
