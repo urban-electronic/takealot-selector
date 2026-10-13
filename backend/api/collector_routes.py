@@ -31,13 +31,36 @@ def touch(db, kind=None):
 def assert_default(store):
     if store != DEFAULT_STORE_ID: raise HTTPException(400,'采集器仅绑定自营店铺')
 
+def recover_expired(db, now):
+    """Return abandoned jobs only when their claimed settings remain unchanged."""
+    for lease in db.query(SystemSettings).filter(SystemSettings.key.startswith(CLAIM_PREFIX)).all():
+        job=json.loads(lease.value)
+        if job.get('expires_at',0)>now: continue
+        config=json.loads(job['claim'])
+        config.update(status='queued' if config.get('enabled') or config.get('request_once') else 'paused', next_due=now)
+        db.query(SystemSettings).filter_by(key=job['monitor_key'],value=job['claim']).update({'value':json.dumps(config,ensure_ascii=False)})
+        db.delete(lease)
+    db.flush()
+
+
+def observation_time(item, job, received):
+    # Older Python collectors buffer whole batches and have no per-item timestamp.
+    # Lease start is a conservative lower bound; receipt must not freshen old quotes.
+    started=job.get('claimed_at',job['expires_at']-900)
+    try:
+        value=datetime.fromisoformat(item['collectedAt'])
+        observed=value.timestamp() if value.tzinfo is not None else None
+    except (KeyError,TypeError,ValueError,OverflowError):
+        observed=None
+    if observed is not None and started<=observed<=received:
+        return observed, 'collector_timestamp'
+    return min(started,received), 'lease_start'
+
 @router.get('/products')
 def products(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
     assert_default(store);touch(db)
     now=time.time();items=[]
-    # Remove old leases; each job is a one-use opaque token, preventing late reports after edits.
-    for row in db.query(SystemSettings).filter(SystemSettings.key.startswith(CLAIM_PREFIX)).all():
-        if json.loads(row.value).get('expires_at',0)<now: db.delete(row)
+    recover_expired(db,now)
     for item in sorted(catalog(db,store),key=lambda x:x['monitor'].get('next_due',0)):
         monitor=item['monitor']
         if not (monitor.get('enabled') or monitor.get('request_once')) or monitor.get('next_due',0)>now: continue
@@ -48,7 +71,7 @@ def products(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
         claimed=json.dumps(config,ensure_ascii=False)
         if db.query(SystemSettings).filter_by(key=key,value=original).update({'value':claimed})!=1: continue
         token=str(uuid.uuid4())
-        db.add(SystemSettings(key=CLAIM_PREFIX+token,value=json.dumps({'monitor_key':key,'sku':item['sku'],'claim':claimed,'expires_at':now+900})))
+        db.add(SystemSettings(key=CLAIM_PREFIX+token,value=json.dumps({'monitor_key':key,'sku':item['sku'],'claim':claimed,'claimed_at':now,'expires_at':now+900})))
         items.append({'productId':token,'shopId':store,'sku':item['sku'],'name':item['name'],'url':item['url'],'myPrice':item['price'],'myStock':item['stock']})
         if len(items)>=20: break
     db.commit()
@@ -66,6 +89,7 @@ def web_open(data:WebOpen,db:Session=Depends(get_db),store:str=Depends(get_store
     if data.heartbeat_only:
         db.commit();return {'queued':0,'price_changed':False}
     now=time.time();queued=0
+    recover_expired(db,now)
     for item in catalog(db,store):
         stock=item.get('stock')
         if isinstance(stock,bool) or not isinstance(stock,(int,float)) or stock<=0 or not item.get('url'): continue
@@ -88,12 +112,15 @@ class Report(BaseModel):
 @router.post('/offers')
 def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
     assert_default(store);touch(db);processed=skipped=0
+    recover_expired(db,time.time())
     for item in data.items:
         lease=db.query(SystemSettings).filter_by(key=CLAIM_PREFIX+str(item.get('productId',''))).first()
         if not lease: skipped+=1;continue
         job=json.loads(lease.value)
         row=db.query(SystemSettings).filter_by(key=job['monitor_key']).first()
-        if job['expires_at']<time.time() or item.get('sku')!=job['sku'] or not row or row.value!=job['claim']:
+        if item.get('sku')!=job['sku']:
+            skipped+=1;continue
+        if not row or row.value!=job['claim']:
             skipped+=1;db.delete(lease);continue
         config=json.loads(row.value);now=time.time();bb=item.get('buyboxPrice')
         valid=not item.get('error') and not item.get('variantSwitchFailed') and not isinstance(bb,bool) and isinstance(bb,(int,float)) and math.isfinite(bb) and bb>0
@@ -104,11 +131,13 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         snapshot['offers']=quotes
         at=datetime.now(timezone.utc).isoformat()
         if valid:
+            observed,clock_source=observation_time(item,job,now)
+            asof=datetime.fromtimestamp(observed,timezone.utc).isoformat()
             own=config.get('current_price')
             config.update(status='success',snapshot=snapshot,buybox_price=bb,holding_buybox=None,
                 price_matches_buybox=abs(bb-own)<.01 if isinstance(own,(int,float)) else False,
                 competitor_price=min((o['price'] for o in quotes if o.get('status')=='in_stock' and not o.get('isMine')),default=None),
-                last_success_at=at,error='',error_code='',diagnostics={},failures=0,source='local_collector')
+                last_success_at=asof,quote_time_source=clock_source,error='',error_code='',diagnostics={},failures=0,source='local_collector')
         else:
             config.update(status='error',error='本机采集未取得有效行情，请检查该机器浏览器登录、配送地址及商品规格',error_code='local_collection_failed',failures=config.get('failures',0)+1)
         config.update(request_once=False,last_attempt_at=at,next_due=now+config.get('interval_minutes',5)*60)
