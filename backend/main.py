@@ -15,7 +15,7 @@ from models import DEFAULT_STORE_ID, FeeCategory, FeeMappingRule, Store, SystemS
 from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes, store_routes, activity_routes
 from migrate import migrate_from_dump
 from api import operations_routes
-from api import pricing_routes, buybox_routes
+from api import pricing_routes, buybox_routes, collector_routes
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -82,6 +82,8 @@ async def api_key_check(request: Request, call_next):
     # image-proxy 由路由层自己校验 token/header（<img> 无法带 header）
     if _API_KEY and request.url.path.startswith("/api") and not request.url.path.startswith("/api/image-proxy"):
         key = request.headers.get("X-API-Key", "")
+        if request.url.path.startswith("/api/collector/"):
+            key = key or request.headers.get("X-Collector-Key", "")
         if key != _API_KEY:
             return JSONResponse(
                 status_code=401,
@@ -104,6 +106,7 @@ app.include_router(activity_routes.router)
 app.include_router(operations_routes.router)
 app.include_router(pricing_routes.router)
 app.include_router(buybox_routes.router)
+app.include_router(collector_routes.router)
 app.include_router(packing_routes.ui_router)
 
 

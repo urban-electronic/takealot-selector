@@ -2076,3 +2076,8 @@ table tbody tr:hover { background: #f2f5f1; }
 .pricing-result { min-width:165px; max-width:220px; font-size:12px; }
 @media(max-width:850px) { .pricing-summary { grid-template-columns:repeat(3,1fr); } .pricing-stop { grid-column:1 / -1; justify-content:flex-end; } .pricing-actions { gap:12px; } }
 .pricing-summary { grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
+
+.replenishment-summary { margin-bottom: 16px; padding: 16px 20px; }
+.replenishment-summary .dashboard-panel-title { margin-bottom: 0; gap: 12px; flex-wrap: wrap; }
+.pricing-table .collection-status-cell { min-width: 170px; max-width: 230px; white-space: normal; overflow-wrap: anywhere; }
+.pricing-table .collection-status-cell small { max-width: 230px; white-space: normal; line-height: 1.5; }

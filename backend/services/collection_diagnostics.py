@@ -13,7 +13,7 @@ def classify(snapshot):
     status=d.get('http_status');reason=d.get('block_reason')
     title=(d.get('page_title') or '').strip().lower()
     if title in ('just a moment...', 'just a moment', 'attention required! | cloudflare'): reason=reason or 'challenge_page_title'
-    if reason: return 'site_challenge','页面要求安全或人机验证，采集暂停；不进行绕过'
+    if reason or error=='site_challenge': return 'site_challenge','网页采集会话遇到验证，本店API不受此错误影响；需恢复已验证的采集器会话'
     if status==429: return 'rate_limited','网站返回429限流，稍后重试'
     if status in (401,403): return 'http_forbidden',f'网站返回HTTP {status}，本轮未取得报价页面'
     if status and status>=500: return 'site_unavailable',f'网站返回HTTP {status}，报价服务暂不可用'

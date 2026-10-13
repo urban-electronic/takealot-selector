@@ -80,7 +80,8 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
                 stock=rule.get('stock', offer.get('stock')), suggested_min=suggested_min,
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
-    return {'rows': rows, 'configured': bool(configured_key(db)) if store == DEFAULT_STORE_ID else False}
+    from api.collector_routes import connected
+    return {'collector_source': 'local_collector' if connected(db) else 'cloud_browser', 'rows': rows, 'configured': bool(configured_key(db)) if store == DEFAULT_STORE_ID else False}
 
 @router.post('/bulk')
 def bulk(data: Bulk, db: Session = Depends(get_db), store: str = Depends(get_store_id)):
