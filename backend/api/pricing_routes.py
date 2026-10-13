@@ -75,6 +75,8 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         suggested_min = system_floor(p)
         for offer in offers:
             rule = rules.get(prefix + p.id + ':' + offer['id'], {})
+            if rule.get('holding_buybox') is True and not rule.get('holding_verified'):
+                rule = {**rule, 'holding_buybox':None, 'price_matches_buybox':True}
             rows.append(dict(product_id=p.id, product_no=p.product_no, offer_id=offer['id'], sku=offer['sku'],
                 name=offer.get('title') or p.product_name, url=p.takealot_url, price=rule.get('current_price', offer.get('price')),
                 stock=rule.get('stock', offer.get('stock')), suggested_min=suggested_min,

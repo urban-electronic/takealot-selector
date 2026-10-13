@@ -32,8 +32,9 @@ async function run() {
     state={status:'running',message:batch.items.length?`本轮 ${batch.items.length} 个商品，正在读取`:'等待下一个5分钟采集周期'};
     for(const item of batch.items) {
       if(!(await attached()))break;
-      const url=new URL(item.url);
-      if(!['www.takealot.com','takealot.com'].includes(url.hostname)||url.protocol!=='https:'||!/PLID\d+/i.test(url.pathname))continue;
+      let url;
+      try{url=new URL(item.url);}catch{await report({productId:item.productId,sku:item.sku,error:'invalid_url'});continue;}
+      if(!['www.takealot.com','takealot.com'].includes(url.hostname)||url.protocol!=='https:'||!/PLID\d+/i.test(url.pathname)){await report({productId:item.productId,sku:item.sku,error:'invalid_url'});continue;}
       let tab;let keep=false;
       try {
         tab=await chrome.tabs.create({url:item.url,active:false});

@@ -43,3 +43,11 @@ def test_cannot_trigger_other_store_or_unknown_sku(monkeypatch):
     with database() as db:
         with pytest.raises(HTTPException): routes.configure('one','one',routes.Rule(enabled=True),db,'other-store')
         with pytest.raises(HTTPException): routes.bulk(routes.Bulk(action='start',items=[{'product_id':'foreign','offer_id':'foreign'}]),db,DEFAULT_STORE_ID)
+
+
+def test_historical_same_price_hold_is_displayed_as_unverified(monkeypatch):
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    with database() as db:
+        db.add(SystemSettings(key=PREFIX+DEFAULT_STORE_ID+':one:one',value=json.dumps({'holding_buybox':True,'buybox_price':100,'current_price':100})));db.commit()
+        row=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows'] if r['sku']=='one')
+        assert row['rule']['holding_buybox'] is None and row['rule']['price_matches_buybox'] is True
