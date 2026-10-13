@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import pytest
@@ -51,3 +52,32 @@ def test_historical_same_price_hold_is_displayed_as_unverified(monkeypatch):
         db.add(SystemSettings(key=PREFIX+DEFAULT_STORE_ID+':one:one',value=json.dumps({'holding_buybox':True,'buybox_price':100,'current_price':100})));db.commit()
         row=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows'] if r['sku']=='one')
         assert row['rule']['holding_buybox'] is None and row['rule']['price_matches_buybox'] is True
+
+
+def test_listing_uses_newest_official_price_and_stock(monkeypatch):
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    now=datetime.now(timezone.utc)
+    with database() as db:
+        profile=db.query(SystemSettings).filter_by(key=f'operations_profile:{DEFAULT_STORE_ID}:one').first()
+        data=json.loads(profile.value);data['synced_at']=now.isoformat();data['offers'][0].update(price=120,stock=9)
+        profile.value=json.dumps(data)
+        db.add(SystemSettings(key=PREFIX+DEFAULT_STORE_ID+':one:one',value=json.dumps({
+            'current_price':80,'stock':0,'last_evaluated_at':(now-timedelta(minutes=5)).isoformat()})))
+        db.commit()
+        row=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows'] if r['sku']=='one')
+        assert (row['price'],row['stock']) == (120,9)
+
+        rule=db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first()
+        value=json.loads(rule.value);value.update(current_price=115,stock=7,last_evaluated_at=(now+timedelta(minutes=5)).isoformat())
+        rule.value=json.dumps(value);db.commit()
+        row=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows'] if r['sku']=='one')
+        assert (row['price'],row['stock']) == (115,7)
+
+
+def test_untimestamped_rule_cannot_hide_current_stock(monkeypatch):
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    with database() as db:
+        db.add(SystemSettings(key=PREFIX+DEFAULT_STORE_ID+':one:one',value=json.dumps({'current_price':80,'stock':0})))
+        db.commit()
+        row=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows'] if r['sku']=='one')
+        assert (row['price'],row['stock']) == (100,5)
