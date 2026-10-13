@@ -18,3 +18,18 @@ def test_variant_failure_and_navigation_exceptions_are_distinct():
     assert classify({'error':'Error: net::ERR_CERT_AUTHORITY_INVALID'})[0]=='tls_error'
     assert classify({'error':'NameError: parser missing'})[0]=='collector_error'
     assert classify({'error':'TimeoutError: Page.goto exceeded'})[0]=='navigation_timeout'
+
+def test_success_http_status_with_just_a_moment_title_is_a_challenge_not_product_html():
+    data={'http_status':200,'page_title':'Just a moment...','buybox_cards':0}
+    assert classify({'diagnostics':data,'error':'blocked_or_load_failed'})[0]=='site_challenge'
+
+def test_collector_stops_on_challenge_before_selectors_or_variant_attempts():
+    import asyncio
+    from types import SimpleNamespace
+    from services.pricepilot_collector import scrape_product
+    class Page:
+        async def goto(self,*args,**kwargs):return SimpleNamespace(status=200)
+        async def title(self):return 'Just a moment...'
+        # Any selector/variant operation would fail: challenge is an early return.
+    result=asyncio.run(scrape_product(Page(),{'url':'https://www.takealot.com/p/PLID1','name':'Product - Variant'}))
+    assert result['error']=='site_challenge' and result['buyboxPrice'] is None

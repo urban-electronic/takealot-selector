@@ -108,7 +108,7 @@ async def collect(product, offer):
                 diagnostics['block_reason']=next((m for m in markers if m in text),None)
                 diagnostics['buybox_cards']=await page.locator('[data-ref="buybox-offer"]').count()
             except Exception: pass
-            diagnostics['raw_error']=str(snapshot.get('error') or '')[:200]
+            diagnostics['raw_error']=re.sub(r'https?://[^\s]+',lambda m:safe_url(m.group()),str(snapshot.get('error') or ''))[:200]
             snapshot['diagnostics']=diagnostics
             code,message=classify(snapshot)
             if code: snapshot.update(error=code,error_message=message)
@@ -126,6 +126,21 @@ def official_offer(client, key, offer_id):
             raise ValueError('卖家现价或库存无效')
     if data['selling_price'] <= 0: raise ValueError('卖家现价无效')
     return data
+
+def shared_snapshot(db, product_id, offer_id, sku, max_age=600):
+    """Repricing consumes collection output without scheduling or launching collection."""
+    row = db.query(SystemSettings).filter(SystemSettings.key == f'_pricing_monitor:{DEFAULT_STORE_ID}:{product_id}:{offer_id}').first()
+    monitor = json.loads(row.value) if row else {}
+    try:
+        age = time.time() - datetime.fromisoformat(monitor['last_success_at']).timestamp()
+    except (KeyError, ValueError, TypeError):
+        age = math.inf
+    if monitor.get('sku') != sku or monitor.get('status') == 'error' or not 0 <= age <= max_age:
+        return {'error': '行情缺失、失败或已过期，等待Buybox采集', 'offers': []}
+    snapshot = monitor.get('snapshot')
+    if not isinstance(snapshot, dict) or snapshot.get('error'):
+        return {'error': '等待Buybox完整行情采集', 'offers': []}
+    return snapshot
 
 def process(row_id):
     from database import SessionLocal
@@ -165,7 +180,7 @@ def process(row_id):
                 if offer['stock_at_takealot_total'] <= 0:
                     snapshot = {'offers': []}; target, reason = None, '无库存，跳过'
                 else:
-                    snapshot = asyncio.run(collect(product, offer))
+                    snapshot = shared_snapshot(db, product.id, rule['offer_id'], rule['sku'])
                     target, reason = decide(offer['selling_price'], offer['stock_at_takealot_total'], rule, snapshot)
                 result.update(current_price=offer['selling_price'], stock=offer['stock_at_takealot_total'],
                     buybox_price=snapshot.get('buyboxPrice'), holding_buybox=bool(snapshot.get('holdingBuybox')),

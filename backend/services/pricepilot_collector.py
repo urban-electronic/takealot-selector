@@ -293,6 +293,14 @@ async def scrape_product(page, item: dict) -> dict:
 
     try:
         resp = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        # A successful HTTP status can still be an interstitial, not a product.
+        initial_title=(await page.title() or '').strip().lower()
+        if initial_title in ('just a moment...', 'just a moment', 'attention required! | cloudflare'):
+            result['error']='site_challenge'
+            return result
+        if resp and (resp.status in (401,403,404,429) or resp.status>=500):
+            result['error']=f'http_{resp.status}'
+            return result
         await page.wait_for_timeout(random.randint(900, 1600))
         # 等待核心区块渲染（buybox 或变体选择器），避免页面未加载完就检测
         # 等待核心区块渲染：buybox 卡或变体选择器任一出现即可（多候选兜底）

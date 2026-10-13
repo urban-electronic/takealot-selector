@@ -11,6 +11,8 @@ def safe_url(url):
 def classify(snapshot):
     d=snapshot.get('diagnostics') or {};error=str(snapshot.get('error') or '')
     status=d.get('http_status');reason=d.get('block_reason')
+    title=(d.get('page_title') or '').strip().lower()
+    if title in ('just a moment...', 'just a moment', 'attention required! | cloudflare'): reason=reason or 'challenge_page_title'
     if reason: return 'site_challenge','页面要求安全或人机验证，采集暂停；不进行绕过'
     if status==429: return 'rate_limited','网站返回429限流，稍后重试'
     if status in (401,403): return 'http_forbidden',f'网站返回HTTP {status}，本轮未取得报价页面'

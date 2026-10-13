@@ -461,6 +461,8 @@ export const bulkAutomaticPricing = (payload: unknown): Promise<any> => request(
 
 export const pauseAllAutomaticPricing = (): Promise<any> => request('/api/automatic-pricing/pause-all', { method: 'POST' });
 
-export const configureBuyboxMonitor = (product:string, offer:string, settings:unknown):Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/monitor`,{method:'PUT',body:JSON.stringify(settings)});
-export const collectBuyboxNow = (product:string, offer:string):Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/collect-now`,{method:'POST'});
-export const bulkBuyboxMonitor = (payload:unknown):Promise<any> => request('/api/automatic-pricing/monitor/bulk',{method:'POST',body:JSON.stringify(payload)});
+export const configureBuyboxMonitor = (product:string, offer:string, settings:unknown):Promise<any> => request(`/api/buybox/${product}/${offer}`,{method:'PUT',body:JSON.stringify(settings)});
+export const collectBuyboxNow = (product:string, offer:string):Promise<any> => request(`/api/buybox/${product}/${offer}/collect-now`,{method:'POST'});
+export const bulkBuyboxMonitor = (payload:unknown):Promise<any> => request('/api/buybox/bulk',{method:'POST',body:JSON.stringify(payload)});
+
+export const getBuybox = ():Promise<any> => request('/api/buybox');

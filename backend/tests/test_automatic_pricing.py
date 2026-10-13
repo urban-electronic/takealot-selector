@@ -43,14 +43,15 @@ def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89):
     response = lambda price: MagicMock(status_code=200, json=lambda: {'offer': {'offer_id': 1, 'sku': 'a', 'selling_price': price, 'stock_at_takealot_total': 5}})
     client.get.side_effect = [response(100), response(100), response(verify_price)]
     client.patch.return_value = MagicMock(status_code=200, json=lambda: {'offer': {'selling_price': 89}})
-    async def collect(product, own):
+    def shared(db_session, product_id, offer_id, sku):
         if pause_during_collect:
             with factory() as db:
                 row = db.query(SystemSettings).filter(SystemSettings.key == key).first()
                 value = json.loads(row.value); value.update(enabled=False, revision=2)
                 row.value = json.dumps(value); db.commit()
         return {'buyboxPrice': 90, 'offers': [offer(90)]}
-    monkeypatch.setattr(pricing, 'collect', collect)
+    monkeypatch.setattr(pricing, 'shared_snapshot', shared)
+    monkeypatch.setattr(pricing, 'collect', lambda *args: (_ for _ in ()).throw(AssertionError('pricing must not launch collection')))
     pricing.process(key)
     with factory() as db: value = json.loads(db.query(SystemSettings).filter(SystemSettings.key == key).first().value)
     return client, value

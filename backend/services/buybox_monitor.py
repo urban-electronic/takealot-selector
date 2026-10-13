@@ -60,6 +60,7 @@ def process(row_id):
                 raise ValueError(snapshot.get('error_message') or message or '未读取到有效Buybox报价')
             competitors=[o['price'] for o in snapshot.get('offers',[]) if o.get('status')=='in_stock' and not o.get('isMine') and not isinstance(o.get('price'),bool) and isinstance(o.get('price'),(int,float)) and math.isfinite(o['price']) and o['price']>0]
             # A price match alone is not proof of seller identity; use collector evidence.
+            result['snapshot'] = snapshot
             result.update(status='success', buybox_price=bb, competitor_price=min(competitors, default=None),
                           holding_buybox=False if abs(bb-own['selling_price'])>=.01 else None, price_matches_buybox=abs(bb-own['selling_price'])<.01, current_price=own['selling_price'],
                           stock=own['stock_at_takealot_total'], last_success_at=datetime.now(timezone.utc).isoformat(), error='', error_code='', error_stage='', failures=0)
@@ -108,3 +109,27 @@ def start_worker():
     _thread=threading.Thread(target=run,daemon=True,name='buybox-monitor');_thread.start()
 
 def stop_worker(): _stop.set()
+
+
+def catalog(db, store):
+    """Collection-only SKU metadata; does not read pricing rules or calculate floors."""
+    import re
+    profiles={r.key:json.loads(r.value)for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('operations_profile:'+store+':')).all()}
+    monitors={r.key:json.loads(r.value)for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+store+':')).all()}
+    rows=[]
+    for p in db.query(Product).filter(Product.store_id==store,Product.is_archived==False).all():
+        profile=profiles.get('operations_profile:'+store+':'+p.id,{})
+        offers=profile.get('offers',[])
+        if not offers and len(profile.get('offer_ids',[]))==1:
+            skus=re.split(r'[\s,，;；]+',(p.sku or '').strip())
+            if len(skus)==1 and skus[0]:offers=[dict(id=profile['offer_ids'][0],sku=skus[0],title=p.product_name,price=profile.get('current_price'),stock=profile.get('stock'))]
+        for offer in offers:
+            monitor=dict(monitors.get(PREFIX+store+':'+p.id+':'+str(offer['id']),{}))
+            if monitor.get('status')=='error' and monitor.get('diagnostics'):
+                from services.collection_diagnostics import classify
+                code,message=classify({'diagnostics':monitor['diagnostics'],'error':monitor['diagnostics'].get('raw_error')})
+                if code: monitor.update(error_code=code,error=message)
+            rows.append(dict(product_id=p.id,offer_id=str(offer['id']),sku=offer['sku'],name=offer.get('title')or p.product_name,
+                url=p.takealot_url,price=offer.get('price'),stock=offer.get('stock'),group=profile.get('group')or'未分类',
+                monitor=monitor,rule={}))
+    return rows
