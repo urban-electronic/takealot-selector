@@ -5,11 +5,12 @@ export default function AutoPricing() {
   const [error, setError] = useState(''); const [busy, setBusy] = useState(''); const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [interval, setIntervalMinutes] = useState(30);
+  const [loaded, setLoaded] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [selected, setSelected] = useState<string[]>([]); const [group, setGroup] = useState('all'); const [groupName, setGroupName] = useState('');
   useEffect(() => { setPage(1); }, [search, group]);
   const key = (r: any) => `${r.product_id}:${r.offer_id}`;
-  const refresh = () => getAutomaticPricing().then(d => { setRows(d.rows); setConfigured(d.configured); });
+  const refresh = () => getAutomaticPricing().then(d => { setRows(d.rows); setConfigured(d.configured); setLoaded(true); setError(''); });
   useEffect(() => { refresh().catch(e => setError(e.message)); const t = setInterval(() => refresh().catch(e => setError(e.message)), 30000); return () => clearInterval(t); }, []);
   const act = async (r: any, action: string) => {
     setBusy(key(r)); setError('');
@@ -65,9 +66,9 @@ export default function AutoPricing() {
   };
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>报价与自动调价</h1><p>先查看 Buybox，再按SKU开启调价</p></div><button className="btn btn-outline" onClick={()=>refresh().catch(e=>setError(e.message))}>刷新列表</button></div>
-    <div className="pricing-summary"><div className="card"><small>自动采集</small><strong className="text-info">{rows.filter(r=>r.monitor?.enabled).length}<span> / {rows.length} SKU</span></strong></div><div className="card"><small>实际调价运行中</small><strong className="text-success">{rows.filter(r=>r.rule.enabled).length}<span> SKU</span></strong></div><div className="card"><small>采集待处理</small><strong className="text-danger">{rows.filter(r=>r.monitor?.status==='error').length}<span> SKU</span></strong></div><div className="pricing-stop"><button className="btn btn-danger" disabled={!!busy||!rows.some(r=>r.rule.enabled)} onClick={emergencyStop}>停止全部调价</button></div></div>
+    <div className="pricing-summary"><div className="card"><small>自动采集</small><strong className="text-info">{loaded ? rows.filter(r=>r.monitor?.enabled).length : '—'}<span> / {rows.length} SKU</span></strong></div><div className="card"><small>实际调价运行中</small><strong className="text-success">{loaded ? rows.filter(r=>r.rule.enabled).length : '—'}<span> SKU</span></strong></div><div className="card"><small>采集待处理</small><strong className="text-danger">{loaded ? rows.filter(r=>r.monitor?.status==='error').length : '—'}<span> SKU</span></strong></div><div className="pricing-stop"><button className="btn btn-danger" disabled={!!busy||!rows.some(r=>r.rule.enabled)} onClick={emergencyStop}>停止全部调价</button></div></div>
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
-    {!configured&&<div className="alert">卖家接口尚未配置，采集及调价暂不可开启。</div>}
+    {loaded&&!configured&&<div className="alert">卖家接口尚未配置，采集及调价暂不可开启。</div>}
     <div className="card operations-table-card">
       <div className="pricing-toolbar"><input aria-label="搜索调价商品" placeholder="商品名称 / SKU" value={search} onChange={e=>setSearch(e.target.value)} /><select aria-label="SKU分类筛选" value={group} onChange={e=>{setGroup(e.target.value);setSelected([]);}}><option value="all">全部分类</option>{[...new Set(rows.map(r=>r.group))].map(g=><option key={g} value={g}>{g}</option>)}</select><span className="selection-count">已选 {selected.length} SKU</span></div>
       <div className="pricing-actions"><div><span>Buybox采集</span><select aria-label="自动采集间隔" value={interval} onChange={e=>setIntervalMinutes(Number(e.target.value))}>{[15,30,60,120].map(n=><option key={n} value={n}>{n}分钟</option>)}</select><button className="btn btn-info" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(true)}>开启选中采集</button><button className="btn btn-outline" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(false)}>停采</button></div><div><span>实际调价</span><button className="btn btn-success" disabled={!!busy||!selected.length||!configured} onClick={()=>bulk('start')}>启动选中调价</button><button className="btn btn-outline" disabled={!!busy||!selected.length} onClick={()=>bulk('pause')}>暂停</button><input placeholder="分类名称" value={groupName} onChange={e=>setGroupName(e.target.value)} /><button className="btn btn-outline" disabled={!!busy||!selected.length} onClick={()=>bulk('group')}>归类</button></div></div>
@@ -85,7 +86,7 @@ export default function AutoPricing() {
           <td><button className={`btn ${r.rule.enabled?'btn-outline':'btn-success'}`} disabled={!!busy||!configured} onClick={()=>act(r,r.rule.write_pending?'reconcile':r.rule.enabled?'pause':'start')}>{busy===key(r)?'处理中…':r.rule.write_pending?'核验现价':r.rule.enabled?'暂停调价':'启动调价'}</button></td></tr>;
       })}</tbody></table></div>
       <div className="operations-pagination"><span>{visible.length} 个SKU · 每页25条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
-      {!rows.length&&<p className="operations-empty">等待店铺SKU同步。</p>}
+      {loaded&&!rows.length&&<p className="operations-empty">等待店铺SKU同步。</p>}
     </div>
     <details className="operations-explanation"><summary>查看 PricePilot 调价与试涨规则</summary><p>最低价默认使用系统20%利润底价。未持有时只降不升；持有时可小步回弹。确认竞品非现货时约3%试涨，12小时观察一次，累计不超过启用参考价20%；48小时无新成交时回退。采集失败保持现价，改价结果未确认时自动暂停。</p></details>
   </div>;
