@@ -60,9 +60,9 @@ export default function OperationsAssist({ product }: { product: Product }) {
     } catch (e) { setResult((e as Error).message); }
   };
   return <details className="card" key={product.id}>
-    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>经营助手 · 定价、补货与相似选品</summary>
+    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>定价建议</summary>
     <p style={{ color: 'var(--color-text-secondary)', fontSize: 13 }}>沿用当前成本与利润数据。竞品和订单需提供真实记录；计算建议不会自动改价或下单。</p>
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>{[['pricing', '定价建议'], ['replenish', '补货测算'], ['recommend', '相似选品']].map(([key, label]) => <button key={key} className={`btn ${tab === key ? 'btn-primary' : 'btn-outline'}`} onClick={() => { setTab(key); setResult(''); }}>{label}</button>)}</div>
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>{[['pricing', '定价建议']].map(([key, label]) => <button key={key} className={`btn ${tab === key ? 'btn-primary' : 'btn-outline'}`} onClick={() => { setTab(key); setResult(''); }}>{label}</button>)}</div>
     <div className="form-row">
       {tab !== 'replenish' && field('floor', '最低价 / 选品价格门槛 (ZAR，必填)')}
       {tab === 'pricing' && <>{field('current', '本店实时售价 (ZAR，必填)')}{field('ceiling', '最高价 (ZAR，可选)')}{field('lead', '领先金额 (ZAR)')}</>}

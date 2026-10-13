@@ -14,6 +14,7 @@ from database import engine, Base, SessionLocal, get_db
 from models import DEFAULT_STORE_ID, FeeCategory, FeeMappingRule, Store, SystemSettings
 from api import product_routes, scraper_routes, category_routes, settings_routes, image_proxy, procurement_routes, packing_routes, inventory_routes, store_routes, activity_routes
 from migrate import migrate_from_dump
+from api import operations_routes
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -99,6 +100,7 @@ app.include_router(packing_routes.router)
 app.include_router(inventory_routes.router)
 app.include_router(store_routes.router)
 app.include_router(activity_routes.router)
+app.include_router(operations_routes.router)
 app.include_router(packing_routes.ui_router)
 
 

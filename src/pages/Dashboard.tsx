@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
+import ReplenishmentAlerts from '../operations/ReplenishmentAlerts';
 import { auditProductSkus, getInventory, getShipments, updateProduct } from '../remoteApi';
 import type { SkuAuditResult } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
@@ -103,6 +104,7 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-page dashboard-simple">
+      <ReplenishmentAlerts />
       <div className="dashboard-heading">
         <div><h1>运营工作台</h1><p>待处理事项、选品表现和近期发货，一页掌握。</p></div>
       </div>

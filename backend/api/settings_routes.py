@@ -39,7 +39,7 @@ class SettingsUpdate(BaseModel):
 @router.get("/settings", response_model=dict)
 def get_settings(db: Session = Depends(get_db)):
     settings = db.query(SystemSettings).all()
-    return {s.key: s.value for s in settings if s.key != SECRET_SETTING}
+    return {s.key: s.value for s in settings if s.key != SECRET_SETTING and not s.key.startswith('operations_profile:')}
 
 
 class SellerApiSetup(BaseModel):
@@ -64,6 +64,8 @@ def setup_seller_api(data: SellerApiSetup, request: Request, db: Session = Depen
 
 @router.patch("/settings")
 def update_settings(data: dict, db: Session = Depends(get_db)):
+    if any(key.startswith('operations_profile:') for key in data):
+        raise HTTPException(403, '经营计划请通过店铺商品专属入口修改')
     if SECRET_SETTING in data:
         raise HTTPException(403, '卖家密钥不能通过普通设置修改')
     for key, value in data.items():
@@ -78,6 +80,8 @@ def update_settings(data: dict, db: Session = Depends(get_db)):
 
 @router.put("/settings")
 def update_settings_put(data: dict, db: Session = Depends(get_db)):
+    if any(key.startswith('operations_profile:') for key in data):
+        raise HTTPException(403, '经营计划请通过店铺商品专属入口修改')
     if SECRET_SETTING in data:
         raise HTTPException(403, '卖家密钥不能通过普通设置修改')
     for key, value in data.items():
