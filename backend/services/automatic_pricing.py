@@ -186,7 +186,9 @@ def process(row_id):
                     snapshot = shared_snapshot(db, product.id, rule['offer_id'], rule['sku'])
                     target, reason = decide(offer['selling_price'], offer['stock_at_takealot_total'], rule, snapshot)
                 result.update(current_price=offer['selling_price'], stock=offer['stock_at_takealot_total'],
-                    buybox_price=snapshot.get('buyboxPrice'), holding_buybox=bool(snapshot.get('holdingBuybox')),
+                    buybox_price=snapshot.get('buyboxPrice'), holding_buybox=True if snapshot.get('holdingBuyboxVerified') is True else None,
+                    holding_verified=snapshot.get('holdingBuyboxVerified') is True,
+                    price_matches_buybox=snapshot.get('buyboxPrice')==offer['selling_price'],
                     competitor_price=min((o['price'] for o in snapshot.get('offers', []) if o.get('status') == 'in_stock' and not o.get('isMine') and isinstance(o.get('price'), (int, float))), default=None))
                 if target is not None:
                     # A pause or edited range invalidates the claimed cycle before money-affecting writes.

@@ -94,6 +94,6 @@ export default function AutoPricing() {
       <div className="operations-pagination"><span>{visible.length} 个SKU · 每段10条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
       {loaded&&!rows.length&&<p className="operations-empty">暂无本店有库存的SKU，请先同步库存。</p>}
     </div>
-    {!buyboxOnly&&<details className="operations-explanation"><summary>查看 PricePilot 调价与试涨规则</summary><p>最低价默认使用系统20%利润底价。未持有时只降不升；持有时可小步回弹。确认竞品非现货时约3%试涨，12小时观察一次，累计不超过启用参考价20%；48小时无新成交时回退。采集失败保持现价，改价结果未确认时自动暂停。</p></details>}
+    {!buyboxOnly&&<details className="operations-explanation"><summary>查看 PricePilot 调价与试涨规则</summary><p>最低价默认使用系统20%利润底价。与Buybox同价但卖家身份未核实则保持现价；明确核实持有后才评估试涨。未持有时只降不升。确认竞品非现货时约3%试涨，12小时观察一次，累计不超过启用参考价20%；48小时无新成交时回退。采集失败保持现价，改价结果未确认时自动暂停。</p></details>}
   </div>;
 }
