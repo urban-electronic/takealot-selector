@@ -21,6 +21,7 @@ def process(row_id):
         row = db.query(SystemSettings).filter(SystemSettings.key == row_id).first()
         if not row: return
         config = json.loads(row.value)
+        if config.get('web_requested') and not config.get('enabled'): return
         if not (config.get('enabled') or config.get('request_once')) or config.get('next_due', 0) > time.time(): return
         original = row.value
         started_at=time.time()
@@ -94,7 +95,7 @@ def start_worker():
                     jobs=[]
                     for row in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+DEFAULT_STORE_ID+':')).all():
                         value=json.loads(row.value)
-                        if (value.get('enabled') or value.get('request_once')) and value.get('next_due',0)<=time.time(): jobs.append((value.get('next_due',0),row.key))
+                        if not (value.get('web_requested') and not value.get('enabled')) and (value.get('enabled') or value.get('request_once')) and value.get('next_due',0)<=time.time(): jobs.append((value.get('next_due',0),row.key))
                 # Two bounded jobs; never open an unbounded browser fleet.
                 with ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read') as pool:
                     pending=set()
