@@ -2081,3 +2081,9 @@ table tbody tr:hover { background: #f2f5f1; }
 .replenishment-summary .dashboard-panel-title { margin-bottom: 0; gap: 12px; flex-wrap: wrap; }
 .pricing-table .collection-status-cell { min-width: 170px; max-width: 230px; white-space: normal; overflow-wrap: anywhere; }
 .pricing-table .collection-status-cell small { max-width: 230px; white-space: normal; line-height: 1.5; }
+.browser-collector-panel { padding: 16px 20px; margin-bottom: 16px; }
+.browser-collector-panel .dashboard-panel-title { gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.browser-collector-panel small { display: block; color: #657477; line-height: 1.6; }
+.browser-collector-panel details { margin-top: 10px; font-size: 13px; }
+.browser-collector-panel summary { cursor: pointer; color: #3465c2; }
+.browser-collector-panel li { margin: 8px 0; line-height: 1.6; }

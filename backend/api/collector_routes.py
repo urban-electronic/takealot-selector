@@ -20,9 +20,11 @@ def connected(db):
     row=db.query(SystemSettings).filter_by(key=HEARTBEAT).first()
     return bool(row and json.loads(row.value).get('expires_at',0)>time.time())
 
-def touch(db):
+def touch(db, kind=None):
     row=db.query(SystemSettings).filter_by(key=HEARTBEAT).first()
-    value=json.dumps({'last_seen_at':datetime.now(timezone.utc).isoformat(),'expires_at':time.time()+900})
+    previous=json.loads(row.value) if row else {}
+    mode=kind or previous.get('kind','local_collector')
+    value=json.dumps({'kind':mode,'last_seen_at':datetime.now(timezone.utc).isoformat(),'expires_at':time.time()+(90 if mode=='browser_extension' else 900)})
     if row: row.value=value
     else: db.add(SystemSettings(key=HEARTBEAT,value=value))
 
@@ -52,6 +54,31 @@ def products(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
     db.commit()
     return {'items':items}
 
+class WebOpen(BaseModel):
+    initial:bool=False
+
+@router.post('/web-open')
+def web_open(data:WebOpen,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
+    """Page-attached read-only collection: refresh stocked SKUs, never enable pricing."""
+    assert_default(store)
+    touch(db, 'browser_extension')
+    now=time.time();queued=0
+    for item in catalog(db,store):
+        stock=item.get('stock')
+        if isinstance(stock,bool) or not isinstance(stock,(int,float)) or stock<=0 or not item.get('url'): continue
+        old=item['monitor']
+        if old.get('status') in ('running','paused') or (old.get('next_due',0)>now and not (data.initial and old.get('status')=='error')): continue
+        value={**old,'product_id':item['product_id'],'offer_id':item['offer_id'],'sku':item['sku'],
+            'enabled':old.get('enabled',False),'request_once':True,'web_requested':True,'interval_minutes':old.get('interval_minutes',5),
+            'revision':old.get('revision',0)+1,'status':'queued','next_due':0}
+        key=PREFIX+store+':'+item['product_id']+':'+item['offer_id']
+        row=db.query(SystemSettings).filter_by(key=key).first()
+        if row: row.value=json.dumps(value,ensure_ascii=False)
+        else: db.add(SystemSettings(key=key,value=json.dumps(value,ensure_ascii=False)))
+        queued+=1
+    db.commit()
+    return {'queued':queued,'price_changed':False}
+
 class Report(BaseModel):
     items:list[dict]=Field(max_length=100)
 
@@ -78,7 +105,7 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
             config.update(status='success',snapshot=snapshot,buybox_price=bb,holding_buybox=None,
                 price_matches_buybox=abs(bb-own)<.01 if isinstance(own,(int,float)) else False,
                 competitor_price=min((o['price'] for o in quotes if o.get('status')=='in_stock' and not o.get('isMine')),default=None),
-                last_success_at=at,error='',error_code='',failures=0,source='local_collector')
+                last_success_at=at,error='',error_code='',diagnostics={},failures=0,source='local_collector')
         else:
             config.update(status='error',error='本机采集未取得有效行情，请检查该机器浏览器登录、配送地址及商品规格',error_code='local_collection_failed',failures=config.get('failures',0)+1)
         config.update(request_once=False,last_attempt_at=at,next_due=now+config.get('interval_minutes',5)*60)
@@ -87,3 +114,21 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         db.delete(lease)
     db.commit()
     return {'processed':processed,'skipped':skipped,'computeEnqueued':0}
+
+class Release(BaseModel):
+    product_ids:list[str]=Field(max_length=20)
+
+@router.post('/release')
+def release(data:Release,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
+    assert_default(store);released=0
+    for token in data.product_ids:
+        lease=db.query(SystemSettings).filter_by(key=CLAIM_PREFIX+token).first()
+        if not lease: continue
+        job=json.loads(lease.value)
+        row=db.query(SystemSettings).filter_by(key=job['monitor_key']).first()
+        if row and row.value==job['claim']:
+            value=json.loads(row.value);value.update(status='queued',next_due=0)
+            db.query(SystemSettings).filter_by(key=row.key,value=job['claim']).update({'value':json.dumps(value,ensure_ascii=False)})
+            released+=1
+        db.delete(lease)
+    db.commit();return {'released':released,'price_changed':False}

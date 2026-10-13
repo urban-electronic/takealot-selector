@@ -41,3 +41,38 @@ def test_variant_error_and_foreign_sku_cannot_publish_prices(monkeypatch):
         bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'variantSwitchFailed':True}]),db,DEFAULT_STORE_ID)
         assert shared_snapshot(db,'one','one','one').get('error')
         with pytest.raises(HTTPException):bridge.products(db,'other-store')
+
+
+def test_web_open_queues_only_stocked_skus_without_enabling_pricing(monkeypatch):
+    with database() as db:
+        profile=db.query(SystemSettings).filter_by(key='operations_profile:'+DEFAULT_STORE_ID+':two').first()
+        value=json.loads(profile.value);value['offers'][0]['stock']=0;profile.value=json.dumps(value);db.commit()
+        result=bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
+        assert result['queued']==1 and not result['price_changed']
+        item=bridge.products(db,DEFAULT_STORE_ID)['items'][0]
+        assert item['sku']=='one'
+        assert not db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_rule:')).count()
+        assert bridge.web_open(bridge.WebOpen(),db,DEFAULT_STORE_ID)['queued']==0
+        assert bridge.release(bridge.Release(product_ids=[item['productId']]),db,DEFAULT_STORE_ID)['released']==1
+        assert bridge.products(db,DEFAULT_STORE_ID)['items'][0]['sku']=='one'
+
+
+def test_reopening_page_can_retry_failed_quote_without_changing_monitors():
+    import time
+    with database() as db:
+        key=PREFIX+DEFAULT_STORE_ID+':one:one'
+        db.add(SystemSettings(key=key,value=json.dumps({'product_id':'one','offer_id':'one','sku':'one','status':'error','enabled':False,'next_due':time.time()+1800,'interval_minutes':5})));db.commit()
+        bridge.web_open(bridge.WebOpen(initial=False),db,DEFAULT_STORE_ID)
+        assert json.loads(db.query(SystemSettings).filter_by(key=key).first().value)['status']=='error'
+        bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
+        result=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        assert result['request_once'] and not result['enabled'] and result['status']=='queued'
+
+
+def test_web_open_respects_explicit_per_sku_pause(monkeypatch):
+    with database() as db:
+        setup(db,monkeypatch)
+        pricing_routes.monitor_configure('one','one',pricing_routes.MonitorConfig(enabled=False),db,DEFAULT_STORE_ID)
+        bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
+        value=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
+        assert value['status']=='paused' and not value['request_once'] and not value['enabled']

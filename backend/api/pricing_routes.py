@@ -81,7 +81,9 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
     from api.collector_routes import connected
-    return {'collector_source': 'local_collector' if connected(db) else 'cloud_browser', 'rows': rows, 'configured': bool(configured_key(db)) if store == DEFAULT_STORE_ID else False}
+    connection=db.query(SystemSettings).filter_by(key='_buybox_local_collector').first()
+    source=json.loads(connection.value).get('kind','local_collector') if connection and connected(db) else 'cloud_browser'
+    return {'collector_source': source, 'rows': rows, 'configured': bool(configured_key(db)) if store == DEFAULT_STORE_ID else False}
 
 @router.post('/bulk')
 def bulk(data: Bulk, db: Session = Depends(get_db), store: str = Depends(get_store_id)):
@@ -200,7 +202,7 @@ def save_monitors(data, db, store):
         item=catalog.get((product_id,offer_id))
         if not item or not item['url']: raise HTTPException(400, '选中SKU未匹配或缺少公开页，本次未更改')
         old=item['monitor'];value={**old,'product_id':product_id,'offer_id':offer_id,'sku':item['sku'],
-            'enabled':data.enabled, 'interval_minutes':data.interval_minutes, 'segment':data.segment.strip() or old.get('segment','未分段'), 'request_once':data.request_once,
+            'enabled':data.enabled, 'web_requested':False, 'interval_minutes':data.interval_minutes, 'segment':data.segment.strip() or old.get('segment','未分段'), 'request_once':data.request_once,
             'revision':old.get('revision',0)+1,'next_due':0 if data.enabled or data.request_once else old.get('next_due',0),
             'status':'queued' if data.enabled or data.request_once else 'paused'}
         staged.append((MONITOR_PREFIX+store+':'+product_id+':'+offer_id,value))

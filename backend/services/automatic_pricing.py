@@ -27,7 +27,10 @@ def decide(current, stock, rule, snapshot):
               and (not typed or o.get('offerType') != 'buybox')
               and isinstance(o.get('price'), (int, float)) and math.isfinite(o['price']) and o['price'] > 0]
     buybox = snapshot.get('buyboxPrice')
-    holding = isinstance(buybox, (int, float)) and math.isfinite(buybox) and abs(current - buybox) < .01
+    price_matches = not isinstance(buybox,bool) and isinstance(buybox, (int, float)) and math.isfinite(buybox) and abs(current - buybox) < .01
+    holding = price_matches and snapshot.get('holdingBuyboxVerified') is True
+    if price_matches and not holding:
+        return None, '与Buybox同价但卖家身份未核实，保持现价'
     if holding and time.time() - rule.get('last_changed_epoch', 0) < rule.get('cooldown_minutes', 10) * 60:
         return None, '持有 Buybox，处于冷却期'
     day = datetime.now(ZoneInfo('Africa/Johannesburg')).date().isoformat()
@@ -201,6 +204,9 @@ def process(row_id):
                     db.commit()
                     if not db.query(SystemSettings).filter(SystemSettings.key == row_id, SystemSettings.value == intent).first(): return
                     time.sleep(10)
+                    # Recheck after the delay; a pause in this window must invalidate the write.
+                    db.expire_all()
+                    if not db.query(SystemSettings).filter(SystemSettings.key == row_id, SystemSettings.value == intent).first(): return
                     response = client.patch(f'https://seller-api.takealot.com/v2/offers/offer/ID{rule["offer_id"]}',
                         headers={'Authorization': f'Key {key}'}, json={'selling_price': target})
                     if response.status_code not in (200, 202) or response.json().get('validation_errors'):

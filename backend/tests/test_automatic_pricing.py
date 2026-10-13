@@ -25,10 +25,10 @@ def test_preorder_and_self_quotes_never_competed_with():
     assert pricing.decide(100, 0, RULE, {'offers': [offer(90)]})[0] is None
 
 def test_holding_rebound_ceiling_and_cooldown():
-    assert pricing.decide(100, 5, {**RULE, 'max_price': 105}, {'buyboxPrice': 100, 'offers': [offer(120)]})[0] == 105
-    assert pricing.decide(100, 5, {**RULE, 'last_changed_epoch': pricing.time.time()}, {'buyboxPrice': 100, 'offers': [offer(120)]})[0] is None
+    assert pricing.decide(100, 5, {**RULE, 'max_price': 105}, {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(120)]})[0] == 105
+    assert pricing.decide(100, 5, {**RULE, 'last_changed_epoch': pricing.time.time()}, {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(120)]})[0] is None
 
-def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89):
+def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89, pause_before_patch=False):
     engine = create_engine('sqlite://'); Base.metadata.create_all(engine); factory = sessionmaker(bind=engine)
     key = pricing.PREFIX + DEFAULT_STORE_ID + ':p:1'
     with factory() as db:
@@ -37,7 +37,15 @@ def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89):
     import database
     monkeypatch.setattr(database, 'SessionLocal', factory)
     monkeypatch.setattr(pricing, 'configured_key', lambda db: 'test-secret')
-    monkeypatch.setattr(pricing.time, 'sleep', lambda seconds: None)
+    sleeps=[]
+    def delay(seconds):
+        sleeps.append(seconds)
+        if pause_before_patch and len(sleeps)==2:
+            with factory() as db:
+                row=db.query(SystemSettings).filter_by(key=key).first()
+                value=json.loads(row.value);value.update(enabled=False,revision=2)
+                row.value=json.dumps(value);db.commit()
+    monkeypatch.setattr(pricing.time, 'sleep', delay)
     client = MagicMock(); monkeypatch.setattr(pricing.httpx, 'Client', lambda **kwargs: client)
     client.__enter__.return_value = client
     response = lambda price: MagicMock(status_code=200, json=lambda: {'offer': {'offer_id': 1, 'sku': 'a', 'selling_price': price, 'stock_at_takealot_total': 5}})
@@ -83,7 +91,7 @@ def test_untriggered_rule_never_reads_or_writes_platform(monkeypatch):
 
 def test_confirmed_scarcity_can_raise_but_empty_data_cannot():
     rule = {**RULE, 'smart_raise': True, 'reference_price': 100, 'max_price': None}
-    snapshot = {'buyboxPrice': 100, 'offers': [offer(100, isMine=True), offer(60, 'best_price', status='backorder')]}
+    snapshot = {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(100, isMine=True), offer(60, 'best_price', status='backorder')]}
     assert pricing.decide(100, 5, rule, snapshot)[0] == 103
     assert pricing.decide(100, 5, rule, {'buyboxPrice': 100, 'offers': []})[0] is None
     assert pricing.decide(120, 5, rule, {**snapshot, 'buyboxPrice': 120})[0] is None
@@ -92,6 +100,15 @@ def test_scarcity_trial_observes_feedback_and_rolls_back_without_sales():
     now = pricing.time.time()
     rule = {**RULE, 'smart_raise': True, 'reference_price': 100, 'scarcity_trial_started': now - 49*3600,
             'scarcity_base_price': 100, 'sku_last_sale_epoch': now - 60*3600, 'sales_recent': True}
-    snapshot = {'buyboxPrice': 110, 'offers': [offer(110, isMine=True), offer(60, 'best_price', status='backorder')]}
+    snapshot = {'buyboxPrice': 110, 'holdingBuyboxVerified':True, 'offers': [offer(110, isMine=True), offer(60, 'best_price', status='backorder')]}
     assert pricing.decide(110, 5, rule, snapshot)[0] == 100
     assert pricing.decide(110, 5, {**rule, 'last_scarcity_raise': now, 'sku_last_sale_epoch': now - 3600}, snapshot)[0] is None
+
+
+def test_price_match_does_not_prove_buybox_ownership():
+    target,reason=pricing.decide(100,5,{**RULE,'smart_raise':True},{'buyboxPrice':100,'holdingBuybox':True,'offers':[offer(120)]})
+    assert target is None and '身份未核实' in reason
+
+def test_pause_after_persisting_intent_prevents_patch(monkeypatch):
+    client,rule=run_cycle(monkeypatch,pause_before_patch=True)
+    assert not client.patch.called and not rule['enabled'] and rule['revision']==2
