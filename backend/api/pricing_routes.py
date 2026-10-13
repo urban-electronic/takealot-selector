@@ -146,8 +146,10 @@ def pause_all(db: Session = Depends(get_db), store: str = Depends(get_store_id))
     count = 0
     for row in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX + store + ':')).all():
         value = json.loads(row.value)
-        if value.get('enabled'):
-            value.update(enabled=False, revision=value.get('revision', 0)+1, last_result='已紧急停止')
+        if value.get('enabled') or value.get('write_pending'):
+            message='已紧急停止；存在待核验改价，请先核对平台现价' if value.get('write_pending') else '已紧急停止'
+            # Keep write_pending until reconciliation: the endpoint may race with an in-flight HTTP request.
+            value.update(enabled=False, revision=value.get('revision', 0)+1, last_result=message)
             row.value = json.dumps(value, ensure_ascii=False); count += 1
     db.commit()
     return {'paused': count}
