@@ -38,6 +38,9 @@ class Profile(BaseModel):
     sea_days: int = Field(default=58, ge=2, le=365)
     safety_days: int = Field(default=7, ge=0, le=90)
     cycle_days: int = Field(default=30, ge=1, le=180)
+    sea_coverage_days: int = Field(default=60, ge=17, le=180)
+    planning_days: int = Field(default=120, ge=30, le=180)
+    procurement_days: int = Field(default=0, ge=0, le=90)
     group: str = Field(default='', max_length=100)
     related_groups: list[str] = Field(default_factory=list, max_length=20)
     sales: list[Sale] = Field(default_factory=list, max_length=10000)
@@ -47,6 +50,8 @@ class Profile(BaseModel):
     def validate_dates(self):
         self.air_days = self.air_head_days + self.tail_days
         self.sea_days = self.sea_head_days + self.tail_days
+        if self.sea_coverage_days < max(self.cycle_days, self.air_days):
+            raise ValueError('海运覆盖天数须至少覆盖采购周期及空运周期')
         today = datetime.now(ZoneInfo('Asia/Shanghai')).date()
         if self.stock_date > today or self.observed_from > self.stock_date or self.air_days >= self.sea_days:
             raise ValueError('观测开始不得晚于库存日期，日期不得在未来，空运时效须短于海运')

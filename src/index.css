@@ -1997,3 +1997,44 @@ table tbody tr:hover { background: #f2f5f1; }
 .replenishment-metrics .card strong { display: block; font-size: 28px; margin-top: 12px; color: var(--color-primary); }
 .replenishment-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
 @media (max-width: 900px) { .replenishment-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+
+/* Compact operations workspace, matching the seller's daily workflow. */
+.operations-workspace { --color-bg: #f7f9fc; }
+.operations-workspace .dashboard-heading { margin-bottom: 16px; }
+.operations-workspace .dashboard-heading h1 { font-size: 24px; }
+.operations-workspace .card { padding: 16px; border-radius: 8px; box-shadow: none; border: 1px solid #e5e9ef; }
+.operations-workspace .replenishment-metrics { gap: 12px; }
+.operations-workspace .replenishment-metrics strong { font-size: 26px; margin-top: 6px; }
+.operations-workspace .replenishment-metrics strong span { font-size: 13px; font-weight: 400; color: #64748b; }
+.operations-status { display:flex; gap:8px; align-items:center; font-size:12px; color:#64748b; margin:12px 0 18px; flex-wrap:wrap; }
+.operations-status > span:last-child { margin-left:auto; }
+.status-dot { width:7px; height:7px; border-radius:50%; background:#94a3b8; }
+.status-dot.active { background:#10b981; }
+.operations-workspace .operations-table-card { padding:0; overflow:hidden; }
+.operations-tabs { display:flex; align-items:center; gap:4px; padding:12px 16px 0; border-bottom:1px solid #e5e9ef; flex-wrap:wrap; }
+.operations-tabs button { background:none; border:0; padding:12px 16px; cursor:pointer; color:#64748b; border-bottom:2px solid transparent; }
+.operations-tabs button.selected { color:#2563eb; border-bottom-color:#2563eb; font-weight:600; }
+.operations-tabs > span { margin-left:auto; font-size:12px; color:#64748b; padding:8px; }
+.operations-workspace .replenishment-toolbar { padding:14px 16px 8px; margin:0; gap:10px; font-size:12px; }
+.operations-workspace .replenishment-toolbar > input { width:220px; }
+.operations-workspace input:not([type=checkbox]), .operations-workspace select { font-size:12px; padding:7px 9px; min-height:32px; border-radius:5px; }
+.operations-note { font-size:12px; color:#64748b; padding:4px 16px 14px; line-height:1.6; }
+.operations-table-scroll { overflow-x:auto; }
+.operations-workspace .data-table { font-size:12px; min-width:1080px; }
+.operations-workspace .data-table th { background:#f8fafc; color:#64748b; font-size:11px; font-weight:600; padding:11px 12px; white-space:nowrap; }
+.operations-workspace .data-table td { padding:10px 12px; vertical-align:middle; border-bottom:1px solid #eef1f5; }
+.operations-workspace .data-table tbody tr:hover { background:#f8fbff; }
+.operations-product { width:240px; max-width:240px; }
+.product-link { display:block; width:230px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left; color:#2563eb; background:none; border:0; padding:0; font:inherit; cursor:pointer; }
+.row-subtitle, .operations-workspace .data-table small { display:block; font-size:11px; color:#94a3b8; margin-top:4px; }
+.mode-pill, .status-pill { display:inline-block; padding:3px 7px; border-radius:4px; background:#f1f5f9; color:#64748b; font-size:11px; white-space:nowrap; }
+.mode-pill.sea { background:#eff6ff; color:#2563eb; }
+.mode-pill.air { background:#fff7ed; color:#c2410c; }
+.status-pill.active { background:#ecfdf5; color:#059669; }
+.operations-workspace .btn { font-size:12px; border-radius:5px; padding:7px 11px; }
+.operations-pagination { display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:14px 16px; font-size:12px; color:#64748b; }
+.operations-pagination > span:first-child { margin-right:auto; }
+.operations-explanation { font-size:12px; color:#64748b; margin:14px 0; line-height:1.7; }
+.operations-explanation summary { cursor:pointer; }
+.operations-empty { padding:20px; color:#64748b; }
+@media(max-width:700px) { .operations-tabs > span { margin-left:0; width:100%; } .operations-workspace .replenishment-toolbar > input { width:100%; } }

@@ -61,3 +61,6 @@ Takealot 继续作为主程序，保留现有 React/Tauri、FastAPI、数据表�
 补货UI保留PricePilot式概览卡、分级、销速、可售天数、确认在途、CSV导出；正常接口状态不逐行重复。计划设置即时打开侧栏并按ID读取商品，修复列表分页造成按钮找不到商品及设置落到表格底部的问题。成本、采购、库存沿用主系统，未采购商品继续不生成计划。安装包自动构建保持停用。
 
 真实店铺价格没有在开发验证中更改，改价执行仅做模拟接口测试；上线可做只读预检。公共页面若无法采集，后台保持现价并明确提示。
+
+### Rolling sea-first calendar
+The planner now defaults to a 120-day departure outlook, a 30-day review/departure interval and 60 days of sea coverage plus existing safety days. It calculates each subsequent sea batch against existing stock, confirmed arrivals and earlier suggested batches; it never repeats the initial air bridge in later sea batches. Procurement preparation days are separate from transport lead times. Every batch carries purchase, departure, arrival and target coverage dates. Future batches are conditional estimates, not placed orders; all purchase reminders still use current unmet air/sea requirements. Short observations and stale snapshots are marked provisional. Profit gates apply to future batches as well. Estimated transport savings are not a guarantee of net profit and exclude unknown storage/capital costs. The main page opens on the dated calendar with compact product rows, filters, CSV and pagination; SKU repricing remains explicitly opt-in.

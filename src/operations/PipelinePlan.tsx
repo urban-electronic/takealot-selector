@@ -14,7 +14,7 @@ export default function PipelinePlan({ product, open = false }: { product: Produ
   const load = async (init = false) => {
     const d = await getOperationsProfile(product.id); setData(d);
     if (init) {
-      const p = d.profile || { stock: '', stock_date: today(), observed_from: today(), air_days: 17, sea_days: 58, air_head_days: 14, sea_head_days: 55, tail_days: 3, minimum_margin: .15, safety_days: 7, cycle_days: 30, group: '', related_groups: [], allocations: [], sales: [] };
+      const p = d.profile || { stock: '', stock_date: today(), observed_from: today(), air_days: 17, sea_days: 58, air_head_days: 14, sea_head_days: 55, tail_days: 3, minimum_margin: .15, safety_days: 7, cycle_days: 30, sea_coverage_days: 60, planning_days: 120, procurement_days: 0, group: '', related_groups: [], allocations: [], sales: [] };
       setForm(p); setSales(p.sales.map((s: any) => `${s.date} | ${s.quantity}`).join('\n')); setRelated(p.related_groups.join('，'));
     }
   };
@@ -56,9 +56,9 @@ export default function PipelinePlan({ product, open = false }: { product: Produ
       {!!p.overdue.length && <p>有采购超过预计到货日，请更新到货日期或确认已纳入库存。</p>}
       {!!p.unmapped.length && <p>检测到 {p.unmapped.length} 笔采购尚未设置空/海及到货日，设置后自动扣除。</p>}
       <p>{p.reason}；采购复核周期 {p.next_review_days} 天。</p>
-      {!!p.timeline.length && <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>计划节点</th><th>到货数量</th><th>预计结余</th></tr></thead><tbody>{p.timeline.map((r: any) => <tr key={r.day}><td>第{r.day}天</td><td>{r.arrivals}</td><td>{r.balance}</td></tr>)}</tbody></table></div>}
+      {!!p.timeline.length && <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>计划节点</th><th>到货数量</th><th>预计结余</th></tr></thead><tbody>{p.timeline.map((r: any) => <tr key={r.day}><td>{r.date || `第${r.day}天`}</td><td>{r.arrivals}</td><td>{r.balance}</td></tr>)}</tbody></table></div>}
     </div>}
-    {form && <><div className="form-row">{field('stock', '本店可售库存（非国内库存）')}{field('stock_date', '库存快照日期（该日结束库存）', 'date')}{field('observed_from', '完整销量观测开始（新品填实际首日）', 'date')}{field('air_head_days', '空运头程（天）')}{field('sea_head_days', '海运头程（天）')}{field('tail_days', '尾程派送（2–3天）')}{field('minimum_margin', '最低补货利润率（0.15 = 15%）')}{field('safety_days', '安全覆盖天数')}{field('cycle_days', '后续采购周期（天）')}{field('group', '细分品类（如 USB-C充电线，勿只填电子产品）', 'text')}</div>
+    {form && <><div className="form-row">{field('stock', '本店可售库存（非国内库存）')}{field('stock_date', '库存快照日期（该日结束库存）', 'date')}{field('observed_from', '完整销量观测开始（新品填实际首日）', 'date')}{field('air_head_days', '空运头程（天）')}{field('sea_head_days', '海运头程（天）')}{field('tail_days', '尾程派送（2–3天）')}{field('minimum_margin', '最低补货利润率（0.15 = 15%）')}{field('safety_days', '安全覆盖天数')}{field('cycle_days', '滚动发运间隔（天）')}{field('sea_coverage_days', '海运到货后覆盖销量（天）')}{field('planning_days', '采购计划展望（天）')}{field('procurement_days', '采购至发运备货（天）')}{field('group', '细分品类（如 USB-C充电线，勿只填电子产品）', 'text')}</div>
       <div className="form-group"><label>关联品类（如 充电头，移动电源；逗号分隔）</label><input value={related} onChange={e => setRelated(e.target.value)} /></div>
       {form.data_source === 'seller_api' ? <p>库存与销量由卖家接口自动维护，无需手工录入。最近同步：{form.synced_at}</p> : <div className="form-group"><label>每日真实成交：YYYY-MM-DD | 数量；未能接入卖家接口时使用人工记录</label><textarea rows={4} style={{ width: '100%' }} value={sales} onChange={e => setSales(e.target.value)} /></div>}
       {!!data?.purchases.length && <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>采购</th><th>空/海</th><th>预计可售到货日</th><th>已计入库存快照</th></tr></thead><tbody>{data.purchases.filter((r: any) => r.status !== 'cancelled').map((r: any) => {
