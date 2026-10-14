@@ -184,3 +184,10 @@ Windows下载包增加独立 `start.cmd` / `login.cmd` 和 `launcher.py`，Pytho
 新增 tools/pricepilot-relay/selector_relay.py，仅转发原守护进程已有的原始轮次结果，不另起浏览器，不访问受限站点，不从 Product 表拼接旧价格。接收端对 pricepilot_relay 标记严格验证来源时间，接受领取租约之前但10分钟内的报价并保留原时间；时间缺失、过期或在未来时不以接收时间刷新行情。仍使用现有SKU、租约及暂停校验，不扩大接口鉴权范围，也不认可同价即持有。
 
 验证：22项适配及接收接口测试通过。未接入原 Mac 进程，尚无真实同步记录；具体接入步骤及验收边界见 tools/pricepilot-relay/README.md。原电脑关闭后独立采集仍未解决。下一轮先确认原进程是否已接入及真实processed数量，不把接收端部署等同于真实采集成功。
+
+
+### 本轮部署后补充：发现一次真实云端成功记录
+
+部署后只读检查生产数据库发现：SKU 9902348624058 的 last_success_at 为 2026-10-14 05:27:32.735689 UTC（北京时间13:27:32），buybox_price=269。保留的成功 snapshot 包含 HTTP200、正确商品标题、相同 PLID100687738 的请求/落地链接、buybox_cards=1、buyboxSeller=Urban Electronics、error为空。这是原网页后台的历史成功快照，不是本轮 relay 上报，不是本轮新发起的商品请求。此前“从未取得过报价”的表述需按此证据纠正。
+
+同一SKU最近失败为05:56:34 UTC，HTTP403 / Just a moment... / site_challenge；当前采集仍暂停、status=error。另一SKU仍无成功记录。结论是单SKU曾成功、随后被验证拦截，稳定采集未验收，不能把旧成功当成目前已恢复。两次读取均不改变报价/开关、不读取Cookie。接收适配部署后来源时间保留与缺失时间拒绝的生产纯函数检查均通过；仍待原机器接入 relay，或取得网站接受的持续数据来源。
