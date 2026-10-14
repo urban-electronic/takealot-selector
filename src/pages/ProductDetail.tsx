@@ -4,6 +4,7 @@ import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
 import type { Product, FeeCategory } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
+import { ProductImage } from '../utils/imageFallback';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -169,9 +170,8 @@ export default function ProductDetail() {
         <div className="two-col">
           <div>
             {product.product_image_url && (
-              <img
+              <ProductImage
               src={api.getImageUrl(product.product_image_url)}
-                alt=""
                 referrerPolicy="no-referrer"
                 className="image-preview"
               />
@@ -612,3 +612,4 @@ export default function ProductDetail() {
     </div>
   );
 }
+
