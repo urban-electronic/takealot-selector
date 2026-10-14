@@ -34,6 +34,15 @@ def test_pause_invalidates_inflight_local_collection(monkeypatch):
         row=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
         assert not row['enabled'] and 'buybox_price' not in row
 
+def test_native_challenge_is_not_accepted_as_success_even_with_old_price(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch)
+        result=bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':269,'diagnostics':{'http_status':403,'page_title':'Just a moment...','requested_url':'https://www.takealot.com/p/PLID1?secret=discard'}}]),db,DEFAULT_STORE_ID)
+        assert result['processed']==1 and result['successful']==0
+        row=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
+        assert row['error_code']=='site_challenge' and not row.get('last_success_at')
+        assert 'discard' not in str(row['diagnostics'])
+
 
 def test_variant_error_and_foreign_sku_cannot_publish_prices(monkeypatch):
     with database() as db:

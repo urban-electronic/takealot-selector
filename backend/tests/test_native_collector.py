@@ -16,6 +16,24 @@ def test_native_runner_reuses_retained_pricepilot_core():
     assert not runner.valid_product_url('https://example.com/PLID123')
     with pytest.raises(ValueError): runner.Api('https://example.com','test')
 
+def test_initial_document_gets_one_passive_wait_without_retry():
+    core=runner.parser_module()
+    class Page:
+        waits=0
+        resolved=False
+        async def title(self):return 'A product | takealot.com' if self.resolved else 'Just a moment...'
+        async def wait_for_function(self,*args,**kwargs):
+            self.waits+=1;self.resolved=True
+    page=Page()
+    assert asyncio.run(core.wait_initial_document(page)) is True and page.waits==1
+    class Blocked(Page):
+        async def wait_for_function(self,*args,**kwargs):
+            self.waits+=1;raise TimeoutError()
+    page=Blocked()
+    assert asyncio.run(core.wait_initial_document(page)) is None and page.waits==1
+    page=Page();page.resolved=True
+    assert asyncio.run(core.wait_initial_document(page)) is False and page.waits==0
+
 def test_native_report_is_per_item_and_no_write_endpoints(monkeypatch):
     calls=[]
     item={'productId':'lease','sku':'SKU1','url':'https://www.takealot.com/x/PLID1'}
@@ -54,7 +72,24 @@ def test_native_wrapper_preserves_quotes_but_never_verifies_identity():
     result=asyncio.run(runner.scrape(Context(),{'productId':'lease','sku':'SKU1','url':'https://www.takealot.com/x/PLID1'},SimpleNamespace(scrape_product=parse)))
     assert result['buyboxPrice']==100 and result['collectedAt']
     assert not result['holdingBuybox'] and 'holdingBuyboxVerified' not in result
-    assert not result['offers'][0]['isMine'] and closed==[True]
+    assert result['offers'][0]['isMine'] and closed==[True]
+
+def test_native_challenge_diagnostics_are_reported_without_session_data():
+    class Page:
+        url='https://www.takealot.com/p/PLID1?token=private'
+        def on(self,name,callback):
+            callback(SimpleNamespace(status=403,request=SimpleNamespace(resource_type='document')))
+        async def title(self):return 'Just a moment...'
+        def locator(self,selector):return self
+        async def count(self):return 0
+        async def close(self):pass
+    class Context:
+        async def new_page(self):return Page()
+    async def parse(*args):return {'error':'site_challenge','buyboxPrice':None}
+    result=asyncio.run(runner.scrape(Context(),{'productId':'lease','sku':'SKU1','url':'https://www.takealot.com/p/PLID1'},SimpleNamespace(scrape_product=parse)))
+    assert result['diagnostics']['http_status']==403
+    assert result['diagnostics']['page_title']=='Just a moment...'
+    assert 'private' not in str(result['diagnostics'])
 
 
 @pytest.mark.parametrize('body,expected',[

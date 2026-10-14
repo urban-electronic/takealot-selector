@@ -270,6 +270,20 @@ async def price_of(page, card) -> float | None:
             continue
     return None
 
+CHALLENGE_TITLES = ('just a moment...', 'just a moment', 'attention required! | cloudflare')
+
+async def wait_initial_document(page):
+    """One passive load wait, without reloads or interaction with verification."""
+    initial=(await page.title() or '').strip().lower()
+    if initial not in CHALLENGE_TITLES: return False
+    try:
+        await page.wait_for_function(
+            "!['just a moment...', 'just a moment', 'attention required! | cloudflare'].includes(document.title.trim().toLowerCase())",
+            timeout=12000)
+    except Exception:
+        return None
+    return True if (await page.title() or '').strip().lower() not in CHALLENGE_TITLES else None
+
 async def scrape_product(page, item: dict) -> dict:
     """抓单个商品详情页，返回上报 item。任何异常返回兜底 item（buyboxPrice=None）。"""
     url = item.get("url") or ""
@@ -294,11 +308,13 @@ async def scrape_product(page, item: dict) -> dict:
     try:
         resp = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
         # A successful HTTP status can still be an interstitial, not a product.
-        initial_title=(await page.title() or '').strip().lower()
-        if initial_title in ('just a moment...', 'just a moment', 'attention required! | cloudflare'):
+        document_settled=await wait_initial_document(page)
+        if document_settled is None:
             result['error']='site_challenge'
             return result
-        if resp and (resp.status in (401,403,404,429) or resp.status>=500):
+        # A naturally completed initial interstitial may have returned 403 before
+        # navigating to the product. Still require real quote cards below.
+        if resp and (resp.status in (401,403,404,429) or resp.status>=500) and not (document_settled and resp.status==403):
             result['error']=f'http_{resp.status}'
             return result
         await page.wait_for_timeout(random.randint(900, 1600))

@@ -145,7 +145,7 @@ class Report(BaseModel):
 @router.post('/offers')
 def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id),
            x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client')):
-    assert_default(store);touch(db,collector_kind(x_collector_client));processed=skipped=0
+    assert_default(store);touch(db,collector_kind(x_collector_client));processed=skipped=successful=0
     recover_expired(db,time.time())
     for item in data.items:
         lease=db.query(SystemSettings).filter_by(key=CLAIM_PREFIX+str(item.get('productId',''))).first()
@@ -159,12 +159,21 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         config=json.loads(row.value);now=time.time();bb=item.get('buyboxPrice')
         relayed=x_collector_client=='pricepilot_relay'
         relayed_at=relay_observation_time(item,now) if relayed else None
-        valid=not item.get('error') and not item.get('variantSwitchFailed') and not isinstance(bb,bool) and isinstance(bb,(int,float)) and math.isfinite(bb) and bb>0 and (not relayed or relayed_at is not None)
+        from services.collection_diagnostics import classify,safe_url
+        raw=item.get('diagnostics') or {}
+        diagnostics={k:raw[k] for k in ('http_status','buybox_cards') if k in raw} if isinstance(raw,dict) else {}
+        if isinstance(raw,dict):
+            for k in ('requested_url','final_url'):
+                if isinstance(raw.get(k),str): diagnostics[k]=safe_url(raw[k])
+            if isinstance(raw.get('page_title'),str): diagnostics['page_title']=raw['page_title'][:160]
+        code,message=classify({**item,'diagnostics':diagnostics})
+        valid=not code and not item.get('error') and not item.get('variantSwitchFailed') and not isinstance(bb,bool) and isinstance(bb,(int,float)) and math.isfinite(bb) and bb>0 and (not relayed or relayed_at is not None)
         snapshot={k:item[k] for k in ('buyboxPrice','buyboxSeller','buyboxType','holdingBuybox','offers','variantSwitchFailed','error','stockMapped','stockStatus') if k in item}
         # The original parser may include other sellers only after location/login is established.
         quotes=snapshot.get('offers') or []
         quotes=[o for o in quotes if isinstance(o,dict) and not isinstance(o.get('price'),bool) and isinstance(o.get('price'),(int,float)) and math.isfinite(o['price']) and o['price']>0]
         snapshot['offers']=quotes
+        if diagnostics: snapshot['diagnostics']=diagnostics
         at=datetime.now(timezone.utc).isoformat()
         if valid:
             observed,clock_source=(relayed_at,'source_round_start') if relayed else observation_time(item,job,now)
@@ -173,16 +182,18 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
             config.update(status='success',snapshot=snapshot,buybox_price=bb,holding_buybox=None,
                 price_matches_buybox=abs(bb-own)<.01 if isinstance(own,(int,float)) else False,
                 competitor_price=min((o['price'] for o in quotes if o.get('status')=='in_stock' and not o.get('isMine')),default=None),
-                last_success_at=asof,quote_time_source=clock_source,error='',error_code='',diagnostics={},failures=0,source='pricepilot_relay' if relayed else 'local_collector')
+                last_success_at=asof,quote_time_source=clock_source,error='',error_code='',diagnostics=diagnostics,failures=0,source='pricepilot_relay' if relayed else 'local_collector')
         else:
             stale=relayed and relayed_at is None
-            config.update(status='error',error='原程序报价时间缺失、过期或无效，未作为新行情使用' if stale else '本机采集未取得有效行情，请检查该机器浏览器登录、配送地址及商品规格',error_code='stale_source_quote' if stale else 'local_collection_failed',failures=config.get('failures',0)+1)
+            config.update(status='error',error='原程序报价时间缺失、过期或无效，未作为新行情使用' if stale else message or '本机采集未取得有效行情',error_code='stale_source_quote' if stale else code or 'local_collection_failed',diagnostics=diagnostics,failures=config.get('failures',0)+1)
         config.update(request_once=False,last_attempt_at=at,next_due=now+config.get('interval_minutes',5)*60)
-        if db.query(SystemSettings).filter_by(key=row.key,value=job['claim']).update({'value':json.dumps(config,ensure_ascii=False)})==1: processed+=1
+        if db.query(SystemSettings).filter_by(key=row.key,value=job['claim']).update({'value':json.dumps(config,ensure_ascii=False)})==1:
+            processed+=1
+            if valid: successful+=1
         else: skipped+=1
         db.delete(lease)
     db.commit()
-    return {'processed':processed,'skipped':skipped,'computeEnqueued':0}
+    return {'processed':processed,'successful':successful,'skipped':skipped,'computeEnqueued':0}
 
 class Release(BaseModel):
     product_ids:list[str]=Field(max_length=20)
