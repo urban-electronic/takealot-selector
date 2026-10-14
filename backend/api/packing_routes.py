@@ -243,24 +243,18 @@ def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(ge
     回退到产品库图片，避免批量下载图片导致请求超时。
 
     并发安全：同店同步串行执行；多 worker 部署下跨进程并发若仍触发
-    UNIQUE 冲突，回滚后按“已同步”返回，不再以 500 失败。
+    SKU UNIQUE 冲突，回滚后从最新快照有界重试；未完成不能假报已同步。
     """
     with _sync_lock_for(store_id):
-        try:
-            return _sync_from_products(db, store_id)
-        except IntegrityError:
-            # 安全网：别处（另一进程/事务）已提交同一 SKU。回滚后按已同步返回，
-            # 重复调用、双击、双标签页均安全。
-            db.rollback()
-            return {
-                'ok': True,
-                'total_products': db.query(Product).filter(
-                    Product.store_id == store_id, Product.is_archived == False).count(),
-                'packing_products': db.query(PackingProduct).count(),
-                'imported': 0,
-                'skipped_no_sku': 0,
-                'duplicate_sku': 0,
-            }
+        for attempt in range(3):
+            try:
+                return _sync_from_products(db, store_id)
+            except IntegrityError as exc:
+                db.rollback()
+                if str(exc.orig).strip().lower() != 'unique constraint failed: packing_products.sku':
+                    raise
+                if attempt == 2:
+                    raise HTTPException(status_code=409, detail='装箱同步发生并发冲突，请重试') from None
 
 
 def _sync_from_products(db: Session, store_id: str):

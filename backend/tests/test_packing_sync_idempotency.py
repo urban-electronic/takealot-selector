@@ -75,14 +75,14 @@ def test_concurrent_sync_calls_all_succeed(tmp_path):
 def test_integrity_conflict_absorbed_as_already_synced(tmp_path):
     """跨进程/跨事务竞态的安全网（多 worker 部署）：本会话基于“尚不存在”的
     过期快照仍要 INSERT 同一 SKU，commit 必然 UNIQUE 冲突——修复前以 500
-    逃逸，修复后回滚并按“已同步”返回，不残留重复行。"""
+    逃逸，修复后回滚并重新同步，必须真正落库而非返回假成功。"""
     Session = _engine_db(tmp_path, 'conflict')
     _seed_catalog(Session)
     db = Session(autoflush=False)  # 与生产 SessionLocal 一致：挂起行对本会话查询不可见
     db.add(PackingProduct(sku='SKU-1', name='stale'))
     result = sync_from_products(db=db, store_id=DEFAULT_STORE_ID)
-    assert result['ok'] is True and result['imported'] == 0
-    assert Session().query(PackingProduct).count() == 0  # 冲突双方均已回滚，无重复行
+    assert result['ok'] is True and result['imported'] == 1
+    assert Session().query(PackingProduct).count() == 1  # 回滚后实际重试，不能假成功
 
 
 def test_unhandled_error_keeps_cors_headers(monkeypatch):
@@ -102,4 +102,5 @@ def test_unhandled_error_keeps_cors_headers(monkeypatch):
                                   if getattr(r, 'path', None) != '/__f11_test_boom__']
     assert resp.status_code == 500
     assert resp.headers['access-control-allow-origin'] == 'http://127.0.0.1:5173'
-    assert 'RuntimeError' in resp.json()['detail']
+    assert 'boom-for-cors-test' not in resp.text and 'RuntimeError' not in resp.text
+    assert resp.json()['request_id'] == resp.headers['x-request-id']

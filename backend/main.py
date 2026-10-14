@@ -103,10 +103,14 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     /api/packing/sync-from-products 的 UNIQUE 500 即被掩盖为 CORS 报错）。
     Starlette 发送本响应后仍会 re-raise，服务端 traceback 日志不受影响。
     """
+    import logging
+    from uuid import uuid4
+    request_id = uuid4().hex
+    logging.getLogger(__name__).error('Unhandled request id=%s type=%s', request_id, type(exc).__name__)
     return JSONResponse(
         status_code=500,
-        content={"detail": f"服务器内部错误（{type(exc).__name__}）：{exc}"},
-        headers=_cors_headers(request),
+        content={"detail": "服务器内部错误，请稍后重试", "request_id": request_id},
+        headers={**_cors_headers(request), "X-Request-ID": request_id},
     )
 
 

@@ -1,5 +1,5 @@
 """
-图片代理端点 - 转发外部图片以绕过 CDN Referer 防盗链
+图片代理端点 - 受限 CDN 图片读取与失败降载，不绕过站点验证
 
 安全与降载（review F2/F3）：
 - 仅放行已确认的 HTTPS 图片 CDN 主机（media.takealot.com:443，解析器抓取的
@@ -30,6 +30,7 @@ MAX_REDIRECTS = 3
 NEGATIVE_TTL_SECONDS = 300.0   # 上游 403/404 负缓存时长
 POSITIVE_TTL_SECONDS = 30.0    # 正向微缓存时长（承接同屏/滚动重复请求）
 POSITIVE_MAX_ENTRIES = 256     # 正向缓存条目上限，超出整体清空防增长
+POSITIVE_MAX_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _CLIENT_LIMITS = httpx.Limits(max_connections=32, max_keepalive_connections=16)
 
@@ -95,14 +96,26 @@ class _ImageFetchService:
     """
 
     def __init__(self, client: httpx.AsyncClient | None = None):
-        self._client = client or httpx.AsyncClient(
-            timeout=15.0, limits=_CLIENT_LIMITS, follow_redirects=False
-        )
+        self._client = client
+        self._closed = False
+        self._capacity = asyncio.Semaphore(4)
+        self._positive_bytes = 0
         self._negative: dict[str, float] = {}   # url -> 负缓存到期时刻（monotonic）
         self._positive: dict[str, tuple[float, bytes, str]] = {}  # url -> (到期, 内容, 类型)
         self._inflight: dict[str, asyncio.Task] = {}
 
     # ---- 缓存 ----
+
+    def _drop_positive(self, url):
+        cached = self._positive.pop(url, None)
+        if cached is not None:
+            self._positive_bytes -= len(cached[1])
+
+    def _expire_positive(self):
+        now = time.monotonic()
+        for key, cached in list(self._positive.items()):
+            if cached[0] <= now:
+                self._drop_positive(key)
 
     def _negatively_blocked(self, url: str) -> bool:
         until = self._negative.get(url)
@@ -119,20 +132,30 @@ class _ImageFetchService:
         self._negative[url] = time.monotonic() + NEGATIVE_TTL_SECONDS
 
     def _positive_hit(self, url: str):
+        self._expire_positive()
         cached = self._positive.get(url)
         if cached is not None and cached[0] > time.monotonic():
             return cached[1], cached[2]
         return None
 
     def _remember_positive(self, url: str, content: bytes, content_type: str) -> None:
-        if len(self._positive) >= POSITIVE_MAX_ENTRIES:
-            self._positive.clear()
+        self._expire_positive()
+        self._drop_positive(url)
+        if len(content) > POSITIVE_MAX_BYTES:
+            return
+        while self._positive and (len(self._positive) >= POSITIVE_MAX_ENTRIES or
+                                  self._positive_bytes + len(content) > POSITIVE_MAX_BYTES):
+            self._drop_positive(next(iter(self._positive)))
         self._positive[url] = (time.monotonic() + POSITIVE_TTL_SECONDS, content, content_type)
+        self._positive_bytes += len(content)
 
     # ---- 出站 ----
 
     async def fetch(self, url: str) -> tuple[bytes, str]:
         """返回 (图片字节, content-type)；失败抛 HTTPException。"""
+        if self._closed:
+            raise HTTPException(status_code=503, detail="图片服务正在关闭")
+        url = _validate_image_url(url)
         if self._negatively_blocked(url):
             raise HTTPException(
                 status_code=502, detail="图片 CDN 暂时拒绝访问（负缓存生效），请稍后重试"
@@ -147,11 +170,12 @@ class _ImageFetchService:
             # 防止 leader 在 await 前被取消时异常无人读取的告警
             task.add_done_callback(_retrieve_task_exception)
         # 等待共享任务：leader 断开不会取消任务，后续请求仍可拿到结果
-        return await task
+        return await asyncio.shield(task)
 
     async def _fetch_upstream(self, url: str) -> tuple[bytes, str]:
         try:
-            content, content_type = await self._fetch_with_redirects(url)
+            async with self._capacity:
+                content, content_type = await self._fetch_with_redirects(url)
         finally:
             self._inflight.pop(url, None)
         self._remember_positive(url, content, content_type)
@@ -161,7 +185,11 @@ class _ImageFetchService:
         current = url
         try:
             for _hop in range(MAX_REDIRECTS + 1):
-                resp = await self._client.get(current, headers=_UPSTREAM_HEADERS)
+                if self._client is None:
+                    self._client = httpx.AsyncClient(
+                        timeout=15.0, limits=_CLIENT_LIMITS, follow_redirects=False)
+                req = self._client.build_request('GET', current, headers=_UPSTREAM_HEADERS)
+                resp = await self._client.send(req, stream=True, follow_redirects=False)
                 try:
                     if resp.is_redirect:
                         location = resp.headers.get("location", "")
@@ -188,10 +216,12 @@ class _ImageFetchService:
                     declared = resp.headers.get("content-length", "")
                     if declared.isdigit() and int(declared) > MAX_IMAGE_BYTES:
                         raise HTTPException(status_code=502, detail="图片体积超限")
-                    content = await resp.aread()
-                    if len(content) > MAX_IMAGE_BYTES:
-                        raise HTTPException(status_code=502, detail="图片体积超限")
-                    return content, content_type
+                    content = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        if len(content) + len(chunk) > MAX_IMAGE_BYTES:
+                            raise HTTPException(status_code=502, detail="图片体积超限")
+                        content.extend(chunk)
+                    return bytes(content), content_type
                 finally:
                     await resp.aclose()
             raise HTTPException(
@@ -203,7 +233,17 @@ class _ImageFetchService:
             raise HTTPException(status_code=502, detail=f"图片代理失败: {type(e).__name__}")
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        self._closed = True
+        tasks = list(self._inflight.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self._client is not None:
+            await self._client.aclose()
+        self._inflight.clear()
+        self._positive.clear()
+        self._positive_bytes = 0
+        self._negative.clear()
 
 
 _service = _ImageFetchService()
@@ -233,5 +273,5 @@ async def image_proxy(
     return Response(
         content=content,
         media_type=content_type,
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
     )

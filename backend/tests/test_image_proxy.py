@@ -281,7 +281,7 @@ def test_endpoint_returns_image_with_cache_header(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.content == b"pngbytes"
     assert resp.headers["content-type"] == "image/png"
-    assert resp.headers["cache-control"] == "public, max-age=86400"
+    assert resp.headers["cache-control"] == "private, max-age=86400"
     assert len(calls) == 1
 
 
