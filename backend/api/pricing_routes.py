@@ -200,6 +200,8 @@ def reconcile(product_id: str, offer_id: str, db: Session = Depends(get_db), sto
     try:
         with httpx.Client(timeout=25, follow_redirects=False) as client: actual = official_offer(client, key, offer_id)
     except Exception: raise HTTPException(503, '平台现价暂时无法读取，继续暂停，不重复提交')
+    if actual.get('sku') != value.get('sku'):
+        raise HTTPException(409, '卖家SKU身份已变化，继续暂停；请重新同步并核对绑定')
     value.update(current_price=actual['selling_price'], stock=actual['stock_at_takealot_total'],
         last_evaluated_at=datetime.now(timezone.utc).isoformat(), enabled=False, write_pending=False,
         revision=value.get('revision', 0) + 1, last_result=f'已核验平台现价 R {actual["selling_price"]}，保持暂停；需要时重新启动')
