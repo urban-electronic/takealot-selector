@@ -6,6 +6,8 @@
 
 依赖、浏览器档案和所选档案路径保存在当前用户的 `TakealotCollector` 本机目录；密钥不保存。不需要打开WorkBuddy，不依赖聊天会话。重新选择档案可在终端运行 `start.cmd --choose-profile`。网页仍用于SKU采集调度和结果展示。
 
+安装修正版使用Playwright 1.64.0与greenlet 3.5.6的预编译包，避免旧greenlet在较新Python上触发Visual C++源码编译。按Python版本建立独立运行环境，保留原浏览器档案和选定路径；旧版安装失败时，重新下载本包并双击start.cmd重试即可，无需安装C++编译工具。不支持的系统会停止安装，不能自动回退源码编译。
+
 此包直接包含仓库 `backend/services/pricepilot_collector.py` 的解析核心，不另写简化解析器。保留原颜色/尺寸 URL 参数、精确变体点击与确认、双读/三读报价一致性、Buybox 卡和其他卖家读取。Windows/macOS 使用同一 Python 入口。仅回传行情，没有售价写入端点。
 
 1. 安装 Python 3.10 或以上，在解压目录执行：

@@ -10,13 +10,15 @@ ROOT=Path(__file__).resolve().parent
 def main():
     if sys.version_info < (3,10): raise RuntimeError('需要Python 3.10或以上版本')
     state=Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'TakealotCollector'
-    runtime=state/'runtime'
+    # A previously failed venv may belong to an older/different Python interpreter.
+    runtime=state/('runtime-'+sys.implementation.cache_tag)
     python=runtime/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
     requirements=(ROOT/'requirements.txt').read_text(encoding='utf-8')
     marker=runtime/'installed-requirements.txt'
     if not python.exists(): venv.EnvBuilder(with_pip=True).create(runtime)
     if not marker.exists() or marker.read_text(encoding='utf-8')!=requirements:
-        subprocess.run([str(python),'-m','pip','install','-r',str(ROOT/'requirements.txt')],check=True)
+        subprocess.run([str(python),'-m','pip','install','--upgrade','pip>=25.2'],check=True)
+        subprocess.run([str(python),'-m','pip','install','--only-binary=:all:','-r',str(ROOT/'requirements.txt')],check=True)
         subprocess.run([str(python),'-m','playwright','install','chromium'],check=True)
         marker.write_text(requirements,encoding='utf-8')
     # Only the profile path is retained. Authentication is prompted by collector.py each run.
