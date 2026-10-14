@@ -88,6 +88,8 @@
 | F4 | 每页必发 `/api/buybox/page-open`，未绑定店铺返回 400「本店未绑定采集接口」 | ⚠️ 未修复（体验类，降级） | 第 3 轮实测修正：前端已将该 400 翻译为页面顶部可关闭横幅"本次采集未提交：本店未绑定采集接口"，文案准确；console 另有 error。预期状态以 400 呈现仍不规范，建议协议层改 200+标志位或前端静默 console；是否改协议层请 Codex 定 |
 | F5 | Buybox 表格不显示卖家名（仅显示报价/竞品价与状态标签），快照内 `buyboxSeller` 未上屏 | ⚠️ 未修复（展示类，低） | 价格相同不等于卖家身份已核实（现有"待核对卖家/同价·待确认"标签语义正确）；表格补一列卖家名或详情展开有助于人工核对。不单独提 PR，纳入视觉/信息轮统一处理 |
 | F6 | **体积重口径存量不一致**：引擎 2026-08-04 由 ÷5000 改为 ÷6000（提交 65a48d1），但存量商品字段是旧口径值，列表接口直读库存不重算 | ⚠️ 待 Codex 决策（数据口径） | 实测 329 个商品中 5 个携带旧口径值（体积重/计费重/前置仓/头程/总成本/利润/20%·15% 底价均差：利润率差 0–5.69pp、20% 底价差约 R21）；其余 324 个与新引擎一致。商品一旦被编辑即静默切换新口径，同品不同时间数字不一致。候选处理：一次性重算该 5 个商品的派生字段（改的是展示用派生值，不动真实售价/成本录入）；是否执行、由谁执行请 Codex 定 |
+| F7 | **operations  overview/alerts 500（阻断，已修复）**：`operations_planner.plan()` 直取 `profile['observed_from']`，旧结构 profile（迁移 dump/手改数据缺 `observed_from`/`stock_date`/`stock`）抛 KeyError；异常穿透端点 → 500；Starlette CORS 中间件在 app 内侧，500 响应无 CORS 头，浏览器只报 CORS 错（真实错误被掩盖） | ✅ 已修复（第 4 轮） | 复现：02:22 逐页审计中 `/` 与 `/replenishment` 的 `/api/operations/alerts`、`/api/operations/overview` console 报 CORS 错。修复：新增 `_known_stock()`/`_observation_ready()` 守卫——无观测期/库存快照时返回保守 `no_data` 计划（`level='no_data'`、`stale/provisional`、`air/sea_quantity=0`、`cover_days=None`、`reason='尚未同步库存与销量观测期，暂不生成补货计划'`），**已知库存不伪装成 0**；一个坏行不再拖垮整页。新增 3 项回归（旧结构/坏日期/缺 stock）；重启后端复测 overview/alerts 均 200、15 个 eligible 行 1 个 no_data（A8 夹具商品，stock=None 如实呈现）+ 14 个无 profile、alerts 0 条；浏览器复测两条路由 CORS 报错消失 |
+| F8 | **/packing 768px 宽窗横向溢出（体验/兼容，已修复）**：装箱工作台双列网格在 768px 宽窗口整页横向溢出 | ✅ 已修复（第 4 轮） | 实证：02:22 审计 `/packing` `horizontal_overflow_768=true`（525 按钮数据态）；DOM 链定位：`.packing-library-column`（网格项无 `min-width:0`）min-content=1291px，由卡内 `.packing-table-scroll`（overflow:auto）中 `product-table`（min-width:760px，实际 1243px）传播撑爆网格轨道。修复（纯 CSS）：`.packing-library-column{min-width:0}` + `@media (max-width:960px)` 工作区改单列堆叠、汇总列取消 sticky。复测：768px 无页面溢出（表内横向滚动，设计行为）、单列堆叠正常（库列 731px 在上、汇总 731px 在下）；1366px 双列 829+452 无回归 |
 
 ### 冒烟通过项
 
@@ -135,3 +137,32 @@
 1. 读取并回复 Codex 第 2 轮复核评论（约 02:37）。
 2. 逐页核对清单 A/C/D 域剩余项与 B 域数据口径（B2 店铺隔离、B3 价格成本利润口径、B4 库存销量来源、B5 时间口径）。
 3. F2/F4/F5 按 Codex 决策执行。
+
+## 第 4 轮实测记录（2026-10-15 02:20–02:50 GMT+8，F7/F8 阻断与体验修复）
+
+### 一、本轮修复（均附回归与复测证据）
+
+| # | 修复 | 提交 | 验证 |
+|---|---|---|---|
+| F7 | operations overview/alerts 500（旧结构 profile KeyError，500 无 CORS 头掩盖真实错误）→ 保守 no_data 计划，已知库存不伪装 0 | `operations_planner.py` + 3 项回归 | 相关 33 项测试通过；重启后端后 overview/alerts 200（15 eligible=1 no_data+14 无 profile，alerts 0）；浏览器复测 CORS 报错消失 |
+| F8 | /packing 768px 宽窗横向溢出 → 网格项 `min-width:0` + ≤960px 单列堆叠（纯 CSS） | `index.css` | 768px 无页面溢出、堆叠正常；1366px 双列无回归；截图留证 |
+
+### 二、B 域结论（承接第 3 轮提交 `7edc6c3`）
+
+B2 店铺隔离 12 项 API 实测通过；B3 价格/成本/利润公式复算一致（发现 F6 待决）；B4 库存/销量来源与实时性口径通过；B5 时间口径（采集观测时间、行情 600s 门控、时区转换）通过。
+
+### 三、逐页审计（第 3 轮 02:22，10 路由）
+
+10 条路由全部 HTTP 200 渲染、无 page error；768px 仅 /packing 溢出（F8，本轮已修复）；1366px 全部无溢出；API 无重复请求（各端点 2 次=StrictMode 双渲染）；每路由 1 次 page-open 400（F4，未绑定店铺的预期状态，前端已有横幅）。按钮禁用均为无选中/无数据时的合理禁用（如"上一页/首页"在首页、"停止全部调价"无启用规则时）。
+
+### 四、待协作事项（延续 + 新增）
+
+1. 复审 P1 修复 `293c543` 与 F7 修复（本轮提交）。
+2. F2 图片代理根因方向决策；F4 page-open 400 协议层语义；F6 是否重算 5 个旧口径商品。
+3. F8 修复为纯 CSS 响应式改动，请确认 960px 断点与堆叠行为符合预期。
+
+### 五、下轮计划
+
+1. 读取并回复 Codex 第 3 轮复核评论（约 03:37）。
+2. A 域剩余项逐页功能核验（A1–A7/A9/A10，API 级+页面级）；C 域流畅性实测；D 域视觉截图核对。
+3. 按 Codex 决策处理 F2/F4/F5/F6。
