@@ -4,8 +4,37 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
+def _known_stock(profile):
+    """Stock snapshot when it is a real number; legacy rows may omit it."""
+    value = profile.get('stock')
+    return value if not isinstance(value, bool) and isinstance(value, (int, float)) else None
+
+
+def _observation_ready(profile):
+    """A profile can only forecast when it has an observation window and stock."""
+    for key in ('observed_from', 'stock_date'):
+        try:
+            date.fromisoformat(profile[key])
+        except (KeyError, TypeError, ValueError):
+            return False
+    return _known_stock(profile) is not None
+
+
 def plan(profile, purchases, today=None, economics=None):
     today = today or datetime.now(ZoneInfo('Asia/Shanghai')).date()
+    if not _observation_ready(profile):
+        # Legacy or hand-edited rows predate the observation-window schema.
+        # Without a window and stock snapshot there is no honest velocity:
+        # report "no data" instead of failing the whole page for every SKU.
+        return dict(air_quantity=0, sea_quantity=0, velocity=0, stock=_known_stock(profile),
+                    cover_days=None, pending={'air': 0, 'sea': 0}, overdue=[], unmapped=[], stale=True,
+                    pre_air_shortage=0, next_review_days=profile.get('cycle_days', 30),
+                    timeline=[], schedule=[], sea_share=0, air_gap_need=0, pre_sea_shortage=0,
+                    shortage_windows=[], allow_emergency_air=profile.get('allow_emergency_air', True),
+                    emergency_air_days=profile.get('emergency_air_days', 21),
+                    reason='尚未同步库存与销量观测期，暂不生成补货计划', level='no_data',
+                    daily_loss_zar=0, units_window=0, units_recent=0, observed_days=0,
+                    days_since_last_sale=None, trend='flat', provisional=True)
     observed = date.fromisoformat(profile['observed_from'])
     snapshot = date.fromisoformat(profile['stock_date'])
     elapsed = (today - snapshot).days

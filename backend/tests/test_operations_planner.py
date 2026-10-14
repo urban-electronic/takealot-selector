@@ -203,3 +203,25 @@ def test_stale_split_exceeding_purchase_quantity_does_not_inflate_stock():
                            {'procurement_id':'p','mode':'sea','quantity':60,'eta':'2026-11-27'}])
     r=plan(p,[{'id':'p','status':'in_transit','quantity':100}],TODAY)
     assert r['pending']=={'air':0,'sea':0} and r['unmapped']==['p']
+
+def test_legacy_profile_without_observation_window_reports_no_data_not_crash():
+    # Migrated/hand-edited rows may lack observed_from/stock_date/stock; one such
+    # row must not 500 the overview/alerts endpoints for every other SKU.
+    legacy={k:v for k,v in profile().items() if k not in ('observed_from','stock_date','stock')}
+    r=plan(legacy,[],TODAY,PROFITABLE)
+    assert r['level']=='no_data' and r['air_quantity']==r['sea_quantity']==0
+    assert r['velocity']==0 and r['cover_days'] is None and r['stale'] and r['provisional']
+    assert r['reason'] and r['schedule']==[] and r['shortage_windows']==[]
+
+def test_invalid_observation_dates_report_no_data():
+    bad=profile(observed_from='not-a-date')
+    r=plan(bad,[],TODAY,PROFITABLE)
+    assert r['level']=='no_data' and r['air_quantity']==0
+    missing_stock=profile(stock=None)
+    assert plan(missing_stock,[],TODAY,PROFITABLE)['level']=='no_data'
+
+def test_known_stock_without_observation_window_is_not_shown_as_zero():
+    legacy={k:v for k,v in profile().items() if k!='observed_from'}
+    legacy['stock']=7
+    r=plan(legacy,[],TODAY,PROFITABLE)
+    assert r['level']=='no_data' and r['stock']==7  # unknown forecast, known stock stays visible
