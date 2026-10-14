@@ -11,12 +11,17 @@ import pytest
 from fastapi import HTTPException
 
 
-def run(monkeypatch, error=False, pause=False, enabled=True, once=False):
+def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial_source=None):
     engine=create_engine('sqlite://');Base.metadata.create_all(engine);factory=sessionmaker(bind=engine)
     key=monitor.PREFIX+DEFAULT_STORE_ID+':p:1'
     with factory() as db:
         db.add(Product(id='p',store_id=DEFAULT_STORE_ID,takealot_url='https://www.takealot.com/p/PLID1'))
         db.add(SystemSettings(key=key,value=json.dumps(dict(product_id='p',offer_id='1',sku='a',enabled=enabled,request_once=once,interval_minutes=30,revision=1,buybox_price=95,last_success_at='2026-10-12T00:00:00+00:00'))));db.commit()
+        if initial_source:
+            row=db.query(SystemSettings).filter_by(key=key).first()
+            value=json.loads(row.value)
+            value.update(source=initial_source,quote_time_source='collector_timestamp')
+            row.value=json.dumps(value);db.commit()
     import database
     monkeypatch.setattr(database,'SessionLocal',factory)
     monkeypatch.setattr(monitor,'configured_key',lambda db:'test')
@@ -43,7 +48,21 @@ def test_monitor_reads_quotes_without_price_patch(monkeypatch):
     client,result=run(monkeypatch)
     assert result['status']=='success' and result['buybox_price']==100 and result['competitor_price']==90
     assert result['holding_buybox'] is None and result['price_matches_buybox'] is True
+    assert result['source']=='cloud_browser' and result['quote_time_source']=='cloud_completion'
     assert client.get.call_count==1 and not client.patch.called and not client.post.called
+
+def test_cloud_success_records_origin_and_replaces_prior_local_origin(monkeypatch):
+    client,result=run(monkeypatch,initial_source='local_collector')
+    assert result['source']=='cloud_browser'
+    assert result['last_attempt_source']=='cloud_browser'
+    assert result['quote_time_source']=='cloud_completion'
+    assert not client.patch.called and not client.post.called
+
+def test_cloud_failure_keeps_old_quote_origin_separate_from_attempt(monkeypatch):
+    _,result=run(monkeypatch,error=True,initial_source='local_collector')
+    assert result['source']=='local_collector' and result['quote_time_source']=='collector_timestamp'
+    assert result['last_attempt_source']=='cloud_browser'
+    assert result['last_success_at']=='2026-10-12T00:00:00+00:00'
 
 def test_failed_collection_preserves_old_quote_and_backs_off(monkeypatch):
     client,result=run(monkeypatch,error=True)

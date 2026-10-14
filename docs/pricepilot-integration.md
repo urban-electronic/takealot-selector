@@ -234,3 +234,12 @@ Codex 首轮复核（CHANGES_REQUESTED）指出合并阻塞：`page_variant_cont
 修复：`main_variant_elements` 返回 `(elements, complete)`，作用域不可判定时 complete=False；`page_variant_controls` 遇不可判定或探针执行失败返回 None（unknown）。门控仅对"确定 0"清空后缀；None 时保留后缀、重试一次后继续切换校验，无法确认则上报 variantSwitchFailed，绝不按无变体放行。诊断字段 `variantControls` 可为 None，各消费方均已按 int 类型守卫。
 
 新增回归 3 项（Codex 失败用例、元素作用域不可判定用例、离线真实 DOM 用例——用 page.set_content 合成"主商品区控件+推荐卡 teaser"页，执行真实 _VARIANT_PROBE_JS/_CORE_BLOCK_JS 与作用域过滤，浏览器不可用时跳过）；全量后端 166 项通过。修复后第三次本机实测 SKU 9902348621330：variantControls=0、无 variantSwitchFailed、R1999/Urban Electronics/现货、URL 未改写，无回归。native collector 打包已随本轮重新生成并校验字节一致（SHA-256）。
+
+## 2026-10-15 Codex 运行复核与报价来源归因
+
+基于 main 37cf155（PR90）接续；PR89运行保护、PR90图片组件已上线，协作仍使用PR87，禁止合并其旧后端覆盖main。后端全量221通过、1项真实Chromium DOM用例因执行环境未安装浏览器跳过；上轮图片组件26项断言复测通过，不代表实际CDN或采集端到端通过。
+
+新复现：云端成功会继承旧本机来源，扩展回传误标本机采集。修复成功报价来源与最后尝试来源分离，失败保留旧有效报价的来源及时间，不回填历史未知来源、不刷新旧快照；细节见[报价来源验收](review/2026-10-15-quote-provenance.md)。来源标记只代表协议/执行路径，不证明硬件或卖家身份。
+
+仍未收到WorkBuddy正式Windows GUI同轮回传网页的证据，不能宣布稳定采集或GUI端到端通过；其需使用现有已保存配置，不读取或发送密钥/profile，在正常一轮日志中提供SKU、脱敏诊断、successful数及生产同轮时间/来源。网站验证失败仍须与变体错误区分，不反复访问已确认拦截页面；不得开启真实调价。未新增生产交易或测试行情。
+
