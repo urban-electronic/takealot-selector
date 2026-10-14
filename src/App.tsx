@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { DataSourceProvider } from './DataSourceContext';
-import { getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
+import { collectOnAppOpen, getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
 import type { Store } from './types';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -51,6 +51,8 @@ export default function App() {
   const [activeStore, setActiveStore] = useState(getActiveStoreId());
   const [managementOpen, setManagementOpen] = useState(false);
   const managementMenuRef = useRef<HTMLDivElement>(null);
+  const collectionRequested = useRef(new Set<string>());
+  const [openCollection,setOpenCollection] = useState('');
 
   useEffect(() => {
     getStores().then(rows => {
@@ -59,6 +61,13 @@ export default function App() {
       if (activeRows.length && !activeRows.some(row => row.id === activeStore)) {
         setActiveStore(activeRows[0].id);
         setActiveStoreId(activeRows[0].id);
+      } else if (activeStore==='default-store' && activeStore===getActiveStoreId() && !collectionRequested.current.has(activeStore)) {
+        collectionRequested.current.add(activeStore);
+        setOpenCollection('正在提交本次 Buybox 采集…');
+        void collectOnAppOpen().then(result=>setOpenCollection(result.queued
+          ? `已提交 ${result.queued} 个SKU采集一轮；报价结果请查看Buybox与调价。`
+          : '本次没有新增采集任务；已暂停、已排队及冷却中的SKU不会重复提交。'))
+          .catch(e=>setOpenCollection(`本次采集未提交：${(e as Error).message}`));
       }
     }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', allow_negative_inventory_shipments: true, last_synced_at: null }]));
   }, [activeStore]);
@@ -80,6 +89,7 @@ export default function App() {
   }, [managementOpen]);
 
   const switchStore = (storeId: string) => {
+    setOpenCollection('');
     setActiveStoreId(storeId);
     setActiveStore(storeId);
   };
@@ -140,6 +150,7 @@ export default function App() {
       </header>
 
       <div className="container" key={activeStore}>
+        {activeStore==='default-store'&&openCollection&&<div className="operations-note" role="status">{openCollection} <NavLink to="/auto-pricing">查看采集</NavLink></div>}
         <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>
           <Route path="/" element={<Dashboard />} />

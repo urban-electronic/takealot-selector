@@ -11,12 +11,12 @@ import pytest
 from fastapi import HTTPException
 
 
-def run(monkeypatch, error=False, pause=False, enabled=True):
+def run(monkeypatch, error=False, pause=False, enabled=True, once=False):
     engine=create_engine('sqlite://');Base.metadata.create_all(engine);factory=sessionmaker(bind=engine)
     key=monitor.PREFIX+DEFAULT_STORE_ID+':p:1'
     with factory() as db:
         db.add(Product(id='p',store_id=DEFAULT_STORE_ID,takealot_url='https://www.takealot.com/p/PLID1'))
-        db.add(SystemSettings(key=key,value=json.dumps(dict(product_id='p',offer_id='1',sku='a',enabled=enabled,interval_minutes=30,revision=1,buybox_price=95,last_success_at='2026-10-12T00:00:00+00:00'))));db.commit()
+        db.add(SystemSettings(key=key,value=json.dumps(dict(product_id='p',offer_id='1',sku='a',enabled=enabled,request_once=once,interval_minutes=30,revision=1,buybox_price=95,last_success_at='2026-10-12T00:00:00+00:00'))));db.commit()
     import database
     monkeypatch.setattr(database,'SessionLocal',factory)
     monkeypatch.setattr(monitor,'configured_key',lambda db:'test')
@@ -31,6 +31,11 @@ def run(monkeypatch, error=False, pause=False, enabled=True):
         return {'error':'unavailable'} if error else {'buyboxPrice':100,'holdingBuybox':True,'offers':[{'price':90,'status':'in_stock'}]}
     monkeypatch.setattr(monitor,'collect',collect)
     monitor.process(key)
+    if once:
+        with factory() as db:
+            row=db.query(SystemSettings).filter_by(key=key).first()
+            value=json.loads(row.value);value['next_due']=0;row.value=json.dumps(value);db.commit()
+        monitor.process(key)
     with factory()as db:value=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
     return client,value
 
@@ -54,6 +59,12 @@ def test_concurrent_stop_is_not_overwritten(monkeypatch):
 def test_disabled_monitor_has_no_network_calls(monkeypatch):
     client,result=run(monkeypatch,enabled=False)
     assert not client.get.called and result.get('status') is None
+
+def test_one_shot_collects_once_and_does_not_repeat_after_due_time(monkeypatch):
+    client,result=run(monkeypatch,enabled=False,once=True)
+    assert result['status']=='success' and result['buybox_price']==100
+    assert not result['enabled'] and not result['request_once']
+    assert client.get.call_count==1 and not client.patch.called
 
 def test_monitor_can_start_without_profit_floor_and_keeps_pricing_off(monkeypatch):
     monkeypatch.setattr(routes,'configured_key',lambda db:'test')
