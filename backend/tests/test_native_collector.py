@@ -78,3 +78,24 @@ def test_failed_preflight_never_launches_browser(monkeypatch,tmp_path):
     monkeypatch.setattr(playwright.async_api,'async_playwright',lambda:(_ for _ in ()).throw(AssertionError('must not launch browser')))
     with pytest.raises(RuntimeError): asyncio.run(runner.run(SimpleNamespace(profile=str(tmp_path/'profile'),login=False)))
     assert not (tmp_path/'profile').exists()
+
+
+def test_desktop_pause_cancels_capture_and_releases_lease(monkeypatch):
+    calls=[]
+    class Api:
+        def call(self,path,body=None):
+            calls.append((path,body))
+            if path.endswith('/products'):return {'items':[{'productId':'lease','sku':'SKU1'}]}
+            return {'released':1}
+    async def scenario():
+        started=asyncio.Event()
+        async def blocked(*args):
+            started.set();await asyncio.Future()
+        monkeypatch.setattr(runner,'scrape',blocked)
+        task=asyncio.create_task(runner.round_once(None,Api(),None))
+        await asyncio.wait_for(started.wait(),1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task
+    asyncio.run(scenario())
+    assert calls[-1]==('/api/collector/release',{'product_ids':['lease']})
+    assert not any(path.endswith('/offers') for path,body in calls)

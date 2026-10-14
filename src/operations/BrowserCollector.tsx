@@ -18,7 +18,7 @@ export default function BrowserCollector() {
   return <section className="card browser-collector-panel">
     <div className="dashboard-panel-title"><div><h2>打开网页自动采集</h2><p>{state.message}</p></div><button className="btn btn-outline btn-sm" onClick={toggle}>{enabled?'暂停网页采集':'开启网页采集'}</button></div>
     <small>只读取行情，不会开启调价。每5分钟为目标周期，排队和页面验证会延后；关闭系统网页后，本机采集停止。</small>
-    <details><summary>使用原 PricePilot 本机采集方式</summary><p>已有原采集器浏览器档案时，可直接复用原解析核心与会话，由本机领取网页采集任务并回传行情。</p><p><a href={`${import.meta.env.BASE_URL}downloads/takealot-native-collector.zip?v=4`} download>下载Windows独立启动包</a>，解压后双击 start.cmd，首次自动准备依赖并选择原 browser_profile；电脑需要Python 3.10以上。然后在本页点击立即采集或开启常态采集。无需WorkBuddy，运行原生采集器时可关闭系统网页。</p></details>
+    <details><summary>使用原 PricePilot 本机采集方式</summary><p>已有原采集器浏览器档案时，可直接复用原解析核心与会话，由本机领取网页采集任务并回传行情。</p><p><a href={`${import.meta.env.BASE_URL}downloads/takealot-native-collector.zip?v=5`} download>下载Windows采集操作程序</a>，解压后双击 start.cmd，首次自动准备依赖；电脑需要Python 3.10以上。程序内直接登录、开始或暂停采集，可在本机加密记住连接配置。然后在本页点击立即采集或开启常态采集。无需WorkBuddy，运行原生采集器时可关闭系统网页。</p></details>
     {state.status==='not_installed'||state.status==='reload_extension'?<details><summary>首次使用：安装一次 Chrome / Edge 采集助手</summary><ol><li><a href={`${import.meta.env.BASE_URL}downloads/takealot-browser-collector.zip?v=1.0.2`} download>下载采集助手 v1.0.2</a>并解压。</li><li>打开浏览器“扩展管理”，开启开发者模式，选择“加载已解压的扩展”，选中解压后的文件夹。</li><li>刷新本页。若 Takealot 页面要求验证，按页面提示完成，并设置南非配送地址；之后复用当前浏览器会话。</li></ol></details>:null}
   </section>;
 }

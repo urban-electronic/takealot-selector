@@ -143,16 +143,33 @@ async def run(args):
                 if args.login:
                     page=await context.new_page()
                     await page.goto('https://www.takealot.com',wait_until='domcontentloaded')
-                    await asyncio.to_thread(input,'在浏览器完成登录和南非配送地址设置后，按回车保存并关闭：')
+                    if getattr(args,'stop_file',None):
+                        print('请在浏览器完成登录和南非配送地址，再点击“完成登录并保存”。',flush=True)
+                        while not Path(args.stop_file).exists(): await asyncio.sleep(.5)
+                    else: await asyncio.to_thread(input,'在浏览器完成登录和南非配送地址设置后，按回车保存并关闭：')
                     return
                 parser=parser_module()
                 while True:
-                    try: await round_once(context,api,parser)
+                    if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
+                    try:
+                        cycle=asyncio.create_task(round_once(context,api,parser))
+                        try:
+                            while not cycle.done():
+                                if getattr(args,'stop_file',None) and Path(args.stop_file).exists():
+                                    cycle.cancel();break
+                                await asyncio.sleep(.5)
+                            await cycle
+                        finally:
+                            if not cycle.done(): cycle.cancel()
+                            await asyncio.gather(cycle,return_exceptions=True)
+                    except asyncio.CancelledError: break
                     except Exception as exc:
                         message=str(exc) if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
                         print(f'本轮失败：{message}；保留原价，稍后重试。',flush=True)
                     if args.once: break
-                    await asyncio.sleep(30)
+                    for _ in range(60):
+                        if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
+                        await asyncio.sleep(.5)
             finally: await context.close()
     finally: lock.close()
 
@@ -161,6 +178,7 @@ def main():
     cli.add_argument('--profile',default=str(ROOT/'browser_profile'),help='原PricePilot browser_profile绝对路径')
     cli.add_argument('--login',action='store_true',help='仅打开持久浏览器进行人工登录与配送设置')
     cli.add_argument('--once',action='store_true')
+    cli.add_argument('--stop-file',help=argparse.SUPPRESS)
     args=cli.parse_args()
     try: asyncio.run(run(args))
     except KeyboardInterrupt: pass
