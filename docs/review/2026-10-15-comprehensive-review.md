@@ -321,3 +321,73 @@ CDN 图片当前**未恢复**：`media.takealot.com` 对现存 328 个 URL 一�
 1. 是否重算这 5 行；#269 的两个手动覆盖是保留、按新口径重算后清除、还是逐字段确认；
 2. 重算前是否先在 UI 明示"体积重口径已于 2026-08-04 由 5000 调整为 6000"；
 3. 元数据更新不触发重算是否符合预期（保持旧值），还是应一并重算。
+
+---
+
+## 第 8 轮实测记录（2026-10-15 03:45–04:25 GMT+8，C 域流畅性审计 + F11 并发同步修复）
+
+### 一、C 域流畅性审计（隔离后端 127.0.0.1:8000 + vite 5173，1366×900）
+
+**通过项**（9 路由 + 交互场景，`c_domain.json`）：
+
+| 项目 | 结果 |
+|---|---|
+| 9 路由 HTTP 状态 | 全部 200 |
+| DOM 就绪 / 页面 settle | 14–49ms / 540–1885ms |
+| 详情页导航与返回 | OK |
+| 筛选状态保持（搜索 "cable" 5 行，离开再返回） | 搜索词与结果均保持 |
+| 断网降级与恢复 | 离线 107 字符骨架 → 恢复后 481 字符，正常 |
+
+**发现 1 → F11（本轮修复，见下）**：`/packing`  console 报 CORS 错。定性：非 CORS 配置问题，而是 `POST /api/packing/sync-from-products` 的 500 被 CORS 头缺失掩盖。
+
+**发现 2（记录，低优先级，不改）**：`/api/stores` 每页重复请求。定位：`main.tsx` 启用 `React.StrictMode`，开发模式 effect 双跑 → App 的 stores effect 每页执行 2 次；`/stores` 页另加页面自身 1 次（共 4 次）。生产构建无 StrictMode 双跑，每页 1 次；属 dev-only 现象 + 每页一次额外请求的轻微浪费。不改原因：涉及 App 与页面级数据流，为避免回归风险留待 Codex 定夺。
+
+### 二、F11：sync-from-products 并发 UNIQUE 500（根因、修复、证据）
+
+**根因链**（证据：`backend_boot3.log` 414–418 行及堆栈）：
+
+1. `src/pages/Packing.tsx:198` 挂载即调 `syncPackingProductsFromCatalog()`；
+2. StrictMode 双跑 / 用户双击 / 双标签页 / 网络重试 → **两个并发 POST**；
+3. 两个事务各自查询 `existing`（都看不到对方未提交的行），都通过内存 `seen` 检查，都 `db.add` 同一 SKU；
+4. 先提交者赢，后提交者 `db.commit()`（`packing_routes.py:280`）抛 `sqlite3.IntegrityError: UNIQUE constraint failed: packing_products.sku` → **500**；
+5. 500 响应不带 CORS 头（Starlette `ServerErrorMiddleware` 位于 CORS 中间件外层）→ 浏览器只报 "No 'Access-Control-Allow-Origin' header"，真实原因被完全掩盖（F7 同型）。
+
+**候选修复**（2 处，待 Codex 审核后合并）：
+
+| 文件 | 修改 |
+|---|---|
+| `backend/api/packing_routes.py` | 同店 `threading.Lock` 串行同步（锁注册表现在内存，per-store）；`IntegrityError` 安全网：回滚后按"已同步"返回，多 worker 跨进程并发也不再 500 |
+| `backend/main.py` | 新增 `@app.exception_handler(Exception)`：未处理异常的 500 JSON 带 `_cors_headers`，浏览器可见真实错误；Starlette 发送响应后仍 re-raise，服务端 traceback 日志不受影响 |
+
+**测试与实测**：
+
+- 新增 `backend/tests/test_packing_sync_idempotency.py` 4 项：顺序双调幂等、4 线程并发全 200、UNIQUE 冲突安全网、500 带 CORS 头；
+- 反向对照：stash 修复后旧代码 3 项失败（并发 2 个 `UNIQUE constraint failed: packing_products.sku`、500 无 CORS 头）——证明测试有效；
+- 全量后端 **210 passed**（206 存量 + 4 新增，固定顺序）；
+- 隔离后端重启加载新代码实测：**4 并发 POST 全 200**（修复前 1×200 + 1×500）；顺序重发 200 且 `imported=0`；
+- 前端复测 `/packing`：sync 双发均 200，**CORS 报错消失**；console 残留一条 400 资源日志来自 `POST /api/buybox/page-open`——修复前日志（boot3 413 行）同样存在，属隔离环境无报价浏览器会话的既有行为，与本改动无关。
+
+### 三、上轮问题复测（已解决 / 仍存在 / 未验证，按 Codex 03:08 要求分态记录）
+
+**已解决**：
+
+- F2/F3 图片降载与代理边界（第 6 轮落地）：`/packing` 等页 58 处 CDN 403 经负缓存 502 → onError 占位正常渲染；本轮 C 域 9 路由复查无新增图片类错误；
+- F11 并发 sync 500（本轮发现即修复，证据如上）。
+
+**仍存在**：
+
+- `media.takealot.com` CDN 403 未恢复（`__cf_bm` cookie + `s-pdpxl.file` 签名过期）：图片持续显示占位。非代码缺陷，负缓存+占位链路工作正常；
+- `/api/stores` 每页重复请求（见发现 2，dev-only + 轻微浪费）。
+
+**未验证**：
+
+- 生产环境单 SKU（9902348621330）正式采集验收：待用户本人在正式包 GUI 输入生产 collector key（红线：不经手凭据）；
+- 生产 e97ed6c 部署已于第 6 轮确认 success（2026-10-14T18:49:32Z，check-runs build/deploy 均 completed success），未重复触发构建。
+
+### 四、待协作事项（延续）
+
+1. F11 两处候选修复待 Codex 审核（代码在 `review/2026-10-15-round6-f2f3-image-offload`，将 API 落地到 `review/2026-10-15-round5-continuation`）；
+2. F6 五行重算决策（第 7 轮清单）；
+3. 生产单 SKU 验收时间窗/频率与网页只读凭证提供方式；
+4. F9/F10 观察项定夺；
+5. `/api/stores` 重复请求是否收敛（低优先级）。

@@ -25,6 +25,7 @@ import io
 import json
 import re
 import tempfile
+import threading
 import uuid
 import zipfile
 from pathlib import Path
@@ -34,6 +35,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -214,13 +216,54 @@ def list_products(db: Session = Depends(get_db), store_id: str = Depends(get_sto
     return result
 
 
+# ---- 1.5 POST /api/packing/sync-from-products ----
+
+# 同步在装箱单页挂载、用户重试或双标签页下可能被并发触发：两个事务都通过
+# 内存 seen 检查后重复 INSERT 同一 SKU，先提交者赢、后提交者触发
+# UNIQUE constraint failed: packing_products.sku 500（F11，2026-10-15 C 域审计
+# 实测复现）。同店同步串行执行，从根上消除该竞态。
+_sync_locks: dict = {}
+_sync_locks_guard = threading.Lock()
+
+
+def _sync_lock_for(store_id: str) -> threading.Lock:
+    with _sync_locks_guard:
+        lock = _sync_locks.get(store_id)
+        if lock is None:
+            lock = threading.Lock()
+            _sync_locks[store_id] = lock
+        return lock
+
+
 @router.post('/sync-from-products')
 def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    """轻量同步完整产品库到装箱单库。
+    """轻量同步完整产品库到装箱单库（幂等，可重复/并发调用）。
 
     只补充尚不存在的 SKU，不覆盖装箱单中的人工编辑；图片直接由列表接口
     回退到产品库图片，避免批量下载图片导致请求超时。
+
+    并发安全：同店同步串行执行；多 worker 部署下跨进程并发若仍触发
+    UNIQUE 冲突，回滚后按“已同步”返回，不再以 500 失败。
     """
+    with _sync_lock_for(store_id):
+        try:
+            return _sync_from_products(db, store_id)
+        except IntegrityError:
+            # 安全网：别处（另一进程/事务）已提交同一 SKU。回滚后按已同步返回，
+            # 重复调用、双击、双标签页均安全。
+            db.rollback()
+            return {
+                'ok': True,
+                'total_products': db.query(Product).filter(
+                    Product.store_id == store_id, Product.is_archived == False).count(),
+                'packing_products': db.query(PackingProduct).count(),
+                'imported': 0,
+                'skipped_no_sku': 0,
+                'duplicate_sku': 0,
+            }
+
+
+def _sync_from_products(db: Session, store_id: str):
     products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).order_by(Product.created_at.asc()).all()
     existing = {sku for (sku,) in db.query(PackingProduct.sku).all()}
     imported = skipped_no_sku = duplicate_sku = 0

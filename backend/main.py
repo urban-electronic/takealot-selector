@@ -92,6 +92,24 @@ async def api_key_check(request: Request, call_next):
             )
     return await call_next(request)
 
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """未处理异常的 500 响应也带 CORS 头（F7 同型修复的延伸）。
+
+    Starlette 的 ServerErrorMiddleware 位于 CORS 中间件外层，未包装的 500
+    默认不带 Access-Control-Allow-Origin，浏览器会把真实 500 误报为
+    “CORS 错误”，前端与排障都看不到真实原因（2026-10-15 C 域审计实测：
+    /api/packing/sync-from-products 的 UNIQUE 500 即被掩盖为 CORS 报错）。
+    Starlette 发送本响应后仍会 re-raise，服务端 traceback 日志不受影响。
+    """
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"服务器内部错误（{type(exc).__name__}）：{exc}"},
+        headers=_cors_headers(request),
+    )
+
+
 # 注册路由
 app.include_router(product_routes.router)
 app.include_router(scraper_routes.router)
