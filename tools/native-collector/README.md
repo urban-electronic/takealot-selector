@@ -1,5 +1,11 @@
 # 原生 PricePilot 网页接入采集器
 
+## Windows独立启动，不需要WorkBuddy
+
+电脑需安装Python 3.10以上。解压后双击 `start.cmd`：首次自动安装独立运行环境和Chromium，并弹窗选择原 `browser_profile`；没有旧档案时取消选择，双击 `login.cmd` 完成人工登录/配送设置，再双击 `start.cmd`。运行时隐藏输入网站服务访问密钥即可。关闭终端会结束采集，可再次双击恢复。
+
+依赖、浏览器档案和所选档案路径保存在当前用户的 `TakealotCollector` 本机目录；密钥不保存。不需要打开WorkBuddy，不依赖聊天会话。重新选择档案可在终端运行 `start.cmd --choose-profile`。网页仍用于SKU采集调度和结果展示。
+
 此包直接包含仓库 `backend/services/pricepilot_collector.py` 的解析核心，不另写简化解析器。保留原颜色/尺寸 URL 参数、精确变体点击与确认、双读/三读报价一致性、Buybox 卡和其他卖家读取。Windows/macOS 使用同一 Python 入口。仅回传行情，没有售价写入端点。
 
 1. 安装 Python 3.10 或以上，在解压目录执行：
