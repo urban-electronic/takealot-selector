@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
-import CloudBrowser from '../operations/CloudBrowser';
+import { lazy, Suspense, useEffect, useState } from 'react';
+const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor } from '../remoteApi';
 export default function AutoPricing() {
   const buyboxOnly = false;
   const [rows, setRows] = useState<any[]>([]); const [drafts, setDrafts] = useState<Record<string, any>>({});
   const [error, setError] = useState(''); const [busy, setBusy] = useState(''); const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [maintenance, setMaintenance] = useState(false);
   const [interval, setIntervalMinutes] = useState(5);
   const [loaded, setLoaded] = useState(false);
   const [configured, setConfigured] = useState(false);
@@ -70,8 +71,7 @@ export default function AutoPricing() {
   };
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>共享商品与行情 · 采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" onClick={()=>refresh().catch(e=>setError(e.message))}>刷新列表</button></div>
-    <CloudBrowser rows={rows} onCollected={()=>{void refresh().catch(e=>setError(e.message));}} />
-    <div className="operations-note">本店售价/库存：卖家API · Buybox/竞品：{collectorSource==='browser_extension'?'当前浏览器采集已连接':collectorSource==='local_collector'?'原本机采集器已连接':'云端浏览器'}</div>
+    <div className="operations-note">本店售价/库存：卖家API · Buybox/竞品：{collectorSource==='browser_extension'?'当前浏览器采集已连接':collectorSource==='local_collector'?'原本机采集器已连接':'后台采集'}</div>
     <div className="pricing-summary">{true&&<div className="card"><small>自动采集</small><strong className="text-info">{loaded ? rows.filter(r=>r.monitor?.enabled).length : '—'}<span> / {rows.length} SKU</span></strong></div>}{!buyboxOnly&&<div className="card"><small>实际调价运行中</small><strong className="text-success">{loaded ? rows.filter(r=>r.rule.enabled).length : '—'}<span> SKU</span></strong></div>}{true&&<div className="card"><small>采集失败</small><strong className="text-danger">{loaded ? rows.filter(r=>r.monitor?.status==='error').length : '—'}<span> SKU</span></strong></div>}{!buyboxOnly&&<div className="pricing-stop"><button className="btn btn-danger" disabled={!!busy||!rows.some(r=>r.rule.enabled)} onClick={emergencyStop}>停止全部调价</button></div>}</div>
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
     {loaded&&!configured&&<div className="alert">卖家接口尚未配置，采集及调价暂不可开启。</div>}
@@ -84,7 +84,7 @@ export default function AutoPricing() {
         return <tr key={key(r)}><td><input type="checkbox" aria-label={`选择SKU ${r.sku}`} checked={selected.includes(key(r))} onChange={e=>setSelected(e.target.checked?[...selected,key(r)]:selected.filter(k=>k!==key(r)))} /></td>
           <td className="operations-product"><a className="product-link" title={r.name} href={r.url} target="_blank" rel="noreferrer">{r.name}</a><small>{r.sku} · {r.group}</small><b className="own-price">R {r.price??'—'}</b></td>
           <td><strong className="quote-price">R {m.buybox_price??'—'}</strong><span className={`status-pill tone-${!hasQuote?'neutral':m.holding_buybox===true?'success':m.holding_buybox===false||m.price_matches_buybox?'warning':'neutral'}`}>{!hasQuote?'未采集':m.holding_buybox===true?'持有':m.holding_buybox===false?'未持有':m.price_matches_buybox?'同价 · 待确认':'待核对卖家'}</span><small>竞品 R {m.competitor_price??'—'}</small></td>
-          {true&&<td className="collection-status-cell"><span className={`status-pill tone-${tone}`}>{label}</span><small>{relative(r.monitor?.last_success_at)}</small>{r.monitor?.status==='error'&&<small className="text-danger" title={r.monitor.error}>{r.monitor.last_success_at?'旧报价 · 待重试':'本轮未获取报价'}</small>}<div className="row-buttons"><button className="btn btn-outline btn-sm" disabled={!!busy||!configured} onClick={()=>monitor(r,'once')}>立即采集</button><button className="btn btn-outline btn-sm" disabled={!!busy||!configured} onClick={()=>monitor(r,r.monitor?.enabled?'stop':'start')}>{r.monitor?.enabled?'停采':'自动'}</button></div>{r.monitor?.error&&<small className="text-danger">{r.monitor.error}</small>}<small>下次 {r.monitor?.enabled&&r.monitor?.next_due?relative(new Date(r.monitor.next_due*1000).toISOString()):'—'}</small><small>{r.monitor?.interval_minutes||5}分钟 · {r.monitor?.segment||'未分段'}</small></td>}
+          {true&&<td className="collection-status-cell"><span className={`status-pill tone-${tone}`}>{label}</span><small>{relative(r.monitor?.last_success_at)}</small>{r.monitor?.status==='error'&&<small className="text-danger" title={r.monitor.error}>{r.monitor.last_success_at?'旧报价 · 待重试':'本轮未获取报价'}</small>}<div className="row-buttons"><button className="btn btn-outline btn-sm" disabled={!!busy||!configured} onClick={()=>monitor(r,'once')}>立即采集</button><button className="btn btn-outline btn-sm" disabled={!!busy||!configured} onClick={()=>monitor(r,r.monitor?.enabled?'stop':'start')}>{r.monitor?.enabled?'停采':'自动'}</button></div>{r.monitor?.error&&<details><summary className="text-danger">{r.monitor.error_code==='site_challenge'?'网站验证阻挡':'失败详情'}</summary><small>{r.monitor.error}</small><small>最近尝试 {relative(r.monitor.last_attempt_at)}</small></details>}<small>下次 {r.monitor?.enabled&&r.monitor?.next_due?relative(new Date(r.monitor.next_due*1000).toISOString()):'—'}</small><small>{r.monitor?.interval_minutes||5}分钟 · {r.monitor?.segment||'未分段'}</small></td>}
           {!buyboxOnly&&<><td><div className="price-range">{input(r,'min_price','最低')}{input(r,'max_price','最高')}</div><small>{(drafts[key(r)]?.use_system_min??r.rule.use_system_min??true)?'系统利润底价':'手动底价'} · 最高可留空</small><button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>act(r,'save')}>保存价格区间</button></td>
           <td><span className={`status-pill tone-${r.rule.write_pending?'warning':r.rule.enabled?'success':'neutral'}`}>{r.rule.write_pending?'待核验':r.rule.enabled?'调价运行中':'调价关闭'}</span><select aria-label={`${r.sku}调价策略`} value={drafts[key(r)]?.strategy??r.rule.strategy??'takealot_buybox'} onChange={e=>setDrafts({...drafts,[key(r)]:{...drafts[key(r)],strategy:e.target.value}})}><option value="takealot_buybox">Buybox / 智能试涨</option><option value="follow_lowest">跟随现货最低价</option></select></td></>}
           <td><span className={`stock-count ${r.stock===0?'text-danger':''}`}>{r.stock??'—'}</span>{r.stock===0&&<small>缺货</small>}</td>
@@ -94,6 +94,7 @@ export default function AutoPricing() {
       <div className="operations-pagination"><span>{visible.length} 个SKU · 每段10条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
       {loaded&&!rows.length&&<p className="operations-empty">暂无本店有库存的SKU，请先同步库存。</p>}
     </div>
+    <details className="operations-explanation" onToggle={e=>setMaintenance(e.currentTarget.open)}><summary>采集维护（高级）</summary><p>日常采集由服务器后台执行。仅排查网站验证或配送设置时打开；关闭此区域会释放操作会话。</p>{maintenance&&<Suspense fallback={<p>正在加载维护工具…</p>}><CloudBrowser rows={rows} onCollected={()=>{void refresh().catch(e=>setError(e.message));}} /></Suspense>}</details>
     {!buyboxOnly&&<details className="operations-explanation"><summary>查看 PricePilot 调价与试涨规则</summary><p>最低价默认使用系统20%利润底价。与Buybox同价但卖家身份未核实则保持现价；明确核实持有后才评估试涨。未持有时只降不升。确认竞品非现货时约3%试涨，12小时观察一次，累计不超过启用参考价20%；48小时无新成交时回退。采集失败保持现价，改价结果未确认时自动暂停。</p></details>}
   </div>;
 }
