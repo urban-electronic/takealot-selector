@@ -129,11 +129,8 @@ def catalog(db, store):
             skus=re.split(r'[\s,，;；]+',(p.sku or '').strip())
             if len(skus)==1 and skus[0]:offers=[dict(id=profile['offer_ids'][0],sku=skus[0],title=p.product_name,price=profile.get('current_price'),stock=profile.get('stock'))]
         for offer in offers:
-            monitor=dict(monitors.get(PREFIX+store+':'+p.id+':'+str(offer['id']),{}))
-            if monitor.get('status')=='error' and monitor.get('diagnostics'):
-                from services.collection_diagnostics import classify
-                code,message=classify({'diagnostics':monitor['diagnostics'],'error':monitor['diagnostics'].get('raw_error')})
-                if code: monitor.update(error_code=code,error=message)
+            from services.collection_diagnostics import displayed_monitor
+            monitor=displayed_monitor(monitors.get(PREFIX+store+':'+p.id+':'+str(offer['id']),{}))
             rows.append(dict(product_id=p.id,offer_id=str(offer['id']),sku=offer['sku'],name=offer.get('title')or p.product_name,
                 url=p.takealot_url,price=offer.get('price'),stock=offer.get('stock'),group=profile.get('group')or'未分类',
                 monitor=monitor,rule={}))

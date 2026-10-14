@@ -466,3 +466,12 @@ export const collectBuyboxNow = (product:string, offer:string):Promise<any> => r
 export const bulkBuyboxMonitor = (payload:unknown):Promise<any> => request('/api/buybox/bulk',{method:'POST',body:JSON.stringify(payload)});
 
 export const getBuybox = ():Promise<any> => request('/api/buybox');
+
+// Browser frames and lease tokens never use query strings or localStorage.
+export const openCloudBrowser = (product_id: string) => request<{session:string;width:number;height:number}>('/api/buybox-browser/open', {method:'POST',body:JSON.stringify({product_id})});
+export const cloudBrowserAction = (session: string, data: Record<string, unknown>) => request('/api/buybox-browser/action', {method:'POST',headers:{'X-Browser-Session':session},body:JSON.stringify(data)});
+export const cloudBrowserFrame = async (session: string) => {
+  const response=await fetch(`${getBaseUrl()}/api/buybox-browser/frame`, {headers:{'X-API-Key':getApiKey(),'X-Store-ID':getActiveStoreId(),'X-Browser-Session':session},cache:'no-store',signal:AbortSignal.timeout(10000)});
+  if(!response.ok) { let detail='云端画面读取失败'; try { detail=(await response.json()).detail||detail; } catch {} throw Object.assign(new Error(detail),{status:response.status}); }
+  return response.blob();
+};
