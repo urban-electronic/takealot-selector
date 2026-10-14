@@ -5,11 +5,12 @@ import getpass
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import time
 from datetime import datetime, timezone
 from urllib import request, error
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent
 BASE = 'https://takealot-selector-production.up.railway.app'
@@ -87,17 +88,33 @@ async def scrape(context, item, parser):
     result={'productId':item['productId'],'sku':item['sku'],'offers':[]}
     if not valid_product_url(item.get('url')): return {**result,'error':'invalid_url'}
     page=await context.new_page()
+    responses=[]
+    if hasattr(page,'on'):
+        def on_response(response):
+            if response.request.resource_type=='document': responses.append(response.status)
+        page.on('response',on_response)
+    quote=result
     try:
         quote=await asyncio.wait_for(parser.scrape_product(page,item),timeout=180)
         quote['collectedAt']=datetime.now(timezone.utc).isoformat()
         # Native PricePilot inferred ownership by matching prices. Keep identity unverified.
         quote['holdingBuybox']=False
         quote.pop('holdingBuyboxVerified',None)
-        for offer in quote.get('offers',[]): offer['isMine']=False
-        return quote
-    except asyncio.TimeoutError: return {**result,'error':'navigation_timeout'}
-    except Exception: return {**result,'error':'collector_error'}
-    finally: await page.close()
+        # Keep original "possibly ours" exclusions; they are not ownership proof.
+    except asyncio.TimeoutError: quote={**result,'error':'navigation_timeout'}
+    except Exception: quote={**result,'error':'collector_error'}
+    finally:
+        def safe_url(url):
+            p=urlsplit(url or '')
+            return urlunsplit((p.scheme,p.netloc,p.path,'',''))
+        diagnostics={'http_status':responses[-1] if responses else None,'requested_url':safe_url(item.get('url'))}
+        try:
+            diagnostics.update(final_url=safe_url(page.url),page_title=(await page.title())[:160],
+                buybox_cards=await page.locator('[data-ref="buybox-offer"]').count())
+        except Exception: pass
+        quote['diagnostics']=diagnostics
+        await page.close()
+    return quote
 
 async def round_once(context, api, parser):
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
@@ -110,8 +127,13 @@ async def round_once(context, api, parser):
             quote=await scrape(context,item,parser)
             response=await asyncio.to_thread(api.call,'/api/collector/offers',{'items':[quote]})
             if response.get('processed') or response.get('skipped'): leased.discard(item['productId'])
-            accepted=response.get('processed') and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
-            print(f"SKU {item['sku']}: {('Buybox R '+str(quote['buyboxPrice'])+' 已回传') if accepted else '本轮未取得有效行情'}",flush=True)
+            accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
+            d=quote.get('diagnostics') or {}
+            error=quote.get('error')
+            reason=error if error in ('site_challenge','blocked_or_load_failed','navigation_timeout','collector_error','unstable_price','invalid_url') or isinstance(error,str) and re.fullmatch(r'http_\d{3}',error) else 'price_not_found'
+            if response.get('skipped'): reason='任务已暂停或租约已失效'
+            result=('Buybox R '+str(quote['buyboxPrice'])+' 已回传') if accepted else f"未取得报价：{reason} · HTTP {d.get('http_status') or '—'} · 报价卡 {d.get('buybox_cards','—')}"
+            print(f"SKU {item['sku']}: {result}",flush=True)
     tasks=[asyncio.create_task(worker(item)) for item in items]
     try:
         if tasks: await asyncio.wait_for(asyncio.gather(*tasks),timeout=600)
