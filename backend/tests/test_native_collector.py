@@ -2,6 +2,8 @@ import asyncio
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from io import BytesIO
+from urllib.error import HTTPError
 import pytest
 
 spec=importlib.util.spec_from_file_location('native_runner',Path(__file__).resolve().parents[2]/'tools/native-collector/collector.py')
@@ -53,3 +55,26 @@ def test_native_wrapper_preserves_quotes_but_never_verifies_identity():
     assert result['buyboxPrice']==100 and result['collectedAt']
     assert not result['holdingBuybox'] and 'holdingBuyboxVerified' not in result
     assert not result['offers'][0]['isMine'] and closed==[True]
+
+
+@pytest.mark.parametrize('body,expected',[
+    (b'{"detail":"store-missing"}','请求被拒绝'),
+    ('{"detail":"店铺不存在或已停用"}'.encode(),'店铺不存在或已停用'),
+    (b'<html>reflected-test-secret</html>','请求被拒绝')])
+def test_http400_reports_safe_details_only(body,expected):
+    api=runner.Api(runner.BASE,'test')
+    class Opener:
+        def open(self,*args,**kwargs): raise HTTPError('https://example.invalid',400,'Bad Request',{},BytesIO(body))
+    api.opener=Opener()
+    with pytest.raises(RuntimeError) as exc: api.call('/api/collector/status')
+    assert expected in str(exc.value) and 'reflected-test-secret' not in str(exc.value)
+
+
+def test_failed_preflight_never_launches_browser(monkeypatch,tmp_path):
+    import playwright.async_api
+    monkeypatch.setenv('PP_COLLECTOR_KEY','test')
+    def fail(*args,**kwargs): raise RuntimeError('服务接口返回 HTTP 400')
+    monkeypatch.setattr(runner.Api,'call',fail)
+    monkeypatch.setattr(playwright.async_api,'async_playwright',lambda:(_ for _ in ()).throw(AssertionError('must not launch browser')))
+    with pytest.raises(RuntimeError): asyncio.run(runner.run(SimpleNamespace(profile=str(tmp_path/'profile'),login=False)))
+    assert not (tmp_path/'profile').exists()

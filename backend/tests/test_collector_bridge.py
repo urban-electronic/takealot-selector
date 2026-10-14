@@ -85,6 +85,14 @@ def test_waiting_for_browser_verification_only_updates_heartbeat():
         assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX)).count()
 
 
+def test_preflight_has_no_task_or_heartbeat_side_effects():
+    with database() as db:
+        count=db.query(SystemSettings).count()
+        assert bridge.status(DEFAULT_STORE_ID)=={'ready':True,'store':DEFAULT_STORE_ID,'mode':'quote_only'}
+        assert db.query(SystemSettings).count()==count and not bridge.connected(db)
+        with pytest.raises(HTTPException): bridge.status('other-store')
+
+
 def test_legacy_and_browser_clients_keep_their_own_heartbeat_lease():
     import time
     with database() as db:

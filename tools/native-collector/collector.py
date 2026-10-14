@@ -46,11 +46,11 @@ class Api:
         parsed = urlsplit(base)
         if parsed.scheme != 'https' or parsed.hostname != urlsplit(BASE).hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
             raise ValueError('仅连接已部署的选品系统 HTTPS 后端')
-        self.base, self.key = base.rstrip('/'), key
+        self.base, self.key = base.rstrip('/'), key.strip()
         self.opener = request.build_opener(NoRedirect)
 
     def call(self, path, body=None):
-        if path not in ('/api/collector/products','/api/collector/offers','/api/collector/release'):
+        if path not in ('/api/collector/status','/api/collector/products','/api/collector/offers','/api/collector/release'):
             raise ValueError('采集器只能使用行情任务接口')
         headers = {'X-Collector-Key': self.key, 'X-Collector-Client':'local_collector',
                    'X-Store-ID':'default-store', 'Content-Type':'application/json'}
@@ -62,7 +62,18 @@ class Api:
                     return json.loads(response.read())
             except error.HTTPError as exc:
                 if exc.code not in (429,500,502,503,504) or attempt == 2:
-                    raise RuntimeError(f'服务接口返回 HTTP {exc.code}') from None
+                    # Never print arbitrary proxy/server bodies, reflected credentials or cookies.
+                    detail=''
+                    try:
+                        payload=json.loads(exc.read(8192))
+                        message=payload.get('detail') if isinstance(payload,dict) else None
+                        if message in ('店铺不存在或已停用','采集器仅绑定自营店铺','无效或缺失 API Key，请在设置页填写'):
+                            detail='：'+message
+                    except (ValueError,TypeError): pass
+                    if exc.code==400 and not detail:
+                        detail='：请求被拒绝，未取得可识别的服务端说明；请检查本机代理/网络与服务地址'
+                    if exc.code==401 and not detail: detail='：网站服务访问密钥无效或缺失'
+                    raise RuntimeError(f'服务接口返回 HTTP {exc.code}{detail}') from None
             except (error.URLError, TimeoutError):
                 if attempt == 2: raise RuntimeError('服务连接超时，任务稍后重试') from None
             time.sleep(2*(attempt+1))
@@ -91,6 +102,7 @@ async def scrape(context, item, parser):
 async def round_once(context, api, parser):
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
     items=batch.get('items',[])
+    if not items: print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     async def worker(item):
@@ -112,6 +124,15 @@ async def round_once(context, api, parser):
 async def run(args):
     from playwright.async_api import async_playwright
     profile=Path(args.profile).expanduser().resolve()
+    api=None
+    if not args.login:
+        key=os.environ.get('PP_COLLECTOR_KEY') or getpass.getpass('选品系统服务访问密钥（输入不显示，输入后按回车）：')
+        if not key.strip(): raise ValueError('缺少服务访问密钥')
+        api=Api(BASE,key)
+        print('正在核对选品系统连接…',flush=True)
+        readiness=await asyncio.to_thread(api.call,'/api/collector/status')
+        if readiness.get('ready') is not True: raise RuntimeError('系统连接未就绪，尚未打开采集浏览器')
+        print('服务认证和自营店铺检查通过，正在启动采集浏览器。',flush=True)
     lock=singleton(profile)
     try:
         async with async_playwright() as playwright:
@@ -124,9 +145,7 @@ async def run(args):
                     await page.goto('https://www.takealot.com',wait_until='domcontentloaded')
                     await asyncio.to_thread(input,'在浏览器完成登录和南非配送地址设置后，按回车保存并关闭：')
                     return
-                key=os.environ.get('PP_COLLECTOR_KEY') or getpass.getpass('选品系统服务访问密钥（输入不显示）：')
-                if not key: raise ValueError('缺少服务访问密钥')
-                api=Api(BASE,key);parser=parser_module()
+                parser=parser_module()
                 while True:
                     try: await round_once(context,api,parser)
                     except Exception as exc:
