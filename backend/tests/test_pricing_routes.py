@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import pytest
@@ -81,3 +82,25 @@ def test_untimestamped_rule_cannot_hide_current_stock(monkeypatch):
         db.commit()
         row=next(r for r in routes.listing(db,DEFAULT_STORE_ID)['rows'] if r['sku']=='one')
         assert (row['price'],row['stock']) == (100,5)
+
+
+def test_reconcile_requires_the_same_seller_sku(monkeypatch):
+    from services import automatic_pricing
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    monkeypatch.setattr(httpx,'Client',lambda **kwargs: type('Client',(),{
+        '__enter__':lambda self:self,'__exit__':lambda self,*args:None})())
+    key=PREFIX+DEFAULT_STORE_ID+':one:one'
+    with database() as db:
+        original={'product_id':'one','offer_id':'one','sku':'one','enabled':False,'write_pending':True,'revision':3}
+        db.add(SystemSettings(key=key,value=json.dumps(original)));db.commit()
+        monkeypatch.setattr(automatic_pricing,'official_offer',lambda client,key,offer_id:{
+            'offer_id':'one','sku':'different','selling_price':91,'stock_at_takealot_total':4})
+        with pytest.raises(HTTPException) as error: routes.reconcile('one','one',db,DEFAULT_STORE_ID)
+        assert error.value.status_code==409
+        assert json.loads(db.query(SystemSettings).filter_by(key=key).first().value)==original
+
+        monkeypatch.setattr(automatic_pricing,'official_offer',lambda client,key,offer_id:{
+            'offer_id':'one','sku':'one','selling_price':91,'stock_at_takealot_total':4})
+        value=routes.reconcile('one','one',db,DEFAULT_STORE_ID)
+        assert not value['write_pending'] and not value['enabled']
+        assert value['current_price']==91 and value['stock']==4 and value['revision']==4
