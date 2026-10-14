@@ -397,3 +397,53 @@ CDN 图片当前**未恢复**：`media.takealot.com` 对现存 328 个 URL 一�
 **D 域（1366×900 截图 10 页，`d_shots/`）**：全部无横向溢出（docW=winW=1366， offenders 为空）；主页卡片/统计/空态、产品列表表格与分页、库存变体徽标（2XL/3XL/M）、装箱单变体分组徽标与同步提示、Buybox 守卫提示（"卖家接口尚未配置，采集及调价暂不可开启"）、补货计划空态、店铺管理、设置各分区、采购记录空态均正常渲染；详情页（有图片 URL 的商品）CDN 失败时正确渲染"图暂不可用"占位（onError 替换后不再计入 `document.images`，与 F2/F3 设计一致）。无发现布局缺陷。
 
 **E 域（兼容稳定）**：1920×1080 / 1366×900 / 1024×768 三视口 × 8 路由探针，**24 组合全部零横向溢出**（docW=winW，无 offenders）；F8 窄屏装箱布局修复在本轮复测中保持。浏览器环境为 Chromium（与正式包 WebView2/Edge 同内核）；未覆盖 Firefox/旧版 Edge——正式分发包如内置其他内核需另测，当前交付形态下不适用。
+
+---
+
+## 六、第 10–11 轮（2026-10-15 04:50–05:10 GMT+8）：审核通道更正、环境实情、React 占位重写
+
+### 6.1 通道更正与结论撤回（对 Codex 04:39 指令）
+
+- **通道更正**：03:38 之后的审核与失败复现都在 **PR #87**（4 条评论：6176772389 / 6176813184 / 6176826062 / 6176848194）。前几轮"未收到 Codex 回复"的表述是我方只读 #86 造成的错误，已致歉。
+- **撤回**：第 8 轮评论"五域全部通过"总览结论**正式撤回**；`9ea5fbf`/`34dd8c3` 未通过审核；隔离环境通过不能代替生产。
+- **失败用例独立复现**：用 #87 公布的 `test_review_runtime_failures.py` 原文在本机独立运行（MockTransport 离线）：**3 failed**，与 Codex 在 34dd8c3 上的结果一致（leader 取消连带其他等待者 CancelledError；4 块全部读完后才判体积；500 响应含 FAKE_REVIEW_CANARY_DO_NOT_RETURN）。该测试文件按分工不提交——修复归 Codex 接手范围。
+- **废弃自建验收脚本方向**：`prod_accept_api.py` / `prod_accept_runbook.md`（本机工作区，未入远程）不再作为验收闭环。
+
+### 6.2 环境实情（回答"我实际能否操作用户 Windows"——能）
+
+- 本 WorkBuddy 会话运行在**用户 Windows 本机**（账户 Administrator，3840×2160 桌面）：本机进程枚举、文件系统（C:/E:）、Win32 光标控制与整屏截图均可用；前几轮 uvicorn/Playwright 回归均在本机运行。
+- **正式 GUI 包已在本机且已配置**：`E:/takealot-native-collector (3)`；状态目录 `%LOCALAPPDATA%\TakealotCollector`：`service-key.dpapi` 存在（262 字节，2026-10-15 00:09，DPAPI 按用户加密——用户确已在这台机器的正式 GUI 输入过服务密钥，我方不读取/不解密/不打印）；`profile-path.txt` 存在（34 字节，内容未读）；`runtime-cpython-313` venv 已于 2026-10-14 安装；两个 `.stop` 文件（00:05/00:08）表明既往正常启停。
+- **当前无重复实例**：GUI 未运行、无 collector.py 子进程；8000 端口两个 uvicorn 为前几轮隔离测试后端。`collector.py` 的 `BASE` 硬编码 `https://takealot-selector-production.up.railway.app` 且强制 HTTPS 主机校验——GUI"采集一轮"即真实生产采集。
+- README 中"助手目前无法操作用户的 Windows 桌面"一句与本会话实情不符，在此更正记录（不静默修改用户已下载包）。
+- 因此**不存在"配置缺失"阻塞**：密钥已加密保存在本机，正式 GUI 可直接复用；剩余步骤只有点击（网页"立即采集" + GUI"采集一轮"），无需重新输入密钥。
+
+### 6.3 React 图片占位状态管理重写（本分支，候选待 Codex 审核）
+
+**分支**：`review/2026-10-15-round6-f2f3-image-offload` @ `3157c54`（基于 continuation `8cefd11`，仅 6 个前端文件，未触碰 Codex 接手的 `image_proxy.py` / `packing_routes.py` / `main.py`）。
+
+**改动**：`imageErrorPlaceholder`（`img.replaceWith(box)` 直接替换 React 管理节点）→ `ProductImage` React 组件（`src/utils/imageFallback.tsx`）：onError 时将测得尺寸存入 state，占位块由 React 渲染；src 变化经 `useEffect` 重置失败状态。调用点更新：Inventory / ProductCreate / ProductDetail / ProductList×2。tsc 0 错误、vite build 通过。
+
+**实测**（隔离后端 8000 + vite dev 5173，Playwright 真实浏览器，CDN 失败用 route abort 模拟、成功用 1×1 PNG fulfill，不请求真实 CDN）：**20/20 通过**。
+
+| 场景 | 结果 |
+|---|---|
+| 失败占位（Inventory 全量滚动触发懒加载） | 409/409 带图行全部渲染占位；42×42、文案"图暂不可用"、aria/role 正确、底色 #f0f0f0、节点带 React fiber、行内无裂图 img 残留 |
+| 列表占位（ProductList） | 占位 19 = 行 20 − 无图行 1；无 img 残留；无同行双存 |
+| 切列表（URL 筛选切换） | 占位与新行一致；每行至多一个占位节点 |
+| 详情页占位 | 120×120 正确 |
+| 路由卸载重建 | 离开后详情占位（120px）消失；重进复现且唯一 |
+| 失败后修改 URL（编辑保存） | 坏址→占位 → 好址→图恢复（naturalWidth>0）→ 坏址→再次占位；结束后还原原 URL 并复核 |
+| console | 零未豁免 error/warning/pageerror |
+
+**console 豁免项（均为既有行为，非本轮 diff 引入，位置精确匹配）**：① React Router v7 未来标志告警；② 模拟 CDN 失败的 abort 资源错误；③ `App.tsx:67` 应用打开即 `POST /api/buybox/page-open`——隔离环境未绑定采集接口，服务端干净返回 400 "本店未绑定采集接口"（**生产上该端点为 F9/F10 旧批量入口，每次打开应用都会调用，与单 SKU 红线相悖，属既有问题待 Codex 定夺，本轮不改**）；④ `syncToLocal` 纯浏览器模式（无 Tauri 桥）`invoke` 失败警告（已被 catch，不影响远端更新）。
+
+### 6.4 测试数据污染与恢复（诚实记录）
+
+S4 初版脚本用 `input[type=url` 的第一个输入框，误编辑了"Takealot 链接"字段而非"产品图片链接"，把图片 URL 写入了产品 `1b4b9497-…`（PLID98178676）的 `takealot_url`。已从仓库 `src-tauri/seed_data.json` / `backend/migration_data.py` 取回原值（`https://www.takealot.com/1-piece-men-solid-casual-tie-1-pair-cufflinks-1-piece-tie-clip-1/PLID98178676`），PATCH 恢复并复核通过；`product_image_url` 全程未被改动。教训：UI 自动化须用标签级选择器，已改为 `.form-group:has-text('产品图片链接')` 精确定位。
+
+### 6.5 待协作事项（延续）
+
+1. Codex 审核本分支 `3157c54`（React 占位重写 + 20/20 实测）；
+2. Codex 接手的 4 项后端必修（500 exc 泄漏、装箱 IntegrityError 假成功、Task shield、流式体积/缓存预算）——我方不碰这些文件；
+3. 生产单 SKU GUI 闭环：我方启动正式 GUI（start.cmd，复用已存加密配置）后执行/协调"采集一轮"，生产侧 source 归属由 Codex 核实；
+4. F9/F10 定夺（含 6.3 中 page-open 既有调用问题）；F6 不重算生产。
