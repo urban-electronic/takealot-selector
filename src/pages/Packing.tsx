@@ -76,7 +76,7 @@ function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallba
   if (state === 'failed' || !src) {
     return <span className="packing-noimg">图加载失败</span>;
   }
-  return <img className="packing-img" src={src} alt={alt || filename} />;
+  return <img className="packing-img" src={src} alt={alt || filename} loading="lazy" onError={() => setState('failed')} />;
 }
 
 const todayStr = () => {

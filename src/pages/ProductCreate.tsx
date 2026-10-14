@@ -4,6 +4,7 @@ import { useApi } from '../DataSourceContext';
 import type { ScrapeResult, FeeCategory, Product } from '../types';
 import { SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { importSavedTakealotPage, makeTakealotBookmarklet, parseTakealotPageImport } from '../takealotPageImport';
+import { imageErrorPlaceholder } from '../utils/imageFallback';
 
 export default function ProductCreate() {
   const navigate = useNavigate();
@@ -282,7 +283,7 @@ export default function ProductCreate() {
           <div className="two-col">
             <div>
               {productImage && (
-                <img src={api.getImageUrl(productImage)} alt="" className="image-preview" />
+                <img src={api.getImageUrl(productImage)} alt="" className="image-preview" loading="lazy" onError={imageErrorPlaceholder} />
               )}
               <div className="form-group"><label>商品图片链接</label><input type="url" value={productImage} onChange={(e) => setProductImage(e.target.value)} placeholder="未获取时可粘贴图片链接" /></div>
             </div>

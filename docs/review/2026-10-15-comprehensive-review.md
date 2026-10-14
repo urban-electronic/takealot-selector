@@ -198,3 +198,63 @@ B2 店铺隔离 12 项 API 实测通过；B3 价格/成本/利润公式复算一
 ### 三、测试环境备注（非应用缺陷）
 
 首轮 A 域脚本 29 项 404 系沙箱 HTTP_PROXY 将同连接后续请求改写为 absolute-form 所致；raw socket 直连三连发全部 200、curl `--noproxy '*'` 全部 200，服务端 keep-alive 正常。记录为 F10 供 Codex 评估。
+
+---
+
+## 第 6 轮实测记录（2026-10-15 03:40–05:30 GMT+8，F2/F3 图片降载）
+
+分支 `review/2026-10-15-round5-continuation`（基于新 main `e97ed6c`，承接第 5 轮文档提交 `d6d1724`）。
+
+### 一、后端 `backend/api/image_proxy.py` 重写（安全 + 降载）
+
+| 机制 | 实现 |
+|---|---|
+| 主机白名单 | 仅 `media.takealot.com`（HTTPS、443）；DB 中 328/328 个 `product_image_url` 均在此域（本轮复核确认） |
+| 输入拒绝 | URL 凭据（`user:pass@`）、非标准端口、IP 字面量/内网/环回/链路本地/云元数据地址、非 HTTPS、非白名单主机、伪装子域（`media.takealot.com.evil.com`）——全部 400，不出站 |
+| 跳转逐跳校验 | 手动跟随跳转（≤3 跳），每一跳都过白名单；跳向非允许主机在发出跳转请求前即 400 |
+| 403/404 负缓存 | 300s；命中时不再出站，直接 502 并说明"负缓存生效" |
+| 同 URL 并发去重 | 单航班（asyncio Task 共享）；leader 断开不取消任务，后续请求仍拿得到结果 |
+| 正向微缓存 | 30s，承接同屏/滚动重复请求（256 条目上限） |
+| 连接池复用 | 共享 `httpx.AsyncClient`（32 连接/16 keep-alive），不再每请求新建；shutdown 时 `aclose`（main.py 新增钩子） |
+| 体积上限 | content-length 声明与实际正文均校验，>10MB 拒 |
+| 其他 | 上游返回 HTML 错误页（防盗链常见）拒 502；超时 504；传输错误 502；鉴权逻辑原样保留（query token / X-API-Key，无会话绕过） |
+
+### 二、测试（新增 `backend/tests/test_image_proxy.py`，36 项，全部 mock 无真实出站）
+
+- 白名单：4 放行 / 13 拒绝（含凭据、内网、元数据地址、非标端口、伪装主机）
+- 负缓存：403/404 后第二次请求零出站；到期恢复；按 URL 隔离
+- 并发去重：5 个并发同 URL 请求只出站 1 次
+- 跳转：允许主机跟随成功；跳向 evil.com / 127.0.0.1 在发出跳转前 400；超 3 跳中止
+- 异常映射：HTML 错误页 502、超大 502、超时 504、传输错误 502
+- 端点：token/X-API-Key 鉴权（401/200/401）、内网与凭据 URL 400、200 图片直通（content-type + `Cache-Control: public, max-age=86400`）、负缓存经 HTTP 二次请求零出站
+
+**全量后端 206 通过**（170 存量 + 36 新增；单次 `test_scraper_fallback` 失败系 pytest 随机顺序抖动，固定顺序复跑通过，与本改动无关）。
+
+### 三、前端降载（`src/utils/imageFallback.ts` + 6 处 `<img>`）
+
+- 统一 `loading="lazy"`：ProductList 卡片图/分支图、Inventory 库存图、Packing 装箱图、ProductDetail 主图、ProductCreate 预览图
+- 统一 onError 占位：失败时替换为等尺寸"图暂不可用"占位块（如实说明，不再留裂图）；Packing 组件并入既有 failed 状态机
+- ProductList 卡片原 onError 用 `parent.innerHTML` 直写 DOM（有 React 状态风险），改为共享助手（`replaceWith` + `data-placeholder-done` 防重复）
+
+### 四、本机复测（隔离后端 127.0.0.1:8000 + vite，1366×900）
+
+| 项 | 结果 |
+|---|---|
+| 白名单拒绝（HTTP 级 7 例） | 全部 400，无出站 |
+| 负缓存（HTTP 级） | 首次 0.74s 出站得"上游图片返回 403"；二次 0.00s 得"负缓存生效"——证明未再出站 |
+| 真实商品图（隔离 DB 取样） | CDN 返回 403（Cloudflare `__cf_bm` 挑战 + 签名 URL `s-pdpxl.file` 过期）→ 负缓存兜底，不再反复出站 |
+| /inventory 懒加载 | DOM 352 `<img>`，351 懒加载（唯一非懒加载为本地吉祥物，符合预期）；首屏仅 33 个唯一 URL 出站（其余按阈值延迟） |
+| 失败占位 | 首屏 58 张失败图全部渲染"图暂不可用" |
+| 成功路径 | Playwright fulfill 200 image/png：58 张渲染（naturalWidth>0）、0 占位——证明 200 直出可正常显示 |
+| 前端 build | 通过 |
+
+### 五、如实说明
+
+CDN 图片当前**未恢复**：`media.takealot.com` 对现存 328 个 URL 一律 403（签名过期 + Cloudflare 挑战）。本轮交付的是"安全边界 + 降载兜底"：白名单拒绝一切非允许主机（含内网/凭据/非标端口/跳转脱管），403 负缓存避免每次翻页重复出站，前端懒加载 + 占位保证界面可用。图片恢复需要新的有效 CDN URL 或与 Takealot 的访问约定，属数据/商务层面，不在本轮代码范围。
+
+### 六、待协作事项（延续）
+
+1. F6 受影响字段清单（5/329 商品体积重口径，不重算）——下轮提交。
+2. C 域流畅性、D 域视觉实测排期。
+3. F9/F10 观察项待 Codex 定夺。
+4. 生产单 SKU 正式验收：待 Codex 答复时间窗/频率与网页只读凭证提供方式（用户本人在 GUI 输入生产密钥）。

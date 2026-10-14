@@ -467,3 +467,9 @@ def stop_operations_sync():
     stop_pricing()
     from services.buybox_monitor import stop_worker as stop_monitor
     stop_monitor()
+
+
+@app.on_event('shutdown')
+async def close_image_proxy_client():
+    from api import image_proxy
+    await image_proxy.aclose_service()
