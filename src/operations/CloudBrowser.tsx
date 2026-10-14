@@ -9,9 +9,10 @@ export default function CloudBrowser({rows,onCollected}:{rows:Row[];onCollected:
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
   const [text,setText]=useState('');
+  const mounted=useRef(true);
   const token=useRef(''); const objectUrl=useRef(''); const selected=useRef<Row>();
   const clearSession=()=>{token.current='';setSession('');setImage('');setText('');if(objectUrl.current){URL.revokeObjectURL(objectUrl.current);objectUrl.current='';}};
-  useEffect(()=>()=>{if(token.current)void cloudBrowserAction(token.current,{action:'close'}).catch(()=>{});if(objectUrl.current)URL.revokeObjectURL(objectUrl.current);},[]);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;if(token.current)void cloudBrowserAction(token.current,{action:'close'}).catch(()=>{});token.current='';if(objectUrl.current)URL.revokeObjectURL(objectUrl.current);};},[]);
   const frame=async(s:string)=>{
     const blob=await cloudBrowserFrame(s);
     if(token.current!==s)return;
@@ -29,7 +30,7 @@ export default function CloudBrowser({rows,onCollected}:{rows:Row[];onCollected:
   const open=async()=>{
     const row=rows.find(r=>`${r.product_id}:${r.offer_id}`===(choice||`${rows[0]?.product_id}:${rows[0]?.offer_id}`));
     if(!row)return;setBusy(true);setError('');
-    try{const result=await openCloudBrowser(row.product_id);token.current=result.session;selected.current=row;setSession(result.session);}catch(e){setError((e as Error).message);}finally{setBusy(false);}
+    try{const result=await openCloudBrowser(row.product_id);if(!mounted.current){await cloudBrowserAction(result.session,{action:'close'});return;}token.current=result.session;selected.current=row;setSession(result.session);}catch(e){setError((e as Error).message);}finally{setBusy(false);}
   };
   const action=async(data:Record<string,unknown>)=>{if(!token.current||busy)return;setBusy(true);setError('');try{await cloudBrowserAction(token.current,data);await frame(token.current);}catch(e){setError((e as Error).message);}finally{setBusy(false);}};
   const close=async(collect=false)=>{
