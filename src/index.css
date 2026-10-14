@@ -204,6 +204,24 @@ button {
   align-items: start;
 }
 
+/* Grid item must be allowed to shrink below its content's min-content;
+   the inner .packing-table-scroll is the designed scroll container. */
+.packing-library-column {
+  min-width: 0;
+}
+
+/* Narrow windows (e.g. 768px-wide): stack the two columns instead of
+   squeezing both below their usable minimums. */
+@media (max-width: 960px) {
+  .packing-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .packing-summary-column {
+    position: static;
+  }
+}
+
 .packing-library-card,
 .packing-summary-column > .card {
   border: 1px solid #ece8e3;

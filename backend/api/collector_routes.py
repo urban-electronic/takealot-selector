@@ -161,7 +161,7 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         relayed_at=relay_observation_time(item,now) if relayed else None
         from services.collection_diagnostics import classify,safe_url
         raw=item.get('diagnostics') or {}
-        diagnostics={k:raw[k] for k in ('http_status','buybox_cards') if k in raw} if isinstance(raw,dict) else {}
+        diagnostics={k:raw[k] for k in ('http_status','buybox_cards','variant_controls') if k in raw} if isinstance(raw,dict) else {}
         if isinstance(raw,dict):
             for k in ('requested_url','final_url'):
                 if isinstance(raw.get(k),str): diagnostics[k]=safe_url(raw[k])
