@@ -46,6 +46,12 @@ def collector_kind(value):
 def assert_default(store):
     if store != DEFAULT_STORE_ID: raise HTTPException(400,'采集器仅绑定自营店铺')
 
+@router.get('/status')
+def status(store:str=Depends(get_store_id)):
+    """Authenticated preflight: no leases, heartbeat changes, prices or credentials."""
+    assert_default(store)
+    return {'ready':True,'store':store,'mode':'quote_only'}
+
 def recover_expired(db, now):
     """Return abandoned jobs only when their claimed settings remain unchanged."""
     for lease in db.query(SystemSettings).filter(SystemSettings.key.startswith(CLAIM_PREFIX)).all():
