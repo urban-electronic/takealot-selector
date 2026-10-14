@@ -292,7 +292,10 @@ _CORE_BLOCK_JS = r"""
 }
 """
 
-async def main_variant_elements(page) -> list:
+# 元素作用域判定脚本：是否位于推荐商品卡内（与 _VARIANT_PROBE_JS 同一规则）
+_CARD_SCOPE_JS = "(el) => !!el.closest('[class*=\"product-card\"]')"
+
+async def main_variant_elements(page):
     """主商品区的变体控件元素（排除推荐商品卡内的变体 teaser）。
 
     修复背景（2026-10-15 实测失败样本 PLID97512496，SKU 9902348621330）：
@@ -304,27 +307,43 @@ async def main_variant_elements(page) -> list:
     歧义，PLID 已唯一确定商品与报价，无需切换，应直接读取唯一报价。
     注意：点击路径同样必须排除推荐卡——卡内 swatch 的文案可能恰好等于变体后缀，
     点击会跳到推荐商品，属于采错价，不可接受。
+
+    返回 (elements, complete)。complete=False 表示有元素的作用域无法判定
+    （evaluate 抛异常：元素已分离、执行上下文销毁等）。此时**不得**据本次
+    结果断定"无变体控件"——Codex 复核 P1（2026-10-15）：把"未能判断"降级成
+    "确定无变体"会清空变体后缀并放行默认变体报价，属于采错价，不可接受。
     """
     els, _ = await query_all_fallback(page, "variant")
     main = []
+    complete = True
     for el in els:
         try:
-            in_card = await el.evaluate("(el) => !!el.closest('[class*=\"product-card\"]')")
+            in_card = await el.evaluate(_CARD_SCOPE_JS)
         except Exception:
+            complete = False
             continue
         if not in_card:
             main.append(el)
-    return main
+    return main, complete
 
-async def page_variant_controls(page) -> int:
-    """主商品区真实变体控件数量（主商品区元素 + 宽松探针联合判定）。"""
-    count = len(await main_variant_elements(page))
+async def page_variant_controls(page):
+    """主商品区真实变体控件数量；**无法判断时返回 None**。
+
+    调用方必须把 None 当作"可能存在变体"保守处理（继续切换校验，失败则
+    variantSwitchFailed），不得当作 0 放行默认报价。返回 int 时含义确定：
+    0 = 主商品区确实没有变体控件；>0 = 有（含探针补计）。
+    """
+    main, complete = await main_variant_elements(page)
+    if not complete:
+        return None
+    count = len(main)
     try:
         probe = await page.evaluate(_VARIANT_PROBE_JS)
         if isinstance(probe, int) and probe > count:
             count = probe
     except Exception:
-        pass
+        # 探针执行失败（上下文销毁等）：无法判断，返回 None 交由调用方保守处理
+        return None
     return count
 
 async def price_of(page, card) -> float | None:
@@ -411,11 +430,15 @@ async def scrape_product(page, item: dict) -> dict:
         # biking, skydiving" 只是标题分隔符）；无控件时 PLID 唯一确定商品与报价，
         # 不存在默认/目标变体歧义，直接读取唯一报价，不再误报 variant_unmatched。
         variant_controls = await page_variant_controls(page)
-        if variant_suffix and not variant_controls:
-            # 变体区可能比 buybox 卡稍晚渲染：短等待后复核一次再下结论
+        if variant_suffix and (variant_controls is None or variant_controls == 0):
+            # 两种可能：① 无法判断（探测失败/元素作用域不可判定）——保守保留
+            # 后缀，继续切换校验，无法确认则上报 variantSwitchFailed，绝不按
+            # "无变体"放行默认报价（Codex 复核 P1，2026-10-15）；
+            # ② 确定 0，但变体区可能比 buybox 卡稍晚渲染——短等待后复核一次。
             await page.wait_for_timeout(600)
             variant_controls = await page_variant_controls(page)
-        if variant_suffix and not variant_controls:
+        if variant_suffix and variant_controls == 0:
+            # 仅"确定 0"才清空后缀：单报价商品 PLID 唯一确定报价，直接读取
             variant_suffix = None
         result["variantControls"] = variant_controls
         if variant_suffix:
@@ -479,7 +502,8 @@ async def scrape_product(page, item: dict) -> dict:
                 if not target:
                     return False
                 # 只认主商品区变体控件：推荐商品卡内的 teaser 不可作为选中态依据
-                vbcs = await main_variant_elements(page)
+                # （作用域不可判定的元素被排除，无法构成"已选中"证据，方向保守）
+                vbcs, _complete = await main_variant_elements(page)
                 for b in vbcs:
                     try:
                         st = await b.evaluate(_VARIANT_STATE_JS)
@@ -525,8 +549,9 @@ async def scrape_product(page, item: dict) -> dict:
                 except Exception:
                     pass
                 # 只点主商品区变体控件：推荐卡内 swatch 文案可能恰好等于目标后缀，
-                # 点击会跳到推荐商品（采错价），必须排除（2026-10-15 PLID97512496 实测教训）
-                vbcs = await main_variant_elements(page)
+                # 点击会跳到推荐商品（采错价），必须排除（2026-10-15 PLID97512496 实测教训）。
+                # 作用域不可判定的元素不点击——点不了则切换无法确认，保守上报。
+                vbcs, _complete = await main_variant_elements(page)
                 target_norm = _norm_label(variant_suffix)
                 for b in vbcs:
                     try:

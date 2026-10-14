@@ -277,3 +277,114 @@ def test_click_fallback_switches_when_url_parameter_does_not(monkeypatch):
     assert result['buyboxPrice'] == 900.0
     assert not result.get('variantSwitchFailed')
     assert clicked == ['Black']
+
+
+def test_probe_failure_must_not_publish_default_quote(monkeypatch):
+    """Codex review P1 (2026-10-15): a failed probe is NOT "no variants".
+
+    Variant queries raise (detached DOM) and the JS probe raises (execution
+    context destroyed). The old code swallowed both and concluded zero
+    controls, cleared the suffix and published the default-variant price.
+    Undeterminable must fail conservatively: keep the suffix, attempt the
+    switch, and report variantSwitchFailed when it cannot be confirmed.
+    """
+    page = FakePage(variants=True)
+    original_query, original_evaluate = page.query_selector_all, page.evaluate
+
+    async def query(selector):
+        if 'variant' in selector or 'swatch' in selector:
+            raise RuntimeError('detached during probe')
+        return await original_query(selector)
+
+    async def evaluate(script, arg=None):
+        if 'querySelectorAll' in str(script):
+            raise RuntimeError('execution context destroyed')
+        return await original_evaluate(script, arg)
+
+    monkeypatch.setattr(page, 'query_selector_all', query)
+    monkeypatch.setattr(page, 'evaluate', evaluate)
+    result = run(page, {'url': URL, 'name': 'Camera - Red', 'sku': '9902348621330'})
+    assert result.get('variantSwitchFailed') or result.get('error'), result
+    assert result['variantControls'] is None, "undeterminable must be reported as unknown"
+
+
+def test_element_scope_undeterminable_fails_conservatively(monkeypatch):
+    """Elements are found but their card-scope cannot be determined: the gate
+    must not conclude "no variants" from that."""
+    page = FakePage(variants=True)
+
+    class UnscopedButton(VariantButton):
+        async def evaluate(self, script):
+            if 'product-card' in str(script):
+                raise RuntimeError('element detached')
+            return await super().evaluate(script)
+
+    async def variant_query(selector):
+        if 'variant' in selector or 'swatch' in selector:
+            return [UnscopedButton('Red', False, page)]
+        return []
+
+    monkeypatch.setattr(page, 'query_selector_all', variant_query)
+    result = run(page, {'url': URL, 'name': 'Camera - Red', 'sku': '9902348621330'})
+    assert result.get('variantSwitchFailed') or result.get('error'), result
+    assert result['variantControls'] is None
+
+
+def test_real_dom_probe_excludes_recommendation_cards():
+    """Offline real-DOM check with the actual JS (no network): a synthetic page
+    with one main-area control plus recommendation-card teasers must count 1,
+    and a teaser-only page must count 0."""
+    import asyncio
+
+    pytest = __import__('pytest')
+    import services.pricepilot_collector as core
+
+    WITH_MAIN = """
+    <div class="pdp"><div data-ref="buybox-offer">buybox</div>
+      <button class="variant-swatch" aria-label="Red">Red</button></div>
+    <div class="product-card-module_card">
+      <div class="colour-variant-icon-text">More Colours</div></div>"""
+    TEASER_ONLY = """
+    <div class="pdp"><div data-ref="buybox-offer">buybox</div></div>
+    <div class="product-card-module_card">
+      <div class="colour-variant-icon-text">More Colours</div>
+      <i class="colour-variant-icon-text-module_spectrum"></i></div>"""
+
+    async def run():
+        from playwright.async_api import async_playwright
+        out = {}
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.set_content(WITH_MAIN)
+                out['with_main'] = {
+                    'probe': await page.evaluate(core._VARIANT_PROBE_JS),
+                    'core_ready': await page.evaluate(core._CORE_BLOCK_JS),
+                    'controls': await core.page_variant_controls(page),
+                }
+                main_els, complete = await core.main_variant_elements(page)
+                out['with_main']['main_els'] = len(main_els)
+                out['with_main']['complete'] = complete
+                await page.set_content(TEASER_ONLY)
+                out['teaser_only'] = {'controls': await core.page_variant_controls(page)}
+                main_els, complete = await core.main_variant_elements(page)
+                out['teaser_only']['main_els'] = len(main_els)
+                out['teaser_only']['complete'] = complete
+                await page.close()
+                await browser.close()
+        except Exception:
+            return None
+        return out
+
+    result = asyncio.run(run())
+    if result is None:
+        pytest.skip('playwright chromium not available in this environment')
+    assert result['with_main']['probe'] == 1
+    assert result['with_main']['core_ready'] is True
+    assert result['with_main']['controls'] == 1
+    assert result['with_main']['main_els'] == 1
+    assert result['with_main']['complete'] is True
+    assert result['teaser_only']['controls'] == 0
+    assert result['teaser_only']['main_els'] == 0
+    assert result['teaser_only']['complete'] is True
