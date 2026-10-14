@@ -1,0 +1,17 @@
+# 原生 PricePilot 网页接入采集器
+
+此包直接包含仓库 `backend/services/pricepilot_collector.py` 的解析核心，不另写简化解析器。保留原颜色/尺寸 URL 参数、精确变体点击与确认、双读/三读报价一致性、Buybox 卡和其他卖家读取。Windows/macOS 使用同一 Python 入口。仅回传行情，没有售价写入端点。
+
+1. 安装 Python 3.10 或以上，在解压目录执行：
+   `python -m pip install -r requirements.txt`
+   `python -m playwright install chromium`
+2. 停止原 PricePilot 采集器，保留原目录的 `browser_profile`。用它的绝对路径运行：
+   `python collector.py --profile "原browser_profile的绝对路径"`
+3. 提示时输入选品系统的服务访问密钥（不是 Takealot 商家 API 密钥）；输入不回显、不保存。
+4. 在网页“Buybox与调价”中对需要的 SKU 点“立即采集”或开启常态采集。采集器每30秒领取到期任务，逐商品回传，调价开关独立。采集器运行可持续后台采集，不依赖系统网页一直打开；网页扩展则仍是打开网页时采集。
+
+没有原档案或会话失效时，先执行 `python collector.py --login --profile "档案绝对路径"`，在可见浏览器里完成验证、登录及南非配送地址设置，按回车保存后再启动采集。不复制Cookie，不自动解决验证。不要同时使用原采集器和新采集器打开同一档案。
+
+所有未执行任务会释放租约；单商品最多180秒，整轮最多600秒；失败不作为行情成功，不开启真实调价。相同价格不再被当作已核实卖家归属。断连后由服务器租约回收任务。
+
+本包验证范围是原解析核心打包一致性、任务回传/释放和模拟页面测试。实际旧机器会话是否仍有效、真实报价与变体仍需在那台电脑运行核对；下载上线不代表真实采集成功。
