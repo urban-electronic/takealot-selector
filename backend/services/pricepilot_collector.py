@@ -256,6 +256,77 @@ el => {
 }
 """
 
+# 变体控件宽松探针：查常见变体 UI 特征，但**排除推荐商品卡**。
+# 实测（2026-10-15，PLID97512496）：Takealot 推荐商品卡用
+# `colour-variant-icon-text` / `product-card-module_*` 渲染 "More Colours" teaser，
+# 会被 [class*="variant"] / [data-ref*="variant"] 误命中（单页 11-12 个），
+# 导致单报价商品被误判为变体商品。误报方向安全（继续尝试切换，失败仍保守上报），
+# 漏报会把变体商品默认规格当目标 SKU 报价采回，不可接受，故探针刻意取宽。
+_VARIANT_PROBE_JS = r"""
+() => {
+  const nodes = document.querySelectorAll(
+    '[data-ref*="variant"], [data-ref*="swatch"], [class*="variant"], [class*="swatch"],' +
+    ' [aria-label*="colour" i], [aria-label*="color" i], [aria-label*="size" i],' +
+    ' [role="radiogroup"], [role="listbox"]');
+  let count = 0;
+  for (const n of nodes) {
+    if (n.closest('[class*="product-card"]')) continue;
+    count++;
+  }
+  return count;
+}
+"""
+
+# 主商品核心区块就绪判定：buybox 卡或主商品区变体控件任一出现
+# （不用 text= 选择器；与 page_variant_controls 的作用域保持一致，
+#  避免推荐卡 teaser 让等待提前返回、变体区尚未渲染就下结论）
+_CORE_BLOCK_JS = r"""
+() => {
+  if (document.querySelector('[data-ref="buybox-offer"]')) return true;
+  const nodes = document.querySelectorAll(
+    '[data-ref*="variant"], [data-ref*="swatch"], [class*="variant"], [class*="swatch"]');
+  for (const n of nodes) {
+    if (!n.closest('[class*="product-card"]')) return true;
+  }
+  return false;
+}
+"""
+
+async def main_variant_elements(page) -> list:
+    """主商品区的变体控件元素（排除推荐商品卡内的变体 teaser）。
+
+    修复背景（2026-10-15 实测失败样本 PLID97512496，SKU 9902348621330）：
+    商品名 "4K Thump action camera - professional package for motor, biking,
+    skydiving" 中的 " - " 只是标题分隔符，并非变体后缀；该页主商品区没有任何
+    变体控件（页面自身 API 响应也无 variant/colour 结构，单 buybox 卡单报价），
+    旧逻辑却据此尝试 colour_variant/size_variant 切换，均无法确认，误报
+    variant_unmatched，阻塞本轮采集。单报价商品页不存在"默认变体 vs 目标变体"
+    歧义，PLID 已唯一确定商品与报价，无需切换，应直接读取唯一报价。
+    注意：点击路径同样必须排除推荐卡——卡内 swatch 的文案可能恰好等于变体后缀，
+    点击会跳到推荐商品，属于采错价，不可接受。
+    """
+    els, _ = await query_all_fallback(page, "variant")
+    main = []
+    for el in els:
+        try:
+            in_card = await el.evaluate("(el) => !!el.closest('[class*=\"product-card\"]')")
+        except Exception:
+            continue
+        if not in_card:
+            main.append(el)
+    return main
+
+async def page_variant_controls(page) -> int:
+    """主商品区真实变体控件数量（主商品区元素 + 宽松探针联合判定）。"""
+    count = len(await main_variant_elements(page))
+    try:
+        probe = await page.evaluate(_VARIANT_PROBE_JS)
+        if isinstance(probe, int) and probe > count:
+            count = probe
+    except Exception:
+        pass
+    return count
+
 async def price_of(page, card) -> float | None:
     """从卡片内提取价格，多候选选择器兜底。"""
     for i, sel in enumerate(SELECTORS["price"]):
@@ -318,12 +389,12 @@ async def scrape_product(page, item: dict) -> dict:
             result['error']=f'http_{resp.status}'
             return result
         await page.wait_for_timeout(random.randint(900, 1600))
-        # 等待核心区块渲染（buybox 或变体选择器），避免页面未加载完就检测
-        # 等待核心区块渲染：buybox 卡或变体选择器任一出现即可（多候选兜底）
+        # 等待核心区块渲染：buybox 卡或**主商品区**变体控件任一出现即可。
+        # 不用 text=/class*="variant" 宽选择器——推荐卡 teaser 遍布页面，会让等待
+        # 提前返回，主商品区尚未渲染就做变体判断（实测 PLID97512496 推荐卡内有
+        # 11-12 个 "More Colours" teaser，主商品区实为 0 个变体控件）。
         try:
-            await page.wait_for_selector(
-                ", ".join(SELECTORS["buybox_card"] + SELECTORS["variant"]), timeout=12000
-            )
+            await page.wait_for_function(_CORE_BLOCK_JS, timeout=12000)
         except Exception:
             pass
         await page.wait_for_timeout(random.randint(500, 900))
@@ -335,6 +406,18 @@ async def scrape_product(page, item: dict) -> dict:
         nm = (item.get("name") or "").strip()
         if " - " in nm:
             variant_suffix = nm.rsplit(" - ", 1)[1].strip()
+        # 变体切换前置门控：仅当页面**主商品区真实存在变体控件**时才尝试切换。
+        # 名称含 " - " 不等于存在变体（如 "... - professional package for motor,
+        # biking, skydiving" 只是标题分隔符）；无控件时 PLID 唯一确定商品与报价，
+        # 不存在默认/目标变体歧义，直接读取唯一报价，不再误报 variant_unmatched。
+        variant_controls = await page_variant_controls(page)
+        if variant_suffix and not variant_controls:
+            # 变体区可能比 buybox 卡稍晚渲染：短等待后复核一次再下结论
+            await page.wait_for_timeout(600)
+            variant_controls = await page_variant_controls(page)
+        if variant_suffix and not variant_controls:
+            variant_suffix = None
+        result["variantControls"] = variant_controls
         if variant_suffix:
             from urllib.parse import quote_plus
 
@@ -395,7 +478,8 @@ async def scrape_product(page, item: dict) -> dict:
                 target = _norm_label(variant_suffix)
                 if not target:
                     return False
-                vbcs, _ = await query_all_fallback(page, "variant")
+                # 只认主商品区变体控件：推荐商品卡内的 teaser 不可作为选中态依据
+                vbcs = await main_variant_elements(page)
                 for b in vbcs:
                     try:
                         st = await b.evaluate(_VARIANT_STATE_JS)
@@ -440,7 +524,9 @@ async def scrape_product(page, item: dict) -> dict:
                     await page.wait_for_timeout(1500)
                 except Exception:
                     pass
-                vbcs, _ = await query_all_fallback(page, "variant")
+                # 只点主商品区变体控件：推荐卡内 swatch 文案可能恰好等于目标后缀，
+                # 点击会跳到推荐商品（采错价），必须排除（2026-10-15 PLID97512496 实测教训）
+                vbcs = await main_variant_elements(page)
                 target_norm = _norm_label(variant_suffix)
                 for b in vbcs:
                     try:

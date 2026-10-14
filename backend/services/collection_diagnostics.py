@@ -19,7 +19,10 @@ def classify(snapshot):
     if status and status>=500: return 'site_unavailable',f'网站返回HTTP {status}，报价服务暂不可用'
     if status==404 or error=='404': return 'product_not_found','商品公开页不存在（404）'
     if error=='invalid_url': return 'invalid_url','商品链接不是有效的Takealot PLID地址'
-    if snapshot.get('variantSwitchFailed'): return 'variant_unmatched','未确认SKU对应变体，不使用默认变体报价'
+    if snapshot.get('variantSwitchFailed'):
+        controls=(snapshot.get('diagnostics') or {}).get('variant_controls')
+        suffix=f'（页面检测到 {controls} 个变体控件，需人工确认SKU对应变体）' if isinstance(controls,int) and controls>0 else ''
+        return 'variant_unmatched',f'未确认SKU对应变体，不使用默认变体报价{suffix}'
     if 'CERT' in error.upper(): return 'tls_error','浏览器证书校验失败，未取得报价页面'
     if 'Timeout' in error or 'timeout' in error.lower(): return 'navigation_timeout','页面加载超时'
     if 'NameError' in error or 'TypeError' in error or 'ReferenceError' in error: return 'collector_error','采集程序运行异常，需修复解析器'

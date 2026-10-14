@@ -91,6 +91,25 @@ def test_native_challenge_diagnostics_are_reported_without_session_data():
     assert result['diagnostics']['page_title']=='Just a moment...'
     assert 'private' not in str(result['diagnostics'])
 
+def test_native_diagnostics_include_variant_control_count():
+    class Page:
+        url='https://www.takealot.com/p/PLID1'
+        def on(self,name,callback): pass
+        async def title(self):return 'Product | takealot.com'
+        def locator(self,selector):return self
+        async def count(self):return 1
+        async def close(self):pass
+    class Context:
+        async def new_page(self):return Page()
+    async def parse(page,item): return {'productId':'lease','sku':'SKU1','buyboxPrice':100,'variantControls':2,
+        'collectedAt':'2026-10-14T00:00:00+00:00'}
+    result=asyncio.run(runner.scrape(Context(),{'productId':'lease','sku':'SKU1','url':'https://www.takealot.com/p/PLID1'},SimpleNamespace(scrape_product=parse)))
+    assert result['diagnostics']['variant_controls']==2
+    async def parse_without_controls(page,item): return {'productId':'lease','sku':'SKU1','buyboxPrice':100,
+        'collectedAt':'2026-10-14T00:00:00+00:00'}
+    result=asyncio.run(runner.scrape(Context(),{'productId':'lease','sku':'SKU1','url':'https://www.takealot.com/p/PLID1'},SimpleNamespace(scrape_product=parse_without_controls)))
+    assert 'variant_controls' not in result['diagnostics']
+
 
 @pytest.mark.parametrize('body,expected',[
     (b'{"detail":"store-missing"}','请求被拒绝'),

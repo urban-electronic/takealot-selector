@@ -109,6 +109,7 @@ async def collect(product, offer):
                 markers=['verify you are human','checking your browser','automated traffic','unusual traffic','complete the captcha']
                 diagnostics['block_reason']=next((m for m in markers if m in text),None)
                 diagnostics['buybox_cards']=await page.locator('[data-ref="buybox-offer"]').count()
+                if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
             except Exception: pass
             diagnostics['raw_error']=re.sub(r'https?://[^\s]+',lambda m:safe_url(m.group()),str(snapshot.get('error') or ''))[:200]
             snapshot['diagnostics']=diagnostics

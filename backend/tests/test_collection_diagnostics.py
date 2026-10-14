@@ -19,6 +19,12 @@ def test_variant_failure_and_navigation_exceptions_are_distinct():
     assert classify({'error':'NameError: parser missing'})[0]=='collector_error'
     assert classify({'error':'TimeoutError: Page.goto exceeded'})[0]=='navigation_timeout'
 
+def test_variant_failure_reports_real_control_count_when_known():
+    code,message=classify({'variantSwitchFailed':True,'diagnostics':{'variant_controls':3}})
+    assert code=='variant_unmatched' and '3 个变体控件' in message
+    code,message=classify({'variantSwitchFailed':True,'diagnostics':{'variant_controls':0}})
+    assert code=='variant_unmatched' and message=='未确认SKU对应变体，不使用默认变体报价'
+
 def test_success_http_status_with_just_a_moment_title_is_a_challenge_not_product_html():
     data={'http_status':200,'page_title':'Just a moment...','buybox_cards':0}
     assert classify({'diagnostics':data,'error':'blocked_or_load_failed'})[0]=='site_challenge'

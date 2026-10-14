@@ -209,3 +209,20 @@ Windows下载包增加独立 `start.cmd` / `login.cmd` 和 `launcher.py`，Pytho
 本机操作界面默认采集一轮（--once），新增按SKU回传的HTTP状态、页面标题、报价卡数等诊断；URL去查询参数，无Cookie/密钥/页面全文。接收端区分processed（处理了成功或失败）和successful（真实采信报价），客户端不再将processed当成功。保留原解析器的可能我方排除标记，避免一律isMine=False把我方价错当竞品；持有归属仍不确认。
 
 152项后端测试通过，包括初始页面仅等待一次、持续验证停止、诊断脱敏、带旧价的验证页不得采信和原任务租约保护。工具源代码及下载包同步更新。尚未在用户Chrome/Edge和Windows桌面运行，助手没有原电脑桌面操作通道；不能称已复现真实采集。应由用户本机执行一轮，核对成功报价/采集时间/目标SKU。没有自动开启真实调价。
+
+## 2026-10-15 变体门控修复：推荐卡 teaser 不再被当作变体控件（SKU 9902348621330 实测）
+
+故障样本：SKU 9902348621330（PLID97512496，标题 "4K Thump action camera - professional package for motor, biking, skydiving"）。真实商品页 HTTP 200、报价卡 1、报价 R 1,999 / Urban Electronics / 现货，程序却报 `variant_unmatched`。
+
+根因（本机用户 profile + Playwright 1.64.0 实测复现，A/B 对照）：商品名中的 " - " 是标题分隔符而非变体后缀，旧逻辑据此尝试 colour_variant/size_variant 切换。进一步勘查发现该页变体选择器确有命中，但全部位于 `[class*="product-card"]` 推荐商品卡内——Takealot 用 `colour-variant-icon-text` 渲染 "More Colours" teaser；主商品区实测 0 个变体控件，页面自身 API 响应也无任何 variant/colour 结构。单报价商品由 PLID 唯一确定，不存在默认/目标变体歧义。
+
+修复（`backend/services/pricepilot_collector.py`，未重新设计系统）：
+- 新增 `main_variant_elements()`：变体控件元素级排除推荐商品卡（`el.closest('[class*="product-card"]')`）。
+- 新增 `_VARIANT_PROBE_JS` / `page_variant_controls()`：宽松探针统计主商品区控件数，刻意取宽（误报方向安全：继续尝试切换，失败仍保守上报；漏报会把默认规格当目标 SKU 报价采回，不可接受）。
+- 变体切换前置门控：仅当主商品区真实存在变体控件时才尝试切换；无控件时清空后缀直接读取唯一报价，并上报 `variantControls` 计数。
+- 选中态补判与点击路径同样只用主商品区控件——卡内 swatch 文案可能恰好等于变体后缀，点击会跳到推荐商品（采错价）。
+- 核心区块就绪等待由宽 text/class 选择器改为 `_CORE_BLOCK_JS`（buybox 卡或主商品区变体控件），避免推荐卡 teaser 让等待提前返回。
+
+诊断链路同步透传 `variant_controls`：本机 collector diagnostics、`/api/collector/offers` 白名单、云端 `automatic_pricing.collect`、`collection_diagnostics.classify`（variant_unmatched 消息带控件计数，便于人工确认）。未取消 SKU 身份校验，未开启真实调价，未上传密钥/Cookie/profile。
+
+实测验收（用户本机、用户 profile、只读，无登录/购买/后端调用）：修复版解析器对该 SKU 返回 `variantControls=0`、无 `variantSwitchFailed`、`buyboxPrice=1999.0`、`buyboxSeller=Urban Electronics`、`stockMapped=in_stock`、报价卡 1、URL 未被改写；同一会话旧解析器仍复现 `variantSwitchFailed=true`。测试：`test_pricepilot_variant_gate.py` 7 项（含推荐卡 teaser 不计数、不点击两个新用例）及相关诊断/桥接/云端分类用例共 43 项通过；`test_scraper_fallback.py::test_site_shell_is_not_a_success` 为既有网络抖动项（单独运行通过，与本次改动无关）。模拟测试不等于真实采集验收：其余 SKU 与网站验证限制仍需按既有边界逐轮核对。

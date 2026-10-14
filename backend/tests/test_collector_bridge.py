@@ -52,6 +52,16 @@ def test_variant_error_and_foreign_sku_cannot_publish_prices(monkeypatch):
         with pytest.raises(HTTPException):bridge.products(db,'other-store')
 
 
+def test_variant_failure_keeps_control_count_for_diagnosis(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch)
+        bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'variantSwitchFailed':True,
+            'diagnostics':{'http_status':200,'buybox_cards':1,'variant_controls':3}}]),db,DEFAULT_STORE_ID)
+        row=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
+        assert row['diagnostics']['variant_controls']==3 and '3 个变体控件' in row['error']
+        assert row['error_code']=='variant_unmatched' and not row.get('last_success_at')
+
+
 def test_web_open_queues_only_stocked_skus_without_enabling_pricing(monkeypatch):
     with database() as db:
         profile=db.query(SystemSettings).filter_by(key='operations_profile:'+DEFAULT_STORE_ID+':two').first()
