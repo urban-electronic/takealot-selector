@@ -4,7 +4,7 @@ WORKDIR /app
 
 # curl_cffi build dependencies
 RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y --no-install-recommends \
-    libcurl4-openssl-dev build-essential \
+    libcurl4-openssl-dev build-essential xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .

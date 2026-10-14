@@ -80,7 +80,8 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     prefix = PREFIX + store + ':'
     rules = {r.key: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
     groups = {r.key: json.loads(r.value).get('group', '') for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
-    monitors = {r.key: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
+    from services.collection_diagnostics import displayed_monitor
+    monitors = {r.key: displayed_monitor(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
     rows = []
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         setting = db.query(SystemSettings).filter(SystemSettings.key == f'operations_profile:{store}:{p.id}').first()

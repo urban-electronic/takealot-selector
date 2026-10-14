@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import BrowserCollector from '../operations/BrowserCollector';
+import CloudBrowser from '../operations/CloudBrowser';
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor } from '../remoteApi';
 export default function AutoPricing() {
   const buyboxOnly = false;
@@ -70,8 +70,8 @@ export default function AutoPricing() {
   };
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>共享商品与行情 · 采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" onClick={()=>refresh().catch(e=>setError(e.message))}>刷新列表</button></div>
-    <BrowserCollector />
-    <div className="operations-note">本店售价/库存：卖家API · Buybox/竞品：{collectorSource==='browser_extension'?'当前浏览器采集已连接':collectorSource==='local_collector'?'原本机采集器已连接':'云端浏览器（原本机采集器未连接）'}</div>
+    <CloudBrowser rows={rows} onCollected={()=>{void refresh().catch(e=>setError(e.message));}} />
+    <div className="operations-note">本店售价/库存：卖家API · Buybox/竞品：{collectorSource==='browser_extension'?'当前浏览器采集已连接':collectorSource==='local_collector'?'原本机采集器已连接':'云端浏览器'}</div>
     <div className="pricing-summary">{true&&<div className="card"><small>自动采集</small><strong className="text-info">{loaded ? rows.filter(r=>r.monitor?.enabled).length : '—'}<span> / {rows.length} SKU</span></strong></div>}{!buyboxOnly&&<div className="card"><small>实际调价运行中</small><strong className="text-success">{loaded ? rows.filter(r=>r.rule.enabled).length : '—'}<span> SKU</span></strong></div>}{true&&<div className="card"><small>采集失败</small><strong className="text-danger">{loaded ? rows.filter(r=>r.monitor?.status==='error').length : '—'}<span> SKU</span></strong></div>}{!buyboxOnly&&<div className="pricing-stop"><button className="btn btn-danger" disabled={!!busy||!rows.some(r=>r.rule.enabled)} onClick={emergencyStop}>停止全部调价</button></div>}</div>
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
     {loaded&&!configured&&<div className="alert">卖家接口尚未配置，采集及调价暂不可开启。</div>}

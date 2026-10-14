@@ -13,7 +13,7 @@ def classify(snapshot):
     status=d.get('http_status');reason=d.get('block_reason')
     title=(d.get('page_title') or '').strip().lower()
     if title in ('just a moment...', 'just a moment', 'attention required! | cloudflare'): reason=reason or 'challenge_page_title'
-    if reason or error=='site_challenge': return 'site_challenge','网页采集会话遇到验证，本店API不受此错误影响；需恢复已验证的采集器会话'
+    if reason or error=='site_challenge': return 'site_challenge','商品页遇到网站验证；可打开本页云端浏览器查看并由本人完成，之后再采集。云端验证仍可能不被网站接受'
     if status==429: return 'rate_limited','网站返回429限流，稍后重试'
     if status in (401,403): return 'http_forbidden',f'网站返回HTTP {status}，本轮未取得报价页面'
     if status and status>=500: return 'site_unavailable',f'网站返回HTTP {status}，报价服务暂不可用'
@@ -31,3 +31,11 @@ def classify(snapshot):
     if not snapshot.get('buyboxPrice'): return 'price_not_found','页面已读取，但未找到有效Buybox价格'
     if error: return 'parse_error','商品报价解析失败'
     return '', ''
+
+def displayed_monitor(monitor):
+    """Reclassify historical diagnostics consistently in BOTH collection/pricing views."""
+    value=dict(monitor)
+    if value.get('status')=='error' and value.get('diagnostics'):
+        code,message=classify({'diagnostics':value['diagnostics'],'error':value['diagnostics'].get('raw_error')})
+        if code: value.update(error_code=code,error=message)
+    return value
