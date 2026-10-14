@@ -5,6 +5,7 @@ import { openUrl } from '../api';
 import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, type SellerAssistResult } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
+import { ProductImage } from '../utils/imageFallback';
 
 // --- 列定义 ---
 interface ColumnDef {
@@ -623,18 +624,10 @@ export default function ProductList() {
         return p.product_no;
       case 'image':
         return p.product_image_url ? (
-          <img
+          <ProductImage
             src={api.getImageUrl(p.product_image_url)}
-            alt=""
             referrerPolicy="no-referrer"
             style={{ width: 68, height: 68, objectFit: 'cover', borderRadius: 4 }}
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = 'none';
-              const parent = (e.target as HTMLImageElement).parentElement;
-              if (parent) {
-                parent.innerHTML = '<div style="width:68px;height:68px;background:#f0f0f0;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#bbb;font-size:11px">无图</div>';
-              }
-            }}
           />
         ) : (
           <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 11 }}>无图</div>
@@ -1053,7 +1046,7 @@ export default function ProductList() {
                                   return next;
                                 })} />
                                 <span className="branch-image">
-                                  {p.product_image_url ? <img src={api.getImageUrl(p.product_image_url)} alt="" referrerPolicy="no-referrer" /> : <i>待补图</i>}
+                                  {p.product_image_url ? <ProductImage src={api.getImageUrl(p.product_image_url)} referrerPolicy="no-referrer" /> : <i>待补图</i>}
                                 </span>
                                 <span className={`branch-role ${index === 0 ? 'primary' : ''}`}>{index === 0 ? '主' : variantKind(labels[index])}</span>
                                 <code>{sku}</code>
@@ -1157,3 +1150,4 @@ export default function ProductList() {
     </div>
   );
 }
+
