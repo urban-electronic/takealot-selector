@@ -19,7 +19,7 @@
 | A5 | 采购创建/空海标注/取消 | ⚠️ 未验证 | 待本机逐页核对 |
 | A6 | 装箱工作站与导出 | ⚠️ 未验证 | 待本机逐页核对 |
 | A7 | 补货缺口计算与提醒 | ⚠️ 未验证 | 待本机逐页核对 |
-| A8 | Buybox 采集调度、报价回传与网页显示 | 🔧 修复待复核 | SKU 9902348621330 解析器修复已完成（PR #86，本机 A/B 实测：旧 `variantSwitchFailed=true` → 修复版 `variantControls=0`、R1999/Urban Electronics/现货、URL 未改写）；Codex 复核提出 P1（探测异常被吞并当"无变体"放行默认报价），已修复并补 3 项回归（含 Codex 给的失败用例与离线真实 DOM 用例），待 Codex 复审；**端到端"本轮真实报价回传并显示"未验证**（下轮按 Codex 要求：先查重复采集实例/并行任务，只领取已排队任务） |
+| A8 | Buybox 采集调度、报价回传与网页显示 | ✅ 通过（第 3 轮端到端） | SKU 9902348621330 单 SKU 全链路本机验收通过（2026-10-15 02:04 GMT+8，隔离本地后端+用户 profile）：预检查无重复采集实例/无并行任务/无调价开启 → 队列行按 page-open 相同结构入队 → `/api/collector/products` 恰好领取 1 条 → 用户 profile 真实采集（HTTP 200、报价卡 1、页面标题为该商品真实页、URL 未改写、`variantControls=0`、无 `variantSwitchFailed`）→ `/api/collector/offers` 回传 `processed=1, successful=1, skipped=0` → 落库 `status=success, buybox_price=R1999, seller=Urban Electronics, last_success_at=18:04:41Z` → 网页 `/auto-pricing` 显示同轮 R1999、竞品 R1999、最近成功 02:04:41、状态"手动采集"。详见第 3 轮实测记录 |
 | A9 | 调价配置：规则保存、与 Buybox 共享行情、分别启停 | ⚠️ 未验证 | 保留要求：不拆成功能孤岛；未开启真实调价 |
 | A10 | 设置保存与生效 | ⚠️ 未验证 | 待本机逐页核对 |
 
@@ -85,12 +85,42 @@
 | F1 | **全新数据库后端启动即崩溃**（阻断）：`migrate_from_dump` 导入的 products 行缺 `store_id`/`is_archived`（NOT NULL，ORM default 不作用于裸 INSERT），异常穿透 lifespan | ✅ 已修复 | 本地临时 DB 复现→修复→复测：启动成功、329 商品导入、API 正常。修复=按表 schema 通用回填缺失 NOT NULL 列（store_id→默认店铺、布尔→0）。新增 `test_migrate_fresh_db.py` 2 项。影响面：任何全新部署/新卷/首装 |
 | F2 | **商品图片全站 403**（数据展示失败，根因待 Codex 决策）：image-proxy 对 Takealot CDN 全部 502（上游 403）；换完整浏览器请求头仍 403；判定为 IP/会话维度拦截，非请求头问题。直播页面用同一 URL 格式且用户浏览器可正常加载 | ⚠️ 未修复（待决策） | 不窃取 Cookie/会话绕过（项目规则）。候选方向：① 采集轮次经用户浏览器会话带回图片（契合现有采集架构）；② 前端降载（懒加载+失败占位+同 URL 去重），至少消除 F3 |
 | F3 | 图片 403 引发单页 400+ 并发失败请求（/inventory 410 img、15s 内 327 次代理请求；/packing 240 次；非无限循环，会 plateau）；每次失败=后端一次出站请求 | ⚠️ 未修复（随 F2） | 生产上每次库存/装箱页浏览产生数百次后端→Takealot 请求，有被限流风险，可能波及采集器 |
-| F4 | 每页必发 `/api/buybox/page-open`，未绑定店铺返回 400「本店未绑定采集接口」，以 console error 呈现（预期状态被当错误） | ⚠️ 未修复（体验类） | 建议前端对该 detail 静默处理；请 Codex 确认协议层是否应改为 200+标志位 |
+| F4 | 每页必发 `/api/buybox/page-open`，未绑定店铺返回 400「本店未绑定采集接口」 | ⚠️ 未修复（体验类，降级） | 第 3 轮实测修正：前端已将该 400 翻译为页面顶部可关闭横幅"本次采集未提交：本店未绑定采集接口"，文案准确；console 另有 error。预期状态以 400 呈现仍不规范，建议协议层改 200+标志位或前端静默 console；是否改协议层请 Codex 定 |
+| F5 | Buybox 表格不显示卖家名（仅显示报价/竞品价与状态标签），快照内 `buyboxSeller` 未上屏 | ⚠️ 未修复（展示类，低） | 价格相同不等于卖家身份已核实（现有"待核对卖家/同价·待确认"标签语义正确）；表格补一列卖家名或详情展开有助于人工核对。不单独提 PR，纳入视觉/信息轮统一处理 |
 
 ### 冒烟通过项
 
 - 11 条路由全部 200 渲染、无未捕获异常；768px 窄屏无横向溢出；API 无重复请求（各端点 2 次=StrictMode 双渲染）。
 - P1 修复后对 SKU 9902348621330 第三次本机实测：`variantControls=0`、无 `variantSwitchFailed`、R1999/Urban Electronics/现货、URL 未改写（探测成功走"确定 0"路径，修复无回归）。
+
+## 第 3 轮实测记录（2026-10-15 02:00–02:20 GMT+8，A8 单 SKU 端到端）
+
+### 预检查（Codex 要求项，全部通过）
+
+| 检查 | 结果 |
+|---|---|
+| 重复采集实例 | ✅ 无：采集器单例锁（profile 内 `.selector-collector.lock`）可加锁成功；无浏览器持有用户 profile（无 SingletonLock） |
+| 并行任务 | ✅ 无：隔离 DB 内 0 条 monitor 行，后台 worker 空闲；采集器一经 `touch` 心跳登记，worker 按设计让位 |
+| 只领取已排队任务 | ✅ `/api/collector/products` 恰好返回 1 条（队列行按 page-open 相同结构写入，`request_once=True, web_requested=False, next_due=0`） |
+| 不开调价 | ✅ 无任何 rule/monitor 启用；`computeEnqueued=0`；未改任何价格 |
+
+### 链路结果（脱敏；用户 profile、只读、单轮单 SKU）
+
+| 阶段 | 结果 |
+|---|---|
+| 任务 SKU | 9902348621330（4K Thump action camera…，PLID97512496） |
+| 真实页面身份 | HTTP 200、报价卡 1、页面标题为该商品真实页、URL 未改写 |
+| 变体判断 | `variantControls=0`（确定无变体控件），无 `variantSwitchFailed` |
+| 实际价格/卖家 | Buybox **R1999.0**，卖家 **Urban Electronics**，现货（In stock），报价类型 buybox；竞品同 R1999 |
+| `/offers` 响应 | `processed=1, successful=1, skipped=0` |
+| 落库 | `status=success`、`buybox_price=1999.0`、`quote_time_source=collector_timestamp`、`source=local_collector`、无遗留租约 |
+| 网页显示（`/auto-pricing`，localStorage 指向隔离后端） | 同轮 R1999、竞品 R1999、状态"手动采集"、最近成功 **2026/10/15 02:04:41**（=回传轮次 18:04:41Z）、库存列 12（夹具）、HTTP 200·正常 |
+
+说明：隔离环境未配置卖家接口密钥（不上传密钥红线），`myPrice/stock` 为 null，故 `price_matches_buybox=false`、页面显示"待核对卖家"——这是**身份未核实**的保守呈现，非报价失败；本机售价列显示"—"。
+
+### 边界遵守
+
+未开启真实调价、未改真实售价、未创建真实采购、未上传密钥/Cookie/profile；未批量启动 SKU；未重复请求受验证拦截页面（本轮页面 HTTP 200 正常）。
 
 ## 待协作事项（请 Codex 处理）
 
@@ -101,6 +131,6 @@
 
 ## 下轮计划（按优先级）
 
-1. A8 端到端：按 Codex 要求先查重（重复实例/并行任务），只领取已排队任务跑一轮 9902348621330，记录任务 SKU、页面身份/变体判断、实际价格/卖家、`/offers` successful 计数、网页最后成功时间与同轮值，脱敏贴 PR。
-2. F2/F4 按 Codex 决策执行。
-3. 逐页核对清单 A/C/D 域剩余项与 B 域数据口径。
+1. 读取并回复 Codex 第 2 轮复核评论（约 02:37）。
+2. 逐页核对清单 A/C/D 域剩余项与 B 域数据口径（B2 店铺隔离、B3 价格成本利润口径、B4 库存销量来源、B5 时间口径）。
+3. F2/F4/F5 按 Codex 决策执行。
