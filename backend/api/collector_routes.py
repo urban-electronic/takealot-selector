@@ -146,6 +146,7 @@ class Report(BaseModel):
 def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id),
            x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client')):
     assert_default(store);touch(db,collector_kind(x_collector_client));processed=skipped=successful=0
+    report_source='pricepilot_relay' if x_collector_client=='pricepilot_relay' else collector_kind(x_collector_client)
     recover_expired(db,time.time())
     for item in data.items:
         lease=db.query(SystemSettings).filter_by(key=CLAIM_PREFIX+str(item.get('productId',''))).first()
@@ -182,11 +183,11 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
             config.update(status='success',snapshot=snapshot,buybox_price=bb,holding_buybox=None,
                 price_matches_buybox=abs(bb-own)<.01 if isinstance(own,(int,float)) else False,
                 competitor_price=min((o['price'] for o in quotes if o.get('status')=='in_stock' and not o.get('isMine')),default=None),
-                last_success_at=asof,quote_time_source=clock_source,error='',error_code='',diagnostics=diagnostics,failures=0,source='pricepilot_relay' if relayed else 'local_collector')
+                last_success_at=asof,quote_time_source=clock_source,error='',error_code='',diagnostics=diagnostics,failures=0,source=report_source)
         else:
             stale=relayed and relayed_at is None
             config.update(status='error',error='原程序报价时间缺失、过期或无效，未作为新行情使用' if stale else message or '本机采集未取得有效行情',error_code='stale_source_quote' if stale else code or 'local_collection_failed',diagnostics=diagnostics,failures=config.get('failures',0)+1)
-        config.update(request_once=False,last_attempt_at=at,next_due=now+config.get('interval_minutes',5)*60)
+        config.update(request_once=False,last_attempt_at=at,last_attempt_source=report_source,next_due=now+config.get('interval_minutes',5)*60)
         if db.query(SystemSettings).filter_by(key=row.key,value=job['claim']).update({'value':json.dumps(config,ensure_ascii=False)})==1:
             processed+=1
             if valid: successful+=1
@@ -212,3 +213,4 @@ def release(data:Release,db:Session=Depends(get_db),store:str=Depends(get_store_
             released+=1
         db.delete(lease)
     db.commit();return {'released':released,'price_changed':False}
+

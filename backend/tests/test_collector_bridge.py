@@ -24,6 +24,30 @@ def test_original_collector_roundtrip_keeps_pricing_disabled_and_shares_quote(mo
         assert not db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_rule:')).count()
         assert bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':50}]),db,DEFAULT_STORE_ID)['skipped']==1
 
+@pytest.mark.parametrize('client,source', [('local_collector','local_collector'),('browser_extension','browser_extension')])
+def test_client_origin_is_not_conflated_with_native_gui(monkeypatch,client,source):
+    with database() as db:
+        item=setup(db,monkeypatch)
+        result=bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99}]),db,DEFAULT_STORE_ID,client)
+        row=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
+        assert result['successful']==1
+        assert row['source']==source and row['last_attempt_source']==source
+
+def test_failed_extension_attempt_preserves_previous_native_quote_origin(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch)
+        bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99}]),db,DEFAULT_STORE_ID,'local_collector')
+        setting=db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first()
+        old=json.loads(setting.value)
+        retry={**old,'next_due':0}
+        setting.value=json.dumps(retry);db.commit()
+        item=bridge.products(db,DEFAULT_STORE_ID,'browser_extension')['items'][0]
+        result=bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'variantSwitchFailed':True}]),db,DEFAULT_STORE_ID,'browser_extension')
+        row=json.loads(db.query(SystemSettings).filter_by(key=setting.key).first().value)
+        assert result['successful']==0 and row['status']=='error'
+        assert row['source']=='local_collector' and row['last_attempt_source']=='browser_extension'
+        assert row['last_success_at']==old['last_success_at'] and row['quote_time_source']==old['quote_time_source']
+
 
 def test_pause_invalidates_inflight_local_collection(monkeypatch):
     with database() as db:
@@ -196,3 +220,4 @@ def test_expired_job_cannot_restore_a_concurrent_pause(monkeypatch):
         bridge.web_open(bridge.WebOpen(initial=True),db,DEFAULT_STORE_ID)
         value=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
         assert value['status']=='paused' and not value['enabled'] and not value['request_once']
+
