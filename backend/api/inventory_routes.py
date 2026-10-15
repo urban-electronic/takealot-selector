@@ -265,6 +265,7 @@ def list_shipments(db: Session = Depends(get_db), store_id: str = Depends(get_st
         lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == row.id).all()
         result.append({
             "id": row.id, "shipment_no": row.shipment_no, "shipment_date": row.shipment_date,
+            "created_at": row.created_at.isoformat() if row.created_at else "",
             "mark": row.mark, "shipping": row.shipping, "address": row.address,
             "status": row.status, "version": row.version, "void_reason": row.void_reason,
             "total_skus": len(lines), "total_quantity": sum(x.total_quantity for x in lines),
