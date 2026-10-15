@@ -1,54 +1,72 @@
 # -*- coding: utf-8 -*-
-"""根据已确认的装箱/发货记录生成 Takealot 入仓模板。"""
+"""根据已确认的装箱/发货记录生成 ERP 入仓模板。"""
 
+import html
 import os
+import re
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 
 BASE_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TEMPLATE = BASE_DIR / "inbound_template.xlsx"
-MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-Q = lambda name: f"{{{MAIN}}}{name}"
-ET.register_namespace("", MAIN)
+SHEET = "xl/worksheets/sheet1.xml"
+ROW_RE = re.compile(r'<row\b(?=[^>]*\br="(?P<number>\d+)")[^>]*(?:/>|>.*?</row\s*>)', re.S)
+DIMENSION_RE = re.compile(r'(<dimension\b[^>]*\bref=")[^"]*(")')
 
 
-def _cell(row, coordinate: str, value, *, text: bool = False) -> None:
-    cell = ET.SubElement(row, Q("c"), {"r": coordinate, "s": "2"})
+def _plain_cell(coordinate: str, value, *, text: bool = False) -> str:
+    """只写入值，不添加单元格样式或格式。"""
     if text:
-        cell.set("t", "inlineStr")
-        inline = ET.SubElement(cell, Q("is"))
-        ET.SubElement(inline, Q("t")).text = str(value)
-    else:
-        ET.SubElement(cell, Q("v")).text = str(int(value))
+        safe = html.escape(str(value), quote=False)
+        return f'<c r="{coordinate}" t="inlineStr"><is><t>{safe}</t></is></c>'
+    return f'<c r="{coordinate}"><v>{int(value)}</v></c>'
+
+
+def _data_row(index: int, identifier: int, line) -> str:
+    """A 标识号、B 箱数、C 自定义箱号、I SKU、J 每箱 SKU 数量。"""
+    return (
+        f'<row r="{index}" spans="1:10">'
+        f'{_plain_cell(f"A{index}", identifier)}'
+        f'{_plain_cell(f"B{index}", 1)}'
+        f'{_plain_cell(f"C{index}", identifier)}'
+        f'{_plain_cell(f"I{index}", line.sku, text=True)}'
+        f'{_plain_cell(f"J{index}", line.total_quantity)}'
+        '</row>'
+    )
 
 
 def generate_inbound(rows, output: Path) -> None:
-    """A 为装箱单顺序号，B 固定为 1，I 为 SKU，J 为该 SKU 的装箱总数量。"""
+    """每张装箱单对应一个箱子；同一装箱单的所有 SKU 共用箱号和标识号。"""
     with zipfile.ZipFile(TEMPLATE) as source:
-        root = ET.fromstring(source.read("xl/worksheets/sheet1.xml"))
-        sheet_data = root.find(Q("sheetData"))
-        if sheet_data is None:
+        sheet_xml = source.read(SHEET).decode("utf-8")
+
+        # 清除模板或上次导出的数据行，只保留表头及其原始 XML/格式。
+        def keep_header(match):
+            return match.group(0) if int(match.group("number")) == 1 else ""
+
+        sheet_xml = ROW_RE.sub(keep_header, sheet_xml)
+        sheet_data_end = sheet_xml.find("</sheetData>")
+        if sheet_data_end < 0:
             raise ValueError("入仓模板缺少工作表数据")
 
-        for row in list(sheet_data):
-            if int(row.get("r", "0")) >= 2:
-                sheet_data.remove(row)
+        data_rows = "".join(
+            _data_row(index, identifier, line)
+            for index, (identifier, line) in enumerate(rows, start=2)
+        )
+        sheet_xml = sheet_xml[:sheet_data_end] + data_rows + sheet_xml[sheet_data_end:]
 
-        for index, (identifier, line) in enumerate(rows, start=2):
-            row = ET.SubElement(sheet_data, Q("row"), {"r": str(index), "spans": "1:10"})
-            _cell(row, f"A{index}", identifier)
-            _cell(row, f"B{index}", 1)
-            _cell(row, f"I{index}", line.sku, text=True)
-            _cell(row, f"J{index}", line.total_quantity)
+        dimension_ref = f"A1:J{max(1, len(rows) + 1)}"
+        sheet_xml, updated = DIMENSION_RE.subn(
+            lambda match: match.group(1) + dimension_ref + match.group(2),
+            sheet_xml,
+            count=1,
+        )
+        if not updated:
+            raise ValueError("入仓模板缺少表格范围信息")
 
-        dimension = root.find(Q("dimension"))
-        if dimension is not None:
-            dimension.set("ref", f"A1:J{max(1, len(rows) + 1)}")
-
-        replacement = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        replacement = sheet_xml.encode("utf-8")
         with zipfile.ZipFile(output, "w") as target:
             for entry in source.infolist():
-                payload = replacement if entry.filename == "xl/worksheets/sheet1.xml" else source.read(entry.filename)
+                payload = replacement if entry.filename == SHEET else source.read(entry.filename)
                 target.writestr(entry, payload)
