@@ -47,7 +47,7 @@ async function scenario(monitor, inspect) {
   await scenario({ ...known, status: 'queued' }, tr => {
     check(tr.textContent.includes('R 269'), 'queued job retains last valid quote');
     check(tr.textContent.includes('卖家：Urban Electronics'), 'actual quoted seller is visible');
-    check(tr.textContent.includes('同价 · 卖家未核实'), 'unknown identity is explicitly distinguished from collection');
+    check(tr.textContent.includes('历史同价 · 推定持有'), 'historical comparison is inferred rather than freshly verified');
     check(!tr.textContent.includes('同价 · 待确认'), 'ambiguous badge removed');
     check(tr.textContent.includes('报价来源：后台采集'), 'quote origin is visible');
     check(tr.querySelector('.pricing-result').textContent.includes('采集：排队中'), 'task result does not say fresh success');
@@ -66,6 +66,13 @@ async function scenario(monitor, inspect) {
     check(tr.querySelectorAll('td')[2].textContent.includes('未采集'), 'empty quote does not show success');
     check(tr.querySelectorAll('td')[2].textContent.includes('卖家：未读取'), 'missing seller is not invented');
   });
+  for (const [state,label] of Object.entries({matched:'同价 · 推定持有',mismatch_pending:'推定持有 · 失去复核1/2',mismatch:'异价 · 推定未持有',checking:'本店售价待复核',verification_failed:'本店售价复核未完成'})) {
+    await scenario({ ...known, status: 'success', price_ownership: {state,own_price:269,own_price_source:'official_live',own_price_asof:'2026-10-15T01:58:10Z',identity_verified:false} }, tr => {
+      check(tr.textContent.includes(label), `price estimate ${state} is explicit`);
+      check(tr.textContent.includes('对照本店价：R 269 · 实时API'), 'comparison source is visible');
+      check(tr.querySelectorAll('td')[2].querySelector('.status-pill').title.includes('不证明卖家身份'), 'estimate is not verified identity');
+    });
+  }
   await scenario({ ...known, status: 'success', source: undefined, snapshot: {} }, tr => {
     check(tr.textContent.includes('报价来源：未记录'), 'legacy source remains unknown');
     check(tr.textContent.includes('卖家：未读取'), 'legacy seller remains unknown');

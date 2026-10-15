@@ -51,6 +51,26 @@ def test_monitor_reads_quotes_without_price_patch(monkeypatch):
     assert result['source']=='cloud_browser' and result['quote_time_source']=='cloud_completion'
     assert client.get.call_count==1 and not client.patch.called and not client.post.called
 
+
+def test_cloud_mismatch_rechecks_api_and_confirms_loss_in_two_rounds(monkeypatch):
+    import database
+    client,first=run(monkeypatch)
+    assert first['price_ownership']['state']=='matched'
+    async def lower_quote(product,offer):
+        return {'buyboxPrice':99,'offers':[]}
+    monkeypatch.setattr(monitor,'collect',lower_quote)
+    key=monitor.PREFIX+DEFAULT_STORE_ID+':p:1'
+    for state in ['mismatch_pending','mismatch']:
+        with database.SessionLocal() as db:
+            row=db.query(SystemSettings).filter_by(key=key).first()
+            value=json.loads(row.value);value['next_due']=0;row.value=json.dumps(value);db.commit()
+        monitor.process(key)
+        with database.SessionLocal() as db:
+            value=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        assert value['status']=='success' and value['price_ownership']['state']==state
+        assert value['price_ownership']['own_price_source']=='official_live'
+    assert client.get.call_count==5 and not client.patch.called and not client.post.called
+
 def test_cloud_success_records_origin_and_replaces_prior_local_origin(monkeypatch):
     client,result=run(monkeypatch,initial_source='local_collector')
     assert result['source']=='cloud_browser'
