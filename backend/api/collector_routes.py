@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from database import get_db
@@ -144,10 +144,11 @@ class Report(BaseModel):
 
 @router.post('/offers')
 def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id),
-           x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client')):
+           x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client'),
+           background_tasks:BackgroundTasks=None):
     assert_default(store);touch(db,collector_kind(x_collector_client));processed=skipped=successful=0
     report_source='pricepilot_relay' if x_collector_client=='pricepilot_relay' else collector_kind(x_collector_client)
-    recover_expired(db,time.time())
+    recover_expired(db,time.time()); price_checks=[]
     for item in data.items:
         lease=db.query(SystemSettings).filter_by(key=CLAIM_PREFIX+str(item.get('productId',''))).first()
         if not lease: skipped+=1;continue
@@ -180,7 +181,11 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
             observed,clock_source=(relayed_at,'source_round_start') if relayed else observation_time(item,job,now)
             asof=datetime.fromtimestamp(observed,timezone.utc).isoformat()
             own=config.get('current_price')
+            from services.price_ownership import amount,estimate,pending
+            same_price=amount(own) and abs(bb-own)<.01
+            inference=estimate(config.get('price_ownership'),bb,own,'task_snapshot',datetime.fromtimestamp(job.get('claimed_at',now),timezone.utc).isoformat()) if same_price else pending(config.get('price_ownership'))
             config.update(status='success',snapshot=snapshot,buybox_price=bb,holding_buybox=None,
+                price_ownership=inference,
                 price_matches_buybox=abs(bb-own)<.01 if isinstance(own,(int,float)) else False,
                 competitor_price=min((o['price'] for o in quotes if o.get('status')=='in_stock' and not o.get('isMine')),default=None),
                 last_success_at=asof,quote_time_source=clock_source,error='',error_code='',diagnostics=diagnostics,failures=0,source=report_source)
@@ -190,10 +195,15 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         config.update(request_once=False,last_attempt_at=at,last_attempt_source=report_source,next_due=now+config.get('interval_minutes',5)*60)
         if db.query(SystemSettings).filter_by(key=row.key,value=job['claim']).update({'value':json.dumps(config,ensure_ascii=False)})==1:
             processed+=1
-            if valid: successful+=1
+            if valid:
+                successful+=1
+                if not same_price: price_checks.append((row.key,json.dumps(config,ensure_ascii=False)))
         else: skipped+=1
         db.delete(lease)
     db.commit()
+    if background_tasks is not None and price_checks:
+        from services.price_ownership import verify_batch
+        background_tasks.add_task(verify_batch,price_checks)
     return {'processed':processed,'successful':successful,'skipped':skipped,'computeEnqueued':0}
 
 class Release(BaseModel):

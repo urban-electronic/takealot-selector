@@ -66,6 +66,18 @@ def process(row_id):
                           holding_buybox=False if abs(bb-own['selling_price'])>=.01 else None, price_matches_buybox=abs(bb-own['selling_price'])<.01, current_price=own['selling_price'],
                           stock=own['stock_at_takealot_total'], last_success_at=datetime.now(timezone.utc).isoformat(),
                           source='cloud_browser', quote_time_source='cloud_completion', error='', error_code='', error_stage='', failures=0)
+            from services.price_ownership import estimate,pending
+            check_own=own
+            check_source=result['own_price_source'];check_asof=result['own_price_asof']
+            try:
+                if abs(bb-own['selling_price'])>=.01:
+                    with httpx.Client(timeout=5,follow_redirects=False) as client:
+                        check_own=official_offer(client,key,config['offer_id'])
+                    if check_own.get('sku')!=config['sku']: raise ValueError('SKU changed')
+                    check_source='official_live';check_asof=datetime.now(timezone.utc).isoformat()
+                result['price_ownership']=estimate(config.get('price_ownership'),bb,check_own['selling_price'],check_source,check_asof)
+            except Exception:
+                result['price_ownership']=pending(config.get('price_ownership'),failed=True)
         except Exception as error:
             result.update(status='error', error_stage=stage, error_code=result.get('error_code') or ('seller_read_failed' if stage=='seller_api' else type(error).__name__), error=str(error) if isinstance(error,ValueError) else '采集或接口暂不可用；未改价', failures=config.get('failures',0)+1)
         finally:

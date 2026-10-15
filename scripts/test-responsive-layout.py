@@ -14,6 +14,7 @@ PROCUREMENT = dict(id='fixture-record', product_id=PRODUCT['id'], product_no='1'
 PACK = dict(sku='TEST-001', name='收纳包', name_zh='收纳包', name_en='Travel storage bag', image_file='', default_count=1, material='织物', electric='否', magnetic='否', unit='个', weight='0.2', brand='', battery='')
 RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last_result='未启动')
 PRICING = dict(product_id=PRODUCT['id'], offer_id='test-offer', sku='TEST-001', name=PRODUCT['product_name'], group='未分类', stock=10, price=269, suggested_min=200, rule=RULE, monitor=dict(status='error', enabled=False, interval_minutes=5, error_code='site_challenge', error='网站要求本人验证', last_success_at=None))
+PRICING['monitor'].update(buybox_price=269,last_success_at='2026-10-15T14:00:00Z',price_ownership=dict(state='matched',own_price=269,own_price_source='official_live',own_price_asof='2026-10-15T14:00:01Z',identity_verified=False))
 DATA = {
     '/api/stores':[STORE], '/api/inventory/stores-overview':[],
     '/api/products':[PRODUCT], '/api/products/'+PRODUCT['id']:PRODUCT,
