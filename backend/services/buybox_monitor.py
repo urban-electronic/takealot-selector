@@ -88,8 +88,11 @@ def start_worker():
         while not _stop.is_set():
             try:
                 with SessionLocal() as db:
-                    from api.collector_routes import connected
-                    if connected(db):
+                    from api.collector_routes import connected, local_last_success
+                    # 仅当本机在线「且」近期确有成功采集时才退避；若本机卡在验证页/会话失效
+                    # （alive 但 120s 内无成功），云端接管，避免「本机独占租约却采不到」的死锁。
+                    local_fresh = time.time() - local_last_success(db) < 120
+                    if connected(db) and local_fresh:
                         _stop.wait(10)
                         continue
                     jobs=[]

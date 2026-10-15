@@ -15,6 +15,33 @@ from urllib.parse import urlsplit, urlunsplit
 ROOT = Path(__file__).resolve().parent
 BASE = 'https://takealot-selector-production.up.railway.app'
 
+import subprocess
+APP_DIR = Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'TakealotCollector'
+try: APP_DIR.mkdir(parents=True, exist_ok=True)
+except Exception: pass
+STATUS_FILE = APP_DIR / 'collector_status.json'
+
+def write_status(state, **extra):
+    payload = {'state': state, 'ts': datetime.now(timezone.utc).isoformat()}
+    payload.update(extra)
+    try: STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    except Exception: pass
+
+def notify(title, message):
+    """Best-effort Windows toast; never raises. Only informative, no secrets."""
+    try:
+        ps = (
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null;"
+            "$t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+            "$l=$t.GetElementsByTagName('text');"
+            "$l.Item(0).AppendChild($t.CreateTextNode('{t}')) | Out-Null;"
+            "$l.Item(1).AppendChild($t.CreateTextNode('{m}')) | Out-Null;"
+            "$n=[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('TakealotCollector');"
+            "$n.Show($t)"
+        ).format(t=title.replace("'", "''"), m=message.replace("'", "''"))
+        subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True, timeout=15)
+    except Exception: pass
+
 def parser_module():
     source = ROOT / 'pricepilot_collector.py'
     if not source.exists(): source = ROOT.parent.parent / 'backend/services/pricepilot_collector.py'
@@ -142,7 +169,7 @@ async def scrape(context, item, parser):
         await page.close()
     return quote
 
-async def round_once(context, api, parser, auth_event=None):
+async def round_once(context, api, parser, auth_event=None, state=None):
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
     items=batch.get('items',[])
     if not items: print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
@@ -156,6 +183,7 @@ async def round_once(context, api, parser, auth_event=None):
             response=await asyncio.to_thread(api.call,'/api/collector/offers',{'items':[quote]})
             if response.get('processed') or response.get('skipped'): leased.discard(item['productId'])
             accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
+            if accepted and state is not None: state['last_success_ts']=time.time()
             d=quote.get('diagnostics') or {}
             error=quote.get('error')
             if error=='auth_expired':
@@ -190,9 +218,12 @@ async def run(args):
     lock=singleton(profile)
     try:
         async with async_playwright() as playwright:
-            context=await playwright.chromium.launch_persistent_context(
-                str(profile),headless=args.headless,locale='en-ZA',timezone_id='Africa/Johannesburg',
+            launch_args=dict(headless=args.headless,locale='en-ZA',timezone_id='Africa/Johannesburg',
                 viewport={'width':1366,'height':768})
+            if args.stealth:
+                launch_args['args']=['--disable-blink-features=AutomationControlled']
+                launch_args['ignore_default_args']=['--enable-automation']
+            context=await playwright.chromium.launch_persistent_context(str(profile),**launch_args)
             try:
                 if args.login:
                     page=await context.new_page()
@@ -209,7 +240,8 @@ async def run(args):
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                     try:
-                        cycle=asyncio.create_task(round_once(context,api,parser,auth_event))
+                        state={'last_success_ts':None}
+                        cycle=asyncio.create_task(round_once(context,api,parser,auth_event,state))
                         try:
                             while not cycle.done():
                                 if getattr(args,'stop_file',None) and Path(args.stop_file).exists():
@@ -220,11 +252,17 @@ async def run(args):
                             if not cycle.done(): cycle.cancel()
                             await asyncio.gather(cycle,return_exceptions=True)
                         if auth_event.is_set():
+                            write_status('auth_expired')
+                            notify('Takealot 采集器', '登录会话已失效，请打开 GUI 点「登录 / 配送设置」重新登录后再次常态采集。')
                             print('登录会话已失效，停止采集；请重新登录后再启动常态采集。',flush=True)
                             break
                         # 容错：连续整轮被风控/拦截时拉长等待，避免加剧封禁
-                        if all_blocked and count>0: consecutive_block+=1
-                        else: consecutive_block=0
+                        if all_blocked and count>0:
+                            consecutive_block+=1
+                            write_status('challenged', consecutive_block=consecutive_block)
+                        else:
+                            consecutive_block=0
+                            write_status('collecting_ok' if count>0 else 'idle', last_success_ts=state.get('last_success_ts'))
                         wait=300 if consecutive_block>=2 else 30
                     except asyncio.CancelledError: break
                     except Exception as exc:
@@ -243,6 +281,7 @@ def main():
     cli.add_argument('--login',action='store_true',help='仅打开持久浏览器进行人工登录与配送设置')
     cli.add_argument('--once',action='store_true')
     cli.add_argument('--headless',action='store_true',help='无界面后台运行（用于无人值守常态采集）')
+    cli.add_argument('--stealth',action='store_true',help='实验性：去除浏览器自动化特征（仅 headless 生效），用于评估无头风控；默认关闭')
     cli.add_argument('--stop-file',help=argparse.SUPPRESS)
     args=cli.parse_args()
     try: asyncio.run(run(args))

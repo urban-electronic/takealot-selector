@@ -17,12 +17,20 @@ router = APIRouter(prefix='/api/collector', tags=['collector'])
 HEARTBEAT = '_buybox_local_collector'
 BROWSER_HEARTBEAT = '_buybox_browser_collector'
 CLAIM_PREFIX = '_buybox_collector_claim:'
+LAST_SUCCESS_KEY = '_buybox_local_collector_last_success'
 
 def connected(db):
     now=time.time()
     return any(row and json.loads(row.value).get('expires_at',0)>now for row in (
         db.query(SystemSettings).filter_by(key=HEARTBEAT).first(),
         db.query(SystemSettings).filter_by(key=BROWSER_HEARTBEAT).first()))
+
+def local_last_success(db):
+    """Unix ts of the local collector's most recent successful quote, or 0 if none."""
+    row=db.query(SystemSettings).filter_by(key=LAST_SUCCESS_KEY).first()
+    if not row: return 0.0
+    try: return float(json.loads(row.value).get('ts',0))
+    except Exception: return 0.0
 
 def collector_source(db):
     now=time.time()
@@ -193,6 +201,10 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         else: skipped+=1
         db.delete(lease)
     db.commit()
+    if successful>0:
+        db.query(SystemSettings).filter_by(key=LAST_SUCCESS_KEY).update(
+            {'value':json.dumps({'ts':time.time()})}, synchronize_session=False)
+        db.commit()
     return {'processed':processed,'successful':successful,'skipped':skipped,'computeEnqueued':0}
 
 class Release(BaseModel):
