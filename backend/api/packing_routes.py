@@ -637,6 +637,10 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
     clearance_setting = db.query(SystemSettings).filter(SystemSettings.key == clearance_key).first()
     clearance_already_used = bool(clearance_setting and clearance_setting.value == '1')
     existing_clearance = bool(existing_shipment and existing_shipment.status == 'clearance')
+    if existing_shipment and data.record_shipment and existing_shipment.status != 'confirmed':
+        return fail(409, '该草稿已是老库存清理或已撤回记录，不能作为普通发货重复导出；请新建发货草稿并确保库存充足。')
+    if existing_shipment and not data.record_shipment and existing_shipment.status == 'void':
+        return fail(409, '该老库存清理记录已撤回，不能再次导出。')
     if is_clearance_request and not existing_clearance and clearance_already_used:
         return fail(409, '本店的一次性老库存清理已完成。后续请使用正常发货，并确保库存充足。')
     if is_clearance_request and existing_shipment and not existing_clearance:
@@ -658,6 +662,13 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         row = public(p)
         row['box_no'] = line.box_no.strip()
         items.append((row, cartons, count))
+    if existing_clearance:
+        recorded_lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == existing_shipment.id).all()
+        recorded_quantities = {}
+        for line in recorded_lines:
+            recorded_quantities[line.sku] = recorded_quantities.get(line.sku, 0) + line.total_quantity
+        if requested_by_sku != recorded_quantities:
+            return fail(409, '老库存清理记录已锁定，重复下载时不能更改 SKU 或数量。')
     db.commit()
     if data.record_shipment and not existing_shipment:
         for sku, requested in requested_by_sku.items():
