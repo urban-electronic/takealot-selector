@@ -106,21 +106,24 @@ def api_paged(path):
             return out
 
 
-def load_state():
+def load_state(path=None):
+    """读取状态 JSON；path 缺省时用模块级 STATE_FILE。独立态文件（自检/测试）可传 path。"""
+    target = path or STATE_FILE
     try:
-        with open(STATE_FILE, encoding="utf-8") as f:
+        with open(target, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
 
 
-def save_state(state):
-    """原子写：先写临时文件再替换，失败不谎报成功。"""
-    fd, tmp = tempfile.mkstemp(dir=str(STATE_FILE.parent), suffix=".tmp")
+def save_state(state, path=None):
+    """原子写：先写临时文件再替换，失败不谎报成功。path 缺省时用 STATE_FILE。"""
+    target = path or STATE_FILE
+    fd, tmp = tempfile.mkstemp(dir=str(Path(target).parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, STATE_FILE)
+        os.replace(tmp, target)
         return True
     except Exception as exc:
         print("WARN 保存 state 失败:", repr(exc)[:200])
@@ -151,16 +154,43 @@ def _open_lock():
     return open(str(_STATE_LOCK), "a+")
 
 
-def _acquire_lock(lockf):
-    try:
-        if _msvcrt is not None:
+def _acquire_lock(lockf, timeout=10.0, step=0.05):
+    """获取跨进程文件锁，返回 (acquired, backend)。
+
+    - backend 为 None 表示两个平台锁后端（msvcrt / fcntl）均不可用，
+      此时无法保证跨进程串行化 → 必须 fail closed，调用方不得写文件。
+    - 获取失败（被占用超时 / 后端异常）返回 (False, backend)。
+    使用非阻塞锁 + 有限重试实现超时，避免永久阻塞事件循环（原 LK_LOCK 会无限阻塞）。
+    """
+    if _msvcrt is not None:
+        try:
             lockf.seek(0)
-            _msvcrt.locking(lockf.fileno(), _msvcrt.LK_LOCK, 1)
-        elif _fcntl is not None:
-            _fcntl.flock(lockf.fileno(), _fcntl.LOCK_EX)
-        return True
-    except Exception:
-        return False
+            deadline = time.time() + timeout
+            while True:
+                try:
+                    _msvcrt.locking(lockf.fileno(), _msvcrt.LK_NBLCK, 1)
+                    return True, "msvcrt"
+                except OSError:
+                    if time.time() >= deadline:
+                        return False, "msvcrt"
+                    time.sleep(step)
+        except Exception:
+            return False, "msvcrt"
+    if _fcntl is not None:
+        try:
+            deadline = time.time() + timeout
+            while True:
+                try:
+                    _fcntl.flock(lockf.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                    return True, "fcntl"
+                except OSError:
+                    if time.time() >= deadline:
+                        return False, "fcntl"
+                    time.sleep(step)
+        except Exception:
+            return False, "fcntl"
+    # 两个平台锁后端均不可用：无法保证跨进程串行化 → fail closed
+    return False, None
 
 
 def _release_lock(lockf):
@@ -175,49 +205,102 @@ def _release_lock(lockf):
 
 
 def atomic_state_update(mutator):
-    """Load → mutate → persist 串行化：进程内用 threading.Lock，跨进程用文件锁。
+    """Load → mutate → persist 串行化：进程内 threading.Lock + 跨进程文件锁。
 
-    原子替换(tmp+replace)只能避免半文件，不能防「读-改-写」交错；
-    这里用 threading.Lock（本进程内）叠加文件锁（跨进程）把整段读改写串行化，
-    杜绝并发 ACK/fetch/reply 丢更新（PR103 桥接并发状态修复）。"""
+    **失败即关闭（fail closed）**：若跨进程文件锁不可用（后端缺失或获取超时/失败），
+    直接返回 False 且**绝不写文件**、绝不谎称「串行化成功」。调用方据此判定状态未
+    持久化（如游标未推进），不得误当作已处理。原子替换(tmp+replace)只能避免半文件，
+    不能防「读-改-写」交错；这里用双重锁把整段读改写串行化，杜绝并发丢更新
+    （PR103 桥接并发状态修复；WB-103-R5 第 1 条）。"""
     with _PROC_LOCK:
         lockf = _open_lock()
-        acquired = _acquire_lock(lockf)
+        acquired, backend = _acquire_lock(lockf)
+        if not acquired:
+            try:
+                lockf.close()
+            except Exception:
+                pass
+            print("WARN: 跨进程文件锁不可用(%s)，atomic_state_update fail closed（未写文件）"
+                  % ("无可用锁后端" if backend is None else backend))
+            return False
         try:
             state = load_state()
             mutator(state)
             return save_state(state)
         finally:
-            if acquired:
-                _release_lock(lockf)
+            _release_lock(lockf)
             try:
                 lockf.close()
             except Exception:
                 pass
 
 
-def state_rw_probe():
-    """自检「state 原子写」：用独立临时态文件往返，不触碰真实协作游标。
+class StateStore:
+    """带路径的状态存储，支持独立 state 文件（如自检临时态 / 跨进程测试）。
 
-    旧实现会在 probe 期间读 original、写 probe、finally 把 original 写回，
-    若此时有并发 ACK 把游标推进，自检结束会把游标回退（丢更新）。
-    这里改用完全独立的临时态文件，真实协作游标绝不被读写。"""
+    与模块级全局 STATE_FILE 解耦：probe 与测试用独立 StateStore 实例读写自己的文件，
+    **绝不重新赋值全局 STATE_FILE**，因此同进程并发 ACK/record_poll（写真实游标）与
+    probe（写临时态）互不干扰，真实游标不会因 probe 中途被删临时文件而丢更新
+    （WB-103-R5 第 2 条）。锁逻辑与 atomic_state_update 一致（进程内 Lock + 跨进程
+    文件锁，fail closed）。
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.lock = threading.Lock()
+        self.lock_file = self.path.with_name(self.path.name + ".lock")
+
+    def load(self):
+        return load_state(self.path)
+
+    def save(self, state):
+        return save_state(state, self.path)
+
+    def atomic_update(self, mutator, timeout=10.0):
+        """返回 (saved: bool, fail_reason: str|None)。锁不可用则 (False, reason)。"""
+        with self.lock:
+            lockf = open(str(self.lock_file), "a+")
+            acquired, backend = _acquire_lock(lockf, timeout=timeout)
+            if not acquired:
+                try:
+                    lockf.close()
+                except Exception:
+                    pass
+                return False, ("no_lock_backend" if backend is None else backend)
+            try:
+                state = self.load()
+                mutator(state)
+                return self.save(state), None
+            finally:
+                _release_lock(lockf)
+                try:
+                    lockf.close()
+                except Exception:
+                    pass
+
+
+def state_rw_probe():
+    """自检「state 原子写」：用独立 StateStore（临时态文件）往返，不触碰真实协作游标、不修改全局。
+
+    真实协作游标由模块级原子写持有；probe 使用完全独立的临时文件 + 独立锁，
+    即便本进程此刻有并发 ACK/record_poll 在写真实游标，也不互相干扰、不丢更新。"""
     import tempfile as _tf
-    global STATE_FILE
-    orig = STATE_FILE
-    tmp = _tf.NamedTemporaryFile("w+", suffix=".json", delete=False, dir=str(orig.parent))
+    tmp = _tf.NamedTemporaryFile("w+", suffix=".json", delete=False, dir=str(STATE_FILE.parent))
     tmp.close()
     try:
-        STATE_FILE = Path(tmp.name)
-        save_state({"__seed__": 1})
-        wrote = save_state({"__seed__": 1, "__probe__": "1"})
-        back = load_state()
-        ok = bool(wrote) and back.get("__probe__") == "1"
+        store = StateStore(Path(tmp.name))
+        ok1 = store.save({"__seed__": 1})
+        ok2 = store.save({"__seed__": 1, "__probe__": "1"})
+        back = store.load()
+        ok = bool(ok1) and bool(ok2) and back.get("__probe__") == "1"
         detail = "原子写(tmp+replace)往返正常（独立临时态文件，不触碰真实游标）"
     finally:
-        STATE_FILE = orig
         try:
             os.unlink(tmp.name)
+        except Exception:
+            pass
+        try:
+            os.unlink(tmp.name + ".lock")
         except Exception:
             pass
     return ok, detail
