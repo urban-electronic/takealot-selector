@@ -56,16 +56,25 @@ export default function Inventory() {
   };
 
   const withdrawShipment = async (shipment: ShipmentRecord) => {
-    if (!window.confirm(`确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`)) return;
+    const isClearance = shipment.status === 'clearance';
+    const prompt = isClearance
+      ? `确认撤回老库存清理记录 ${shipment.shipment_no}？不会调整库存；本店的一次性清理额度仍保持已使用。`
+      : `确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`;
+    if (!window.confirm(prompt)) return;
     try {
-      await voidShipment(shipment.id, '装箱单有误，撤回修改');
-      localStorage.setItem(getStoreStorageKey('packingDraftV1'), JSON.stringify({
-        selected: shipment.lines.map(line => line.sku),
-        lines: Object.fromEntries(shipment.lines.map(line => [line.sku, { cartons: String(line.cartons), count: String(line.count_per_carton) }])),
-        exportForm: { date: shipment.shipment_date, mark: shipment.mark, shipping: shipment.shipping, address: shipment.address },
-        draftKey: draftKey(),
-      }));
-      navigate('/packing');
+      await voidShipment(shipment.id, isClearance ? '撤回老库存清理记录' : '装箱单有误，撤回修改');
+      if (!isClearance) {
+        localStorage.setItem(getStoreStorageKey('packingDraftV1'), JSON.stringify({
+          selected: shipment.lines.map(line => line.sku),
+          lines: Object.fromEntries(shipment.lines.map(line => [line.sku, { cartons: String(line.cartons), count: String(line.count_per_carton) }])),
+          exportForm: { date: shipment.shipment_date, mark: shipment.mark, shipping: shipment.shipping, address: shipment.address },
+          draftKey: draftKey(),
+        }));
+        navigate('/packing');
+        return;
+      }
+      setMessage('老库存清理记录已撤回，库存未变化，一次性清理额度仍已使用');
+      await load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -151,8 +160,8 @@ export default function Inventory() {
         <tbody>{shipments.map(row => <tr key={row.id}>
           <td>{row.status === 'confirmed' ? <input type="checkbox" checked={selectedShipmentIds.includes(row.id)} onChange={e => setSelectedShipmentIds(prev => e.target.checked ? [...prev, row.id] : prev.filter(id => id !== row.id))} /> : null}</td>
           <td className="mono">{row.shipment_no}</td><td>{row.shipment_date}</td><td>{row.total_skus}</td><td>{row.total_quantity}</td><td>{row.shipping || '-'}</td>
-          <td><span className={row.status === 'confirmed' ? 'status-confirmed' : 'status-void'}>{row.status === 'confirmed' ? '已发货' : '已撤回'}</span></td>
-          <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : <span className="muted">{row.void_reason}</span>}</td>
+          <td><span className={row.status === 'void' ? 'status-void' : 'status-confirmed'}>{row.status === 'confirmed' ? '已发货' : row.status === 'clearance' ? '老库存清理·不扣库存' : '已撤回'}</span></td>
+          <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : row.status === 'clearance' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回记录</button> : <span className="muted">{row.void_reason}</span>}</td>
         </tr>)}</tbody>
       </table></div></>}
 

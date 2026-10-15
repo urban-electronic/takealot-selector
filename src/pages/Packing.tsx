@@ -513,7 +513,7 @@ export default function Packing() {
     try {
       const rows = await getShipments();
       setTemplateShipments(rows
-        .filter(row => row.status === 'confirmed')
+        .filter(row => row.status === 'confirmed' || row.status === 'clearance')
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.shipment_no.localeCompare(a.shipment_no)));
     } catch (e: any) {
       setTemplateError(typeof e === 'string' ? e : e.message || '装箱单记录加载失败');
@@ -527,7 +527,7 @@ export default function Packing() {
       .filter(row => selectedShipmentIds.includes(row.id))
       .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.shipment_no.localeCompare(b.shipment_no));
     if (chosen.length === 0) {
-      setTemplateError('请至少选择 1 张已确认的装箱单');
+      setTemplateError('请至少选择 1 张有效装箱单');
       return;
     }
     setTemplateExporting(true);
@@ -869,7 +869,7 @@ export default function Packing() {
             <input type="text" value={exportForm.address} onChange={e => setExportForm(prev => ({ ...prev, address: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
           </div>
         </div>
-        <label style={{ display: 'block', marginTop: 12 }}><input type="checkbox" checked={exportForm.record_shipment === false} onChange={e => setExportForm(prev => ({ ...prev, record_shipment: !e.target.checked }))} /> 老库存清理：仅导出，不登记发货、不扣库存</label>
+        <label style={{ display: 'block', marginTop: 12 }}><input type="checkbox" checked={exportForm.record_shipment === false} onChange={e => setExportForm(prev => ({ ...prev, record_shipment: !e.target.checked }))} /> 本次仅一次老库存清理：登记可撤回记录，不扣库存；完成后关闭</label>
         <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
@@ -1064,7 +1064,7 @@ export default function Packing() {
               {templateLoading ? (
                 <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>正在读取装箱单…</div>
               ) : templateShipments.length === 0 ? (
-                <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>暂无已确认的装箱单</div>
+                <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>暂无可用装箱单</div>
               ) : templateShipments.map(row => (
                 <label key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderBottom: '1px solid #f0f1f3', cursor: 'pointer' }}>
                   <input type="checkbox" checked={selectedShipmentIds.includes(row.id)}
@@ -1072,7 +1072,7 @@ export default function Packing() {
                     style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)' }} />
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <strong style={{ display: 'block', color: '#243042' }}>{row.shipment_no}</strong>
-                    <small style={{ color: '#667085' }}>{row.shipment_date} · {row.total_skus} 个 SKU</small>
+                    <small style={{ color: '#667085' }}>{row.shipment_date} · {row.total_skus} 个 SKU{row.status === 'clearance' ? ' · 老库存清理' : ''}</small>
                   </span>
                   <span style={{ color: '#344054', fontSize: 13, whiteSpace: 'nowrap' }}>{row.total_quantity} 件</span>
                 </label>

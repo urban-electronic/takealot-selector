@@ -223,7 +223,7 @@ export interface ShipmentRecord {
   mark: string;
   shipping: string;
   address: string;
-  status: 'confirmed' | 'void';
+  status: 'confirmed' | 'void' | 'clearance';
   version: number;
   void_reason: string;
   total_skus: number;

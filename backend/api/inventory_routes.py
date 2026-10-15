@@ -290,7 +290,7 @@ def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db)
         shipment = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
         if not shipment:
             raise HTTPException(status_code=404, detail=f"第 {identifier} 个发货记录不存在")
-        if shipment.status != "confirmed":
+        if shipment.status not in ("confirmed", "clearance"):
             raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 已撤回，不能生成入仓文件")
         lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == shipment.id).order_by(ShipmentLine.sku).all()
         if not lines:
@@ -316,11 +316,12 @@ def void_shipment(shipment_id: str, data: VoidIn, db: Session = Depends(get_db),
     row = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="发货记录不存在")
-    if row.status != "confirmed":
+    if row.status not in ("confirmed", "clearance"):
         raise HTTPException(status_code=400, detail="该发货记录已经撤回")
+    previous_status = row.status
     row.status = "void"
     row.void_reason = data.reason.strip()
     row.voided_at = dt.datetime.utcnow()
-    record_operation(db, store_id, "shipment", row.id, "void", f"撤回发货单 {row.shipment_no}", {"reason": row.void_reason})
+    record_operation(db, store_id, "shipment", row.id, "void", f"撤回 {row.shipment_no}", {"reason": row.void_reason, "previous_status": previous_status})
     db.commit()
     return {"ok": True}
