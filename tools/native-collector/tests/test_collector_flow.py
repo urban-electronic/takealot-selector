@@ -156,17 +156,29 @@ def test_cancelled_round_releases_all_leases():
     assert sorted(api.released) == ['lease-0', 'lease-1'], "取消时所有在租租约都要释放"
 
 
-def test_consecutive_verification_block_stops_visiting_page():
-    # 连续两轮 site_challenge 后，第三轮不再访问该商品页
+def test_verification_block_pauses_on_first_confirmation():
+    # 首次确认被拦截即暂停：不为「确认」而故意第二次访问已确认的拦页面
     ctx, api = FakeContext(), FakeApi(items(1))
     parser = FakeParser(challenged)
     state = {}
-    run(collector.round_once(ctx, api, parser, state))
-    run(collector.round_once(ctx, api, parser, state))
-    assert parser.visited == ['SKU0', 'SKU0'], "前两轮各访问一次"
     claimed, successful, blocked = run(collector.round_once(ctx, api, parser, state))
-    assert parser.visited == ['SKU0', 'SKU0'], "第三轮不得再访问已确认拦截的页面"
+    assert blocked == 1, "拦截必须计入 blocked"
+    assert parser.visited == ['SKU0'], "首轮访问一次"
+    claimed, successful, blocked = run(collector.round_once(ctx, api, parser, state))
+    assert parser.visited == ['SKU0'], "首次确认后不得再访问第二次"
     assert claimed == 1 and blocked == 1
+
+
+def test_http_403_is_counted_as_intercept_not_network_error():
+    # 403 属验证拦截，不得误归为网络加载失败（WB-103-R3 第 2 条）
+    ctx, api = FakeContext(), FakeApi(items(1))
+    parser = FakeParser(lambda i: {'buyboxPrice': None, 'error': 'http_403', 'offers': []})
+    state = {}
+    claimed, successful, blocked = run(collector.round_once(ctx, api, parser, state))
+    assert blocked == 1, "403 必须计入 blocked"
+    assert state.get('SKU0') == 1, "403 必须累加拦截计数"
+    run(collector.round_once(ctx, api, parser, state))
+    assert parser.visited == ['SKU0'], "403 首次确认后同样不得再访问"
 
 
 def test_network_load_failure_is_not_treated_as_intercept():
@@ -216,3 +228,27 @@ def test_pid_mismatch_is_never_trusted():
             'claimed': 3, 'successful': 3, 'failed': 0}
     text, _, _, _ = status_view.classify_state(data, 123, 4, '', now=_now())
     assert '成功' not in text, "pid 不一致（上一次运行残留）不得被信任"
+
+
+def test_run_id_mismatch_is_not_trusted():
+    # Codex 场景：同 PID + fresh ts，但 run_id='OLD' 与本次启动 'NEW' 不符
+    data = {'pid': 123, 'ts': _now().isoformat(), 'run_id': 'OLD', 'round': 9,
+            'state': 'collecting_ok', 'claimed': 1, 'successful': 1, 'failed': 0}
+    text, color, _, _ = status_view.classify_state(data, 123, 2, 'NEW', now=_now())
+    assert '成功' not in text and color != '#007a00', "run_id 与本次启动不符不得显示绿色成功"
+
+
+def test_invalid_round_does_not_raise_or_show_success():
+    # round='oops' 曾直接 TypeError 并可能打断 GUI poll
+    data = {'pid': 123, 'ts': _now().isoformat(), 'run_id': 'R', 'round': 'oops',
+            'state': 'collecting_ok', 'claimed': 1, 'successful': 1, 'failed': 0}
+    text, color, _, _ = status_view.classify_state(data, 123, 0, '', now=_now())
+    assert '成功' not in text and color != '#007a00'
+
+
+def test_future_timestamp_is_not_trusted():
+    future = (_now() + timedelta(hours=1)).isoformat()
+    data = {'pid': 123, 'ts': future, 'run_id': 'R', 'round': 3,
+            'state': 'collecting_ok', 'claimed': 1, 'successful': 1, 'failed': 0}
+    text, color, _, _ = status_view.classify_state(data, 123, 0, '', now=_now())
+    assert '成功' not in text and color != '#007a00', "来自未来的时间戳不得被信任"

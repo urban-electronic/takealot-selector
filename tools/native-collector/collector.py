@@ -7,6 +7,7 @@ import json
 import os
 import re
 from pathlib import Path
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -153,12 +154,32 @@ def is_retryable(error):
 # 「确认被验证拦截」的错误：连续出现说明该页面当前无法访问，应停止重复访问。
 # 注意与网络加载失败（blocked_or_load_failed / navigation_timeout）区分——后者可重试。
 INTERCEPT_ERRORS = {'site_challenge', 'http_403'}
-CHALLENGE_STOP_AFTER = 2
+# 首次确认被拦截即暂停该页面：不再为了「确认」而故意第二次访问已确认的拦页面。
+CHALLENGE_STOP_AFTER = 1
 
 async def round_once(context, api, parser, challenged=None):
     challenged = {} if challenged is None else challenged
-    batch=await asyncio.to_thread(api.call,'/api/collector/products')
-    items=batch.get('items',[])
+    # 领取放到独立线程并可用 Event 确定性等待：取消时必须等它落地，才能拿到服务端
+    # 已授予的租约并释放，否则「领取中取消」会让租约悬挂（WB-103-R3 第 1 条实测失败）。
+    box={};claim_done=threading.Event()
+
+    def claim():
+        try: box['batch']=api.call('/api/collector/products')
+        except Exception: box['batch']={}
+        finally: claim_done.set()
+
+    threading.Thread(target=claim,daemon=True).start()
+    try:
+        await asyncio.to_thread(claim_done.wait,30)
+    except asyncio.CancelledError:
+        # 取消路径：等领取返回（阻塞但有限时），再同步释放已领取的租约。
+        claim_done.wait(30)
+        pending=(box.get('batch') or {}).get('items',[])
+        if pending:
+            try: api.call('/api/collector/release',{'product_ids':[i['productId'] for i in pending]})
+            except Exception: pass
+        raise
+    items=(box.get('batch') or {}).get('items',[])
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     successful=0;blocked=0
@@ -170,8 +191,11 @@ async def round_once(context, api, parser, challenged=None):
             # 直接放弃租约并提示人工恢复（在网页重新点击「立即采集」或重启采集器）。
             if challenged.get(sku,0) >= CHALLENGE_STOP_AFTER:
                 blocked+=1
-                print(f"SKU {sku}: 已连续 {CHALLENGE_STOP_AFTER} 轮被验证页/403 拦截，本机停止访问该商品页；"
-                      f"如需恢复请在网页重新点击「立即采集」（或重启常态采集）。",flush=True)
+                # 提示必须准确：暂停只持续到本次进程结束；重启会重新尝试，若仍被拦会再次暂停。
+                # 不承诺「点立即采集即可恢复」——同一 SKU 换租约仍指向同一被拦页面。
+                print(f"SKU {sku}: 上轮已被验证页/403 拦截，本机暂停访问该商品页以避免反复触发风控。"
+                      f"该暂停持续到本次采集进程结束（重启会重新尝试，仍被拦则再次暂停）；"
+                      f"恢复前提是先在本机浏览器人工确认该页面可正常访问。",flush=True)
                 return
             quote=None
             for attempt in range(2):
@@ -183,6 +207,7 @@ async def round_once(context, api, parser, challenged=None):
             got=quote.get('error')
             if got in INTERCEPT_ERRORS:
                 challenged[sku]=challenged.get(sku,0)+1
+                blocked+=1
             else:
                 challenged.pop(sku,None)
             try:
@@ -195,7 +220,7 @@ async def round_once(context, api, parser, challenged=None):
             if response.get('processed') or response.get('skipped'): leased.discard(item['productId'])
             accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
             if accepted: successful+=1
-            if quote.get('error') in ('site_challenge','blocked_or_load_failed'): blocked+=1
+            # blocked 已在上方「拦截判据」分支累计，此处不重复计数
             d=quote.get('diagnostics') or {}
             error=quote.get('error')
             reason=error if error in ('site_challenge','blocked_or_load_failed','navigation_timeout','collector_error','unstable_price','invalid_url') or isinstance(error,str) and re.fullmatch(r'http_\d{3}',error) else 'price_not_found'
