@@ -20,6 +20,7 @@
 """
 import argparse
 import json
+import threading
 import os
 import subprocess
 import tempfile
@@ -130,15 +131,108 @@ def save_state(state):
         return False
 
 
-def record_poll(state, pr):
+# --- 跨进程互斥：避免并发 ACK / fetch / reply 在「读-改-写」之间丢失更新 ---
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+try:
+    import msvcrt as _msvcrt
+except ImportError:
+    _msvcrt = None
+
+_STATE_LOCK = STATE_FILE.with_name(STATE_FILE.name + ".lock")
+# 进程内互斥：桥接脚本始终单进程运行，threading.Lock 足以串行化本进程内的
+# ACK/fetch/reply；文件锁再叠加一层跨进程互斥（best-effort）。
+_PROC_LOCK = threading.Lock()
+
+
+def _open_lock():
+    return open(str(_STATE_LOCK), "a+")
+
+
+def _acquire_lock(lockf):
+    try:
+        if _msvcrt is not None:
+            lockf.seek(0)
+            _msvcrt.locking(lockf.fileno(), _msvcrt.LK_LOCK, 1)
+        elif _fcntl is not None:
+            _fcntl.flock(lockf.fileno(), _fcntl.LOCK_EX)
+        return True
+    except Exception:
+        return False
+
+
+def _release_lock(lockf):
+    try:
+        if _msvcrt is not None:
+            lockf.seek(0)
+            _msvcrt.locking(lockf.fileno(), _msvcrt.LK_UNLCK, 1)
+        elif _fcntl is not None:
+            _fcntl.flock(lockf.fileno(), _fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+
+def atomic_state_update(mutator):
+    """Load → mutate → persist 串行化：进程内用 threading.Lock，跨进程用文件锁。
+
+    原子替换(tmp+replace)只能避免半文件，不能防「读-改-写」交错；
+    这里用 threading.Lock（本进程内）叠加文件锁（跨进程）把整段读改写串行化，
+    杜绝并发 ACK/fetch/reply 丢更新（PR103 桥接并发状态修复）。"""
+    with _PROC_LOCK:
+        lockf = _open_lock()
+        acquired = _acquire_lock(lockf)
+        try:
+            state = load_state()
+            mutator(state)
+            return save_state(state)
+        finally:
+            if acquired:
+                _release_lock(lockf)
+            try:
+                lockf.close()
+            except Exception:
+                pass
+
+
+def state_rw_probe():
+    """自检「state 原子写」：用独立临时态文件往返，不触碰真实协作游标。
+
+    旧实现会在 probe 期间读 original、写 probe、finally 把 original 写回，
+    若此时有并发 ACK 把游标推进，自检结束会把游标回退（丢更新）。
+    这里改用完全独立的临时态文件，真实协作游标绝不被读写。"""
+    import tempfile as _tf
+    global STATE_FILE
+    orig = STATE_FILE
+    tmp = _tf.NamedTemporaryFile("w+", suffix=".json", delete=False, dir=str(orig.parent))
+    tmp.close()
+    try:
+        STATE_FILE = Path(tmp.name)
+        save_state({"__seed__": 1})
+        wrote = save_state({"__seed__": 1, "__probe__": "1"})
+        back = load_state()
+        ok = bool(wrote) and back.get("__probe__") == "1"
+        detail = "原子写(tmp+replace)往返正常（独立临时态文件，不触碰真实游标）"
+    finally:
+        STATE_FILE = orig
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+    return ok, detail
+
+
+def record_poll(pr):
     """记录本次轮询时刻（心跳）。只写轮询时间，**不推进任何游标**——
     游标推进仍须显式 --ack，保持「先执行、后标记」的协议。"""
-    state["poll"] = {
-        "last_poll_at": datetime.now(timezone.utc).isoformat(),
-        "pr": pr,
-        "interval_minutes": EXPECTED_INTERVAL_MINUTES,
-    }
-    if not save_state(state):
+    def _set(s):
+        s["poll"] = {
+            "last_poll_at": datetime.now(timezone.utc).isoformat(),
+            "pr": pr,
+            "interval_minutes": EXPECTED_INTERVAL_MINUTES,
+        }
+    if not atomic_state_update(_set):
         print("WARN: 轮询心跳未持久化，自检将无法判断频率")
 
 
@@ -193,7 +287,7 @@ def collect(pr):
 
 def fetch(pr, show_all):
     state, buckets = collect(pr)
-    record_poll(state, pr)
+    record_poll(pr)
     printed = 0
     tops = {}
     for kind, items in buckets.items():
@@ -224,17 +318,20 @@ def fetch(pr, show_all):
 
 
 def ack(pr, tokens):
-    state = load_state()
-    for token in tokens:
-        kind, _, value = token.partition(":")
-        if not value:
-            kind, value = "issue", kind
-        if kind not in dict(SOURCES):
-            print(f"SKIP 未知 kind: {kind}")
-            continue
-        set_cursor(state, pr, kind, int(value))
-    if save_state(state):
-        print(f"STATE_UPDATED: PR #{pr} 游标 -> {state.get(str(pr))}")
+    updated = {}
+
+    def _mut(s):
+        for token in tokens:
+            kind, _, value = token.partition(":")
+            if not value:
+                kind, value = "issue", kind
+            if kind not in dict(SOURCES):
+                print(f"SKIP 未知 kind: {kind}")
+                continue
+            set_cursor(s, pr, kind, int(value))
+            updated[kind] = cursor_of(s, pr, kind)
+    if atomic_state_update(_mut):
+        print(f"STATE_UPDATED: PR #{pr} 游标 -> {updated}")
     else:
         print("STATE_NOT_SAVED: 游标未持久化，请勿视为已处理")
     return 0
@@ -242,11 +339,12 @@ def ack(pr, tokens):
 
 def reply(pr, body):
     res = api("POST", f"/issues/{pr}/comments", {"body": body + "\n" + MARKER})
-    state = load_state()
-    posted = set(state.get("posted", []))
-    posted.add(res.get("id"))
-    state["posted"] = sorted(posted)[-500:]
-    if not save_state(state):
+
+    def _mut(s):
+        posted = set(s.get("posted", []))
+        posted.add(res.get("id"))
+        s["posted"] = sorted(posted)[-500:]
+    if not atomic_state_update(_mut):
         print("WARN: posted 记录未持久化，下次可能把自身回复当新反馈")
     print("REPLIED to PR #%d id=%s" % (pr, res.get("id")))
     return 0
@@ -282,17 +380,7 @@ def selftest(pr, expected_minutes=None):
     check("分支 head", _branch)
 
     def _state_rw():
-        original = load_state()
-        probe = dict(original)
-        probe["__probe__"] = "1"
-        try:
-            wrote = save_state(probe)
-            back = load_state()
-        finally:
-            cleaned = dict(original)
-            cleaned.pop("__probe__", None)
-            save_state(cleaned)
-        return wrote and back.get("__probe__") == "1", "原子写(tmp+replace)往返正常"
+        return state_rw_probe()
     check("state 原子写", _state_rw)
 
     def _poll():

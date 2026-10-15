@@ -169,19 +169,22 @@ def test_products_failure_is_disconnect_not_idle():
     run(go())
 
 
-def test_claim_timeout_releases_late_leases(monkeypatch):
-    # 超时后后台领取才成功：迟到租约必须被释放，且不得静默当空闲（WB-103-R3 复测第 2 条）
-    monkeypatch.setattr(collector, 'CLAIM_TIMEOUT_SECONDS', 0)
+def test_late_claim_after_cancel_releases_lease():
+    # 取消时服务端尚未响应、取消后租约才迟到返回：shield 必须等真实响应再释放，不得悬挂
+    # （接续 WB-103-R3 / PR105 门闩语义；原 30s 截止版本已移除，不再有事件循环层超时）
     api = BlockingApi(items(2))
 
-    async def go():
-        with pytest.raises(RuntimeError):
-            await collector.round_once(FakeContext(), api, FakeParser(ok))
+    async def scenario():
+        task = asyncio.create_task(collector.round_once(FakeContext(), api, FakeParser(ok)))
+        await asyncio.sleep(0)            # 让 round_once 进入领取（卡在 claim_batch 的 shield）
+        task.cancel()                     # 取消时服务端尚未响应
+        api.gate.set()                    # 模拟迟到响应（取消后服务端才返回）
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
-    run(go())
-    api.gate.set()
-    assert api.release_done.wait(10), f"超时后迟到的租约必须被释放，实际 released={api.released}"
-    assert sorted(api.released) == ['lease-0', 'lease-1']
+    run(scenario())
+    assert api.release_done.wait(10), f"迟到租约必须被释放，实际 released={api.released}"
+    assert sorted(api.released) == ['lease-0', 'lease-1'], "取消后的迟到租约必须释放"
 
 
 def test_exception_text_never_reaches_log(capsys):

@@ -142,6 +142,33 @@ async def scrape(context, item, parser):
         await page.close()
     return quote
 
+async def _finish_pending(task):
+    # 被取消的 await 不会中断其 worker 线程里的同步 HTTP 调用。
+    # 保留 task 存活、事件循环响应，直到其有界调用结束（PR105 shield 语义）。
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+
+async def claim_batch(api):
+    task = asyncio.create_task(asyncio.to_thread(api.call, '/api/collector/products'))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            batch = await _finish_pending(task)
+            pending = [item['productId'] for item in batch.get('items', [])]
+            if pending:
+                release = asyncio.create_task(
+                    asyncio.to_thread(api.call, '/api/collector/release', {'product_ids': pending}))
+                await _finish_pending(release)
+        except Exception:
+            # 绝不打印任意异常正文、请求头或凭据。
+            print('取消后的任务清理未获服务确认；请等待租约到期，不要重复启动。', flush=True)
+        raise
+
 # 仅对「瞬时失败」重试一次：页面超时/加载失败/服务端 5xx 与 429。
 # 验证页（site_challenge）与登录失效不重试——重试解决不了，还会加剧风控。
 # 重试只是用新页面重放同一请求，不做任何指纹规避或验证绕过。
@@ -156,50 +183,13 @@ def is_retryable(error):
 INTERCEPT_ERRORS = {'site_challenge', 'http_403'}
 # 首次确认被拦截即暂停该页面：不再为了「确认」而故意第二次访问已确认的拦页面。
 CHALLENGE_STOP_AFTER = 1
-# 领取后端任务的等待上限；超时视为断连/超时，不得静默当成「空闲」。
-CLAIM_TIMEOUT_SECONDS = 30
 
 async def round_once(context, api, parser, challenged=None):
     challenged = {} if challenged is None else challenged
-    # 领取放到独立线程并可用 Event 确定性等待：取消时必须等它落地，才能拿到服务端
-    # 已授予的租约并释放，否则「领取中取消」会让租约悬挂（WB-103-R3 第 1 条实测失败）。
-    box={};claim_done=threading.Event();give_up=threading.Event()
-
-    def release(items):
-        if not items: return
-        try: api.call('/api/collector/release',{'product_ids':[i['productId'] for i in items]})
-        except Exception: pass
-
-    def claim():
-        try:
-            batch=api.call('/api/collector/products')
-            items=batch.get('items',[])
-            if give_up.is_set():
-                # 本轮已放弃（超时/取消）：服务端可能已授予租约，就地释放避免悬挂
-                release(items);return
-            box['batch']=batch
-        except Exception:
-            # 不吞成 {}：记录失败，交由上层按「断连」处理，而不是误报空闲
-            box['error']=True
-        finally:
-            claim_done.set()
-
-    threading.Thread(target=claim,daemon=True).start()
-    try:
-        await asyncio.to_thread(claim_done.wait,CLAIM_TIMEOUT_SECONDS)
-    except asyncio.CancelledError:
-        give_up.set()
-        claim_done.wait(CLAIM_TIMEOUT_SECONDS)
-        release((box.get('batch') or {}).get('items',[]))
-        raise
-    if not claim_done.is_set():
-        # 超时：必须让上层知道是断连/超时，不得静默返回 (0,0,0) 被当成空闲
-        give_up.set()
-        release((box.get('batch') or {}).get('items',[]))
-        raise RuntimeError('服务连接被拒绝或超时')
-    if box.get('error') and 'batch' not in box:
-        raise RuntimeError('服务连接被拒绝或超时')
-    items=(box.get('batch') or {}).get('items',[])
+    # 领取走 PR105 的 shield 实现（已合并 main，e4da21d）：在途 HTTP 不被 await 取消丢失；
+    # 暂停/重复取消后异步等真实响应再 release，不阻塞事件循环、不用 30 秒截止、不吞领取错误。
+    batch = await claim_batch(api)
+    items = batch.get('items', [])
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     successful=0;blocked=0
