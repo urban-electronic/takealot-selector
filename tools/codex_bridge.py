@@ -26,11 +26,13 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 OWNER = "urban-electronic"
 REPO = "takealot-selector"
 DEFAULT_PR = 103
+BRANCH = "fix/native-collector-loop-status"
 MARKER = "<!-- codex-bridge:auto -->"
 HERE = Path(__file__).resolve().parent
 
@@ -51,6 +53,8 @@ def repo_root():
 
 
 STATE_FILE = workspace_dir() / "codex_bridge_state.json"
+# 与定时任务触发频率一致；自检据此判断轮询是否停滞（超过 3 倍间隔即告警）。
+EXPECTED_INTERVAL_MINUTES = 15
 
 
 def get_token():
@@ -126,6 +130,18 @@ def save_state(state):
         return False
 
 
+def record_poll(state, pr):
+    """记录本次轮询时刻（心跳）。只写轮询时间，**不推进任何游标**——
+    游标推进仍须显式 --ack，保持「先执行、后标记」的协议。"""
+    state["poll"] = {
+        "last_poll_at": datetime.now(timezone.utc).isoformat(),
+        "pr": pr,
+        "interval_minutes": EXPECTED_INTERVAL_MINUTES,
+    }
+    if not save_state(state):
+        print("WARN: 轮询心跳未持久化，自检将无法判断频率")
+
+
 def cursor_of(state, pr, kind):
     raw = state.get(str(pr))
     if isinstance(raw, dict):
@@ -177,6 +193,7 @@ def collect(pr):
 
 def fetch(pr, show_all):
     state, buckets = collect(pr)
+    record_poll(state, pr)
     printed = 0
     tops = {}
     for kind, items in buckets.items():
@@ -235,6 +252,92 @@ def reply(pr, body):
     return 0
 
 
+def selftest(pr, expected_minutes=None):
+    """自我校验：逐项验证协作链路健康度。任一 FAIL → 退出码 1（供定时任务判定）。"""
+    global TOKEN
+    expected = int(expected_minutes or EXPECTED_INTERVAL_MINUTES)
+    results = []
+    head = {"sha": "?"}
+
+    def check(name, fn):
+        try:
+            ok, detail = fn()
+        except Exception as exc:
+            ok, detail = False, repr(exc)[:200]
+        results.append((bool(ok), name, str(detail)))
+
+    def _token():
+        return bool(get_token()), "已从本机凭据库取得（不打印、不落盘）"
+    check("凭据 token", _token)
+
+    def _repo():
+        r = api("GET", "")
+        return r.get("full_name") == f"{OWNER}/{REPO}", r.get("full_name", "?")
+    check("仓库可达", _repo)
+
+    def _branch():
+        ref = api("GET", f"/git/ref/heads/{BRANCH}")
+        head["sha"] = ref["object"]["sha"][:10]
+        return True, head["sha"]
+    check("分支 head", _branch)
+
+    def _state_rw():
+        original = load_state()
+        probe = dict(original)
+        probe["__probe__"] = "1"
+        try:
+            wrote = save_state(probe)
+            back = load_state()
+        finally:
+            cleaned = dict(original)
+            cleaned.pop("__probe__", None)
+            save_state(cleaned)
+        return wrote and back.get("__probe__") == "1", "原子写(tmp+replace)往返正常"
+    check("state 原子写", _state_rw)
+
+    def _poll():
+        poll = (load_state().get("poll") or {})
+        ts = poll.get("last_poll_at")
+        if not ts:
+            return True, "尚无轮询记录（首次运行后自动生成）"
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(ts)).total_seconds() / 60
+        limit = expected * 3
+        if age > limit:
+            return False, f"轮询停滞 {age:.0f} 分钟（阈值 {limit}）"
+        return True, f"最近轮询 {age:.0f} 分钟前（间隔 {expected} 分钟）"
+    check("轮询心跳", _poll)
+
+    def _cursors():
+        raw = load_state().get(str(pr))
+        if raw is None:
+            return True, "无游标（尚未读过）"
+        if isinstance(raw, dict):
+            bad = {k: v for k, v in raw.items() if not isinstance(v, int)}
+            return (not bad), (f"{raw}" if not bad else f"非法游标值 {bad}")
+        if isinstance(raw, int):
+            return True, f"旧格式单游标 {raw}（读取时自动按 kind 迁移）"
+        return False, f"未知游标格式 {type(raw).__name__}"
+    check("游标 schema", _cursors)
+
+    def _kinds():
+        counts = {k: len(api_paged(fn(pr))) for k, fn in SOURCES}
+        return True, ", ".join(f"{k}={v}" for k, v in counts.items())
+    check("三类评论可拉取", _kinds)
+
+    def _posted():
+        n = len(load_state().get("posted", []))
+        return True, f"已记录自身回复 {n} 条（用于防循环）"
+    check("自身回复过滤", _posted)
+
+    print("=== codex_bridge 自检 ===")
+    fails = sum(1 for ok, _, _ in results if not ok)
+    for ok, name, detail in results:
+        print(f"{'OK  ' if ok else 'FAIL'} {name}: {detail}")
+    print("-" * 60)
+    print(f"结果：{'全部通过' if not fails else str(fails) + ' 项失败'}  (PR #{pr}, head {head['sha']})")
+    return 1 if fails else 0
+
+
 def main():
     global TOKEN
     ap = argparse.ArgumentParser()
@@ -242,9 +345,13 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--ack", nargs="*", help="kind:id，如 issue:123 review:45")
     ap.add_argument("--reply")
+    ap.add_argument("--selftest", action="store_true", help="自我校验协作链路健康度")
+    ap.add_argument("--interval", type=int, default=None, help="期望轮询间隔（分钟），供心跳校验")
     args = ap.parse_args()
 
     TOKEN = get_token()
+    if args.selftest:
+        return selftest(args.pr, args.interval)
     if args.reply:
         return reply(args.pr, args.reply)
     if args.ack is not None:

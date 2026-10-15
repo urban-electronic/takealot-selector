@@ -156,29 +156,49 @@ def is_retryable(error):
 INTERCEPT_ERRORS = {'site_challenge', 'http_403'}
 # 首次确认被拦截即暂停该页面：不再为了「确认」而故意第二次访问已确认的拦页面。
 CHALLENGE_STOP_AFTER = 1
+# 领取后端任务的等待上限；超时视为断连/超时，不得静默当成「空闲」。
+CLAIM_TIMEOUT_SECONDS = 30
 
 async def round_once(context, api, parser, challenged=None):
     challenged = {} if challenged is None else challenged
     # 领取放到独立线程并可用 Event 确定性等待：取消时必须等它落地，才能拿到服务端
     # 已授予的租约并释放，否则「领取中取消」会让租约悬挂（WB-103-R3 第 1 条实测失败）。
-    box={};claim_done=threading.Event()
+    box={};claim_done=threading.Event();give_up=threading.Event()
+
+    def release(items):
+        if not items: return
+        try: api.call('/api/collector/release',{'product_ids':[i['productId'] for i in items]})
+        except Exception: pass
 
     def claim():
-        try: box['batch']=api.call('/api/collector/products')
-        except Exception: box['batch']={}
-        finally: claim_done.set()
+        try:
+            batch=api.call('/api/collector/products')
+            items=batch.get('items',[])
+            if give_up.is_set():
+                # 本轮已放弃（超时/取消）：服务端可能已授予租约，就地释放避免悬挂
+                release(items);return
+            box['batch']=batch
+        except Exception:
+            # 不吞成 {}：记录失败，交由上层按「断连」处理，而不是误报空闲
+            box['error']=True
+        finally:
+            claim_done.set()
 
     threading.Thread(target=claim,daemon=True).start()
     try:
-        await asyncio.to_thread(claim_done.wait,30)
+        await asyncio.to_thread(claim_done.wait,CLAIM_TIMEOUT_SECONDS)
     except asyncio.CancelledError:
-        # 取消路径：等领取返回（阻塞但有限时），再同步释放已领取的租约。
-        claim_done.wait(30)
-        pending=(box.get('batch') or {}).get('items',[])
-        if pending:
-            try: api.call('/api/collector/release',{'product_ids':[i['productId'] for i in pending]})
-            except Exception: pass
+        give_up.set()
+        claim_done.wait(CLAIM_TIMEOUT_SECONDS)
+        release((box.get('batch') or {}).get('items',[]))
         raise
+    if not claim_done.is_set():
+        # 超时：必须让上层知道是断连/超时，不得静默返回 (0,0,0) 被当成空闲
+        give_up.set()
+        release((box.get('batch') or {}).get('items',[]))
+        raise RuntimeError('服务连接被拒绝或超时')
+    if box.get('error') and 'batch' not in box:
+        raise RuntimeError('服务连接被拒绝或超时')
     items=(box.get('batch') or {}).get('items',[])
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)

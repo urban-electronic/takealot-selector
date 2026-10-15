@@ -6,6 +6,7 @@
 import asyncio
 import os
 import sys
+import threading
 from datetime import datetime, timezone, timedelta
 
 import pytest
@@ -130,6 +131,57 @@ def test_partial_offer_failure_keeps_others_and_releases_lease():
     assert claimed == 2 and successful == 1
     assert api.reported == ['SKU1'], "另一个 SKU 应继续回传"
     assert 'lease-0' in api.released, "失败项的租约必须释放，不能悬挂"
+
+
+class BlockingApi(FakeApi):
+    """products 可被门闩阻塞，用于确定性复现「超时后迟到租约」场景。"""
+
+    def __init__(self, items):
+        super().__init__(items)
+        self.gate = threading.Event()
+        self.release_done = threading.Event()
+
+    def call(self, path, body=None):
+        if path == '/api/collector/products':
+            self.gate.wait(30)
+            return {'items': self.items}
+        if path == '/api/collector/release':
+            self.released.extend(body['product_ids'])
+            self.release_done.set()
+            return {'released': len(body['product_ids'])}
+        return super().call(path, body)
+
+
+def test_products_failure_is_disconnect_not_idle():
+    # 领取失败必须向上传播，不得吞成 {} 后返回 (0,0,0) 被误报为「空闲」
+    class BoomApi(FakeApi):
+        def call(self, path, body=None):
+            if path == '/api/collector/products':
+                raise RuntimeError('connection refused')
+            return super().call(path, body)
+
+    api = BoomApi(items(1))
+
+    async def go():
+        with pytest.raises(RuntimeError):
+            await collector.round_once(FakeContext(), api, FakeParser(ok))
+
+    run(go())
+
+
+def test_claim_timeout_releases_late_leases(monkeypatch):
+    # 超时后后台领取才成功：迟到租约必须被释放，且不得静默当空闲（WB-103-R3 复测第 2 条）
+    monkeypatch.setattr(collector, 'CLAIM_TIMEOUT_SECONDS', 0)
+    api = BlockingApi(items(2))
+
+    async def go():
+        with pytest.raises(RuntimeError):
+            await collector.round_once(FakeContext(), api, FakeParser(ok))
+
+    run(go())
+    api.gate.set()
+    assert api.release_done.wait(10), f"超时后迟到的租约必须被释放，实际 released={api.released}"
+    assert sorted(api.released) == ['lease-0', 'lease-1']
 
 
 def test_exception_text_never_reaches_log(capsys):
