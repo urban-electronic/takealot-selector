@@ -12,10 +12,12 @@ import {
   syncPackingVariantsFromTakealot,
   exportPacking,
   fetchPackingImageBlob,
+  getShipments,
+  exportInboundTemplate,
   getStoreStorageKey,
   readStoreStorage,
 } from '../remoteApi';
-import type { PackingProduct, Product, PackingExportPayload } from '../types';
+import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord } from '../types';
 
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
@@ -148,6 +150,12 @@ export default function Packing() {
   const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm });
   const [draftKey, setDraftKey] = useState(savedDraft.draftKey);
   const [exporting, setExporting] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [templateShipments, setTemplateShipments] = useState<ShipmentRecord[]>([]);
+  const [selectedShipmentIds, setSelectedShipmentIds] = useState<string[]>([]);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateExporting, setTemplateExporting] = useState(false);
+  const [templateError, setTemplateError] = useState('');
 
   // URL import=sku1,sku2
   const urlImportSkus = useMemo(() => {
@@ -497,6 +505,53 @@ export default function Packing() {
     }
   };
 
+  const openErpTemplate = async () => {
+    setTemplateOpen(true);
+    setTemplateLoading(true);
+    setTemplateError('');
+    setSelectedShipmentIds([]);
+    try {
+      const rows = await getShipments();
+      setTemplateShipments(rows
+        .filter(row => row.status === 'confirmed')
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.shipment_no.localeCompare(a.shipment_no)));
+    } catch (e: any) {
+      setTemplateError(typeof e === 'string' ? e : e.message || '装箱单记录加载失败');
+    } finally {
+      setTemplateLoading(false);
+    }
+  };
+
+  const handleExportErpTemplate = async () => {
+    const chosen = templateShipments
+      .filter(row => selectedShipmentIds.includes(row.id))
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.shipment_no.localeCompare(b.shipment_no));
+    if (chosen.length === 0) {
+      setTemplateError('请至少选择 1 张已确认的装箱单');
+      return;
+    }
+    setTemplateExporting(true);
+    setTemplateError('');
+    try {
+      const blob = await exportInboundTemplate(chosen.map(row => row.id));
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `ERP入仓模板_${todayStr()}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setTemplateOpen(false);
+      const totalItems = chosen.reduce((sum, row) => sum + row.total_quantity, 0);
+      setMsg(`ERP 模板已生成：${chosen.length} 张装箱单、${chosen.length} 个箱子、${totalItems} 件商品`);
+    } catch (e: any) {
+      setTemplateError(typeof e === 'string' ? e : e.message || 'ERP 模板生成失败');
+    } finally {
+      setTemplateExporting(false);
+    }
+  };
+
   // 按 SKU 从选品库匹配图片（后端抓取转存，仅处理待补图）
   const handleSyncImages = async () => {
     setSyncingImages(true);
@@ -571,6 +626,9 @@ export default function Packing() {
         <div className="packing-hero-actions">
           <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); }}>
             新增产品
+          </button>
+          <button className="btn btn-outline" onClick={openErpTemplate}>
+            ERP 模板
           </button>
           <button className="btn packing-export-btn" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
@@ -987,7 +1045,48 @@ export default function Packing() {
           </div>
         </div>
       )}
+      {templateOpen && (
+        <div className="packing-modal-mask">
+          <div className="packing-modal" style={{ maxWidth: 720 }}>
+            <h3 style={{ margin: '0 0 8px' }}>导出 ERP 入仓模板</h3>
+            <p style={{ margin: '0 0 14px', fontSize: 13, color: '#667085', lineHeight: 1.6 }}>
+              选择已创建的装箱单。每张装箱单对应 1 个箱子；同一张单中的 SKU 共用箱号和标识号，按装箱单创建顺序从 1 开始编号。
+            </p>
+            {templateError && <div className="alert alert-error" style={{ marginBottom: 10 }}>{templateError}</div>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: '#667085' }}>
+              <span>{templateLoading ? '正在读取装箱单…' : `可选 ${templateShipments.length} 张 · 已选 ${selectedShipmentIds.length} 张`}</span>
+              <button className="btn btn-outline" style={{ marginLeft: 'auto', padding: '3px 9px' }} disabled={templateLoading || templateShipments.length === 0}
+                onClick={() => setSelectedShipmentIds(templateShipments.map(row => row.id))}>全选</button>
+              <button className="btn btn-outline" style={{ padding: '3px 9px' }} disabled={selectedShipmentIds.length === 0}
+                onClick={() => setSelectedShipmentIds([])}>清空</button>
+            </div>
+            <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+              {templateLoading ? (
+                <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>正在读取装箱单…</div>
+              ) : templateShipments.length === 0 ? (
+                <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>暂无已确认的装箱单</div>
+              ) : templateShipments.map(row => (
+                <label key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderBottom: '1px solid #f0f1f3', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={selectedShipmentIds.includes(row.id)}
+                    onChange={() => setSelectedShipmentIds(prev => prev.includes(row.id) ? prev.filter(id => id !== row.id) : [...prev, row.id])}
+                    style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)' }} />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ display: 'block', color: '#243042' }}>{row.shipment_no}</strong>
+                    <small style={{ color: '#667085' }}>{row.shipment_date} · {row.total_skus} 个 SKU</small>
+                  </span>
+                  <span style={{ color: '#344054', fontSize: 13, whiteSpace: 'nowrap' }}>{row.total_quantity} 件</span>
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="btn" onClick={() => setTemplateOpen(false)} disabled={templateExporting}>取消</button>
+              <button className="btn btn-primary" onClick={handleExportErpTemplate} disabled={templateLoading || templateExporting || selectedShipmentIds.length === 0}>
+                {templateExporting ? '生成中…' : '下载填好的模板'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
