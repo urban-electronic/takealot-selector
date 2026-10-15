@@ -22,6 +22,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from status_view import classify_state, STOPPED  # noqa: E402
 
+# 拦截暂停的显式人工恢复（WB-103-R6）；导入失败也不影响主流程，recover 会降级处理。
+try:
+    from challenge_state import clear_challenge_state, default_path, RECOVERY_FLAG as _RECOVERY_FLAG
+except Exception:
+    clear_challenge_state = None
+    default_path = None
+    _RECOVERY_FLAG = 'clear_challenge.flag'
+
 def protect(data, decrypt=False):
     if os.name!='nt': raise RuntimeError('本机不是Windows，不保存服务密钥')
     class Blob(ctypes.Structure):
@@ -63,7 +71,7 @@ class App:
         ttk.Entry(row,textvariable=self.profile).pack(side='left',fill='x',expand=True)
         ttk.Button(row,text='选择原浏览器档案',command=self.choose).pack(side='right',padx=(8,0))
         buttons=ttk.Frame(frame);buttons.pack(fill='x',pady=8)
-        for text,command in [('登录 / 配送设置',lambda:self.start('login')),('采集一轮',lambda:self.start('once')),('常态采集',lambda:self.start('continuous')),('暂停采集',self.stop),('打开系统',lambda:webbrowser.open(SITE))]:
+        for text,command in [('登录 / 配送设置',lambda:self.start('login')),('采集一轮',lambda:self.start('once')),('常态采集',lambda:self.start('continuous')),('暂停采集',self.stop),('恢复被拦截商品',self.recover_challenges),('打开系统',lambda:webbrowser.open(SITE))]:
             ttk.Button(buttons,text=text,command=command).pack(side='left',padx=(0,8))
         indicator=ttk.Frame(frame);indicator.pack(anchor='w',pady=(10,0))
         self.dot=tk.Label(indicator,text='●',font=('',14),foreground='#888888');self.dot.pack(side='left')
@@ -77,6 +85,16 @@ class App:
     def choose(self):
         folder=filedialog.askdirectory(title='选择原PricePilot browser_profile')
         if folder:self.profile.set(folder)
+
+    def recover_challenges(self):
+        # 显式人工恢复（WB-103-R6）：删除持久化暂停状态，并通知运行中的采集器下一轮清空。
+        try:
+            if clear_challenge_state is not None and default_path is not None:
+                clear_challenge_state(default_path())
+            (STATE/_RECOVERY_FLAG).touch()
+        except Exception:
+            pass
+        self.status.set('已请求恢复被拦截的商品；若采集器正在运行，将在下一轮生效。')
 
     def start(self,mode):
         if mode not in ('login','once','continuous'):
@@ -98,11 +116,15 @@ class App:
         command=[sys.executable,'-u',str(ROOT/'collector.py'),'--profile',str(profile),'--stop-file',str(self.stop_path)]
         if mode=='login': command.append('--login')
         elif mode=='once': command.append('--once')
+        # GUI 作为启动方生成 run_id 并立即绑定：首次读取状态即以该 run_id 校验，
+        # 不从首条残留状态文件「学习」上一次运行的 run_id（WB-103-R6）。
+        run_id=uuid.uuid4().hex[:12]
         environment=os.environ.copy();environment['PP_COLLECTOR_KEY']=key;environment['PYTHONIOENCODING']='utf-8'
+        environment['PP_COLLECTOR_RUN_ID']=run_id
         flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
         self.process=subprocess.Popen(command,cwd=ROOT,env=environment,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',creationflags=flags)
-        # 新进程 = 新的一次运行：清掉上一轮/上一次运行的轮次与 run_id 记忆
-        self._last_round=0;self._last_run=''
+        # 新进程 = 新的一次运行：清掉上一轮/上一次运行的轮次记忆，并立即写入本次 run_id
+        self._last_round=0;self._last_run=run_id
         self.status.set('登录浏览器正在打开；完成登录和配送设置后，在本窗口点“完成登录”。' if mode=='login' else '正在连接并启动常态采集，任务结果见下方日志。' if mode=='continuous' else '正在连接并启动采集…')
         if mode=='login':
             self.finish=ttk.Button(self.window,text='完成登录并保存',command=self.stop);self.finish.pack(pady=5)

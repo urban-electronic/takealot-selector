@@ -307,3 +307,100 @@ def test_future_timestamp_is_not_trusted():
             'state': 'collecting_ok', 'claimed': 1, 'successful': 1, 'failed': 0}
     text, color, _, _ = status_view.classify_state(data, 123, 0, '', now=_now())
     assert '成功' not in text and color != '#007a00', "来自未来的时间戳不得被信任"
+
+
+# ---- WB-103-R6：拦截暂停跨重启保存 + GUI run_id 绑定 + 显式人工恢复 ----
+
+import challenge_state as cs  # noqa: E402
+
+
+def test_challenge_state_persists_across_restart(tmp_path):
+    # 模拟重启：save 后再次 load 应读回已保存的拦截计数（跨重启保存）
+    p = tmp_path / 'challenge_state.json'
+    cs.save_challenge_state({'SKU0': 1, 'SKU1': 2}, p)
+    assert cs.load_challenge_state(p) == {'SKU0': 1, 'SKU1': 2}, "重启后应读回已保存的拦截计数"
+
+
+def test_challenge_state_missing_is_empty(tmp_path):
+    assert cs.load_challenge_state(tmp_path / 'nope.json') == {}, "缺失文件应返回空 dict"
+
+
+def test_challenge_state_corrupt_is_empty(tmp_path):
+    p = tmp_path / 'c.json'
+    p.write_text('{not valid json', encoding='utf-8')
+    assert cs.load_challenge_state(p) == {}, "损坏文件应降级为空 dict"
+
+
+def test_challenge_state_rejects_non_int_values(tmp_path):
+    p = tmp_path / 'c.json'
+    p.write_text('{"SKU0": 1, "SKU1": "x", "SKU2": true}', encoding='utf-8')
+    loaded = cs.load_challenge_state(p)
+    assert loaded == {'SKU0': 1}, "只接受 int 计数，bool/字符串应剔除"
+
+
+def test_challenge_state_clear_recovery(tmp_path):
+    # 显式人工恢复（删除文件）后应为空
+    p = tmp_path / 'c.json'
+    cs.save_challenge_state({'SKU0': 3}, p)
+    cs.clear_challenge_state(p)
+    assert cs.load_challenge_state(p) == {}, "显式恢复后应为空"
+
+
+def test_consume_recovery_flag_clears_state(tmp_path):
+    p = tmp_path / 'c.json'
+    cs.save_challenge_state({'SKU0': 3}, p)
+    flag = tmp_path / cs.RECOVERY_FLAG
+    flag.touch()
+    assert cs.consume_recovery_flag(p) is True, "存在恢复标志应返回 True"
+    assert cs.load_challenge_state(p) == {}, "恢复标志应清空持久化暂停"
+    assert not flag.exists(), "恢复标志应被消费删除"
+
+
+def test_consume_recovery_flag_no_flag_is_false(tmp_path):
+    assert cs.consume_recovery_flag(tmp_path / 'c.json') is False, "无标志应返回 False"
+
+
+def test_known_run_id_first_read_is_trusted():
+    # GUI 生成 run_id 并立即绑定：首次读取即以此 run_id 校验，不从残留文件学习
+    run_id = 'GUI-GENERATED'
+    data = {'pid': 123, 'ts': _now().isoformat(), 'run_id': run_id, 'round': 1,
+            'state': 'collecting_ok', 'claimed': 1, 'successful': 1, 'failed': 0}
+    text, color, _, seen = status_view.classify_state(data, 123, 0, run_id, now=_now())
+    assert '成功' in text and color == '#007a00', "已知 run_id 的首次读取应信任"
+    assert seen == run_id, "应回写已绑定 run_id"
+
+
+def test_same_pid_reused_but_old_run_id_is_stale():
+    # 进程重启后 OS 可能复用相同 PID：必须用 run_id 区分，旧 run_id 的状态视为陈旧
+    data = {'pid': 123, 'ts': _now().isoformat(), 'run_id': 'OLD-RUN', 'round': 9,
+            'state': 'collecting_ok', 'claimed': 1, 'successful': 1, 'failed': 0}
+    text, color, _, _ = status_view.classify_state(data, 123, 0, 'NEW-RUN', now=_now())
+    assert '成功' not in text and color != '#007a00', "同 PID 但旧 run_id 必须判为陈旧"
+
+
+def test_after_recovery_only_rechallenged_sku_pauses_others_continue():
+    # 显式恢复（清空 challenged）后，再次被拦的 SKU 仅自身暂停，其余任务继续
+    def mixed(item):
+        return challenged(item) if item['sku'] == 'SKU0' else ok(item)
+    ctx, api = FakeContext(), FakeApi(items(2))
+    parser = FakeParser(mixed)
+    state = {}  # 已恢复：空拦截计数
+    claimed, successful, blocked = run(collector.round_once(ctx, api, parser, state))
+    assert claimed == 2 and successful == 1 and blocked == 1, "恢复后仅再被拦的 SKU 暂停，其他继续"
+    assert 'SKU1' in api.reported, "未被拦的 SKU 必须继续回传"
+    assert parser.visited == ['SKU0', 'SKU1'], "两个 SKU 本轮各被尝试一次，被拦项不被反复 hammer"
+    assert state.get('SKU0') == 1, "被拦 SKU 的计数应累加，供后续轮次跨轮暂停"
+
+
+def test_persisted_pause_survives_restart_without_reclear():
+    # 跨重启语义：上一次运行已持久化的拦截计数，本次运行应直接复用（不自动清空）
+    ctx, api = FakeContext(), FakeApi(items(1))
+    parser = FakeParser(challenged)
+    # 第一轮：首次拦截，计数变 1
+    state = {}
+    run(collector.round_once(ctx, api, parser, state))
+    assert state.get('SKU0') == 1
+    # 第二轮：本轮仍被拦，但计数已 >=1，应直接暂停、不再访问页面（跨轮暂停）
+    run(collector.round_once(ctx, api, parser, state))
+    assert parser.visited == ['SKU0'], "已持久化的拦截计数应使本轮直接暂停，不重复访问"
+

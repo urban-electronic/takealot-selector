@@ -21,7 +21,10 @@ APP_DIR = Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'TakealotCollector'
 try: APP_DIR.mkdir(parents=True, exist_ok=True)
 except Exception: pass
 STATUS_FILE = APP_DIR / 'collector_status.json'
+CHALLENGE_PATH = APP_DIR / 'challenge_state.json'
 _CURRENT = {'profile': '', 'round': 0}
+# 拦截暂停状态持久化：跨重启保存，需显式人工恢复（WB-103-R6）
+from challenge_state import load_challenge_state, save_challenge_state, consume_recovery_flag  # noqa: E402
 
 def write_status(state, **extra):
     """原子写状态文件供 GUI 只读呈现（tmp + os.replace，避免读到半截文件）。
@@ -275,17 +278,25 @@ async def run(args):
                     return
                 parser=parser_module()
                 _CURRENT['profile']=str(profile)
-                # 每次运行一个独立 run_id：GUI 据此区分「本次运行」与上一次运行的残留状态
-                _CURRENT['run_id']=uuid.uuid4().hex[:12]
-                challenged={}
+                # run_id 由 GUI 生成并传入（PP_COLLECTOR_RUN_ID）；缺省才本机生成。
+                # 这样 GUI 在启动瞬间就持有 run_id，首次读取状态即以此校验，
+                # 不会从首条残留状态文件「学习」到上一次运行的 run_id（WB-103-R6）。
+                _CURRENT['run_id']=os.environ.get('PP_COLLECTOR_RUN_ID') or uuid.uuid4().hex[:12]
+                # 拦截暂停跨重启保存：重启后继续暂停已被验证页/403 拦截的 SKU，
+                # 避免重启后立刻重新触发同一风控页。显式人工恢复才清空（见循环顶部的恢复标志检查）。
+                challenged=load_challenge_state(CHALLENGE_PATH)
                 round_no=0;wait=30;idle_noticed=False
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
+                    # 显式人工恢复（GUI「恢复被拦截商品」写入恢复标志）：下一轮清空被拦截商品的暂停
+                    if consume_recovery_flag(CHALLENGE_PATH):
+                        challenged.clear()
+                        print('已按人工恢复清空被拦截商品的暂停，将重新尝试访问这些商品。',flush=True)
                     try:
                         round_no+=1;_CURRENT['round']=round_no
                         # 轮次开始先写 running：在途阶段不应继续显示上一轮的汇总结果
                         _CURRENT['stage']='round_start'
-                        write_status('running',claimed=0,successful=0,failed=0)
+                        write_status('running',claimed=0,successful=0,failed=0,paused=len(challenged))
                         cycle=asyncio.create_task(round_once(context,api,parser,challenged))
                         try:
                             while not cycle.done():
@@ -296,6 +307,8 @@ async def run(args):
                         finally:
                             if not cycle.done(): cycle.cancel()
                             await asyncio.gather(cycle,return_exceptions=True)
+                        # 持久化拦截暂停状态，跨重启保存（WB-103-R6）
+                        save_challenge_state(dict(challenged), CHALLENGE_PATH)
                         if claimed==0:
                             # 空闲：只在刚进入空闲时提示一次，避免每轮重复刷同一句话
                             if not idle_noticed:
