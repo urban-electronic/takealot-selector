@@ -37,7 +37,7 @@ class App:
     def __init__(self, window):
         self.window=window;self.process=None;self.stop_path=None;self.events=queue.Queue()
         STATE.mkdir(parents=True,exist_ok=True)
-        self.key=tk.StringVar();self.status=tk.StringVar(value='准备就绪。先打开系统，再采集一轮；已有可用会话无需重新登录。')
+        self.key=tk.StringVar();self.status=tk.StringVar(value='准备就绪。可采集一轮，或开启常态采集持续等待网页任务。')
         self.profile=tk.StringVar(value=(STATE/'profile-path.txt').read_text(encoding='utf-8').strip() if (STATE/'profile-path.txt').exists() else str(STATE/'browser_profile'))
         self.remember=tk.BooleanVar(value=os.name=='nt')
         saved=STATE/'service-key.dpapi'
@@ -55,22 +55,24 @@ class App:
         ttk.Entry(row,textvariable=self.profile).pack(side='left',fill='x',expand=True)
         ttk.Button(row,text='选择原浏览器档案',command=self.choose).pack(side='right',padx=(8,0))
         buttons=ttk.Frame(frame);buttons.pack(fill='x',pady=8)
-        for text,command in [('登录 / 配送设置',lambda:self.start(True)),('采集一轮',lambda:self.start(False)),('暂停采集',self.stop),('打开系统',lambda:webbrowser.open(SITE))]:
+        for text,command in [('登录 / 配送设置',lambda:self.start('login')),('采集一轮',lambda:self.start('once')),('常态采集',lambda:self.start('continuous')),('暂停采集',self.stop),('打开系统',lambda:webbrowser.open(SITE))]:
             ttk.Button(buttons,text=text,command=command).pack(side='left',padx=(0,8))
         ttk.Label(frame,textvariable=self.status,wraplength=690).pack(anchor='w',pady=8)
         self.log=tk.Text(frame,height=10,wrap='word',state='disabled');self.log.pack(fill='both',expand=True)
-        ttk.Label(frame,text='先打开系统提交采集任务，再点“采集一轮”；本轮结束即停止。登录/配送设置只在需要时使用。',wraplength=690).pack(anchor='w',pady=(8,0))
+        ttk.Label(frame,text='“采集一轮”完成即停止；“常态采集”保持浏览器运行，持续领取网页到期任务。暂停仅停止本机执行；停采全部任务请在网页关闭对应采集开关。',wraplength=690).pack(anchor='w',pady=(8,0))
         window.protocol('WM_DELETE_WINDOW',self.close);window.after(200,self.poll)
 
     def choose(self):
         folder=filedialog.askdirectory(title='选择原PricePilot browser_profile')
         if folder:self.profile.set(folder)
 
-    def start(self,login):
+    def start(self,mode):
+        if mode not in ('login','once','continuous'):
+            messagebox.showerror('采集模式','无法识别的采集模式。');return
         if self.process and self.process.poll() is None:
             messagebox.showinfo('正在运行','请先暂停当前采集或关闭登录浏览器。');return
         key=self.key.get().strip()
-        if not login and not key:
+        if mode!='login' and not key:
             messagebox.showinfo('首次连接设置','请复制网站系统设置中的API Key到上方输入框；只需设置一次。');return
         profile=Path(self.profile.get()).expanduser()
         if not profile.is_absolute(): messagebox.showerror('档案路径','请选择浏览器档案的绝对路径。');return
@@ -82,13 +84,13 @@ class App:
         except Exception as exc: messagebox.showerror('连接配置',str(exc));return
         self.stop_path=STATE/(str(uuid.uuid4())+'.stop')
         command=[sys.executable,'-u',str(ROOT/'collector.py'),'--profile',str(profile),'--stop-file',str(self.stop_path)]
-        if login: command.append('--login')
-        else: command.append('--once')
+        if mode=='login': command.append('--login')
+        elif mode=='once': command.append('--once')
         environment=os.environ.copy();environment['PP_COLLECTOR_KEY']=key;environment['PYTHONIOENCODING']='utf-8'
         flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
         self.process=subprocess.Popen(command,cwd=ROOT,env=environment,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',creationflags=flags)
-        self.status.set('登录浏览器正在打开；完成登录和配送设置后，在本窗口点“完成登录”。' if login else '正在连接并启动采集…')
-        if login:
+        self.status.set('登录浏览器正在打开；完成登录和配送设置后，在本窗口点“完成登录”。' if mode=='login' else '正在连接并启动常态采集，任务结果见下方日志。' if mode=='continuous' else '正在连接并启动采集…')
+        if mode=='login':
             self.finish=ttk.Button(self.window,text='完成登录并保存',command=self.stop);self.finish.pack(pady=5)
         process=self.process
         def read():
