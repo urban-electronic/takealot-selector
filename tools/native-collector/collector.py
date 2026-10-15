@@ -160,7 +160,7 @@ async def run(args):
     try:
         async with async_playwright() as playwright:
             context=await playwright.chromium.launch_persistent_context(
-                str(profile),headless=False,locale='en-ZA',timezone_id='Africa/Johannesburg',
+                str(profile),headless=args.headless,locale='en-ZA',timezone_id='Africa/Johannesburg',
                 viewport={'width':1366,'height':768})
             try:
                 if args.login:
@@ -201,6 +201,7 @@ def main():
     cli.add_argument('--profile',default=str(ROOT/'browser_profile'),help='原PricePilot browser_profile绝对路径')
     cli.add_argument('--login',action='store_true',help='仅打开持久浏览器进行人工登录与配送设置')
     cli.add_argument('--once',action='store_true')
+    cli.add_argument('--headless',action='store_true',help='无界面后台运行（用于无人值守常态采集）')
     cli.add_argument('--stop-file',help=argparse.SUPPRESS)
     args=cli.parse_args()
     try: asyncio.run(run(args))
