@@ -56,14 +56,14 @@ export default function Inventory() {
   };
 
   const withdrawShipment = async (shipment: ShipmentRecord) => {
-    const isClearance = shipment.status === 'clearance';
-    const prompt = isClearance
-      ? `确认撤回老库存清理记录 ${shipment.shipment_no}？不会调整库存；本店的一次性清理额度仍保持已使用。`
-      : `确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`;
+    const affectsInventory = shipment.status === 'confirmed';
+    const prompt = affectsInventory
+      ? `确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`
+      : `确认撤回装箱单 ${shipment.shipment_no}？库存不会变化。`;
     if (!window.confirm(prompt)) return;
     try {
-      await voidShipment(shipment.id, isClearance ? '撤回老库存清理记录' : '装箱单有误，撤回修改');
-      if (!isClearance) {
+      await voidShipment(shipment.id, affectsInventory ? '装箱单有误，撤回修改' : '撤回未扣库存的装箱单');
+      if (affectsInventory) {
         localStorage.setItem(getStoreStorageKey('packingDraftV1'), JSON.stringify({
           selected: shipment.lines.map(line => line.sku),
           lines: Object.fromEntries(shipment.lines.map(line => [line.sku, { cartons: String(line.cartons), count: String(line.count_per_carton) }])),
@@ -73,7 +73,7 @@ export default function Inventory() {
         navigate('/packing');
         return;
       }
-      setMessage('老库存清理记录已撤回，库存未变化，一次性清理额度仍已使用');
+      setMessage('装箱单记录已撤回，库存未变化');
       await load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -120,7 +120,7 @@ export default function Inventory() {
       </div>
       <div className="inventory-tabs">
         <button className={tab === 'inventory' ? 'active' : ''} onClick={() => setTab('inventory')}>库存余额</button>
-        <button className={tab === 'shipments' ? 'active' : ''} onClick={() => setTab('shipments')}>发货记录</button>
+        <button className={tab === 'shipments' ? 'active' : ''} onClick={() => setTab('shipments')}>装箱 / 发货记录</button>
         <button className={tab === 'adjustments' ? 'active' : ''} onClick={() => setTab('adjustments')}>调整流水</button>
         <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>操作历史</button>
       </div>
@@ -158,10 +158,10 @@ export default function Inventory() {
       {tab === 'shipments' && <><div className="inventory-toolbar"><button className="btn btn-primary" disabled={!selectedShipmentIds.length || exportingInbound} onClick={downloadInbound}>{exportingInbound ? '生成中...' : `生成入仓文件（已选 ${selectedShipmentIds.length} 单）`}</button><span className="muted">勾选顺序决定标识号：第 1 单为 1，第 2 单为 2，以此类推</span></div><div className="inventory-table-wrap"><table className="inventory-table">
         <thead><tr><th>选择</th><th>发货单号</th><th>发货日期</th><th>SKU 数</th><th>总件数</th><th>运输方式</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>{shipments.map(row => <tr key={row.id}>
-          <td>{row.status === 'confirmed' ? <input type="checkbox" checked={selectedShipmentIds.includes(row.id)} onChange={e => setSelectedShipmentIds(prev => e.target.checked ? [...prev, row.id] : prev.filter(id => id !== row.id))} /> : null}</td>
+          <td>{row.status !== 'void' ? <input type="checkbox" checked={selectedShipmentIds.includes(row.id)} onChange={e => setSelectedShipmentIds(prev => e.target.checked ? [...prev, row.id] : prev.filter(id => id !== row.id))} /> : null}</td>
           <td className="mono">{row.shipment_no}</td><td>{row.shipment_date}</td><td>{row.total_skus}</td><td>{row.total_quantity}</td><td>{row.shipping || '-'}</td>
-          <td><span className={row.status === 'void' ? 'status-void' : 'status-confirmed'}>{row.status === 'confirmed' ? '已发货' : row.status === 'clearance' ? '老库存清理·不扣库存' : '已撤回'}</span></td>
-          <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : row.status === 'clearance' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回记录</button> : <span className="muted">{row.void_reason}</span>}</td>
+          <td><span className={row.status === 'void' ? 'status-void' : 'status-confirmed'}>{row.status === 'confirmed' ? '已发货' : row.status === 'clearance' ? '老库存清理·不扣库存' : row.status === 'exported' ? '仅导出·未扣库存' : '已撤回'}</span></td>
+          <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : row.status !== 'void' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回记录</button> : <span className="muted">{row.void_reason}</span>}</td>
         </tr>)}</tbody>
       </table></div></>}
 

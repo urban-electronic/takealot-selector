@@ -286,12 +286,19 @@ def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="请至少选择一个装箱单")
     rows = []
     shipment_numbers = []
+    shipping_modes = set()
     for identifier, shipment_id in enumerate(data.shipment_ids, start=1):
         shipment = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
         if not shipment:
             raise HTTPException(status_code=404, detail=f"第 {identifier} 个发货记录不存在")
-        if shipment.status not in ("confirmed", "clearance"):
+        if shipment.status not in ("confirmed", "clearance", "exported"):
             raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 已撤回，不能生成入仓文件")
+        if "海" in (shipment.shipping or ""):
+            shipping_modes.add("海")
+        if "空" in (shipment.shipping or ""):
+            shipping_modes.add("空")
+        if len(shipping_modes) > 1:
+            raise HTTPException(status_code=400, detail="海运和空运请分别生成入仓模板")
         lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == shipment.id).order_by(ShipmentLine.sku).all()
         if not lines:
             raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 没有产品明细")
@@ -316,7 +323,7 @@ def void_shipment(shipment_id: str, data: VoidIn, db: Session = Depends(get_db),
     row = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="发货记录不存在")
-    if row.status not in ("confirmed", "clearance"):
+    if row.status not in ("confirmed", "clearance", "exported"):
         raise HTTPException(status_code=400, detail="该发货记录已经撤回")
     previous_status = row.status
     row.status = "void"

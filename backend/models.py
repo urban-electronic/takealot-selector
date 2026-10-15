@@ -276,7 +276,7 @@ class InventoryAdjustment(Base):
 
 
 class Shipment(Base):
-    """一次已确认的装箱/发货记录。void 状态不再扣减库存。"""
+    """装箱/发货快照。只有 confirmed 状态扣库存；exported 仅留档。"""
     __tablename__ = "shipments"
 
     id = Column(String, primary_key=True, default=generate_uuid)

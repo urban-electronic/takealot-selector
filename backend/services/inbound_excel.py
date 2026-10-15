@@ -29,7 +29,7 @@ def _data_row(index: int, identifier: int, line) -> str:
         f'<row r="{index}" spans="1:10">'
         f'{_plain_cell(f"A{index}", identifier)}'
         f'{_plain_cell(f"B{index}", 1)}'
-        f'{_plain_cell(f"C{index}", identifier)}'
+        f'{_plain_cell(f"C{index}", f"{identifier:02d}", text=True)}'
         f'{_plain_cell(f"I{index}", line.sku, text=True)}'
         f'{_plain_cell(f"J{index}", line.total_quantity)}'
         '</row>'

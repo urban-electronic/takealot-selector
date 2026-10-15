@@ -8,7 +8,7 @@ from models import Base, Shipment, ShipmentLine, SystemSettings, InventoryAdjust
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def test_old_stock_export_is_repeatable_without_recording_or_deducting_inventory():
+def test_export_is_repeatable_with_snapshots_without_deducting_inventory():
     from api import packing_routes as routes
     engine = create_engine('sqlite://')
     Base.metadata.create_all(engine)
@@ -34,12 +34,13 @@ def test_old_stock_export_is_repeatable_without_recording_or_deducting_inventory
         db.add(SystemSettings(key='old_inventory_clearance_used:default-store', value='1'))
         db.commit()
         assert routes.export_excel(another_draft, db, 'default-store').status_code == 200
-        assert db.query(Shipment).count() == 0
-        assert db.query(ShipmentLine).count() == 0
+        assert db.query(Shipment).count() == 2
+        assert {row.status for row in db.query(Shipment).all()} == {'exported'}
+        assert db.query(ShipmentLine).count() == 2
         assert db.query(InventoryAdjustment).count() == 0
         assert db.query(SystemSettings).filter_by(key='old_inventory_clearance_used:default-store').one().value == '1'
-        record.assert_not_called()
+        assert record.call_count == 2
         balance.assert_not_called()
     db.close()
     engine.dispose()
-    assert routes.ExportIn().record_shipment is True
+    assert routes.ExportIn().record_shipment is False

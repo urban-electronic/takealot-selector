@@ -110,7 +110,7 @@ class ExportLine(BaseModel):
 
 
 class ExportIn(BaseModel):
-    record_shipment: bool = True
+    record_shipment: bool = False
     date: str = ''
     mark: str = 'KPLDJ'
     shipping: str = '空'
@@ -632,6 +632,9 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
     existing_shipment = None
     if data.draft_key.strip():
         existing_shipment = db.query(Shipment).filter(Shipment.draft_key == data.draft_key.strip(), Shipment.store_id == store_id).first()
+    expected_status = 'confirmed' if data.record_shipment else 'exported'
+    if existing_shipment and existing_shipment.status != expected_status:
+        return fail(409, '此草稿已按其他方式留档，请新建装箱单后导出，避免重复扣库存')
     requested_by_sku = {}
     for line in data.items:
         p = _find(db, line.sku.strip())
@@ -664,8 +667,8 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         return fail(400, str(e))
     except Exception as e:
         return fail(400, f'生成失败：{e}')
-    if data.record_shipment and not existing_shipment:
-        # shipment_no 当前是全局唯一；按全局日序号生成，避免未来不同店铺同日编号冲突。
+    if not existing_shipment:
+        # 导出快照和正式发货分别留档，只有 confirmed 记录参与库存核减。
         day_count = db.query(Shipment).filter(Shipment.shipment_date == date.isoformat()).count()
         shipment = Shipment(
             id=str(uuid.uuid4()),
@@ -676,7 +679,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             mark=data.mark,
             shipping=data.shipping,
             address=data.address,
-            status='confirmed',
+            status=expected_status,
         )
         db.add(shipment)
         db.flush()
@@ -692,11 +695,11 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 count_per_carton=int(count),
                 total_quantity=int(cartons) * int(count),
             ))
-        record_operation(db, store_id, "shipment", shipment.id, "confirm", f"确认发货单 {shipment.shipment_no}", {
+        record_operation(db, store_id, "shipment", shipment.id, "confirm" if data.record_shipment else "export", f'{"确认发货单" if data.record_shipment else "导出装箱单"} {shipment.shipment_no}', {
             "shipment_date": shipment.shipment_date,
             "sku_count": len(items),
             "total_quantity": sum(int(cartons) * int(count) for _, cartons, count in items),
-            "inventory_deducted": True,
+            "inventory_deducted": data.record_shipment,
         })
         db.commit()
     return Response(

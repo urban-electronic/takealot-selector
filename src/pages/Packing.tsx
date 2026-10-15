@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import {
   getPackingProducts,
+  getInventory,
   syncPackingProductsFromCatalog,
   upsertPackingProduct,
   deletePackingProduct,
@@ -17,7 +18,7 @@ import {
   getStoreStorageKey,
   readStoreStorage,
 } from '../remoteApi';
-import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord } from '../types';
+import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
 
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
@@ -131,6 +132,8 @@ export default function Packing() {
 
   // 装箱单库
   const [products, setProducts] = useState<PackingProduct[]>([]);
+  const [inventoryBySku, setInventoryBySku] = useState<Record<string, InventoryRow>>({});
+  const [inventoryState, setInventoryState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
@@ -147,7 +150,7 @@ export default function Packing() {
   const [lines, setLines] = useState<PackingLines>(() => savedDraft.lines);
 
   // 导出设置
-  const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm });
+  const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm, record_shipment: false });
   const [draftKey, setDraftKey] = useState(savedDraft.draftKey);
   const [exporting, setExporting] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -191,6 +194,14 @@ export default function Packing() {
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const loadProducts = useCallback(async () => {
+    setInventoryState('loading');
+    void getInventory().then(rows => {
+      setInventoryBySku(Object.fromEntries(rows.filter(row => row.sku).map(row => [row.sku, row])));
+      setInventoryState('ready');
+    }).catch(() => {
+      setInventoryBySku({});
+      setInventoryState('failed');
+    });
     try {
       const sync = await syncPackingProductsFromCatalog();
       setCatalogStats({ total: sync.total_products, noSku: sync.skipped_no_sku, duplicates: sync.duplicate_sku });
@@ -471,7 +482,7 @@ export default function Packing() {
         shipping: exportForm.shipping,
         address: exportForm.address,
         draft_key: draftKey,
-        record_shipment: exportForm.record_shipment !== false,
+        record_shipment: exportForm.record_shipment === true,
         items: rows.map(p => ({
           sku: p.sku,
           cartons: lines[p.sku]?.cartons || '1',
@@ -497,7 +508,8 @@ export default function Packing() {
       sp.delete('import');
       setSearchParams(sp, { replace: true });
       await loadProducts();
-      setMsg('导出成功，已刷新装箱单库并清空本次勾选，请检查下载的 Excel');
+      setExportForm(prev => ({ ...prev, record_shipment: false }));
+      setMsg(exportForm.record_shipment ? '导出成功，已登记发货并扣库存' : '导出成功，装箱单已留档，库存未变化，可在 ERP 模板窗口继续套入');
     } catch (e: any) {
       setError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
@@ -513,7 +525,7 @@ export default function Packing() {
     try {
       const rows = await getShipments();
       setTemplateShipments(rows
-        .filter(row => row.status === 'confirmed' || row.status === 'clearance')
+        .filter(row => row.status === 'confirmed' || row.status === 'clearance' || row.status === 'exported')
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.shipment_no.localeCompare(a.shipment_no)));
     } catch (e: any) {
       setTemplateError(typeof e === 'string' ? e : e.message || '装箱单记录加载失败');
@@ -528,6 +540,10 @@ export default function Packing() {
       .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.shipment_no.localeCompare(b.shipment_no));
     if (chosen.length === 0) {
       setTemplateError('请至少选择 1 张有效装箱单');
+      return;
+    }
+    if (chosen.some(row => row.shipping.includes('海')) && chosen.some(row => row.shipping.includes('空'))) {
+      setTemplateError('海运和空运请分别勾选、分别生成模板');
       return;
     }
     setTemplateExporting(true);
@@ -818,7 +834,9 @@ export default function Packing() {
                   return (
                     <div className="packing-selected-item" key={p.sku}>
                       <div className="packing-selected-item-head">
-                        <div><strong>{p.name_zh || p.name_en || '-'}</strong><small>{p.sku}</small></div>
+                        <div><strong>{p.name_zh || p.name_en || '-'}</strong><small>{p.sku}</small>
+                          <small>{inventoryState === 'loading' ? '库存读取中…' : inventoryState === 'failed' ? '库存读取失败' : inventoryBySku[p.sku] ? `本地可用 ${inventoryBySku[p.sku].available} 件 · 在途 ${inventoryBySku[p.sku].in_transit} 件` : '该 SKU 未建库存'}</small>
+                        </div>
                         <button className="packing-remove-btn" onClick={() => toggleSelect(p.sku)} title="从本次装箱单移除">×</button>
                       </div>
                       <div className="packing-selected-controls">
@@ -869,7 +887,8 @@ export default function Packing() {
             <input type="text" value={exportForm.address} onChange={e => setExportForm(prev => ({ ...prev, address: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
           </div>
         </div>
-        <label style={{ display: 'block', marginTop: 12 }}><input type="checkbox" checked={exportForm.record_shipment === false} onChange={e => setExportForm(prev => ({ ...prev, record_shipment: !e.target.checked }))} /> 老库存清理：仅导出，不登记发货、不扣库存</label>
+        <label style={{ display: 'block', marginTop: 12 }}><input type="checkbox" checked={exportForm.record_shipment === true} onChange={e => setExportForm(prev => ({ ...prev, record_shipment: e.target.checked }))} /> 登记发货并扣库存</label>
+        <small style={{ display: 'block', marginTop: 6, color: '#667085' }}>{exportForm.record_shipment ? '按每个 SKU 的发货数量检查并核减本地库存。' : '仅生成文件并留档，可重复使用导出功能，库存未建档也可导出。'}</small>
         <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
@@ -1050,7 +1069,7 @@ export default function Packing() {
           <div className="packing-modal" style={{ maxWidth: 720 }}>
             <h3 style={{ margin: '0 0 8px' }}>导出 ERP 入仓模板</h3>
             <p style={{ margin: '0 0 14px', fontSize: 13, color: '#667085', lineHeight: 1.6 }}>
-              选择已创建的装箱单。每张装箱单对应 1 个箱子；同一张单中的 SKU 共用箱号和标识号，按装箱单创建顺序从 1 开始编号。
+              选择已留档的装箱单，海运、空运分别生成。每张单对应 1 箱；标识号为 1、2…，自定义箱号为 01、02…（ERP 要求至少 2 个字符）。生成模板不扣库存。
             </p>
             {templateError && <div className="alert alert-error" style={{ marginBottom: 10 }}>{templateError}</div>}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: '#667085' }}>
@@ -1072,7 +1091,7 @@ export default function Packing() {
                     style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)' }} />
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <strong style={{ display: 'block', color: '#243042' }}>{row.shipment_no}</strong>
-                    <small style={{ color: '#667085' }}>{row.shipment_date} · {row.total_skus} 个 SKU{row.status === 'clearance' ? ' · 老库存清理' : ''}</small>
+                    <small style={{ color: '#667085' }}>{row.shipment_date} · {row.shipping || '未填运输方式'} · {row.total_skus} 个 SKU{row.status === 'clearance' ? ' · 老库存清理' : row.status === 'exported' ? ' · 仅导出·未扣库存' : ''}</small>
                   </span>
                   <span style={{ color: '#344054', fontSize: 13, whiteSpace: 'nowrap' }}>{row.total_quantity} 件</span>
                 </label>
