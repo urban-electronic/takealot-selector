@@ -70,11 +70,12 @@ class NoRedirect(request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs): return None
 
 class Api:
-    def __init__(self, base, key):
+    def __init__(self, base, key, autonomous=False):
         parsed = urlsplit(base)
         if parsed.scheme != 'https' or parsed.hostname != urlsplit(BASE).hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
             raise ValueError('仅连接已部署的选品系统 HTTPS 后端')
         self.base, self.key = base.rstrip('/'), key.strip()
+        self.autonomous = bool(autonomous)
         self.opener = request.build_opener(NoRedirect)
 
     def call(self, path, body=None):
@@ -82,6 +83,8 @@ class Api:
             raise ValueError('采集器只能使用行情任务接口')
         headers = {'X-Collector-Key': self.key, 'X-Collector-Client':'local_collector',
                    'X-Store-ID':'default-store', 'Content-Type':'application/json'}
+        if self.autonomous:
+            headers['X-Collector-Autonomous'] = '1'
         for attempt in range(3):
             req = request.Request(self.base+path, data=json.dumps(body).encode() if body is not None else None,
                                   headers=headers, method='POST' if body is not None else 'GET')
@@ -172,7 +175,11 @@ async def scrape(context, item, parser):
 async def round_once(context, api, parser, auth_event=None, state=None):
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
     items=batch.get('items',[])
-    if not items: print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
+    if not items:
+        if getattr(api,'autonomous',False):
+            print('已连接选品系统：当前没有「到期且未暂停」的目录 SKU 可采集（可能全部已暂停）。',flush=True)
+        else:
+            print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     blocked=0
@@ -210,7 +217,7 @@ async def run(args):
     if not args.login:
         key=os.environ.get('PP_COLLECTOR_KEY') or getpass.getpass('选品系统服务访问密钥（输入不显示，输入后按回车）：')
         if not key.strip(): raise ValueError('缺少服务访问密钥')
-        api=Api(BASE,key)
+        api=Api(BASE,key,autonomous=not args.once)
         print('正在核对选品系统连接…',flush=True)
         readiness=await asyncio.to_thread(api.call,'/api/collector/status')
         if readiness.get('ready') is not True: raise RuntimeError('系统连接未就绪，尚未打开采集浏览器')

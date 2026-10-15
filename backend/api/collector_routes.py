@@ -98,19 +98,37 @@ def relay_observation_time(item, received):
 
 @router.get('/products')
 def products(db:Session=Depends(get_db),store:str=Depends(get_store_id),
-             x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client')):
+             x_collector_client:Optional[str]=Header(default=None,alias='X-Collector-Client'),
+             x_autonomous:Optional[str]=Header(default=None,alias='X-Collector-Autonomous')):
     assert_default(store);touch(db,collector_kind(x_collector_client))
     now=time.time();items=[]
     recover_expired(db,now)
+    # 本地原生采集器（local_collector）在「常态采集」时请求自主模式：放宽领取条件，
+    # 采集全部「未显式暂停且已到期」的目录 SKU（含从未配置的），不再要求网页预先
+    # enabled/request_once。云端在本地健康时自动退避（buybox_monitor.start_worker），
+    # 故本地接管全量只读采集不会与云端重复写价或改动 SKU 身份。仅 local_collector 可触发。
+    autonomous = x_collector_client=='local_collector' and x_autonomous=='1'
     for item in sorted(catalog(db,store),key=lambda x:x['monitor'].get('next_due',0)):
         monitor=item['monitor']
-        if not (monitor.get('enabled') or monitor.get('request_once')) or monitor.get('next_due',0)>now: continue
+        if autonomous:
+            if monitor.get('status')=='paused' or monitor.get('next_due',0)>now: continue
+        else:
+            if not (monitor.get('enabled') or monitor.get('request_once')) or monitor.get('next_due',0)>now: continue
         key=PREFIX+store+':'+item['product_id']+':'+item['offer_id']
         row=db.query(SystemSettings).filter_by(key=key).first()
-        original=row.value
-        config=json.loads(original);config.update(status='running',next_due=now+900,current_price=item['price'],stock=item['stock'])
-        claimed=json.dumps(config,ensure_ascii=False)
-        if db.query(SystemSettings).filter_by(key=key,value=original).update({'value':claimed})!=1: continue
+        if row is None:
+            # 从未配置过的目录 SKU（自主模式会走到这里）：以「运行中」状态新建 monitor 行，
+            # 避免 AttributeError；乐观锁不适用，直接插入。
+            config={'product_id':item['product_id'],'offer_id':item['offer_id'],'sku':item['sku'],
+                    'enabled':False,'request_once':False,'web_requested':False,'interval_minutes':5,
+                    'revision':0,'status':'running','next_due':now+900,'current_price':item['price'],'stock':item['stock']}
+            claimed=json.dumps(config,ensure_ascii=False)
+            db.add(SystemSettings(key=key,value=claimed))
+        else:
+            original=row.value
+            config=json.loads(original);config.update(status='running',next_due=now+900,current_price=item['price'],stock=item['stock'])
+            claimed=json.dumps(config,ensure_ascii=False)
+            if db.query(SystemSettings).filter_by(key=key,value=original).update({'value':claimed})!=1: continue
         token=str(uuid.uuid4())
         db.add(SystemSettings(key=CLAIM_PREFIX+token,value=json.dumps({'monitor_key':key,'sku':item['sku'],'claim':claimed,'claimed_at':now,'expires_at':now+900})))
         items.append({'productId':token,'shopId':store,'sku':item['sku'],'name':item['name'],'url':item['url'],'myPrice':item['price'],'myStock':item['stock']})
@@ -132,8 +150,12 @@ def web_open(data:WebOpen,db:Session=Depends(get_db),store:str=Depends(get_store
     now=time.time();queued=0
     recover_expired(db,now)
     for item in catalog(db,store):
+        # 只读采集：缺失/非数字的库存（operations_profile.offers[].stock 从未从卖家接口
+        # 同步）不该阻断排程——原逻辑因此把全部 SKU 跳过，导致原生采集器领 0 任务。
+        # 库存会在后端 process() 期间从卖家接口重新读取。明确缺货（数字且 <=0）仍按原设计跳过。
+        if not item.get('url'): continue
         stock=item.get('stock')
-        if isinstance(stock,bool) or not isinstance(stock,(int,float)) or stock<=0 or not item.get('url'): continue
+        if isinstance(stock,bool) or (isinstance(stock,(int,float)) and stock<=0): continue
         old=item['monitor']
         if old.get('status') in ('running','paused') or (old.get('next_due',0)>now and not (data.initial and old.get('status')=='error')): continue
         value={**old,'product_id':item['product_id'],'offer_id':item['offer_id'],'sku':item['sku'],
