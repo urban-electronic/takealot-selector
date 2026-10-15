@@ -133,7 +133,13 @@ def products(db:Session=Depends(get_db),store:str=Depends(get_store_id),
         db.add(SystemSettings(key=CLAIM_PREFIX+token,value=json.dumps({'monitor_key':key,'sku':item['sku'],'claim':claimed,'claimed_at':now,'expires_at':now+900})))
         items.append({'productId':token,'shopId':store,'sku':item['sku'],'name':item['name'],'url':item['url'],'myPrice':item['price'],'myStock':item['stock']})
         if len(items)>=20: break
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发请求（本机 /products 与网页 /web-open）同时为同一「从未配置」的 SKU
+        # 新建 monitor 行会造成主键冲突。回滚并让采集器下一轮重试，而不是返回 500。
+        db.rollback()
+        return {'items':[]}
     return {'items':items}
 
 class WebOpen(BaseModel):

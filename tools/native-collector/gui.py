@@ -1,6 +1,7 @@
 """Desktop collection controls; Windows credentials use per-user DPAPI encryption."""
 import ctypes
 from ctypes import wintypes
+import json
 import os
 from pathlib import Path
 import queue
@@ -33,11 +34,24 @@ def protect(data, decrypt=False):
         ctypes.windll.kernel32.LocalFree.argtypes=[ctypes.c_void_p]
         ctypes.windll.kernel32.LocalFree(ctypes.cast(result.data,ctypes.c_void_p))
 
+def resolve_python():
+    """与 run_background.py 保持一致：优先自带 playwright 的解释器，否则回退
+    TakealotCollector 捆绑运行时。避免用缺 playwright 的解释器启动子采集器。"""
+    try:
+        import importlib.util
+        if importlib.util.find_spec('playwright'):
+            return sys.executable
+    except Exception:
+        pass
+    candidate = STATE / 'runtime-cpython-313' / 'Scripts' / 'python.exe'
+    return str(candidate) if candidate.exists() else sys.executable
+
 class App:
     def __init__(self, window):
         self.window=window;self.process=None;self.stop_path=None;self.events=queue.Queue()
         STATE.mkdir(parents=True,exist_ok=True)
-        self.key=tk.StringVar();self.status=tk.StringVar(value='准备就绪。推荐点「常态采集」让本机长驻领租约；网页点“立即采集”即由本机抓回报价。')
+        self.key=tk.StringVar();self.status=tk.StringVar(value='准备就绪。点「常态采集」本机即可自主采集目录中到期且未暂停的 SKU，云端自动退避让路。')
+        self.state=tk.StringVar(value='待机')
         self.profile=tk.StringVar(value=(STATE/'profile-path.txt').read_text(encoding='utf-8').strip() if (STATE/'profile-path.txt').exists() else str(STATE/'browser_profile'))
         self.remember=tk.BooleanVar(value=os.name=='nt')
         saved=STATE/'service-key.dpapi'
@@ -57,9 +71,13 @@ class App:
         buttons=ttk.Frame(frame);buttons.pack(fill='x',pady=8)
         for text,command in [('登录 / 配送设置',lambda:self.start('login')),('采集一轮',lambda:self.start('once')),('常态采集',lambda:self.start('continuous')),('暂停采集',self.stop),('打开系统',lambda:webbrowser.open(SITE))]:
             ttk.Button(buttons,text=text,command=command).pack(side='left',padx=(0,8))
-        self.status_label=ttk.Label(frame,textvariable=self.status,wraplength=690);self.status_label.pack(anchor='w',pady=8)
+        indicator=ttk.Frame(frame);indicator.pack(anchor='w',pady=(10,0))
+        self.dot=tk.Label(indicator,text='●',font=('',14),foreground='#888888');self.dot.pack(side='left')
+        self.state_label=tk.Label(indicator,textvariable=self.state,font=('',11,'bold'),foreground='#888888')
+        self.state_label.pack(side='left',padx=(6,0))
+        self.status_label=ttk.Label(frame,textvariable=self.status,wraplength=690);self.status_label.pack(anchor='w',pady=(4,8))
         self.log=tk.Text(frame,height=10,wrap='word',state='disabled');self.log.pack(fill='both',expand=True)
-        ttk.Label(frame,text='推荐「常态采集」：本机长驻领租约、云端自动让路，网页点“立即采集”即由本机抓回；「采集一轮」仅跑一次；「登录 / 配送设置」仅在需要时使用。',wraplength=690).pack(anchor='w',pady=(8,0))
+        ttk.Label(frame,text='推荐「常态采集」：本机自主采集目录中到期且未暂停的 SKU、云端自动让路；「采集一轮」仅处理网页已排队的任务（无排队则不采）；「登录 / 配送设置」仅在会话失效或首次使用时使用。',wraplength=690).pack(anchor='w',pady=(8,0))
         window.protocol('WM_DELETE_WINDOW',self.close);window.after(200,self.poll)
 
     def choose(self):
@@ -81,7 +99,7 @@ class App:
             elif saved.exists(): saved.unlink()
         except Exception as exc: messagebox.showerror('连接配置',str(exc));return
         self.stop_path=STATE/(str(uuid.uuid4())+'.stop')
-        command=[sys.executable,'-u',str(ROOT/'collector.py'),'--profile',str(profile),'--stop-file',str(self.stop_path)]
+        command=[resolve_python(),'-u',str(ROOT/'collector.py'),'--profile',str(profile),'--stop-file',str(self.stop_path)]
         if mode=='login': command.append('--login')
         elif mode=='once': command.append('--once')
         # continuous 模式：不加 --once，采集器长驻、每约30s领租约并刷新心跳，云端 worker 自动退避让路
@@ -91,7 +109,7 @@ class App:
         if mode=='login':
             self.status.set('登录浏览器正在打开；完成登录和配送设置后，在本窗口点“完成登录”。')
         elif mode=='continuous':
-            self.status.set('常态采集已启动：本机长驻领租约，云端自动退避让路；在网页点“立即采集”即由本机抓回报价，点“暂停采集”可随时停止。')
+            self.status.set('常态采集已启动：本机自主采集目录中到期且未暂停的 SKU，云端自动让路；点「暂停采集」可随时停止。')
         else:
             self.status.set('正在连接并启动采集…')
         if mode=='login':
