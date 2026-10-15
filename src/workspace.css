@@ -1,0 +1,163 @@
+/* Shared shell and page rhythm. Page-specific workspaces retain their own layout. */
+:root {
+  --surface-border: #dce4ed;
+  --surface-soft: #f4f7fb;
+  --radius-panel: 16px;
+  --radius-control: 9px;
+  --color-text: #253247;
+  --color-text-secondary: #64748b;
+}
+body { font-size: 14px; }
+button, input, select, textarea { font-family: inherit; }
+input, select, textarea { min-width: 0; max-width: 100%; }
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']), select, textarea {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+:where(button, a, input, select, textarea):focus-visible { outline: 2px solid #5182ce; outline-offset: 3px; }
+.container { max-width: 1680px; margin: 0 auto; min-width: 0; padding: 24px clamp(16px, 2.4vw, 40px) 36px; }
+.container > * { min-width: 0; }
+.container > .operations-note { padding: 0 0 16px; color: #65748a; }
+
+/* Navigation never compresses labels into vertical text. */
+.app-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 20px; height: 68px; padding-inline: 24px; }
+.app-brand, .header-tools { min-width: 0; }
+.app-brand h1 { font-size: 16px; }
+.app-header .primary-nav { min-width: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+.app-header .primary-nav a { flex: 0 0 auto; white-space: nowrap; padding: 8px 12px; font-size: 13px; }
+.header-tools { gap: 8px; }
+.management-menu-panel { z-index: 110; max-height: calc(100dvh - 150px); overflow-y: auto; }
+.store-switcher select { color: #eaf1fa; background: #30425b; }
+
+/* Same heading scale, actions and supporting copy on each page. */
+:is(.dashboard-heading, .product-list-header, .inventory-heading, .stores-heading, .packing-hero, .create-page-heading, .page-heading) {
+  display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap;
+  gap: 14px 20px; margin: 0 0 20px; padding: 0; border: 0; background: none; box-shadow: none;
+}
+:is(.dashboard-heading, .product-list-header, .inventory-heading, .stores-heading, .packing-hero, .create-page-heading, .page-heading) > div:first-child { min-width: 0; }
+.container :is(.dashboard-heading, .product-list-header, .inventory-heading, .stores-heading, .packing-hero, .create-page-heading, .page-heading) :is(h1,h2) {
+  font-size: 26px; line-height: 1.35; font-weight: 700; color: #273b55; letter-spacing: -.02em; margin: 0;
+  overflow-wrap: anywhere;
+}
+:is(.dashboard-heading, .inventory-heading, .stores-heading, .create-page-heading, .page-heading) p { color: #64748b; font-size: 13px; margin: 6px 0 0; line-height: 1.65; }
+.page-actions, .packing-hero-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 0; }
+.btn, .operations-workspace .btn { border-radius: var(--radius-control); white-space: nowrap; line-height: 1.45; min-height: 36px; padding: 8px 14px; font-size: 13px; }
+.btn-sm, .operations-workspace .btn-sm { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+.card, .dashboard-panel, .store-editor, .store-table-card, .packing-library-card, .packing-summary-column > .card, .operations-workspace .card {
+  border-color: var(--surface-border); border-radius: var(--radius-panel); box-shadow: 0 2px 8px rgba(30,50,80,.035);
+}
+.card, .operations-workspace .card { padding: 20px; }
+.operations-workspace .operations-table-card { padding: 0; }
+.card-title, .dashboard-panel-title h2 { color: #304562; }
+.dashboard-simple .dashboard-panel { background: #fff; border-color: var(--surface-border); }
+.dashboard-simple .dashboard-heading { margin: 0 0 20px; }
+.dashboard-summary-card { background: #fff; }
+.dashboard-panel-title { gap: 12px; flex-wrap: wrap; }
+.dashboard-panel-title .btn { flex-shrink: 0; }
+.dashboard-task { background: #f9fbfd; }
+.dashboard-task strong, .dashboard-task b { color: #304562; }
+
+/* Dense data stays in its own scroll area; forms use the full available width. */
+:is(.table-wrapper, .inventory-table-wrap, .operations-table-scroll, .product-table-scroll, .packing-table-scroll) { max-width: 100%; min-width: 0; overscroll-behavior-inline: contain; }
+:is(.inventory-table-wrap, .operations-table-scroll, .procurement-table-scroll) { border-radius: 12px; scrollbar-width: thin; }
+.table-wrapper:focus-visible, .operations-table-scroll:focus-visible { outline-offset: -2px; }
+.inventory-tabs, .inventory-toolbar, .pagination-bar, .operations-pagination { flex-wrap: wrap; gap: 10px; }
+.inventory-toolbar > *, .pricing-toolbar > * { max-width: 100%; }
+.inventory-kpis { flex-wrap: wrap; }
+.operations-workspace .data-table th { background: #f3f6fa; color: #52657f; }
+.operations-workspace .row-subtitle { color: #64748b; }
+.operations-workspace input:not([type='checkbox']), .operations-workspace select { border-radius: var(--radius-control); }
+.pricing-summary { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; }
+.pricing-summary .card { margin-bottom: 0; }
+.pricing-stop { justify-content: flex-end; }
+.pricing-actions { gap: 12px; padding-bottom: 12px; }
+.pricing-actions > div { padding: 10px 12px; border: 1px solid #e1e8f1; border-radius: 12px; background: #f8fafd; }
+.pricing-actions > div > span { font-weight: 600; color: #435874; }
+
+/* Packing keeps the two-column workstation with a quieter summary. */
+.packing-page { --packing-accent: #5778a8; }
+.packing-eyebrow { font-size: 10px; letter-spacing: .1em; margin-bottom: 5px; }
+.packing-subtitle { margin-top: 7px; font-size: 13px; color: #64748b; gap: 4px 12px; }
+.packing-hero-actions .btn { min-height: 36px; }
+.packing-summary-banner { padding: 20px; border: 1px solid #d6e2f3; border-radius: 16px; background: #eaf1fb; color: #304967; }
+.packing-summary-banner::after { display: none; }
+.packing-summary-banner strong { font-size: 28px; color: #273b55; }
+.packing-summary-banner span, .packing-summary-banner small { color: #61748c; }
+.packing-export-btn { background: #304d78; border-color: #304d78; }
+.packing-export-btn:hover { background: #253e63; }
+.packing-export-grid input { min-height: 36px; }
+.packing-library-card { padding: 20px !important; }
+.packing-table-scroll { min-height: 240px; }
+
+.product-detail-page .two-col > * { min-width: 0; }
+.product-detail-page table { table-layout: fixed; }
+.product-detail-page td { white-space: normal; overflow-wrap: anywhere; }
+.settings-page, .product-detail-page { max-width: 1180px; margin-inline: auto; }
+.settings-connection-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.settings-connection-row label { flex: 0 0 84px; }
+.settings-connection-row input { flex: 1 1 240px; width: 100%; }
+.procurement-heading-copy { display: flex; flex-direction: column; gap: 6px; }
+.procurement-heading-copy > span { font-size: 13px !important; color: #64748b !important; font-weight: 400 !important; }
+.procurement-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px 24px; margin-bottom: 16px; }
+.procurement-filterbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.procurement-table-scroll { overflow-x: auto; }
+.procurement-table-scroll table { min-width: 900px; }
+.procurement-page form label { display: block; margin-bottom: 4px; font-size: 13px; color: #64748b; }
+
+/* Dialogs fit short windows and remain above the sticky navigation. */
+.packing-modal-mask, .app-modal-backdrop { position: fixed; inset: 0; padding: 16px; z-index: 1200; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: rgba(24,40,63,.38); }
+.packing-modal, .app-modal { width: 100%; max-width: 560px; max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--surface-border); border-radius: 16px; padding: 20px 24px; background: #fff; box-shadow: 0 18px 60px rgba(15,36,66,.18); overflow-wrap: anywhere; }
+.app-modal { max-width: 460px; }
+.seller-assist-dialog { max-height: calc(100dvh - 32px); }
+body:has(.packing-modal-mask, .app-modal-backdrop) { overflow: hidden; }
+.replenishment-panel-heading { position: sticky; top: -24px; z-index: 4; padding: 14px 0; background: var(--color-bg); }
+
+@media (max-width: 1360px) {
+  .app-header { grid-template-columns: auto minmax(0, 1fr); height: auto; gap: 8px 20px; padding: 10px 20px 8px; }
+  .app-header .primary-nav { grid-column: 1 / -1; grid-row: 2; width: 100%; order: initial; }
+  .app-header .primary-nav a { flex: 0 0 auto; padding: 7px 14px; }
+  .header-tools { justify-content: flex-end; }
+  .app-brand h1 { display: block; }
+  .header-create-button { font-size: 12px; padding: 8px 12px; }
+  .header-create-button::after { content: none; }
+}
+@media (max-width: 1000px) {
+  .app-brand h1 { display: none; }
+  .pricing-summary { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .pricing-stop { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+  .container { padding: 18px 12px 28px; }
+  .app-header { grid-template-columns: 38px minmax(0,1fr); gap: 8px 10px; padding: 8px 12px; }
+  .app-brand img { width: 36px; height: 42px; }
+  .header-tools { flex-wrap: wrap; gap: 6px; }
+  .world-clocks { flex-basis: 100%; justify-content: flex-end; border: 0; padding: 0; }
+  .header-tools .store-switcher select { width: 92px; height: 32px; }
+  .management-menu-trigger, .header-create-button { padding: 7px 9px; font-size: 12px; }
+  .app-header .primary-nav { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 4px; padding-bottom: 2px; overflow: visible; }
+  .app-header .primary-nav a { padding: 7px 4px; font-size: 13px; text-align: center; }
+  .container :is(.dashboard-heading, .product-list-header, .inventory-heading, .stores-heading, .packing-hero, .create-page-heading, .page-heading) :is(h1,h2) { font-size: 23px; }
+  .card, .operations-workspace .card { padding: 16px; }
+  .operations-workspace .operations-table-card { padding: 0; }
+  .packing-library-card { padding: 16px !important; }
+  .packing-hero-actions { width: 100%; flex-wrap: wrap; }
+  .packing-hero-actions .btn { flex: 1 1 auto; padding-inline: 10px; }
+  .packing-table-scroll { max-height: 55dvh; }
+  .pricing-summary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .pricing-stop { grid-column: auto; align-items: center; }
+  .pricing-stop .btn { white-space: normal; }
+  .pricing-toolbar { padding: 12px; gap: 8px; }
+  .pricing-toolbar > input, .pricing-toolbar > select { width: 100%; }
+  .selection-count { margin-left: 0; }
+  .pricing-actions { padding-inline: 12px; }
+  .pricing-actions > div { width: 100%; }
+  .settings-connection-row label { flex-basis: 100%; }
+  .settings-connection-row input { flex-basis: 100%; max-width: 100% !important; }
+  .product-detail-page td:first-child:not([colspan]) { width: 46% !important; }
+  .procurement-form-grid { grid-template-columns: minmax(0,1fr); }
+  .procurement-form-grid > div { grid-column: auto !important; }
+  .pagination-bar, .operations-pagination { justify-content: flex-start; }
+  .packing-modal-mask, .app-modal-backdrop { padding: 12px; }
+  .packing-modal, .app-modal { padding: 18px; max-height: calc(100dvh - 24px); }
+  .replenishment-panel-heading { top: -16px; }
+}

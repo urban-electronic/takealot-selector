@@ -225,9 +225,9 @@ export default function Procurement() {
   if (loading) return <div className="loading">加载中...</div>;
 
   return (
-    <div className="page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
+    <div className="page procurement-page">
+      <div className="page-heading">
+        <div className="procurement-heading-copy">
           <h1 style={{ margin: 0 }}>采购记录</h1>
           {records.length > 0 && (
             <span style={{ fontSize: 16, fontWeight: 600, color: '#e74c3c' }}>
@@ -239,7 +239,7 @@ export default function Procurement() {
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="page-actions">
           <button className="btn btn-outline" onClick={handleSyncToRemote} disabled={syncing}>
             {syncing ? '同步中...' : '同步到远程'}
           </button>
@@ -257,7 +257,7 @@ export default function Procurement() {
         <div className="card" style={{ marginBottom: 20, padding: 20 }}>
           <h3 style={{ marginTop: 0 }}>{editingId ? '编辑采购记录' : '新建采购记录'}</h3>
           <form onSubmit={handleSubmit}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: 16 }}>
+            <div className="procurement-form-grid">
               {/* recorded date */}
               <div>
                 <label>日期</label>
@@ -344,7 +344,7 @@ export default function Procurement() {
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div className="page-actions">
               <button type="submit" className="btn btn-primary">{editingId ? '保存修改' : '创建记录'}</button>
               <button type="button" className="btn" onClick={resetForm}>取消</button>
             </div>
@@ -354,11 +354,8 @@ export default function Procurement() {
 
       {/* delete confirm modal */}
       {deleteTarget && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex',
-          alignItems: 'center', justifyContent: 'center', zIndex: 100
-        }}>
-          <div style={{ background: '#fff', borderRadius: 8, padding: 24, minWidth: 360, boxShadow: '0 4px 16px rgba(0,0,0,0.2)' }}>
+        <div className="app-modal-backdrop">
+          <div className="app-modal" role="dialog" aria-modal="true" aria-label="确认删除采购记录">
             <h3 style={{ margin: '0 0 12px' }}>确认删除</h3>
             <p style={{ margin: '0 0 20px', color: '#555' }}>
               确定删除「{deleteTarget.product_name || deleteTarget.product_no}」的采购记录？
@@ -372,7 +369,7 @@ export default function Procurement() {
       )}
 
       {/* list */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+      <div className="procurement-filterbar">
         <input type="text" placeholder="输入产品序号筛选采购记录..." value={filterProductNo}
           onChange={e => setFilterProductNo(e.target.value)}
           style={{ padding: '6px 12px', borderRadius: 10, border: '1px solid #d6e3f3', width: 240 }} />
@@ -383,7 +380,7 @@ export default function Procurement() {
       {filteredRecords.length === 0 ? (
         <div style={{ textAlign: 'center', color: '#888', padding: 40 }}>暂无采购记录，点击上方按钮新建。</div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <div className="table-wrapper procurement-table-scroll"><table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
               <th style={{ padding: '8px 12px' }}>日期</th>
@@ -438,7 +435,7 @@ export default function Procurement() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   );
