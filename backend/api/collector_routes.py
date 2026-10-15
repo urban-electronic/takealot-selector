@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from database import get_db
 from models import SystemSettings, DEFAULT_STORE_ID
 from api.store_routes import get_store_id

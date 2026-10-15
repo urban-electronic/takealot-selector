@@ -15,6 +15,19 @@
 - 本机经 `/api/collector/products` 领租约（CAS 更新，≤20 个），`/offers` 回传 `source='local_collector'`。
 - **根因（已修复）**：GUI 原先只有「采集一轮」=`--once`，本地跑完一轮即退出，心跳空窗被常驻云端 worker 抢走任务 → 点「采集一轮」常报「暂无到期任务」。新增「常态采集」持续模式让本地心跳常驻、云端退避、本地优先领租约。
 
+## 2.1 自主常态采集（本次新增，修「领 0 任务」）
+
+**问题**：原生采集器本质是 worker，只领 `monitor.enabled or monitor.request_once` 且到期的任务，**自己不决定采哪些**。而网页「立即采集」`POST /web-open` 用 `stock>0` 过滤，`catalog()` 的 `stock` 来自 `operations_profile.offers[].stock`——库存字段缺失（从未同步）时 web-open 把**全部** SKU 跳过 → 无人被置 `request_once` → CLI 永远领 0、空转打「暂无到期任务」。
+
+**方案**：
+- `products()` 新增**自主模式**：仅 `local_collector` 经 `X-Collector-Autonomous:1`（常态模式自动携带）触发；领取条件放宽为「**未暂停且到期**」的**全部目录 SKU（含从未配置的）**，不再要求网页预先 `enabled/request_once`。
+- `web_open()` **放宽库存过滤**：缺失/非数字库存不再阻断排程（**明确缺货 `stock<=0` 仍按原设计跳过**，避免扩大采集面）。
+- `products()` 对**从未配置**的 SKU 容错：monitor 行不存在时新建（`enabled=False`），避免 `AttributeError`。
+- `products()` 提交加 `IntegrityError` 保护：并发请求同时新建同一 monitor 行时回滚并让下一轮重试，而非 500。
+- 云端仍在本地健康时自动退避（`start_worker` 的 120s 接管），本地接管全量**只读**采集不会重复写价或改动 SKU 身份。
+
+**边界**：「采集一轮」（`--once`）保持 opt-in 语义，仅处理已排队任务。
+
 ## 3. 会话失效检测机制（本次新增）
 
 **触发**：Takealot 会话过期 → 商品页跳转到 `/login` 或出现登录入口（而非被风控拦截）。
@@ -45,7 +58,20 @@
 ## 5. 前端视觉逻辑一致性
 
 - **React（`src/utils/imageFallback.tsx`）**：`imageErrorPlaceholder` → `ProductImage` 组件（state 驱动占位，`useEffect` 重置失败态），Inventory / ProductCreate / ProductDetail / ProductList ×2 共 4 处统一调用；`tsc` 0 错、`vite build` 通过、Playwright 回归 20/20。
-- **原生 GUI**：状态栏统一四类可视状态（连接中 / 采集中 / 已暂停 / **会话失效红色**）；失败信息可观测。
+- **原生 GUI（本次统一）**：状态不再靠 stdout 文本猜，改为**采集器写状态、GUI 只读呈现**的单一数据源：
+  - 采集器侧 `write_status(state)` 写入 `collector_status.json`（`idle` / `collecting_ok` / `challenged` / `auth_expired`）；
+  - GUI 侧 `refresh_state()` 读取该文件，用**彩色圆点 + 状态文案**统一呈现：
+
+  | 状态 | 文案 | 颜色 |
+  |---|---|---|
+  | `idle` | 待机（暂无到期任务） | 灰 `#888` |
+  | `collecting_ok` | 采集中 | 绿 `#007a00` |
+  | `challenged` | 遇风控，已退避等待 | 橙 `#b06000` |
+  | `auth_expired` | ⚠ 会话失效，请重新登录 | 红 `#cc0000` |
+  | （进程在跑、尚无状态文件） | 启动中… | 蓝 `#0066cc` |
+  | （进程已退出） | 已停止 | 灰 `#888` |
+
+  - 另修：GUI 启动子采集器改用 `resolve_python()`（与 `run_background.py` 一致，优先自带 playwright 的解释器、否则回退捆绑运行时），避免用缺 playwright 的解释器启动导致必然失败。
 - **统一原则**：失败不污染成功（宁可采不到也不采错 —— 选择器宁缺毋滥）；诊断透传（`diagnostics` 含 http_status / buybox_cards / page_title / final_url）。
 
 ## 6. 视觉逻辑系统图
@@ -53,7 +79,8 @@
 ```mermaid
 flowchart TD
     A[网页点「立即采集」/ 应用打开排队] --> B[/api/collector/products 领租约 + 刷新心跳/]
-    B --> C{本地心跳 connected=真?}
+    A2[常态采集自主模式<br/>本机扫目录：到期且未暂停的 SKU（含从未配置）] --> B
+    B --> C{本地心跳 connected=真<br/>且 120s 内有成功采集?}
     C -- 是 --> D[云端 buybox_monitor worker 退避<br/>_stop.wait 10s]
     C -- 否 --> E[云端 worker 接管采集]
     D --> F[本机 scrape 商品页]
@@ -77,3 +104,5 @@ flowchart TD
 3. **接管时延**：本地崩溃/退出后云端需等 900s 心跳过期才接管，是否加更短健康心跳。
 4. **会话检测阈值**：`is_auth_expired` 的判定是否需结合后端 Seller API 校验会话有效性。
 5. **合并路径**：本分支（native-collector 修复）与 React 复核分支的合入顺序。
+6. **自主采集范围（本次新增，请裁定）**：常态采集现在会自主采集**整个目录**中「到期且未暂停」的 SKU（含从未在网页开启的），而 Mac 侧 `collector.ts:81` 只采 `autoPricingEnabled=true`（27/785）。请确认这是期望行为；若应维持「仅采已开启的」，只需去掉采集器常态模式携带的 `X-Collector-Autonomous:1` 即可回退，无需改后端。
+7. **Mac 侧 `collector.ts` 的 4 项保护缺口**（挑战识别 / 变体门控 / HTTP 状态 / `variantControls`）：本分支不覆盖（跨端）。这 4 项在 `pricepilot_collector.py` 已实现且被 Windows 路径复用；若要给 Mac 侧补齐，建议单独立 PR。

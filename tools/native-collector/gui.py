@@ -125,6 +125,26 @@ class App:
             self.stop_path.touch();self.status.set('正在停止并释放未完成任务…')
         if hasattr(self,'finish'):self.finish.destroy();del self.finish
 
+    def refresh_state(self):
+        """读取采集器写入的 collector_status.json，统一呈现可视状态（颜色 + 文案）。
+        状态由采集器侧 write_status() 产出，GUI 只负责如实显示，不自行猜测。"""
+        mapping={'idle':('待机（暂无到期任务）','#888888'),
+                 'collecting_ok':('采集中','#007a00'),
+                 'challenged':('遇风控，已退避等待','#b06000'),
+                 'auth_expired':('⚠ 会话失效，请重新登录','#cc0000')}
+        if self.process and self.process.poll() is None:
+            state=None
+            try:
+                state=json.loads((STATE/'collector_status.json').read_text(encoding='utf-8')).get('state')
+            except Exception:
+                pass
+            text,color=mapping.get(state,('启动中…','#0066cc'))
+        else:
+            text,color=('已停止','#888888')
+        self.state.set(text)
+        self.dot.configure(foreground=color)
+        self.state_label.configure(foreground=color)
+
     def poll(self):
         while not self.events.empty():
             line=self.events.get()
@@ -135,6 +155,7 @@ class App:
             else:
                 self.status.set(line)
                 self.status_label.configure(foreground='black')
+        self.refresh_state()
         self.window.after(200,self.poll)
 
     def close(self):
