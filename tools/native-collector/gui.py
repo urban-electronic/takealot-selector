@@ -57,7 +57,7 @@ class App:
         buttons=ttk.Frame(frame);buttons.pack(fill='x',pady=8)
         for text,command in [('登录 / 配送设置',lambda:self.start('login')),('采集一轮',lambda:self.start('once')),('常态采集',lambda:self.start('continuous')),('暂停采集',self.stop),('打开系统',lambda:webbrowser.open(SITE))]:
             ttk.Button(buttons,text=text,command=command).pack(side='left',padx=(0,8))
-        ttk.Label(frame,textvariable=self.status,wraplength=690).pack(anchor='w',pady=8)
+        self.status_label=ttk.Label(frame,textvariable=self.status,wraplength=690);self.status_label.pack(anchor='w',pady=8)
         self.log=tk.Text(frame,height=10,wrap='word',state='disabled');self.log.pack(fill='both',expand=True)
         ttk.Label(frame,text='推荐「常态采集」：本机长驻领租约、云端自动让路，网页点“立即采集”即由本机抓回；「采集一轮」仅跑一次；「登录 / 配送设置」仅在需要时使用。',wraplength=690).pack(anchor='w',pady=(8,0))
         window.protocol('WM_DELETE_WINDOW',self.close);window.after(200,self.poll)
@@ -109,8 +109,14 @@ class App:
 
     def poll(self):
         while not self.events.empty():
-            line=self.events.get();self.status.set(line)
+            line=self.events.get()
             self.log.configure(state='normal');self.log.insert('end',line+'\n');self.log.see('end');self.log.configure(state='disabled')
+            if line.startswith('AUTH_EXPIRED:'):
+                self.status.set('⚠️ 登录会话已失效：请点「登录 / 配送设置」重新登录，然后再次「常态采集」。')
+                self.status_label.configure(foreground='#c00')
+            else:
+                self.status.set(line)
+                self.status_label.configure(foreground='black')
         self.window.after(200,self.poll)
 
     def close(self):

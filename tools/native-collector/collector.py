@@ -84,6 +84,26 @@ def valid_product_url(value):
     parsed=urlsplit(value or '')
     return parsed.scheme=='https' and parsed.hostname in ('takealot.com','www.takealot.com') and bool(re.search(r'PLID\d+',parsed.path,re.I))
 
+async def is_auth_expired(page):
+    """识别 Takealot 登录墙（会话过期/已退出）。
+
+    我们只用「本人已登录会话」访问，不做验证码破解、不做浏览器指纹伪装。
+    若被识别为已退出登录（跳转到登录页或页面出现登录入口），则明确标记，
+    提示用户用本人的会话重新登录，而不是继续空跑或绕验证。"""
+    try:
+        url=(page.url or '').lower()
+        if any(k in url for k in ('/login','signin','sign-in','/account/login','account/signin')):
+            return True
+        title=(await page.title() or '')
+        if re.search(r'sign[\s-]?in|log[\s-]?in|please.?sign',title,re.I):
+            return True
+        if await page.query_selector('input[type="password"]') and \
+           await page.query_selector('a[href*="login"], form[action*="login"], [class*="login"]'):
+            return True
+    except Exception:
+        pass
+    return False
+
 async def scrape(context, item, parser):
     result={'productId':item['productId'],'sku':item['sku'],'offers':[]}
     if not valid_product_url(item.get('url')): return {**result,'error':'invalid_url'}
@@ -113,16 +133,24 @@ async def scrape(context, item, parser):
                 buybox_cards=await page.locator('[data-ref="buybox-offer"]').count())
         except Exception: pass
         quote['diagnostics']=diagnostics
+        try:
+            # 会话失效优先于 site_challenge：登录墙说明需要本人重新登录，而非被风控
+            if not quote.get('buyboxPrice') and await is_auth_expired(page):
+                quote['error']='auth_expired'
+        except Exception:
+            pass
         await page.close()
     return quote
 
-async def round_once(context, api, parser):
+async def round_once(context, api, parser, auth_event=None):
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
     items=batch.get('items',[])
     if not items: print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
+    blocked=0
     async def worker(item):
+        nonlocal blocked
         async with semaphore:
             quote=await scrape(context,item,parser)
             response=await asyncio.to_thread(api.call,'/api/collector/offers',{'items':[quote]})
@@ -130,8 +158,12 @@ async def round_once(context, api, parser):
             accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
             d=quote.get('diagnostics') or {}
             error=quote.get('error')
-            reason=error if error in ('site_challenge','blocked_or_load_failed','navigation_timeout','collector_error','unstable_price','invalid_url') or isinstance(error,str) and re.fullmatch(r'http_\d{3}',error) else 'price_not_found'
+            if error=='auth_expired':
+                if auth_event is not None: auth_event.set()
+                print('AUTH_EXPIRED: 登录会话已失效；请打开 GUI 点「登录 / 配送设置」重新登录后再次采集。',flush=True)
+            reason=error if error in ('site_challenge','blocked_or_load_failed','auth_expired','navigation_timeout','collector_error','unstable_price','invalid_url') or isinstance(error,str) and re.fullmatch(r'http_\d{3}',error) else 'price_not_found'
             if response.get('skipped'): reason='任务已暂停或租约已失效'
+            if error in ('site_challenge','blocked_or_load_failed','auth_expired'): blocked+=1
             result=('Buybox R '+str(quote['buyboxPrice'])+' 已回传') if accepted else f"未取得报价：{reason} · HTTP {d.get('http_status') or '—'} · 报价卡 {d.get('buybox_cards','—')}"
             print(f"SKU {item['sku']}: {result}",flush=True)
     tasks=[asyncio.create_task(worker(item)) for item in items]
@@ -141,7 +173,7 @@ async def round_once(context, api, parser):
         for task in tasks: task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
         if leased: await asyncio.to_thread(api.call,'/api/collector/release',{'product_ids':list(leased)})
-    return len(items)
+    return len(items), (blocked==len(items) and len(items)>0)
 
 async def run(args):
     from playwright.async_api import async_playwright
@@ -171,25 +203,35 @@ async def run(args):
                     else: await asyncio.to_thread(input,'在浏览器完成登录和南非配送地址设置后，按回车保存并关闭：')
                     return
                 parser=parser_module()
+                auth_event=asyncio.Event()
+                consecutive_block=0
+                wait=30
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                     try:
-                        cycle=asyncio.create_task(round_once(context,api,parser))
+                        cycle=asyncio.create_task(round_once(context,api,parser,auth_event))
                         try:
                             while not cycle.done():
                                 if getattr(args,'stop_file',None) and Path(args.stop_file).exists():
                                     cycle.cancel();break
                                 await asyncio.sleep(.5)
-                            await cycle
+                            count,all_blocked=await cycle
                         finally:
                             if not cycle.done(): cycle.cancel()
                             await asyncio.gather(cycle,return_exceptions=True)
+                        if auth_event.is_set():
+                            print('登录会话已失效，停止采集；请重新登录后再启动常态采集。',flush=True)
+                            break
+                        # 容错：连续整轮被风控/拦截时拉长等待，避免加剧封禁
+                        if all_blocked and count>0: consecutive_block+=1
+                        else: consecutive_block=0
+                        wait=300 if consecutive_block>=2 else 30
                     except asyncio.CancelledError: break
                     except Exception as exc:
                         message=str(exc) if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
                         print(f'本轮失败：{message}；保留原价，稍后重试。',flush=True)
                     if args.once: break
-                    for _ in range(60):
+                    for _ in range(wait*2):
                         if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                         await asyncio.sleep(.5)
             finally: await context.close()
