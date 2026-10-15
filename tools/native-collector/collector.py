@@ -112,7 +112,6 @@ async def scrape(context, item, parser):
             diagnostics.update(final_url=safe_url(page.url),page_title=(await page.title())[:160],
                 buybox_cards=await page.locator('[data-ref="buybox-offer"]').count())
         except Exception: pass
-        if isinstance(quote.get('variantControls'),int): diagnostics['variant_controls']=quote['variantControls']
         quote['diagnostics']=diagnostics
         await page.close()
     return quote
