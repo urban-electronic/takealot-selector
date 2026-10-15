@@ -1,6 +1,7 @@
 """Desktop collection controls; Windows credentials use per-user DPAPI encryption."""
 import ctypes
 from ctypes import wintypes
+import json
 import os
 from pathlib import Path
 import queue
@@ -38,6 +39,7 @@ class App:
         self.window=window;self.process=None;self.stop_path=None;self.events=queue.Queue()
         STATE.mkdir(parents=True,exist_ok=True)
         self.key=tk.StringVar();self.status=tk.StringVar(value='准备就绪。可采集一轮，或开启常态采集持续等待网页任务。')
+        self.state=tk.StringVar(value='待机')
         self.profile=tk.StringVar(value=(STATE/'profile-path.txt').read_text(encoding='utf-8').strip() if (STATE/'profile-path.txt').exists() else str(STATE/'browser_profile'))
         self.remember=tk.BooleanVar(value=os.name=='nt')
         saved=STATE/'service-key.dpapi'
@@ -57,7 +59,11 @@ class App:
         buttons=ttk.Frame(frame);buttons.pack(fill='x',pady=8)
         for text,command in [('登录 / 配送设置',lambda:self.start('login')),('采集一轮',lambda:self.start('once')),('常态采集',lambda:self.start('continuous')),('暂停采集',self.stop),('打开系统',lambda:webbrowser.open(SITE))]:
             ttk.Button(buttons,text=text,command=command).pack(side='left',padx=(0,8))
-        ttk.Label(frame,textvariable=self.status,wraplength=690).pack(anchor='w',pady=8)
+        indicator=ttk.Frame(frame);indicator.pack(anchor='w',pady=(10,0))
+        self.dot=tk.Label(indicator,text='●',font=('',14),foreground='#888888');self.dot.pack(side='left')
+        self.state_label=tk.Label(indicator,textvariable=self.state,font=('',11,'bold'),foreground='#888888')
+        self.state_label.pack(side='left',padx=(6,0))
+        ttk.Label(frame,textvariable=self.status,wraplength=690).pack(anchor='w',pady=(4,8))
         self.log=tk.Text(frame,height=10,wrap='word',state='disabled');self.log.pack(fill='both',expand=True)
         ttk.Label(frame,text='“采集一轮”完成即停止；“常态采集”保持浏览器运行，持续领取网页到期任务。暂停仅停止本机执行；停采全部任务请在网页关闭对应采集开关。',wraplength=690).pack(anchor='w',pady=(8,0))
         window.protocol('WM_DELETE_WINDOW',self.close);window.after(200,self.poll)
@@ -103,10 +109,36 @@ class App:
             self.stop_path.touch();self.status.set('正在停止并释放未完成任务…')
         if hasattr(self,'finish'):self.finish.destroy();del self.finish
 
+    def refresh_state(self):
+        """只读呈现采集器写入的状态：校验 pid，避免把上一次运行的陈旧状态当成当前状态。"""
+        mapping={'idle':('待机（暂无到期任务）','#888888'),
+                 'collecting_ok':('采集中','#007a00'),
+                 'challenged':('遇风控，已退避等待','#b06000'),
+                 'failed':('本轮未取得有效报价','#b06000')}
+        if self.process and self.process.poll() is None:
+            data=None
+            try:
+                data=json.loads((STATE/'collector_status.json').read_text(encoding='utf-8'))
+            except Exception:
+                pass
+            if isinstance(data,dict) and data.get('pid')==self.process.pid:
+                text,color=mapping.get(data.get('state'),('启动中…','#0066cc'))
+                claimed=data.get('claimed')
+                if isinstance(claimed,int) and claimed>0:
+                    text=f"{text} · 本轮领取 {claimed} / 成功 {data.get('successful',0)} / 失败 {data.get('failed',0)}"
+            else:
+                text,color=('启动中…','#0066cc')
+        else:
+            text,color=('已停止','#888888')
+        self.state.set(text)
+        self.dot.configure(foreground=color)
+        self.state_label.configure(foreground=color)
+
     def poll(self):
         while not self.events.empty():
             line=self.events.get();self.status.set(line)
             self.log.configure(state='normal');self.log.insert('end',line+'\n');self.log.see('end');self.log.configure(state='disabled')
+        self.refresh_state()
         self.window.after(200,self.poll)
 
     def close(self):

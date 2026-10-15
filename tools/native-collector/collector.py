@@ -15,6 +15,28 @@ from urllib.parse import urlsplit, urlunsplit
 ROOT = Path(__file__).resolve().parent
 BASE = 'https://takealot-selector-production.up.railway.app'
 
+APP_DIR = Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'TakealotCollector'
+try: APP_DIR.mkdir(parents=True, exist_ok=True)
+except Exception: pass
+STATUS_FILE = APP_DIR / 'collector_status.json'
+_CURRENT = {'profile': '', 'round': 0}
+
+def write_status(state, **extra):
+    """原子写状态文件供 GUI 只读呈现（tmp + os.replace，避免读到半截文件）。
+
+    附带 pid / 浏览器档案 / 轮次：GUI 据此判断是否为**当前进程**的最新状态，
+    从而不会把上一次运行（或上一轮）的陈旧状态当成现在的状态。"""
+    payload = {'state': state, 'ts': datetime.now(timezone.utc).isoformat(),
+               'pid': os.getpid(), 'profile': _CURRENT.get('profile', ''),
+               'round': _CURRENT.get('round', 0)}
+    payload.update(extra)
+    try:
+        tmp = STATUS_FILE.with_name(STATUS_FILE.name + '.tmp')
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+        os.replace(tmp, STATUS_FILE)
+    except Exception:
+        pass
+
 def parser_module():
     source = ROOT / 'pricepilot_collector.py'
     if not source.exists(): source = ROOT.parent.parent / 'backend/services/pricepilot_collector.py'
@@ -117,18 +139,40 @@ async def scrape(context, item, parser):
         await page.close()
     return quote
 
+# 仅对「瞬时失败」重试一次：页面超时/加载失败/服务端 5xx 与 429。
+# 验证页（site_challenge）与登录失效不重试——重试解决不了，还会加剧风控。
+# 重试只是用新页面重放同一请求，不做任何指纹规避或验证绕过。
+RETRYABLE_ERRORS = {'navigation_timeout', 'collector_error', 'blocked_or_load_failed'}
+RETRYABLE_HTTP = re.compile(r'http_(?:429|500|502|503|504)')
+
+def is_retryable(error):
+    return error in RETRYABLE_ERRORS or (isinstance(error, str) and bool(RETRYABLE_HTTP.fullmatch(error)))
+
 async def round_once(context, api, parser):
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
     items=batch.get('items',[])
-    if not items: print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
+    successful=0;blocked=0
     async def worker(item):
+        nonlocal successful,blocked
         async with semaphore:
-            quote=await scrape(context,item,parser)
-            response=await asyncio.to_thread(api.call,'/api/collector/offers',{'items':[quote]})
+            quote=None
+            for attempt in range(2):
+                quote=await scrape(context,item,parser)
+                error=quote.get('error')
+                if error is None or not is_retryable(error) or attempt==1: break
+                await asyncio.sleep(2+attempt*3)
+            try:
+                response=await asyncio.to_thread(api.call,'/api/collector/offers',{'items':[quote]})
+            except Exception as exc:
+                # 单个 SKU 回传失败不该拖垮整轮：其余任务继续，未回传的租约稍后统一释放。
+                print(f"SKU {item['sku']}: 回传失败：{exc}",flush=True)
+                return
             if response.get('processed') or response.get('skipped'): leased.discard(item['productId'])
             accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
+            if accepted: successful+=1
+            if quote.get('error') in ('site_challenge','blocked_or_load_failed'): blocked+=1
             d=quote.get('diagnostics') or {}
             error=quote.get('error')
             reason=error if error in ('site_challenge','blocked_or_load_failed','navigation_timeout','collector_error','unstable_price','invalid_url') or isinstance(error,str) and re.fullmatch(r'http_\d{3}',error) else 'price_not_found'
@@ -142,7 +186,7 @@ async def round_once(context, api, parser):
         for task in tasks: task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
         if leased: await asyncio.to_thread(api.call,'/api/collector/release',{'product_ids':list(leased)})
-    return len(items)
+    return len(items), successful, blocked
 
 async def run(args):
     from playwright.async_api import async_playwright
@@ -172,25 +216,50 @@ async def run(args):
                     else: await asyncio.to_thread(input,'在浏览器完成登录和南非配送地址设置后，按回车保存并关闭：')
                     return
                 parser=parser_module()
+                _CURRENT['profile']=str(profile)
+                round_no=0;wait=30;idle_noticed=False
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                     try:
+                        round_no+=1;_CURRENT['round']=round_no
                         cycle=asyncio.create_task(round_once(context,api,parser))
                         try:
                             while not cycle.done():
                                 if getattr(args,'stop_file',None) and Path(args.stop_file).exists():
                                     cycle.cancel();break
                                 await asyncio.sleep(.5)
-                            await cycle
+                            claimed,successful,blocked=await cycle
                         finally:
                             if not cycle.done(): cycle.cancel()
                             await asyncio.gather(cycle,return_exceptions=True)
+                        if claimed==0:
+                            # 空闲：只在刚进入空闲时提示一次，避免每轮重复刷同一句话
+                            if not idle_noticed:
+                                print('暂无到期任务（本机保持待命）；如需立即采集，请在网页点击 SKU「立即采集」或开启常态采集。',flush=True)
+                                idle_noticed=True
+                            write_status('idle',claimed=0,successful=0,failed=0)
+                            wait=60
+                        else:
+                            idle_noticed=False
+                            failed=claimed-successful
+                            print(f'ROUND_DONE: 第 {round_no} 轮 · 领取 {claimed} 个 / 成功回传 {successful} 个 / 失败 {failed} 个',flush=True)
+                            if successful>0:
+                                write_status('collecting_ok',claimed=claimed,successful=successful,failed=failed)
+                                wait=30
+                            elif blocked>=claimed:
+                                write_status('challenged',claimed=claimed,successful=0,failed=failed)
+                                wait=300
+                            else:
+                                write_status('failed',claimed=claimed,successful=0,failed=failed)
+                                wait=60
                     except asyncio.CancelledError: break
                     except Exception as exc:
                         message=str(exc) if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
                         print(f'本轮失败：{message}；保留原价，稍后重试。',flush=True)
+                        write_status('failed',error=message)
+                        wait=60
                     if args.once: break
-                    for _ in range(60):
+                    for _ in range(wait*2):
                         if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                         await asyncio.sleep(.5)
             finally: await context.close()
