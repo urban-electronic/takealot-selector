@@ -217,6 +217,7 @@ export interface InventoryAdjustment {
 
 export interface ShipmentRecord {
   id: string;
+  created_at?: string;
   shipment_no: string;
   shipment_date: string;
   mark: string;
