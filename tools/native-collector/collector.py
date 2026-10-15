@@ -117,8 +117,33 @@ async def scrape(context, item, parser):
         await page.close()
     return quote
 
+async def _finish_pending(task):
+    # A cancelled await does not stop a synchronous HTTP call in its worker thread.
+    # Keep the task alive and the event loop responsive until its bounded call ends.
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled(): raise
+
+async def claim_batch(api):
+    task=asyncio.create_task(asyncio.to_thread(api.call,'/api/collector/products'))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            batch=await _finish_pending(task)
+            pending=[item['productId'] for item in batch.get('items',[])]
+            if pending:
+                release=asyncio.create_task(asyncio.to_thread(api.call,'/api/collector/release',{'product_ids':pending}))
+                await _finish_pending(release)
+        except Exception:
+            # Never log arbitrary exception bodies, headers or credentials.
+            print('取消后的任务清理未获服务确认；请等待租约到期，不要重复启动。',flush=True)
+        raise
+
 async def round_once(context, api, parser):
-    batch=await asyncio.to_thread(api.call,'/api/collector/products')
+    batch=await claim_batch(api)
     items=batch.get('items',[])
     if not items: print('已连接选品系统，暂无到期任务；请在网页点击SKU立即采集或开启常态采集。',flush=True)
     leased={item['productId'] for item in items}
@@ -208,3 +233,4 @@ def main():
     except Exception as exc: print(str(exc) if isinstance(exc,(ValueError,RuntimeError)) else '浏览器未能启动，请检查安装和档案占用。')
 
 if __name__=='__main__': main()
+
