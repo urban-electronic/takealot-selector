@@ -39,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import PackingProduct, Product, Shipment, ShipmentLine, Store
+from models import PackingProduct, Product, Shipment, ShipmentLine, Store, SystemSettings
 from api.inventory_routes import inventory_balance_for_sku
 from api.store_routes import get_store_id
 from services import packing_excel as px
@@ -632,6 +632,15 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
     existing_shipment = None
     if data.draft_key.strip():
         existing_shipment = db.query(Shipment).filter(Shipment.draft_key == data.draft_key.strip(), Shipment.store_id == store_id).first()
+    is_clearance_request = not data.record_shipment
+    clearance_key = f'old_inventory_clearance_used:{store_id}'
+    clearance_setting = db.query(SystemSettings).filter(SystemSettings.key == clearance_key).first()
+    clearance_already_used = bool(clearance_setting and clearance_setting.value == '1')
+    existing_clearance = bool(existing_shipment and existing_shipment.status == 'clearance')
+    if is_clearance_request and not existing_clearance and clearance_already_used:
+        return fail(409, '本店的一次性老库存清理已完成。后续请使用正常发货，并确保库存充足。')
+    if is_clearance_request and existing_shipment and not existing_clearance:
+        return fail(409, '该草稿已登记为普通发货，不能改为老库存清理导出。')
     requested_by_sku = {}
     for line in data.items:
         p = _find(db, line.sku.strip())
@@ -650,9 +659,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         row['box_no'] = line.box_no.strip()
         items.append((row, cartons, count))
     db.commit()
-    store = db.query(Store).filter(Store.id == store_id).first()
-    allow_negative_inventory = bool(store and store.allow_negative_inventory_shipments)
-    if data.record_shipment and not existing_shipment and not allow_negative_inventory:
+    if data.record_shipment and not existing_shipment:
         for sku, requested in requested_by_sku.items():
             available = inventory_balance_for_sku(db, sku, store_id)
             if available < requested:
@@ -666,9 +673,9 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         return fail(400, str(e))
     except Exception as e:
         return fail(400, f'生成失败：{e}')
-    if data.record_shipment and not existing_shipment:
-        # shipment_no 当前是全局唯一；按全局日序号生成，避免未来不同店铺同日编号冲突。
+    if (data.record_shipment and not existing_shipment) or (is_clearance_request and not existing_clearance):
         day_count = db.query(Shipment).filter(Shipment.shipment_date == date.isoformat()).count()
+        status = 'confirmed' if data.record_shipment else 'clearance'
         shipment = Shipment(
             id=str(uuid.uuid4()),
             store_id=store_id,
@@ -678,7 +685,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             mark=data.mark,
             shipping=data.shipping,
             address=data.address,
-            status='confirmed',
+            status=status,
         )
         db.add(shipment)
         db.flush()
@@ -694,11 +701,20 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 count_per_carton=int(count),
                 total_quantity=int(cartons) * int(count),
             ))
-        record_operation(db, store_id, "shipment", shipment.id, "confirm", f"确认发货单 {shipment.shipment_no}", {
+        action = 'confirm' if data.record_shipment else 'clearance_export'
+        summary = f"{'确认发货单' if data.record_shipment else '记录老库存清理'} {shipment.shipment_no}"
+        record_operation(db, store_id, "shipment", shipment.id, action, summary, {
             "shipment_date": shipment.shipment_date,
             "sku_count": len(items),
             "total_quantity": sum(int(cartons) * int(count) for _, cartons, count in items),
+            "inventory_deducted": bool(data.record_shipment),
         })
+        if not data.record_shipment:
+            if clearance_setting is None:
+                clearance_setting = SystemSettings(key=clearance_key, value='1')
+                db.add(clearance_setting)
+            else:
+                clearance_setting.value = '1'
         db.commit()
     return Response(
         content=content,
