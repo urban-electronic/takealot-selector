@@ -26,6 +26,7 @@ DATA = {
     '/api/operations/alerts':[], '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
     '/api/automatic-pricing':{'configured':False,'rows':[PRICING]},
     '/api/buybox/page-open':{'queued':0,'skipped':0,'price_changed':False},
+    '/api/products/seller-assist/preview':{'fillable':1,'items':[dict(id=PRODUCT['id'],product_no=1,name=PRODUCT['product_name'],token='fixture-only',changes=[dict(field='product_name',label='标题',value=PRODUCT['product_name'])],differences=[],warnings=['请核对实际规格与商品身份'],manual=['重量'])]},
 }
 PAGES = [('/', '运营工作台'),('/products','产品列表'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
 
@@ -41,7 +42,7 @@ def main():
             from urllib.parse import urlsplit
             url=urlsplit(route.request.url)
             if url.path.startswith('/api/'):
-                allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open')
+                allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open', '/api/products/seller-assist/preview')
                 if route.request.method != 'GET' and not allowed_write:
                     unknown.append(route.request.method+' '+url.path);route.abort();return
                 if url.path in DATA:
@@ -74,6 +75,19 @@ def main():
                     if b['height']>44:failures.append(f'{width}: vertical navigation label')
                     if width<=700 and (b['x']<0 or b['x']+b['width']>width+1):failures.append(f'{width}: hidden primary navigation entry')
                 if details['scroll']>width+2: failures.append(f'{width} {path}: overflow {details}')
+                if path=='/products' and (width,height) in ((1280,720),(390,480),(320,568)):
+                    page.get_by_role('button',name='核对本店资料',exact=True).click()
+                    preview=page.locator('.seller-assist-dialog');preview.wait_for()
+                    if preview.locator('.seller-assist-body').evaluate('e=>e.scrollWidth>e.clientWidth+1'):failures.append(f'{width}: preview body overflows')
+                    if width<=480 and not preview.get_by_role('region',name='资料核对明细').evaluate('e=>e.scrollWidth>e.clientWidth'):failures.append(f'{width}: preview table lacks local scroll')
+                    bounds=preview.bounding_box()
+                    if bounds['x']<0 or bounds['y']<0 or bounds['x']+bounds['width']>width+1 or bounds['y']+bounds['height']>height+1:failures.append(f'{width}: seller preview outside viewport')
+                    for control in preview.get_by_role('button').all():
+                        b=control.bounding_box()
+                        if b['x']<0 or b['y']<0 or b['x']+b['width']>width+1 or b['y']+b['height']>height+1:failures.append(f'{width}: preview action clipped')
+                    if args.screenshots: page.screenshot(path=str(Path(args.screenshots)/f'seller-preview-{width}.png'))
+                    page.keyboard.press('Escape')
+                    if preview.count():failures.append('seller preview Escape failed')
                 if path=='/' and width in (1440,1024,390):
                     page.get_by_role('button',name='管理工具',exact=True).click()
                     menu=page.locator('.management-menu-panel').bounding_box()
@@ -90,8 +104,13 @@ def main():
                     page.get_by_role('button',name='取消',exact=True).click()
                 if path=='/packing' and (width,height) in ((1280,720),(390,680),(390,480),(1024,480),(320,568)):
                     page.get_by_role('button',name='编辑',exact=True).first.click()
-                    modal=page.locator('.packing-modal');bounds=modal.bounding_box()
+                    modal=page.get_by_role('dialog',name='编辑装箱产品',exact=True);bounds=modal.bounding_box()
+                    columns=modal.locator('.dialog-form-grid').evaluate("e=>getComputedStyle(e).gridTemplateColumns.split(' ').length")
+                    if columns!=(1 if width<=480 else 2):failures.append(f'{width}: packing form columns {columns}')
                     if bounds['x']<0 or bounds['y']<0 or bounds['x']+bounds['width']>width+1 or bounds['y']+bounds['height']>height+1:failures.append(f'{width}: packing dialog outside viewport')
+                    modal.get_by_role('button',name='保存',exact=True).scroll_into_view_if_needed()
+                    if modal.evaluate('e=>e.scrollWidth>e.clientWidth+1'):failures.append(f'{width}: packing form content overflows')
+                    if args.screenshots and width in (390,1280):page.screenshot(path=str(Path(args.screenshots)/f'packing-edit-{width}.png'))
                     page.get_by_role('button',name='取消',exact=True).click()
                     if (width,height)==(390,680):
                         page.locator('.packing-table-scroll input[type=checkbox]').first.check()

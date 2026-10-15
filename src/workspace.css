@@ -29,6 +29,16 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .management-menu-panel { z-index: 110; max-height: calc(100dvh - 150px); overflow-y: auto; }
 .store-switcher select { color: #eaf1fa; background: #30425b; }
 
+/* Reuse the same blue-grey hierarchy in the remaining legacy surfaces. */
+.create-eyebrow { color: #5778a8; }
+.create-flow-chip { color: #52657f; background: #f4f7fb; border-color: var(--surface-border); box-shadow: none; }
+.container table thead th,
+.packing-table-scroll .product-table thead th,
+.operations-workspace .data-table th { background: #f3f6fa; color: #52657f; font-weight: 600; }
+.container table td { line-height: 1.55; }
+.container :is(.card-title, .dashboard-panel-title h2, .store-editor-title h2, .store-table-title h2) { font-size: 17px; line-height: 1.45; }
+.btn:focus-visible, .price-refresh-button:focus-visible, .price-refresh-status:focus-visible { outline-color: #5182ce; }
+
 /* Same heading scale, actions and supporting copy on each page. */
 :is(.dashboard-heading, .product-list-header, .inventory-heading, .stores-heading, .packing-hero, .create-page-heading, .page-heading) {
   display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap;
@@ -105,10 +115,22 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .procurement-page form label { display: block; margin-bottom: 4px; font-size: 13px; color: #64748b; }
 
 /* Dialogs fit short windows and remain above the sticky navigation. */
-.packing-modal-mask, .app-modal-backdrop { position: fixed; inset: 0; padding: 16px; z-index: 1200; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: rgba(24,40,63,.38); }
+.packing-modal-mask, .app-modal-backdrop, .seller-assist-backdrop { position: fixed; inset: 0; padding: 16px; z-index: 1200; display: flex; align-items: center; justify-content: center; overflow-y: auto; background: rgba(24,40,63,.38); }
 .packing-modal, .app-modal { width: 100%; max-width: 560px; max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--surface-border); border-radius: 16px; padding: 20px 24px; background: #fff; box-shadow: 0 18px 60px rgba(15,36,66,.18); overflow-wrap: anywhere; }
 .app-modal { max-width: 460px; }
-.seller-assist-dialog { max-height: calc(100dvh - 32px); }
+.dialog-title, .app-modal > h3 { margin: 0 0 16px; color: #273b55; font-size: 18px; line-height: 1.45; overflow-wrap: anywhere; }
+.dialog-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px 16px; }
+.dialog-form-grid > div { min-width: 0; }
+.dialog-form-grid :is(input,select) { min-height: 36px; }
+.dialog-actions, .modal-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--surface-border); }
+.seller-assist-header, .seller-assist-footer { background: var(--surface-soft); border-color: var(--surface-border); }
+.seller-assist-header { color: #273b55; }
+.seller-assist-body { line-height: 1.65; }
+.seller-assist-body > h3 { font-size: 17px; color: #304562; margin-bottom: 8px; }
+.seller-assist-body > p { color: #64748b; margin-bottom: 14px; }
+.seller-assist-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: thin; }
+.seller-assist-table-scroll table { min-width: 640px; }
+.seller-assist-dialog { width: min(1100px,100%); max-height: calc(100dvh - 32px); border-radius: var(--radius-panel); }
 body:has(.packing-modal-mask, .app-modal-backdrop) { overflow: hidden; }
 .replenishment-panel-heading { position: sticky; top: -24px; z-index: 4; padding: 14px 0; background: var(--color-bg); }
 
@@ -120,6 +142,11 @@ body:has(.packing-modal-mask, .app-modal-backdrop) { overflow: hidden; }
   .app-brand h1 { display: block; }
   .header-create-button { font-size: 12px; padding: 8px 12px; }
   .header-create-button::after { content: none; }
+}
+@media (max-width: 480px) {
+  .dialog-form-grid { grid-template-columns: minmax(0,1fr); }
+  .dialog-actions > .btn, .modal-actions > .btn { flex: 1 1 auto; }
+  .seller-assist-header, .seller-assist-footer, .seller-assist-body { padding: 14px; }
 }
 @media (max-width: 1000px) {
   .app-brand h1 { display: none; }
@@ -157,7 +184,8 @@ body:has(.packing-modal-mask, .app-modal-backdrop) { overflow: hidden; }
   .procurement-form-grid { grid-template-columns: minmax(0,1fr); }
   .procurement-form-grid > div { grid-column: auto !important; }
   .pagination-bar, .operations-pagination { justify-content: flex-start; }
-  .packing-modal-mask, .app-modal-backdrop { padding: 12px; }
+  .packing-modal-mask, .app-modal-backdrop, .seller-assist-backdrop { padding: 12px; }
+  .seller-assist-dialog { max-height: calc(100dvh - 24px); }
   .packing-modal, .app-modal { padding: 18px; max-height: calc(100dvh - 24px); }
   .replenishment-panel-heading { top: -16px; }
 }
