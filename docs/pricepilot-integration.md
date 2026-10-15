@@ -243,3 +243,18 @@ Codex 首轮复核（CHANGES_REQUESTED）指出合并阻塞：`page_variant_cont
 
 仍未收到WorkBuddy正式Windows GUI同轮回传网页的证据，不能宣布稳定采集或GUI端到端通过；其需使用现有已保存配置，不读取或发送密钥/profile，在正常一轮日志中提供SKU、脱敏诊断、successful数及生产同轮时间/来源。网站验证失败仍须与变体错误区分，不反复访问已确认拦截页面；不得开启真实调价。未新增生产交易或测试行情。
 
+## 2026-10-15 10:45 Codex 独立生产复核：两SKU新云端报价，Windows闭环仍待验
+
+环境：main 65d6883（PR91），Railway部署660a787e。读取现有生产监控记录，事务结束rollback/close，未触发新采集、交易或改价；未读取密钥、Cookie或profile。WorkBuddy第12轮报告单SKU入队后正式CLI一次运行领取0任务；Codex在PR87要求其补充精确时序，不能称GUI按钮验收通过。
+
+| SKU / PLID | 成功时间（北京时间，2026-10-15） | 有效报价记录 | 页面诊断 |
+| --- | --- | --- | --- |
+| 9902348621330 / 97512496 | 09:38:51（01:38:51.797416Z） | R1999，Urban Electronics | HTTP200，报价卡1，主商品变体控件0，目标/最终PLID一致，无错误 |
+| 9902348624058 / 100687738 | 09:58:09（01:58:09.012766Z） | R269，Urban Electronics | HTTP200，报价卡2，主商品变体控件0，目标/最终PLID一致，无错误 |
+
+两行均为status=success、source/last_attempt_source=cloud_browser、quote_time_source=cloud_completion；holding_buybox=null，只确认价格相同，不宣称我方身份或持有归属。enabled=false/request_once=false，不存在本次开启持续采集或调价。它们是生产新成功记录，不能再说两个SKU均未采到；也不能据两次成功宣布持续稳定。核验未重新访问Takealot页面。
+
+本机心跳当前last_seen为02:03:09.765400Z（10:03:09），晚于上述两条成功记录；这是最近心跳而非完整历史，不能单独证明此前无心跳，也不能据一次products=0推断本机永远领不到任务。当前代码status预检不写心跳，products领取才写心跳；cloud worker在轮次选择任务前检查connected。后续需用入队/启动浏览器/首次products/云端开始结束的完整日志验证竞争，不先关闭云worker或删除网页自动一轮。
+
+验收结论：新云端行情记录与来源已独立核对；受测后端221通过/1 Chromium缺失跳过，组件26断言通过。Windows正式GUI→有效报价回传→网页同轮展示仍未验证；CLI零任务不算该链路通过。03:09无来源旧快照仍不追认来源。Mac原程序若提供对照，仅需相同SKU的一轮脱敏中间证据，不要传全部业务数据或会话profile。
+
