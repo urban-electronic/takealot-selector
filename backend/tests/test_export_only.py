@@ -8,7 +8,7 @@ from models import Base, Shipment, ShipmentLine, SystemSettings, InventoryAdjust
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def test_old_stock_export_records_once_without_deducting_inventory():
+def test_old_stock_export_is_repeatable_without_recording_or_deducting_inventory():
     from api import packing_routes as routes
     engine = create_engine('sqlite://')
     Base.metadata.create_all(engine)
@@ -27,18 +27,18 @@ def test_old_stock_export_records_once_without_deducting_inventory():
          patch.object(routes, 'record_operation') as record:
         response = routes.export_excel(data, db, 'default-store')
         assert response.body == b'original-template-export'
-        shipment = db.query(Shipment).one()
-        assert shipment.status == 'clearance'
-        assert db.query(ShipmentLine).one().total_quantity == 10
-        assert db.query(SystemSettings).filter_by(key='old_inventory_clearance_used:default-store').one().value == '1'
-        assert db.query(InventoryAdjustment).count() == 0
-        assert record.call_args.args[4] == 'clearance_export'
-        assert record.call_args.args[6]['inventory_deducted'] is False
         assert routes.export_excel(data, db, 'default-store').status_code == 200
-        assert db.query(Shipment).count() == 1
-        duplicate = data.model_copy(update={'draft_key': 'another-clearance-draft'})
-        assert routes.export_excel(duplicate, db, 'default-store').status_code == 409
-        assert db.query(Shipment).count() == 1
+        another_draft = data.model_copy(update={'draft_key': 'another-clearance-draft'})
+        assert routes.export_excel(another_draft, db, 'default-store').status_code == 200
+        # A historical flag from the retired one-time flow must not block export.
+        db.add(SystemSettings(key='old_inventory_clearance_used:default-store', value='1'))
+        db.commit()
+        assert routes.export_excel(another_draft, db, 'default-store').status_code == 200
+        assert db.query(Shipment).count() == 0
+        assert db.query(ShipmentLine).count() == 0
+        assert db.query(InventoryAdjustment).count() == 0
+        assert db.query(SystemSettings).filter_by(key='old_inventory_clearance_used:default-store').one().value == '1'
+        record.assert_not_called()
         balance.assert_not_called()
     db.close()
     engine.dispose()
