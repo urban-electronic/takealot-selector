@@ -1,15 +1,19 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from models import Base, Shipment, ShipmentLine, SystemSettings, InventoryAdjustment
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def test_old_stock_export_does_not_check_or_change_inventory():
+def test_old_stock_export_records_once_without_deducting_inventory():
     from api import packing_routes as routes
-    db = Mock()
-    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(allow_negative_inventory_shipments=False)
-    data = routes.ExportIn(date='2026-10-08', record_shipment=False,
+    engine = create_engine('sqlite://')
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    data = routes.ExportIn(date='2026-10-08', record_shipment=False, draft_key='clearance-test-draft',
                            items=[routes.ExportLine(sku='real-sku', box_no='BOX-001', cartons='1', count='10')])
     def generate(items, date, mark, shipping, address, output):
         assert items[0][0]['box_no'] == 'BOX-001'
@@ -22,8 +26,20 @@ def test_old_stock_export_does_not_check_or_change_inventory():
          patch.object(routes, 'inventory_balance_for_sku') as balance, \
          patch.object(routes, 'record_operation') as record:
         response = routes.export_excel(data, db, 'default-store')
-    assert response.body == b'original-template-export'
-    balance.assert_not_called()
-    db.add.assert_not_called()
-    record.assert_not_called()
+        assert response.body == b'original-template-export'
+        shipment = db.query(Shipment).one()
+        assert shipment.status == 'clearance'
+        assert db.query(ShipmentLine).one().total_quantity == 10
+        assert db.query(SystemSettings).filter_by(key='old_inventory_clearance_used:default-store').one().value == '1'
+        assert db.query(InventoryAdjustment).count() == 0
+        assert record.call_args.args[4] == 'clearance_export'
+        assert record.call_args.args[6]['inventory_deducted'] is False
+        assert routes.export_excel(data, db, 'default-store').status_code == 200
+        assert db.query(Shipment).count() == 1
+        duplicate = data.model_copy(update={'draft_key': 'another-clearance-draft'})
+        assert routes.export_excel(duplicate, db, 'default-store').status_code == 409
+        assert db.query(Shipment).count() == 1
+        balance.assert_not_called()
+    db.close()
+    engine.dispose()
     assert routes.ExportIn().record_shipment is True
