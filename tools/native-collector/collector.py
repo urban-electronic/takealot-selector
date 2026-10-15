@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 import time
+import uuid
 from datetime import datetime, timezone
 from urllib import request, error
 from urllib.parse import urlsplit, urlunsplit
@@ -28,7 +29,8 @@ def write_status(state, **extra):
     从而不会把上一次运行（或上一轮）的陈旧状态当成现在的状态。"""
     payload = {'state': state, 'ts': datetime.now(timezone.utc).isoformat(),
                'pid': os.getpid(), 'profile': _CURRENT.get('profile', ''),
-               'round': _CURRENT.get('round', 0)}
+               'round': _CURRENT.get('round', 0), 'run_id': _CURRENT.get('run_id', ''),
+               'stage': _CURRENT.get('stage', '')}
     payload.update(extra)
     try:
         tmp = STATUS_FILE.with_name(STATUS_FILE.name + '.tmp')
@@ -148,7 +150,13 @@ RETRYABLE_HTTP = re.compile(r'http_(?:429|500|502|503|504)')
 def is_retryable(error):
     return error in RETRYABLE_ERRORS or (isinstance(error, str) and bool(RETRYABLE_HTTP.fullmatch(error)))
 
-async def round_once(context, api, parser):
+# 「确认被验证拦截」的错误：连续出现说明该页面当前无法访问，应停止重复访问。
+# 注意与网络加载失败（blocked_or_load_failed / navigation_timeout）区分——后者可重试。
+INTERCEPT_ERRORS = {'site_challenge', 'http_403'}
+CHALLENGE_STOP_AFTER = 2
+
+async def round_once(context, api, parser, challenged=None):
+    challenged = {} if challenged is None else challenged
     batch=await asyncio.to_thread(api.call,'/api/collector/products')
     items=batch.get('items',[])
     leased={item['productId'] for item in items}
@@ -157,17 +165,32 @@ async def round_once(context, api, parser):
     async def worker(item):
         nonlocal successful,blocked
         async with semaphore:
+            sku=item.get('sku')
+            # 跨轮拦截：同一 SKU 连续两轮被验证页/403 拦截后，本机不再访问该商品页，
+            # 直接放弃租约并提示人工恢复（在网页重新点击「立即采集」或重启采集器）。
+            if challenged.get(sku,0) >= CHALLENGE_STOP_AFTER:
+                blocked+=1
+                print(f"SKU {sku}: 已连续 {CHALLENGE_STOP_AFTER} 轮被验证页/403 拦截，本机停止访问该商品页；"
+                      f"如需恢复请在网页重新点击「立即采集」（或重启常态采集）。",flush=True)
+                return
             quote=None
             for attempt in range(2):
                 quote=await scrape(context,item,parser)
                 error=quote.get('error')
                 if error is None or not is_retryable(error) or attempt==1: break
                 await asyncio.sleep(2+attempt*3)
+            # 判据：仅 site_challenge / http_403 计入跨轮拦截；网络加载失败不计。
+            got=quote.get('error')
+            if got in INTERCEPT_ERRORS:
+                challenged[sku]=challenged.get(sku,0)+1
+            else:
+                challenged.pop(sku,None)
             try:
                 response=await asyncio.to_thread(api.call,'/api/collector/offers',{'items':[quote]})
-            except Exception as exc:
+            except Exception:
                 # 单个 SKU 回传失败不该拖垮整轮：其余任务继续，未回传的租约稍后统一释放。
-                print(f"SKU {item['sku']}: 回传失败：{exc}",flush=True)
+                # 只输出受控分类，不输出异常正文（异常可能含反射内容或敏感配置）。
+                print(f"SKU {sku}: 回传失败（服务未接受），其余任务继续。",flush=True)
                 return
             if response.get('processed') or response.get('skipped'): leased.discard(item['productId'])
             accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
@@ -217,12 +240,18 @@ async def run(args):
                     return
                 parser=parser_module()
                 _CURRENT['profile']=str(profile)
+                # 每次运行一个独立 run_id：GUI 据此区分「本次运行」与上一次运行的残留状态
+                _CURRENT['run_id']=uuid.uuid4().hex[:12]
+                challenged={}
                 round_no=0;wait=30;idle_noticed=False
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                     try:
                         round_no+=1;_CURRENT['round']=round_no
-                        cycle=asyncio.create_task(round_once(context,api,parser))
+                        # 轮次开始先写 running：在途阶段不应继续显示上一轮的汇总结果
+                        _CURRENT['stage']='round_start'
+                        write_status('running',claimed=0,successful=0,failed=0)
+                        cycle=asyncio.create_task(round_once(context,api,parser,challenged))
                         try:
                             while not cycle.done():
                                 if getattr(args,'stop_file',None) and Path(args.stop_file).exists():
@@ -254,9 +283,10 @@ async def run(args):
                                 wait=60
                     except asyncio.CancelledError: break
                     except Exception as exc:
-                        message=str(exc) if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
-                        print(f'本轮失败：{message}；保留原价，稍后重试。',flush=True)
-                        write_status('failed',error=message)
+                        # 只输出受控分类，绝不输出异常正文：异常可能含反射内容或敏感配置。
+                        label='服务连接被拒绝或超时' if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
+                        print(f'本轮失败：{label}；保留原价，稍后重试。',flush=True)
+                        write_status('failed',error=label)
                         wait=60
                     if args.once: break
                     for _ in range(wait*2):

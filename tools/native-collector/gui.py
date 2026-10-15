@@ -17,6 +17,11 @@ ROOT=Path(__file__).resolve().parent
 STATE=Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'TakealotCollector'
 SITE='https://urban-electronic.github.io/takealot-selector/auto-pricing'
 
+# 状态判定逻辑独立在 status_view 模块（不依赖 Tk，可单测）；确保同目录可导入。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from status_view import classify_state, STOPPED  # noqa: E402
+
 def protect(data, decrypt=False):
     if os.name!='nt': raise RuntimeError('本机不是Windows，不保存服务密钥')
     class Blob(ctypes.Structure):
@@ -40,6 +45,7 @@ class App:
         STATE.mkdir(parents=True,exist_ok=True)
         self.key=tk.StringVar();self.status=tk.StringVar(value='准备就绪。可采集一轮，或开启常态采集持续等待网页任务。')
         self.state=tk.StringVar(value='待机')
+        self._last_round=0;self._last_run=''
         self.profile=tk.StringVar(value=(STATE/'profile-path.txt').read_text(encoding='utf-8').strip() if (STATE/'profile-path.txt').exists() else str(STATE/'browser_profile'))
         self.remember=tk.BooleanVar(value=os.name=='nt')
         saved=STATE/'service-key.dpapi'
@@ -95,6 +101,8 @@ class App:
         environment=os.environ.copy();environment['PP_COLLECTOR_KEY']=key;environment['PYTHONIOENCODING']='utf-8'
         flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
         self.process=subprocess.Popen(command,cwd=ROOT,env=environment,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',creationflags=flags)
+        # 新进程 = 新的一次运行：清掉上一轮/上一次运行的轮次与 run_id 记忆
+        self._last_round=0;self._last_run=''
         self.status.set('登录浏览器正在打开；完成登录和配送设置后，在本窗口点“完成登录”。' if mode=='login' else '正在连接并启动常态采集，任务结果见下方日志。' if mode=='continuous' else '正在连接并启动采集…')
         if mode=='login':
             self.finish=ttk.Button(self.window,text='完成登录并保存',command=self.stop);self.finish.pack(pady=5)
@@ -110,26 +118,18 @@ class App:
         if hasattr(self,'finish'):self.finish.destroy();del self.finish
 
     def refresh_state(self):
-        """只读呈现采集器写入的状态：校验 pid，避免把上一次运行的陈旧状态当成当前状态。"""
-        mapping={'idle':('待机（暂无到期任务）','#888888'),
-                 'collecting_ok':('采集中','#007a00'),
-                 'challenged':('遇风控，已退避等待','#b06000'),
-                 'failed':('本轮未取得有效报价','#b06000')}
+        """只读呈现采集器写入的状态：pid / 时间戳 / 轮次三重校验，杜绝陈旧结果。"""
         if self.process and self.process.poll() is None:
             data=None
             try:
                 data=json.loads((STATE/'collector_status.json').read_text(encoding='utf-8'))
             except Exception:
                 pass
-            if isinstance(data,dict) and data.get('pid')==self.process.pid:
-                text,color=mapping.get(data.get('state'),('启动中…','#0066cc'))
-                claimed=data.get('claimed')
-                if isinstance(claimed,int) and claimed>0:
-                    text=f"{text} · 本轮领取 {claimed} / 成功 {data.get('successful',0)} / 失败 {data.get('failed',0)}"
-            else:
-                text,color=('启动中…','#0066cc')
+            text,color,self._last_round,self._last_run=classify_state(
+                data,self.process.pid,self._last_round,self._last_run)
         else:
-            text,color=('已停止','#888888')
+            text,color=STOPPED
+            self._last_round=0;self._last_run=''
         self.state.set(text)
         self.dot.configure(foreground=color)
         self.state_label.configure(foreground=color)
