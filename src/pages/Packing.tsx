@@ -902,9 +902,9 @@ export default function Packing() {
       {/* 编辑弹层 */}
       {editSku && (
         <div className="packing-modal-mask">
-          <div className="packing-modal">
-            <h3 style={{ margin: '0 0 12px' }}>编辑产品（{editSku}）</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 16px' }}>
+          <div className="packing-modal" role="dialog" aria-modal="true" aria-label="编辑装箱产品">
+            <h3 className="dialog-title">编辑产品（{editSku}）</h3>
+            <div className="dialog-form-grid">
               <div>
                 <label>中文名</label>
                 <input type="text" value={editForm.name_zh || ''} onChange={e => setEditForm(prev => ({ ...prev, name_zh: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
@@ -954,7 +954,7 @@ export default function Packing() {
                 <input type="number" min={1} value={editForm.default_count ?? ''} onChange={e => setEditForm(prev => ({ ...prev, default_count: e.target.value ? parseInt(e.target.value, 10) : null }))} style={{ width: '100%', boxSizing: 'border-box' }} />
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+            <div className="dialog-actions">
               <button className="btn" onClick={() => setEditSku(null)}>取消</button>
               <button className="btn btn-primary" onClick={saveEdit}>保存</button>
             </div>
@@ -965,10 +965,10 @@ export default function Packing() {
       {/* 删除确认 */}
       {deleteSku && (
         <div className="packing-modal-mask">
-          <div className="packing-modal" style={{ maxWidth: 420 }}>
-            <h3 style={{ margin: '0 0 12px' }}>确认删除</h3>
+          <div className="packing-modal" role="dialog" aria-modal="true" aria-label="确认删除装箱产品" style={{ maxWidth: 420 }}>
+            <h3 className="dialog-title">确认删除</h3>
             <p style={{ margin: '0 0 20px', color: '#555' }}>确定从装箱单库删除「{deleteSku}」吗？此操作不可恢复。</p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div className="dialog-actions">
               <button className="btn" onClick={() => setDeleteSku(null)}>取消</button>
               <button className="btn btn-danger" onClick={confirmDelete}>确认删除</button>
             </div>

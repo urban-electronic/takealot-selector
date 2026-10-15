@@ -356,11 +356,11 @@ export default function Procurement() {
       {deleteTarget && (
         <div className="app-modal-backdrop">
           <div className="app-modal" role="dialog" aria-modal="true" aria-label="确认删除采购记录">
-            <h3 style={{ margin: '0 0 12px' }}>确认删除</h3>
+            <h3 className="dialog-title">确认删除</h3>
             <p style={{ margin: '0 0 20px', color: '#555' }}>
               确定删除「{deleteTarget.product_name || deleteTarget.product_no}」的采购记录？
             </p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div className="dialog-actions">
               <button className="btn" onClick={() => setDeleteTarget(null)}>取消</button>
               <button className="btn btn-danger" onClick={confirmDelete}>确认删除</button>
             </div>
