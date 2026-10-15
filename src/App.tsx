@@ -149,7 +149,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className="container" key={activeStore}>
+      <main className="container" key={activeStore}>
         {activeStore==='default-store'&&openCollection&&<div className="operations-note" role="status">{openCollection} <NavLink to="/auto-pricing">查看采集</NavLink></div>}
         <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>
@@ -167,7 +167,7 @@ export default function App() {
           <Route path="/settings" element={<Settings />} />
         </Routes>
         </Suspense>
-      </div>
+      </main>
       </DataSourceProvider>
     </BrowserRouter>
   );

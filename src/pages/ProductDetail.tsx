@@ -135,8 +135,8 @@ export default function ProductDetail() {
   const skuCount = (editData.sku || product.sku || '').split(/[\s,，;；]+/).filter(Boolean).length;
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+    <div className="product-detail-page">
+      <div className="page-heading">
         <div>
           <a href="#" onClick={(e) => { e.preventDefault(); navigate(-1); }} style={{ fontSize: 13, color: 'var(--color-primary)', textDecoration: 'none' }}>&larr; 返回列表</a>
           <h2 style={{ marginTop: 4 }}>
@@ -146,7 +146,7 @@ export default function ProductDetail() {
             </span>
           </h2>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="page-actions">
           {!editMode ? (
             <button className="btn btn-primary" onClick={() => setEditMode(true)}>编辑</button>
           ) : (
@@ -612,4 +612,3 @@ export default function ProductDetail() {
     </div>
   );
 }
-

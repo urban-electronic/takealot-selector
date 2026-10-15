@@ -177,8 +177,8 @@ export default function Settings() {
   if (loading) return <div className="loading">加载中...</div>;
 
   return (
-    <div>
-      <h2 style={{ marginBottom: 20 }}>系统设置</h2>
+    <div className="settings-page">
+      <div className="page-heading"><div><h1>系统设置</h1><p>管理数据连接、费率与基础参数。</p></div></div>
 
       {message && <div className="alert alert-success">{message}</div>}
       {error && <div className="alert alert-error">{error}</div>}
@@ -206,7 +206,7 @@ export default function Settings() {
         </div>
         {dataSource === 'remote' && (
           <>
-          <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div className="settings-connection-row">
             <label style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>API 地址:</label>
             <input
               value={apiBaseUrl}
@@ -219,7 +219,7 @@ export default function Settings() {
               {exporting ? '导出中...' : '一键导出到云端'}
             </button>
           </div>
-          <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div className="settings-connection-row">
             <label style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>API Key:</label>
             <input
               ref={apiKeyRef}
