@@ -24,7 +24,7 @@ STATUS_FILE = APP_DIR / 'collector_status.json'
 CHALLENGE_PATH = APP_DIR / 'challenge_state.json'
 _CURRENT = {'profile': '', 'round': 0}
 # 拦截暂停状态持久化：跨重启保存，需显式人工恢复（WB-103-R6）
-from challenge_state import load_challenge_state, save_challenge_state, consume_recovery_flag  # noqa: E402
+from challenge_state import (load_challenge_state, save_challenge_state, consume_recovery_flag, ChallengeStateError)  # noqa: E402
 
 def write_status(state, **extra):
     """原子写状态文件供 GUI 只读呈现（tmp + os.replace，避免读到半截文件）。
@@ -284,12 +284,20 @@ async def run(args):
                 _CURRENT['run_id']=os.environ.get('PP_COLLECTOR_RUN_ID') or uuid.uuid4().hex[:12]
                 # 拦截暂停跨重启保存：重启后继续暂停已被验证页/403 拦截的 SKU，
                 # 避免重启后立刻重新触发同一风控页。显式人工恢复才清空（见循环顶部的恢复标志检查）。
-                challenged=load_challenge_state(CHALLENGE_PATH)
-                round_no=0;wait=30;idle_noticed=False
+                # 读盘损坏/缺失必须显式区分：缺失=从未暂停（安全空）；损坏=不可信，保留内存暂停并
+                # 提示人工核验，严禁冒充“无暂停”（WB-103-R7 第2条）。
+                challenged_unreliable=False
+                try:
+                    challenged=load_challenge_state(CHALLENGE_PATH)
+                except ChallengeStateError as exc:
+                    challenged={}
+                    challenged_unreliable=True
+                    print('⚠ '+str(exc)+'（不输出路径或敏感内容）',flush=True)
+                round_no=0;wait=30;idle_noticed=False;state_save_failed=False
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                     # 显式人工恢复（GUI「恢复被拦截商品」写入恢复标志）：下一轮清空被拦截商品的暂停
-                    if consume_recovery_flag(CHALLENGE_PATH):
+                    if consume_recovery_flag(CHALLENGE_PATH, profile):
                         challenged.clear()
                         print('已按人工恢复清空被拦截商品的暂停，将重新尝试访问这些商品。',flush=True)
                     try:
@@ -305,10 +313,15 @@ async def run(args):
                                 await asyncio.sleep(.5)
                             claimed,successful,blocked=await cycle
                         finally:
-                            if not cycle.done(): cycle.cancel()
+                            # 取消/暂停或异常后也要持久化已确认的拦截暂停，避免重启重访已确认的拦页面
+                            # （WB-103-R7 第1条：首次确认即保存 + finally 取消清理也保存）
+                            if not cycle.done():
+                                cycle.cancel()
                             await asyncio.gather(cycle,return_exceptions=True)
-                        # 持久化拦截暂停状态，跨重启保存（WB-103-R6）
-                        save_challenge_state(dict(challenged), CHALLENGE_PATH)
+                            saved=save_challenge_state(dict(challenged), CHALLENGE_PATH)
+                            if not saved and not state_save_failed:
+                                state_save_failed=True
+                                print('⚠ 拦截暂停状态写盘失败，已保留内存暂停；重启前请人工核验被拦截商品，勿重复启动。',flush=True)
                         if claimed==0:
                             # 空闲：只在刚进入空闲时提示一次，避免每轮重复刷同一句话
                             if not idle_noticed:

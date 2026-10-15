@@ -49,6 +49,9 @@ class FakeContext:
         self.pages.append(page)
         return page
 
+    async def close(self):
+        return None
+
 
 class FakeParser:
     """result_fn(item) -> dict。记录被访问的 SKU，用于验证「不再访问已拦截页」."""
@@ -325,10 +328,24 @@ def test_challenge_state_missing_is_empty(tmp_path):
     assert cs.load_challenge_state(tmp_path / 'nope.json') == {}, "缺失文件应返回空 dict"
 
 
-def test_challenge_state_corrupt_is_empty(tmp_path):
+def test_challenge_state_corrupt_raises_not_empty(tmp_path):
+    # WB-103-R7 第2条：损坏文件不得静默回 {} 冒充“无暂停”，必须抛错让调用方保留内存暂停
     p = tmp_path / 'c.json'
     p.write_text('{not valid json', encoding='utf-8')
-    assert cs.load_challenge_state(p) == {}, "损坏文件应降级为空 dict"
+    with pytest.raises(cs.ChallengeStateError):
+        cs.load_challenge_state(p)
+
+
+def test_challenge_state_missing_is_empty(tmp_path):
+    assert cs.load_challenge_state(tmp_path / 'nope.json') == {}, "缺失文件应返回空 dict（从未暂停，安全）"
+
+
+def test_challenge_state_rejects_negative_counts(tmp_path):
+    # WB-103-R7 第2条：负计数无意义，必须剔除
+    p = tmp_path / 'c.json'
+    p.write_text('{"SKU0": 1, "SKU1": -3, "SKU2": true}', encoding='utf-8')
+    loaded = cs.load_challenge_state(p)
+    assert loaded == {'SKU0': 1}, "负计数/bool 应剔除，仅保留非负 int"
 
 
 def test_challenge_state_rejects_non_int_values(tmp_path):
@@ -403,4 +420,189 @@ def test_persisted_pause_survives_restart_without_reclear():
     # 第二轮：本轮仍被拦，但计数已 >=1，应直接暂停、不再访问页面（跨轮暂停）
     run(collector.round_once(ctx, api, parser, state))
     assert parser.visited == ['SKU0'], "已持久化的拦截计数应使本轮直接暂停，不重复访问"
+
+
+# ---- WB-103-R7 第2条：save/load 失败与损坏不冒充“无暂停” ----
+
+def test_save_challenge_state_returns_true_on_success(tmp_path):
+    p = tmp_path / 'c.json'
+    assert cs.save_challenge_state({'SKU0': 1}, p) is True, "成功写盘应返回 True"
+    assert cs.load_challenge_state(p) == {'SKU0': 1}
+
+
+def test_save_challenge_state_returns_false_when_parent_is_file(tmp_path):
+    # 父路径本身是文件：无法建目录/写盘，必须返回 False（旧实现静默返回 None 冒充成功）
+    p = tmp_path / 'afile' / 'c.json'
+    p.parent.write_text('i am a file not a dir', encoding='utf-8')
+    assert cs.save_challenge_state({'SKU0': 1}, p) is False, "父路径为文件必须返回 False"
+
+
+def test_save_challenge_state_returns_false_on_write_error(tmp_path):
+    # 把目标文件本身设成只读目录名冲突等：用不存在的非法父（已覆盖上条）。再补一个：目标为目录
+    p = tmp_path / 'c.json'
+    p.mkdir()  # 目标是目录而非文件，os.replace 会失败
+    assert cs.save_challenge_state({'SKU0': 1}, p) is False, "目标为目录写盘应失败返回 False"
+
+
+# ---- WB-103-R7 第3条：recover 显式成功/失败 + 按 profile 隔离 ----
+
+def test_consume_recovery_flag_false_when_clear_fails(tmp_path):
+    # 状态文件路径被占位为目录，clear 必然失败；即使标志存在也必须返回 False 并保持暂停
+    p = tmp_path / 'c.json'
+    p.mkdir()  # 目录：clear_challenge_state 的 unlink 会失败
+    flag = cs.recovery_flag_path(None, p)
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.touch()
+    assert cs.consume_recovery_flag(p) is False, "状态清空失败必须返回 False（保持暂停）"
+    assert flag.exists(), "失败时必须保留恢复标志以便重试"
+
+
+def test_consume_recovery_flag_true_only_when_all_succeed(tmp_path):
+    p = tmp_path / 'c.json'
+    cs.save_challenge_state({'SKU0': 3}, p)
+    flag = cs.recovery_flag_path(None, p)
+    flag.touch()
+    assert cs.consume_recovery_flag(p) is True, "标志删除+状态清空都成功才返回 True"
+    assert cs.load_challenge_state(p) == {}, "消费后持久化暂停应被清空"
+    assert not flag.exists(), "恢复标志应被消费删除"
+
+
+def test_recovery_flag_is_profile_scoped_and_deterministic(tmp_path):
+    # 不同 profile 的标志命名不同（避免一键误放开其他 profile），且对同 profile 稳定
+    p = tmp_path / 'c.json'
+    f_a = cs.recovery_flag_path('C:/profiles/A', p)
+    f_a2 = cs.recovery_flag_path('C:/profiles/A', p)
+    f_b = cs.recovery_flag_path('C:/profiles/B', p)
+    assert f_a == f_a2, "同 profile 的标志路径必须稳定一致"
+    assert f_a != f_b, "不同 profile 的标志必须隔离，避免误放开"
+    assert f_a.name.startswith('clear_challenge.') and f_a.name.endswith('.flag')
+
+
+def test_write_recovery_flag_and_consume_profile_scoped(tmp_path):
+    # GUI 写入 profile 隔离标志；运行中的采集器用同 profile 消费，互不干扰其他 profile
+    p = tmp_path / 'c.json'
+    flag_a = cs.write_recovery_flag('C:/profiles/A', p)
+    assert flag_a is not None and flag_a.exists(), "恢复标志应创建成功"
+    # 用不同 profile 消费：A 的标志不应被 B 消费
+    assert cs.consume_recovery_flag(p, 'C:/profiles/B') is False, "其他 profile 不得消费本 profile 标志"
+    assert cs.consume_recovery_flag(p, 'C:/profiles/A') is True, "本 profile 可正常消费"
+
+
+def test_write_recovery_flag_failure_returns_none(tmp_path):
+    # 父路径为文件：创建失败必须返回 None（GUI 据以提示失败而非谎报成功）
+    p = tmp_path / 'afile' / 'c.json'
+    p.parent.write_text('file', encoding='utf-8')
+    assert cs.write_recovery_flag(None, p) is None, "标志创建失败应返回 None"
+
+
+def test_default_path_is_absolute_and_stable():
+    # 跨平台路径一致性：default_path 返回绝对路径且对同一环境稳定
+    a = cs.default_path()
+    b = cs.default_path()
+    assert a.is_absolute(), "状态路径必须为绝对路径"
+    assert a == b, "default_path 必须稳定一致"
+    assert a.name == 'challenge_state.json'
+
+
+# ---- WB-103-R7 第1条：run 级确定性测试——取消/异常后拦截暂停仍持久化 ----
+
+import sys as _sys  # noqa: E402
+
+
+class _FakePlaywright:
+    """替身：吃掉真实浏览器启动，提供 launch_persistent_context。"""
+    def __init__(self):
+        self.chromium = self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def launch_persistent_context(self, *args, **kwargs):
+        return FakeContext()
+
+
+def _install_fake_playwright(monkeypatch):
+    """让 `from playwright.async_api import async_playwright` 拿到替身（不触碰真实 playwright/网络）。"""
+    fake_mod = _sys.modules.get('playwright.async_api')
+    if fake_mod is None:
+        import types
+        fake_mod = types.ModuleType('playwright.async_api')
+        pkg = _sys.modules.get('playwright')
+        if pkg is None:
+            pkg = types.ModuleType('playwright')
+            _sys.modules['playwright'] = pkg
+        _sys.modules['playwright.async_api'] = fake_mod
+    fake_mod.async_playwright = _FakePlaywright
+    monkeypatch.setitem(_sys.modules, 'playwright.async_api', fake_mod)
+
+
+class _FakeApiRun:
+    """run() 启动自检用的极简 Api：只应答 status，不访问站点/凭据。"""
+    def call(self, path, body=None):
+        if path == '/api/collector/status':
+            return {'ready': True}
+        raise AssertionError('unexpected path in run-level test: ' + path)
+
+
+def test_run_persists_challenge_state_on_cancel(monkeypatch):
+    # 确定性 run 级复现：round_once 首次确认拦截后立即被取消，run 正常收尾，
+    # 暂停状态文件必须存在（旧实现漏存，重启重访已确认拦页面）。WB-103-R7 第1条。
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    tmp_challenge = os.path.join(tmp, 'challenge_state.json')
+    orig_challenge_path = collector.CHALLENGE_PATH
+    collector.CHALLENGE_PATH = tmp_challenge
+
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setattr(collector, 'parser_module', lambda: FakeParser(challenged))
+
+    class _FakeApi:
+        # 仅应答启动自检 status；不访问站点/凭据/网络
+        def __init__(self, base, key):
+            self.base = base
+            self.key = key
+
+        def call(self, path, body=None):
+            if path == '/api/collector/status':
+                return {'ready': True}
+            raise AssertionError('unexpected path in run-level test: ' + path)
+
+    monkeypatch.setattr(collector, 'Api', _FakeApi)
+
+    async def fake_round_once(context, api, parser, challenged=None):
+        challenged = {} if challenged is None else challenged
+        challenged['blocked-sku'] = 1  # 首次确认被拦截
+        raise asyncio.CancelledError()  # 模拟用户暂停/取消 或 后续异常
+
+    orig_round = collector.round_once
+    collector.round_once = fake_round_once
+
+    class _Args:
+        profile = tmp
+        login = False
+        once = False
+        stop_file = None
+
+    saved_env = {}
+    for k in ('PP_COLLECTOR_KEY',):
+        saved_env[k] = os.environ.get(k)
+    os.environ['PP_COLLECTOR_KEY'] = 'TEST_KEY_NO_SITE'
+    try:
+        run(collector.run(_Args()))
+    finally:
+        collector.round_once = orig_round
+        collector.CHALLENGE_PATH = orig_challenge_path
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert os.path.exists(tmp_challenge), "取消/异常后拦截暂停状态文件必须已落盘"
+    loaded = cs.load_challenge_state(tmp_challenge)
+    assert loaded == {'blocked-sku': 1}, "取消后拦截暂停必须已持久化，避免重启重访"
+
 

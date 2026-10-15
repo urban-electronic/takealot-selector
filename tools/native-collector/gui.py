@@ -22,13 +22,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from status_view import classify_state, STOPPED  # noqa: E402
 
-# 拦截暂停的显式人工恢复（WB-103-R6）；导入失败也不影响主流程，recover 会降级处理。
+# 拦截暂停的显式人工恢复（WB-103-R6 / WB-103-R7）：写入恢复标志供采集器下一轮消费。
+# 导入失败也不影响主流程；recover 降级处理。
 try:
-    from challenge_state import clear_challenge_state, default_path, RECOVERY_FLAG as _RECOVERY_FLAG
+    from challenge_state import default_path, write_recovery_flag
 except Exception:
-    clear_challenge_state = None
     default_path = None
-    _RECOVERY_FLAG = 'clear_challenge.flag'
+    write_recovery_flag = None
 
 def protect(data, decrypt=False):
     if os.name!='nt': raise RuntimeError('本机不是Windows，不保存服务密钥')
@@ -87,14 +87,19 @@ class App:
         if folder:self.profile.set(folder)
 
     def recover_challenges(self):
-        # 显式人工恢复（WB-103-R6）：删除持久化暂停状态，并通知运行中的采集器下一轮清空。
+        # 显式人工恢复（WB-103-R6 / R7）：仅写入恢复标志，由运行中的采集器下一轮消费并清空内存暂停。
+        # 按 profile 隔离标志，避免误放开其他 profile；据实际写入结果反馈，失败保持暂停（R7 第3条）。
+        if write_recovery_flag is None or default_path is None:
+            self.status.set('⚠ 恢复模块不可用，保持暂停，请手动核验后再继续。')
+            return
         try:
-            if clear_challenge_state is not None and default_path is not None:
-                clear_challenge_state(default_path())
-            (STATE/_RECOVERY_FLAG).touch()
+            flag = write_recovery_flag(self.profile.get(), default_path())
+            if flag is not None and flag.exists():
+                self.status.set('已请求恢复被拦截的商品；若采集器正在运行，将在下一轮生效。')
+            else:
+                self.status.set('⚠ 恢复标志写入失败，保持暂停，请手动核验后再继续。')
         except Exception:
-            pass
-        self.status.set('已请求恢复被拦截的商品；若采集器正在运行，将在下一轮生效。')
+            self.status.set('⚠ 恢复操作异常，保持暂停，请手动核验。')
 
     def start(self,mode):
         if mode not in ('login','once','continuous'):
