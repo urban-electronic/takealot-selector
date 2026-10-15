@@ -12,7 +12,7 @@ BASE_DIR = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TEMPLATE = BASE_DIR / "inbound_template.xlsx"
 SHEET = "xl/worksheets/sheet1.xml"
 ROW_RE = re.compile(r'<row\b(?=[^>]*\br="(?P<number>\d+)")[^>]*(?:/>|>.*?</row\s*>)', re.S)
-DIMENSION_RE = re.compile(r'(<dimension\b[^>]*\bref=")[^"]*(")')
+DIMENSION_RE = re.compile(r'(<dimension\b[^>]*\bref=")(?P<start_col>[A-Z]+)(?P<start_row>\d+):(?P<end_col>[A-Z]+)\d+(")')
 
 
 def _plain_cell(coordinate: str, value, *, text: bool = False) -> str:
@@ -56,9 +56,17 @@ def generate_inbound(rows, output: Path) -> None:
         )
         sheet_xml = sheet_xml[:sheet_data_end] + data_rows + sheet_xml[sheet_data_end:]
 
-        dimension_ref = f"A1:J{max(1, len(rows) + 1)}"
+        last_row = max(1, len(rows) + 1)
         sheet_xml, updated = DIMENSION_RE.subn(
-            lambda match: match.group(1) + dimension_ref + match.group(2),
+            lambda match: (
+                match.group(1)
+                + match.group("start_col")
+                + match.group("start_row")
+                + ":"
+                + match.group("end_col")
+                + str(last_row)
+                + match.group(5)
+            ),
             sheet_xml,
             count=1,
         )
