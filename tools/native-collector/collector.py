@@ -158,6 +158,15 @@ async def _finish_pending(task):
             if task.cancelled():
                 raise
 
+def identifiable_lease_ids(batch):
+    """Only server-issued string identifiers can be returned to release."""
+    items = batch.get('items') if isinstance(batch, dict) else None
+    if not isinstance(items, list):
+        return []
+    return list(dict.fromkeys(item['productId'] for item in items
+        if isinstance(item, dict) and isinstance(item.get('productId'), str)
+        and item['productId'].strip()))
+
 async def claim_batch(api):
     task = asyncio.create_task(asyncio.to_thread(api.call, '/api/collector/products'))
     try:
@@ -165,7 +174,7 @@ async def claim_batch(api):
     except asyncio.CancelledError:
         try:
             batch = await _finish_pending(task)
-            pending = [item['productId'] for item in batch.get('items', [])]
+            pending = identifiable_lease_ids(batch)
             if pending:
                 release = asyncio.create_task(
                     asyncio.to_thread(api.call, '/api/collector/release', {'product_ids': pending}))
@@ -195,7 +204,18 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
     # 领取走 PR105 的 shield 实现（已合并 main，e4da21d）：在途 HTTP 不被 await 取消丢失；
     # 暂停/重复取消后异步等真实响应再 release，不阻塞事件循环、不用 30 秒截止、不吞领取错误。
     batch = await claim_batch(api)
-    items = batch.get('items', [])
+    items = batch.get('items') if isinstance(batch, dict) else None
+    pending = identifiable_lease_ids(batch)
+    if not isinstance(items, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get('productId'), str)
+            or not item['productId'].strip() for item in items):
+        # Reject the entire malformed claim before opening pages, but do not lose
+        # valid leases delivered alongside a malformed item.
+        if pending:
+            release = asyncio.create_task(asyncio.to_thread(
+                api.call, '/api/collector/release', {'product_ids': pending}))
+            await _finish_pending(release)
+        raise RuntimeError('服务任务响应格式异常，本轮未访问商品页')
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     persistence_stopped=asyncio.Event()

@@ -315,3 +315,7 @@ PR115后端同步路由已在生产openapi出现，修正此前临时未上线�
 ## 2026-10-17 04:40 库存交互检查可复现性
 
 WorkBuddy尚未更新PR113，Codex独立采纳其边界交互用例，补PR115新增组件替身、jsdom开发依赖与lockfile，统一test:inventory入口。全新空目录npm ci及两组实际React交互检查通过，未复用已有node_modules；后端相关38项复测通过。线上前端200、两条同步路由可见，未认证库存401仍不能作为真实库存或业务通过。真实装箱更正与目标机报价闭环阻塞不变，PR114上轮失败未追认修复。见[验收证据与贡献来源](review/2026-10-17-inventory-test-reproducibility.md)。
+
+## 2026-10-17 05:40 异常领取租约清理
+
+WorkBuddy PR114未更新；Codex在正式main3bfcb84源码独立复现混合异常ID的TypeError与合法租约未归还，最小修复批次形状校验、清理合法ID、取消后迟到异常响应清理，保留shield与取消语义并同步下载包。flow65项通过；可操作错误提示仍待接续，真实本机报价与实际库存更正未完成，不恢复调价。详见[同条件复现及验收边界](review/2026-10-17-malformed-claim-cleanup.md)。
