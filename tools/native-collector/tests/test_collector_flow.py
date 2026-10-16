@@ -123,7 +123,7 @@ def test_all_success_reports_every_sku():
 def test_malformed_claim_releases_valid_lease_without_visiting(bad):
     api = FakeApi([*items(1), {'productId': bad, 'sku': 'bad'}])
     ctx, parser = FakeContext(), FakeParser(ok)
-    with pytest.raises(RuntimeError, match='任务响应格式异常'):
+    with pytest.raises(RuntimeError, match='响应格式异常'):
         run(collector.round_once(ctx, api, parser))
     assert api.released == ['lease-0']
     assert not ctx.pages and not parser.visited and not api.reported
@@ -137,7 +137,7 @@ def test_non_list_claim_is_not_idle_or_success(batch):
                 return batch
             return super().call(path, body)
     api, ctx = MalformedApi([]), FakeContext()
-    with pytest.raises(RuntimeError, match='任务响应格式异常'):
+    with pytest.raises(RuntimeError, match='响应格式异常'):
         run(collector.round_once(ctx, api, FakeParser(ok)))
     assert not ctx.pages and not api.released
 

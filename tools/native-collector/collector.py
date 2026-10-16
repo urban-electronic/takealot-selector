@@ -73,6 +73,27 @@ def singleton(profile):
 class NoRedirect(request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs): return None
 
+class ServiceError(RuntimeError):
+    """Construct display messages from trusted categories, never server text."""
+    def __init__(self, kind, detail=None):
+        messages = {
+            400: '服务接口返回 HTTP 400：请求被拒绝，请检查店铺配置与服务地址',
+            401: '服务接口返回 HTTP 401：网站服务访问密钥无效或缺失',
+            403: '服务接口返回 HTTP 403：服务拒绝访问，请检查访问权限',
+            404: '服务接口返回 HTTP 404：采集接口不存在，请检查程序与服务版本',
+            429: '服务接口返回 HTTP 429：请求过于频繁，请稍后重试',
+            'redirect': '服务接口发生重定向：已拒绝转发密钥，请检查服务地址或代理',
+            'unavailable': '服务暂不可用，请稍后重试',
+            'connection': '服务连接超时或不可达，请检查网络后重试',
+            'format': '服务响应格式异常，请检查程序与服务版本',
+        }
+        message = messages.get(kind, messages['unavailable'])
+        if kind in (400, 401, 403) and detail in (
+                '店铺不存在或已停用', '采集器仅绑定自营店铺',
+                '无效或缺失 API Key，请在设置页填写'):
+            message += '：' + detail
+        super().__init__(message)
+
 class Api:
     def __init__(self, base, key):
         parsed = urlsplit(base)
@@ -91,23 +112,27 @@ class Api:
                                   headers=headers, method='POST' if body is not None else 'GET')
             try:
                 with self.opener.open(req, timeout=30) as response:
-                    return json.loads(response.read())
+                    try:
+                        payload = json.loads(response.read())
+                    except (ValueError, UnicodeError):
+                        raise ServiceError('format') from None
+                    if not isinstance(payload, dict):
+                        raise ServiceError('format')
+                    return payload
             except error.HTTPError as exc:
                 if exc.code not in (429,500,502,503,504) or attempt == 2:
                     # Never print arbitrary proxy/server bodies, reflected credentials or cookies.
-                    detail=''
+                    detail=None
                     try:
                         payload=json.loads(exc.read(8192))
                         message=payload.get('detail') if isinstance(payload,dict) else None
                         if message in ('店铺不存在或已停用','采集器仅绑定自营店铺','无效或缺失 API Key，请在设置页填写'):
-                            detail='：'+message
+                            detail=message
                     except (ValueError,TypeError): pass
-                    if exc.code==400 and not detail:
-                        detail='：请求被拒绝，未取得可识别的服务端说明；请检查本机代理/网络与服务地址'
-                    if exc.code==401 and not detail: detail='：网站服务访问密钥无效或缺失'
-                    raise RuntimeError(f'服务接口返回 HTTP {exc.code}{detail}') from None
+                    kind = 'redirect' if 300 <= exc.code < 400 else exc.code
+                    raise ServiceError(kind, detail) from None
             except (error.URLError, TimeoutError):
-                if attempt == 2: raise RuntimeError('服务连接超时，任务稍后重试') from None
+                if attempt == 2: raise ServiceError('connection') from None
             time.sleep(2*(attempt+1))
 
 def valid_product_url(value):
@@ -215,7 +240,7 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
             release = asyncio.create_task(asyncio.to_thread(
                 api.call, '/api/collector/release', {'product_ids': pending}))
             await _finish_pending(release)
-        raise RuntimeError('服务任务响应格式异常，本轮未访问商品页')
+        raise ServiceError('format')
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     persistence_stopped=asyncio.Event()
@@ -446,7 +471,7 @@ async def run(args):
                         wait=60
                     except Exception as exc:
                         # 只输出受控分类，绝不输出异常正文：异常可能含反射内容或敏感配置。
-                        label='服务连接被拒绝或超时' if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
+                        label=str(exc) if isinstance(exc,ServiceError) else '页面或服务暂不可用'
                         print(f'本轮失败：{label}；保留原价，稍后重试。',flush=True)
                         write_status('failed',error=label)
                         wait=60
