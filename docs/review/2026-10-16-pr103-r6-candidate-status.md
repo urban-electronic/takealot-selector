@@ -24,9 +24,22 @@
 | 3 | `recover_challenges` 吞全部异常仍显示“已请求恢复”；`consume_recovery_flag` 删除失败仍返回 `True` | `consume_recovery_flag` 仅当“标志删除 + 状态清空都成功”才返回 `True`，任一失败返回 `False` 并保持暂停；`gui.recover_challenges` 据 `write_recovery_flag` 实际结果反馈，失败给受控错误并保持暂停；恢复标志**按 profile 哈希隔离**，避免一键误放开其他 profile | 已修（单测级） |
 | 4 | 新模块 `status_view`/`challenge_state` 必须纳入打包脚本与 ZIP，现网包未包含；补 GUI start/recover 替身测试与跨平台路径一致性 | `scripts/package-native-collector.py` ZIP 列表加入 `status_view.py` / `challenge_state.py` 并重新生成 `public/downloads/takealot-native-collector.zip`（已验证含 9 个采集器文件）；补 `write_recovery_flag`/`consume_recovery_flag` 替身测试、`recovery_flag_path` 按 profile 隔离且稳定、`default_path` 绝对且稳定等一致性测试 | 已修（单测级） |
 
+## WB-103-R8 要求与处理（issue id=6204519284，接续 id=6204526846）
+
+> R8 为 Codex 在隔离环境（假 Playwright/Api、无站点/凭据）补测发现的 4 项运行级失败；全部以单测（替身）修复与覆盖，未对 Takealot 发起真实访问，未用证据模板充当采集结果。
+
+| # | Codex 复现 / 要求 | 本次处理 | 状态 |
+|---|------------------|----------|------|
+| 1 | 损坏状态仍实际放行并销毁证据：预写损坏文件，启动打印人工核验后仍 `round_once(challenged={})` 领取/scrape，正常结束把磁盘覆盖成 `{}`；`challenged_unreliable` 只赋值从未使用 | `collector.run` 启动读盘损坏置 `challenged_unreliable=True`（保留内存暂停 + 受控提示，不输出路径/敏感内容）；循环顶部：不可信状态**禁止领取/访问**（不调用 products/scrape），每轮重试重读，人工修复或删除原文件后即恢复采集；`finally` 保存仅在 `not challenged_unreliable` 时执行，**绝不覆盖损坏原文件**，直到显式人工恢复。新增 run 级测试 `test_run_refuses_collection_when_state_corrupt`（损坏不调用 products、不擦原文件） | 已修（单测级） |
+| 2 | profile 仅恢复标志隔离，state 仍全局 `challenge_state.json`：存 B 暂停后 `write_recovery_flag('A')` + `consume A` 返回 True，读 B 暂停已 `{}`；A 可清除 B；不同 profile 单例锁也允许并发写同一固定 tmp/覆盖状态 | 新增 `challenge_state_path(profile)` 按 profile 路径哈希隔离状态文件（与恢复标志共用同一 slug/base），`load/save/clear/consume` 支持 `profile` 参数；A 的恢复只清 A 的状态文件，不碰 B；新增 `test_challenge_state_path_is_profile_scoped_and_deterministic` / `test_two_profiles_same_sku_independent_pause` / `test_profile_a_recovery_does_not_clear_profile_b` / `test_profile_concurrent_save_no_lost_pause` | 已修（单测级） |
+| 3 | `consume` 先删状态再删标志：标志删除失败返回 False，内存保留但磁盘丢暂停，重启仍放行 | `consume_recovery_flag` 改为**保守顺序**：先删恢复标志，再清空持久化暂停；标志删除失败直接返回 False 且磁盘状态原样不动（不丢暂停）；清空失败也返回 False 但磁盘状态仍在，重启仍读回暂停（不丢暂停），仅本次恢复未生效可重试。新增 `test_consume_recovery_flag_false_when_flag_unlink_fails`（标志删除失败不得清空持久化暂停） | 已修（单测级） |
+| 4 | 注释「首次确认即保存」实际仍只轮次 finally 保存；进程突然退出在 finally 前会丢本轮暂停 | `round_once` 新增 `lock`/`persist` 参数；worker 首次确认拦截即在锁内**即时持久化**（不等整批 600s 结束）；`collector.run` 传入 `asyncio.Lock()` 与 `persist_challenge` 回调（不可信时跳过）；新增 `test_round_once_persists_on_first_intercept`（首次确认即 persist）+ run 级 `test_run_persists_during_round_not_only_on_exit`（即时落盘不依赖 finally）；`test_run_persists_challenge_state_on_cancel` 同步适配 profile 隔离路径 | 已修（单测级） |
+
+> 红线：未触碰 backend/，未改售价/调价/采购/SKU 校验，未读传密钥 Cookie；未做任何指纹规避/反爬绕过；未自行合并 main；未 force push。
+
 ## 回归测试（WorkBuddy 本机执行，非 Codex 运行）
 
-- `tools/native-collector/tests/`（pytest）：**39 passed**（R2–R6 既有 + R7 新增 11 项：损坏抛错、负计数过滤、save 成功/父路径为文件失败/目标为目录失败、consume 清空失败返回 False、consume 全成功返回 True、profile 隔离标志、write+consume 按 profile、write 失败返回 None、default_path 一致性、run 级取消持久化）。
+- `tools/native-collector/tests/`（pytest）：**46 passed**（R2–R7 既有 + R8 新增/调整 7 项：损坏状态禁止领取且不擦原文件、首次确认即时 persist、run 级即时落盘不依赖 finally、状态文件按 profile 隔离且稳定、双 profile 同 SKU 独立暂停、A 恢复不清除 B、并发保存不丢暂停；并修正 consume 顺序测试为「标志删除失败不丢暂停」）。
 - `tools/test_codex_bridge.py` + `tools/_bridge_mp_worker.py`（R5 既有）：**6 passed**。
 - `py_compile` 校验：`collector.py` / `gui.py` / `status_view.py` / `challenge_state.py` 均通过。
 
@@ -37,6 +50,9 @@
 - **恢复标志跨 profile 端到端**：按 profile 哈希隔离以单测验证，未在真实多 profile 运行态实测。
 - **真实 Windows 路径一致性**：`default_path` 依赖 `LOCALAPPDATA`/`HOME`，在 Linux/macOS 容器与本机 Windows 行为一致（绝对路径、稳定），但现网部署仅在 Windows，未跨机实测。
 - **现网包下发**：ZIP 已重新生成并含新模块，但用户侧实际下载/解压/运行以新包为准，需用户环境确认。
+- **损坏状态端到端人工恢复（R8-1）**：单测覆盖「损坏不领取/不擦原文件 + 每轮重读恢复」，但真实场景「人工修复或删除损坏文件后采集器自动恢复采集」未在真实运行态实测。
+- **profile 隔离跨 profile 真实运行（R8-2）**：按 profile 哈希隔离状态/标志以单测覆盖，未在两 profile 同时运行的真实态实测「A 恢复不影响 B、并发保存互不覆盖」。
+- **即时持久化崩溃恢复（R8-4）**：首次确认即写盘的语义以单测覆盖，但「进程在整批 600s 结束前被强杀、重启读回暂停」未做真实强杀验收。
 
 ## 红线声明
 

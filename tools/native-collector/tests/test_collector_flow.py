@@ -446,15 +446,16 @@ def test_save_challenge_state_returns_false_on_write_error(tmp_path):
 
 # ---- WB-103-R7 第3条：recover 显式成功/失败 + 按 profile 隔离 ----
 
-def test_consume_recovery_flag_false_when_clear_fails(tmp_path):
-    # 状态文件路径被占位为目录，clear 必然失败；即使标志存在也必须返回 False 并保持暂停
+def test_consume_recovery_flag_false_when_flag_unlink_fails(tmp_path):
+    # WB-103-R8 第3条：恢复标志删除失败（标志是目录无法 unlink）时必须返回 False，
+    # 且**保留磁盘暂停**，不得先清空状态再谎报失败导致丢暂停（旧实现：先清空后删标志，
+    # 删标志失败则状态已丢、重启放行）。
     p = tmp_path / 'c.json'
-    p.mkdir()  # 目录：clear_challenge_state 的 unlink 会失败
+    cs.save_challenge_state({'SKU0': 3}, p)
     flag = cs.recovery_flag_path(None, p)
-    flag.parent.mkdir(parents=True, exist_ok=True)
-    flag.touch()
-    assert cs.consume_recovery_flag(p) is False, "状态清空失败必须返回 False（保持暂停）"
-    assert flag.exists(), "失败时必须保留恢复标志以便重试"
+    flag.mkdir(parents=True, exist_ok=True)  # 标志是目录：unlink 会失败
+    assert cs.consume_recovery_flag(p) is False, "标志删除失败必须返回 False（保持暂停）"
+    assert cs.load_challenge_state(p) == {'SKU0': 3}, "标志删除失败时不得清空持久化暂停"
 
 
 def test_consume_recovery_flag_true_only_when_all_succeed(tmp_path):
@@ -493,6 +494,57 @@ def test_write_recovery_flag_failure_returns_none(tmp_path):
     p = tmp_path / 'afile' / 'c.json'
     p.parent.write_text('file', encoding='utf-8')
     assert cs.write_recovery_flag(None, p) is None, "标志创建失败应返回 None"
+
+
+# ---- WB-103-R8 第2条：state/恢复/锁统一按 profile 隔离 ----
+
+def test_challenge_state_path_is_profile_scoped_and_deterministic(tmp_path):
+    # 不同 profile 的状态文件命名不同（避免 A 误清 B），且同 profile 稳定
+    p = tmp_path / 'c.json'
+    a = cs.challenge_state_path('C:/profiles/A')
+    a2 = cs.challenge_state_path('C:/profiles/A')
+    b = cs.challenge_state_path('C:/profiles/B')
+    assert a == a2, "同 profile 的状态路径必须稳定一致"
+    assert a != b, "不同 profile 的状态文件必须隔离"
+    assert a.name.startswith('challenge_state.') and a.name.endswith('.json')
+
+
+def test_two_profiles_same_sku_independent_pause(tmp_path):
+    # 两个 profile 同一 SKU 各有独立暂停计数，互不干扰
+    pa = cs.challenge_state_path('C:/profiles/A')
+    pb = cs.challenge_state_path('C:/profiles/B')
+    cs.save_challenge_state({'SKU0': 1}, pa)
+    cs.save_challenge_state({'SKU0': 5}, pb)
+    assert cs.load_challenge_state(pa) == {'SKU0': 1}
+    assert cs.load_challenge_state(pb) == {'SKU0': 5}
+
+
+def test_profile_a_recovery_does_not_clear_profile_b(tmp_path):
+    # WB-103-R8 第2条核心：profile A 的恢复不得清空 profile B 的暂停
+    pa = cs.challenge_state_path('C:/profiles/A')
+    pb = cs.challenge_state_path('C:/profiles/B')
+    cs.save_challenge_state({'profile-B-sku': 1}, pb)
+    cs.write_recovery_flag('C:/profiles/A', pa)
+    assert cs.consume_recovery_flag(pa, 'C:/profiles/A') is True, "A 的恢复应成功"
+    assert cs.load_challenge_state(pa) == {}, "A 的状态应被清空"
+    assert cs.load_challenge_state(pb) == {'profile-B-sku': 1}, "A 的恢复不得清除 B 的暂停"
+
+
+def test_profile_concurrent_save_no_lost_pause(tmp_path):
+    # 不同 profile 并发保存各自独立文件，互不覆盖（旧实现共享固定 tmp/状态文件会互相覆盖）
+    import threading
+    pa = cs.challenge_state_path('C:/profiles/A')
+    pb = cs.challenge_state_path('C:/profiles/B')
+
+    def worker(path, key):
+        for i in range(50):
+            cs.save_challenge_state({key: i}, path)
+
+    t1 = threading.Thread(target=worker, args=(pa, 'A'))
+    t2 = threading.Thread(target=worker, args=(pb, 'B'))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert cs.load_challenge_state(pa) == {'A': 49}, "A 的最后写入不得被 B 覆盖"
+    assert cs.load_challenge_state(pb) == {'B': 49}, "B 的最后写入不得被 A 覆盖"
 
 
 def test_default_path_is_absolute_and_stable():
@@ -541,6 +593,10 @@ def _install_fake_playwright(monkeypatch):
 
 class _FakeApiRun:
     """run() 启动自检用的极简 Api：只应答 status，不访问站点/凭据。"""
+    def __init__(self, base, key):
+        self.base = base
+        self.key = key
+
     def call(self, path, body=None):
         if path == '/api/collector/status':
             return {'ready': True}
@@ -553,8 +609,10 @@ def test_run_persists_challenge_state_on_cancel(monkeypatch):
     import tempfile
     tmp = tempfile.mkdtemp()
     tmp_challenge = os.path.join(tmp, 'challenge_state.json')
-    orig_challenge_path = collector.CHALLENGE_PATH
-    collector.CHALLENGE_PATH = tmp_challenge
+    # 状态文件按 profile 隔离：让 run() 用本测试的固定路径（而非默认 APP_DIR/<slug>）
+    def _csp(profile=None, state_path=None):
+        return tmp_challenge
+    monkeypatch.setattr(collector, 'challenge_state_path', _csp)
 
     _install_fake_playwright(monkeypatch)
     monkeypatch.setattr(collector, 'parser_module', lambda: FakeParser(challenged))
@@ -572,7 +630,7 @@ def test_run_persists_challenge_state_on_cancel(monkeypatch):
 
     monkeypatch.setattr(collector, 'Api', _FakeApi)
 
-    async def fake_round_once(context, api, parser, challenged=None):
+    async def fake_round_once(context, api, parser, challenged=None, lock=None, persist=None):
         challenged = {} if challenged is None else challenged
         challenged['blocked-sku'] = 1  # 首次确认被拦截
         raise asyncio.CancelledError()  # 模拟用户暂停/取消 或 后续异常
@@ -594,7 +652,6 @@ def test_run_persists_challenge_state_on_cancel(monkeypatch):
         run(collector.run(_Args()))
     finally:
         collector.round_once = orig_round
-        collector.CHALLENGE_PATH = orig_challenge_path
         for k, v in saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -604,5 +661,127 @@ def test_run_persists_challenge_state_on_cancel(monkeypatch):
     assert os.path.exists(tmp_challenge), "取消/异常后拦截暂停状态文件必须已落盘"
     loaded = cs.load_challenge_state(tmp_challenge)
     assert loaded == {'blocked-sku': 1}, "取消后拦截暂停必须已持久化，避免重启重访"
+
+
+# ---- WB-103-R8 第1条：损坏状态禁止领取/访问，且不覆盖损坏原文件 ----
+
+def test_run_refuses_collection_when_state_corrupt(monkeypatch):
+    # 确定性 run 级复现：预写损坏状态文件，run 在不可信状态下必须禁止领取/访问
+    # （不调用 /api/collector/products、不 scrape），且不得覆盖/擦除损坏原文件
+    # （WB-103-R8 第1条）。
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    tmp_challenge = os.path.join(tmp, 'challenge_state.json')
+    with open(tmp_challenge, 'w', encoding='utf-8') as f:
+        f.write('{not valid json')
+    monkeypatch.setattr(collector, 'challenge_state_path', lambda profile=None, state_path=None: tmp_challenge)
+
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setattr(collector, 'parser_module', lambda: FakeParser(ok))
+
+    class _RecordApi:
+        """仅应答启动自检 status；记录是否有人调用 products（应被禁止）。"""
+        products_called = False
+
+        def __init__(self, base, key):
+            pass
+
+        def call(self, path, body=None):
+            if path == '/api/collector/products':
+                _RecordApi.products_called = True
+                return {'items': [{'productId': 'lease-0', 'sku': 'SKU0', 'url': URL}]}
+            if path == '/api/collector/status':
+                return {'ready': True}
+            raise AssertionError('unexpected path in run-level test: ' + path)
+
+    monkeypatch.setattr(collector, 'Api', _RecordApi)
+
+    class _Args:
+        profile = tmp
+        login = False
+        once = True  # 不可信状态 once 直接退出，避免长轮询
+        stop_file = None
+
+    saved_env = {}
+    for k in ('PP_COLLECTOR_KEY',):
+        saved_env[k] = os.environ.get(k)
+    os.environ['PP_COLLECTOR_KEY'] = 'TEST_KEY_NO_SITE'
+    try:
+        run(collector.run(_Args()))
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert _RecordApi.products_called is False, "损坏状态必须禁止领取/访问（不得调用 products）"
+    with open(tmp_challenge, encoding='utf-8') as f:
+        content = f.read()
+    assert content.strip() == '{not valid json', "损坏原文件不得被覆盖/擦除"
+
+
+# ---- WB-103-R8 第4条：首次确认即即时持久化（不等整批 600s） ----
+
+def test_round_once_persists_on_first_intercept():
+    # 首次确认被拦截即调用 persist 落盘，不等整批 600s 结束（进程崩溃也不丢暂停）
+    api, ctx, parser = FakeApi(items(1)), FakeContext(), FakeParser(challenged)
+    lock = asyncio.Lock()
+    saved = []
+    async def persist(state):
+        saved.append(dict(state))
+    state = {}
+    claimed, successful, blocked = run(
+        collector.round_once(ctx, api, parser, state, lock=lock, persist=persist))
+    assert (claimed, successful, blocked) == (1, 0, 1)
+    assert state.get('SKU0') == 1, "拦截计数应累加"
+    assert saved and saved[-1].get('SKU0') == 1, "首次确认拦截应立即持久化"
+
+
+def test_run_persists_during_round_not_only_on_exit(monkeypatch):
+    # 确定性 run 级复现：round_once 首次确认即 persist 后立即被取消（不走到 finally 的整批保存），
+    # 但 worker 的即时持久化应已落盘（WB-103-R8 第4条：不等整批 600s）。
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    tmp_challenge = os.path.join(tmp, 'challenge_state.json')
+    monkeypatch.setattr(collector, 'challenge_state_path', lambda profile=None, state_path=None: tmp_challenge)
+
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setattr(collector, 'parser_module', lambda: FakeParser(challenged))
+    monkeypatch.setattr(collector, 'Api', _FakeApiRun)
+
+    async def fake_round_once(context, api, parser, challenged=None, lock=None, persist=None):
+        challenged = {} if challenged is None else challenged
+        challenged['blocked-sku'] = 1  # 首次确认被拦截
+        if persist is not None:
+            await persist(dict(challenged))  # 即时持久化（模拟 worker 行为）
+        raise asyncio.CancelledError()  # 随后被取消，不走到 finally 的整批保存
+
+    orig_round = collector.round_once
+    collector.round_once = fake_round_once
+
+    class _Args:
+        profile = tmp
+        login = False
+        once = False
+        stop_file = None
+
+    saved_env = {}
+    for k in ('PP_COLLECTOR_KEY',):
+        saved_env[k] = os.environ.get(k)
+    os.environ['PP_COLLECTOR_KEY'] = 'TEST_KEY_NO_SITE'
+    try:
+        run(collector.run(_Args()))
+    finally:
+        collector.round_once = orig_round
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert os.path.exists(tmp_challenge), "即时持久化应已落盘（不依赖 finally 整批保存）"
+    loaded = cs.load_challenge_state(tmp_challenge)
+    assert loaded == {'blocked-sku': 1}, "取消前的即时持久化必须保留拦截暂停"
 
 
