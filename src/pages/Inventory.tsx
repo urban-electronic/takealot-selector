@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInventory, getInventoryAdjustments, getOperationLogs, getShipments, getStoreStorageKey, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
 import type { InventoryAdjustment, InventoryRow, OperationLog, ShipmentRecord } from '../types';
@@ -23,6 +23,8 @@ export default function Inventory() {
   const [message, setMessage] = useState('');
   const [adjustSku, setAdjustSku] = useState('');
   const [form, setForm] = useState({ mode: 'increase', quantity: '', reason: '盘点调整', notes: '', occurred_at: today() });
+  const adjustmentPending = useRef(false);
+  const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [exportingInbound, setExportingInbound] = useState(false);
   const [selectedShipmentIds, setSelectedShipmentIds] = useState<string[]>([]);
 
@@ -47,12 +49,16 @@ export default function Inventory() {
   }, [rows, search, stockFilter]);
 
   const submitAdjustment = async () => {
-    const quantity = Number.parseInt(form.quantity, 10);
-    if (!adjustSku || !Number.isInteger(quantity) || quantity < 1) { setError('请选择 SKU，并填写大于 0 的整数数量'); return; }
+    if (adjustmentPending.current) return;
+    const quantity = Number(form.quantity);
+    if (!adjustSku || !Number.isSafeInteger(quantity) || quantity < 1) { setError('请选择 SKU，并填写大于 0 的整数数量'); return; }
+    adjustmentPending.current = true;
+    setSavingAdjustment(true); setError(''); setMessage('');
     try {
       await createInventoryAdjustment({ sku: adjustSku, quantity_delta: form.mode === 'increase' ? quantity : -quantity, reason: form.reason, notes: form.notes, occurred_at: form.occurred_at });
       setAdjustSku(''); setForm(prev => ({ ...prev, quantity: '', notes: '' })); setMessage('库存调整已记录'); await load();
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { adjustmentPending.current = false; setSavingAdjustment(false); }
   };
 
   const withdrawShipment = async (shipment: ShipmentRecord) => {
@@ -136,12 +142,12 @@ export default function Inventory() {
         </div>
         {adjustSku && <div className="inventory-adjust-strip">
           <strong>调整 {adjustSku}</strong>
-          <select value={form.mode} onChange={e => setForm(prev => ({ ...prev, mode: e.target.value }))}><option value="increase">增加库存</option><option value="decrease">减少库存</option></select>
-          <input type="number" min="1" placeholder="数量" value={form.quantity} onChange={e => setForm(prev => ({ ...prev, quantity: e.target.value }))} />
-          <input value={form.reason} onChange={e => setForm(prev => ({ ...prev, reason: e.target.value }))} placeholder="原因" />
-          <input type="date" value={form.occurred_at} onChange={e => setForm(prev => ({ ...prev, occurred_at: e.target.value }))} />
-          <input value={form.notes} onChange={e => setForm(prev => ({ ...prev, notes: e.target.value }))} placeholder="备注（可选）" />
-          <button className="btn btn-primary" onClick={submitAdjustment}>确认记录</button><button className="btn" onClick={() => setAdjustSku('')}>取消</button>
+          <select disabled={savingAdjustment} value={form.mode} onChange={e => setForm(prev => ({ ...prev, mode: e.target.value }))}><option value="increase">增加库存</option><option value="decrease">减少库存</option></select>
+          <input disabled={savingAdjustment} type="number" min="1" placeholder="数量" value={form.quantity} onChange={e => setForm(prev => ({ ...prev, quantity: e.target.value }))} />
+          <input disabled={savingAdjustment} value={form.reason} onChange={e => setForm(prev => ({ ...prev, reason: e.target.value }))} placeholder="原因" />
+          <input disabled={savingAdjustment} type="date" value={form.occurred_at} onChange={e => setForm(prev => ({ ...prev, occurred_at: e.target.value }))} />
+          <input disabled={savingAdjustment} value={form.notes} onChange={e => setForm(prev => ({ ...prev, notes: e.target.value }))} placeholder="备注（可选）" />
+          <button className="btn btn-primary" disabled={savingAdjustment} onClick={submitAdjustment}>{savingAdjustment ? '记录中...' : '确认记录'}</button><button className="btn" disabled={savingAdjustment} onClick={() => setAdjustSku('')}>取消</button>
         </div>}
         <div className="inventory-table-wrap"><table className="inventory-table">
           <thead><tr><th>产品</th><th>SKU</th><th>在途</th><th>采购入库</th><th>人工调整</th><th>已发货</th><th>可用库存</th><th>操作</th></tr></thead>
@@ -150,7 +156,7 @@ export default function Inventory() {
             <td className="mono">{row.sku || <span className="muted">缺少 SKU</span>}</td>
             <td className="stock-transit">{row.in_transit || 0}</td><td>{row.purchased}</td><td>{row.adjusted > 0 ? `+${row.adjusted}` : row.adjusted}</td><td>{row.shipped}</td>
             <td><strong className={row.available < 0 ? 'stock-danger' : 'stock-value'}>{row.available}</strong></td>
-            <td><button className="btn btn-sm" disabled={!row.sku} onClick={() => setAdjustSku(row.sku)}>调整库存</button></td>
+            <td><button className="btn btn-sm" disabled={!row.sku || savingAdjustment} onClick={() => setAdjustSku(row.sku)}>调整库存</button></td>
           </tr>)}</tbody>
         </table></div>
       </>}
