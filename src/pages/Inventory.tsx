@@ -4,6 +4,8 @@ import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInven
 import type { InventoryAdjustment, InventoryRow, OperationLog, ShipmentRecord } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 
+import ShipmentReconciliation from '../operations/ShipmentReconciliation';
+
 type Tab = 'inventory' | 'shipments' | 'adjustments' | 'activity';
 const today = () => new Date().toISOString().slice(0, 10);
 const draftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}`;
@@ -62,7 +64,7 @@ export default function Inventory() {
   };
 
   const withdrawShipment = async (shipment: ShipmentRecord) => {
-    const affectsInventory = shipment.status === 'confirmed';
+    const affectsInventory = shipment.status === 'confirmed' || shipment.status === 'transit';
     const prompt = affectsInventory
       ? `确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`
       : `确认撤回装箱单 ${shipment.shipment_no}？库存不会变化。`;
@@ -119,8 +121,8 @@ export default function Inventory() {
         <div><h1>库存管理</h1><p>自 2026-09-24 起重新计算 · 库存余额、人工调整和发货记录统一留痕，可撤回，不覆盖历史。</p></div>
         <div className="inventory-kpis">
           <span><strong>{totalAvailable}</strong> 可用库存</span>
-          <span><strong>{totalInTransit}</strong> 在途库存</span>
-          <span><strong>{shipments.filter(x => x.status === 'confirmed').length}</strong> 已发货单</span>
+          <span><strong>{totalInTransit}</strong> 国内采购在途</span><span><strong>{rows.reduce((sum, row) => sum + (row.overseas_in_transit || 0), 0)}</strong> 海外在途</span>
+          <span><strong>{shipments.filter(x => x.status === 'confirmed' || x.status === 'transit').length}</strong> 已发货单</span>
           {lowStock > 0 && <span className="warning"><strong>{lowStock}</strong> 负库存</span>}
         </div>
       </div>
@@ -150,23 +152,23 @@ export default function Inventory() {
           <button className="btn btn-primary" disabled={savingAdjustment} onClick={submitAdjustment}>{savingAdjustment ? '记录中...' : '确认记录'}</button><button className="btn" disabled={savingAdjustment} onClick={() => setAdjustSku('')}>取消</button>
         </div>}
         <div className="inventory-table-wrap"><table className="inventory-table">
-          <thead><tr><th>产品</th><th>SKU</th><th>在途</th><th>采购入库</th><th>人工调整</th><th>已发货</th><th>可用库存</th><th>操作</th></tr></thead>
+          <thead><tr><th>产品</th><th>SKU</th><th>国内采购在途</th><th>海外在途</th><th>采购入库</th><th>人工调整</th><th>已发货</th><th>可用库存</th><th>操作</th></tr></thead>
           <tbody>{filtered.map(row => <tr key={row.product_id}>
             <td><div className="inventory-product">{row.image_url ? <ProductImage src={getImageUrl(row.image_url)} /> : <span className="inventory-no-image">无图</span>}<div><strong>{row.variant_group && <span className={row.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{row.is_primary_variant ? '主' : '分支'}</span>}{row.name}</strong><small>{row.name_en}</small></div></div></td>
             <td className="mono">{row.sku || <span className="muted">缺少 SKU</span>}</td>
-            <td className="stock-transit">{row.in_transit || 0}</td><td>{row.purchased}</td><td>{row.adjusted > 0 ? `+${row.adjusted}` : row.adjusted}</td><td>{row.shipped}</td>
+            <td className="stock-transit">{row.in_transit || 0}</td><td className="stock-transit">{row.overseas_in_transit || 0}</td><td>{row.purchased}</td><td>{row.adjusted > 0 ? `+${row.adjusted}` : row.adjusted}</td><td>{row.shipped}</td>
             <td><strong className={row.available < 0 ? 'stock-danger' : 'stock-value'}>{row.available}</strong></td>
             <td><button className="btn btn-sm" disabled={!row.sku || savingAdjustment} onClick={() => setAdjustSku(row.sku)}>调整库存</button></td>
           </tr>)}</tbody>
         </table></div>
       </>}
 
-      {tab === 'shipments' && <><div className="inventory-toolbar"><button className="btn btn-primary" disabled={!selectedShipmentIds.length || exportingInbound} onClick={downloadInbound}>{exportingInbound ? '生成中...' : `生成入仓文件（已选 ${selectedShipmentIds.length} 单）`}</button><span className="muted">勾选顺序决定标识号：第 1 单为 1，第 2 单为 2，以此类推</span></div><div className="inventory-table-wrap"><table className="inventory-table">
+      {tab === 'shipments' && <><ShipmentReconciliation replaceIds={selectedShipmentIds} onSaved={async () => { setSelectedShipmentIds([]); await load(); }} /><div className="inventory-toolbar"><button className="btn btn-primary" disabled={!selectedShipmentIds.length || exportingInbound} onClick={downloadInbound}>{exportingInbound ? '生成中...' : `生成入仓文件（已选 ${selectedShipmentIds.length} 单）`}</button><span className="muted">勾选顺序决定标识号：第 1 单为 1，第 2 单为 2，以此类推</span></div><div className="inventory-table-wrap"><table className="inventory-table">
         <thead><tr><th>选择</th><th>发货单号</th><th>发货日期</th><th>SKU 数</th><th>总件数</th><th>运输方式</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>{shipments.map(row => <tr key={row.id}>
           <td>{row.status !== 'void' ? <input type="checkbox" checked={selectedShipmentIds.includes(row.id)} onChange={e => setSelectedShipmentIds(prev => e.target.checked ? [...prev, row.id] : prev.filter(id => id !== row.id))} /> : null}</td>
           <td className="mono">{row.shipment_no}</td><td>{row.shipment_date}</td><td>{row.total_skus}</td><td>{row.total_quantity}</td><td>{row.shipping || '-'}</td>
-          <td><span className={row.status === 'void' ? 'status-void' : 'status-confirmed'}>{row.status === 'confirmed' ? '已发货' : row.status === 'clearance' ? '老库存清理·不扣库存' : row.status === 'exported' ? '仅导出·未扣库存' : '已撤回'}</span></td>
+          <td><span className={row.status === 'void' ? 'status-void' : 'status-confirmed'}>{row.status === 'transit' ? '已发货 · 海外在途' : row.status === 'confirmed' ? '已发货' : row.status === 'clearance' ? '老库存清理·不扣库存' : row.status === 'exported' ? '仅导出·未扣库存' : '已撤回'}</span></td>
           <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : row.status !== 'void' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回记录</button> : <span className="muted">{row.void_reason}</span>}</td>
         </tr>)}</tbody>
       </table></div></>}

@@ -15,13 +15,25 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     InventoryAdjustment, PackingProduct, ProcurementRecord, Product,
-    Shipment, ShipmentLine, Store, SystemSettings,
+    Shipment, ShipmentLine, ShipmentAllocation, Store, SystemSettings,
 )
 from services.inbound_excel import generate_inbound
 from services.operation_log import record_operation
 from api.store_routes import get_store_id
 
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
+
+from services.shipment_reconciliation import ReconcileIn, preview as preview_manifest, apply as apply_manifest
+
+
+@router.post('/reconciliation/preview')
+def preview_reconciliation(data: ReconcileIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    return preview_manifest(db, store_id, data)
+
+
+@router.post('/reconciliation/apply')
+def apply_reconciliation(data: ReconcileIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    return apply_manifest(db, store_id, data)
 
 
 def _start_date(db: Session) -> str:
@@ -85,12 +97,27 @@ def inventory_balance_for_sku(db: Session, sku: str, store_id: str) -> int:
         .filter(Shipment.shipment_date >= start_date)
         .scalar() or 0
     )
-    return purchased + adjusted - shipped
+    return purchased + adjusted - shipped - _overseas_quantities(db, store_id)[0].get(sku, 0)
+
+
+def _overseas_quantities(db, store_id):
+    domestic, transit = {}, {}
+    for sku, deducted, quantity in (
+        db.query(ShipmentLine.sku, func.sum(ShipmentAllocation.domestic_quantity), func.sum(ShipmentLine.total_quantity))
+        .join(ShipmentAllocation, ShipmentAllocation.line_id == ShipmentLine.id)
+        .join(Shipment, Shipment.id == ShipmentLine.shipment_id)
+        .filter(Shipment.store_id == store_id, Shipment.status == 'transit')
+        .filter(Shipment.shipment_date >= _start_date(db))
+        .group_by(ShipmentLine.sku).all()
+    ):
+        domestic[sku], transit[sku] = int(deducted or 0), int(quantity or 0)
+    return domestic, transit
 
 
 @router.get("")
 def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     start_date = _start_date(db)
+    overseas_deductions, overseas_transit = _overseas_quantities(db, store_id)
     products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).order_by(Product.product_no.asc()).all()
     purchased_by_id = _procurement_by_product(db, store_id)
     purchased_by_no = dict(
@@ -139,7 +166,7 @@ def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_st
             purchased = 0 if len(variants) > 1 else int(purchased_by_id.get(product.id, 0) or 0) + int(purchased_by_no.get(product.product_no, 0) or 0)
             in_transit = 0 if len(variants) > 1 else int(in_transit_by_id.get(product.id, 0) or 0) + int(in_transit_by_no.get(product.product_no, 0) or 0)
             adjusted = int(adjusted_by_sku.get(sku, 0) or 0) if sku else 0
-            shipped = int(shipped_by_sku.get(sku, 0) or 0) if sku else 0
+            shipped = (int(shipped_by_sku.get(sku, 0) or 0) + overseas_deductions.get(sku, 0)) if sku else 0
             variant_name = zh_names[idx] if len(zh_names) == len(variants) else (product.chinese_product_name or product.product_name or "未命名产品")
             rows.append({
                 "product_id": f"{product.id}:{idx}" if len(variants) > 1 else product.id,
@@ -150,6 +177,7 @@ def list_inventory(db: Session = Depends(get_db), store_id: str = Depends(get_st
                 "image_url": product.product_image_url or "",
                 "purchased": purchased,
                 "in_transit": in_transit,
+                "overseas_in_transit": overseas_transit.get(sku, 0),
                 "adjusted": adjusted,
                 "shipped": shipped,
                 "available": purchased + adjusted - shipped,
@@ -270,6 +298,8 @@ def list_shipments(db: Session = Depends(get_db), store_id: str = Depends(get_st
             "status": row.status, "version": row.version, "void_reason": row.void_reason,
             "total_skus": len(lines), "total_quantity": sum(x.total_quantity for x in lines),
             "lines": [{"sku": x.sku, "name": x.name_zh or x.name_en, "cartons": x.cartons,
+                       "domestic_quantity": db.get(ShipmentAllocation, x.id).domestic_quantity if db.get(ShipmentAllocation, x.id) else (x.total_quantity if row.status == 'confirmed' else 0),
+                       "legacy_quantity": db.get(ShipmentAllocation, x.id).legacy_quantity if db.get(ShipmentAllocation, x.id) else 0,
                        "count_per_carton": x.count_per_carton, "total_quantity": x.total_quantity}
                       for x in lines],
         })
@@ -291,7 +321,7 @@ def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db)
         shipment = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
         if not shipment:
             raise HTTPException(status_code=404, detail=f"第 {identifier} 个发货记录不存在")
-        if shipment.status not in ("confirmed", "clearance", "exported"):
+        if shipment.status not in ("confirmed", "clearance", "exported", "transit"):
             raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 已撤回，不能生成入仓文件")
         if "海" in (shipment.shipping or ""):
             shipping_modes.add("海")
@@ -323,7 +353,7 @@ def void_shipment(shipment_id: str, data: VoidIn, db: Session = Depends(get_db),
     row = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="发货记录不存在")
-    if row.status not in ("confirmed", "clearance", "exported"):
+    if row.status not in ("confirmed", "clearance", "exported", "transit"):
         raise HTTPException(status_code=400, detail="该发货记录已经撤回")
     previous_status = row.status
     row.status = "void"

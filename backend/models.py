@@ -306,3 +306,11 @@ class ShipmentLine(Base):
     cartons = Column(Integer, default=1)
     count_per_carton = Column(Integer, default=1)
     total_quantity = Column(Integer, default=1)
+
+
+class ShipmentAllocation(Base):
+    """已发往海外的逐行来源；海外在途不计入国内可用库存。"""
+    __tablename__ = "shipment_allocations"
+    line_id = Column(String, ForeignKey("shipment_lines.id"), primary_key=True)
+    domestic_quantity = Column(Integer, nullable=False)
+    legacy_quantity = Column(Integer, nullable=False)
