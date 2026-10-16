@@ -44,7 +44,7 @@ def test_native_report_is_per_item_and_no_write_endpoints(monkeypatch):
             return {'processed':1}
     async def scrape(*args): return {**item,'buyboxPrice':100,'collectedAt':'2026-10-14T00:00:00+00:00'}
     monkeypatch.setattr(runner,'scrape',scrape)
-    assert asyncio.run(runner.round_once(None,Api(),None))==1
+    assert asyncio.run(runner.round_once(None,Api(),None))==(1,0,0)
     assert [p for p,b in calls]==['/api/collector/products','/api/collector/offers']
     assert len(calls[1][1]['items'])==1
 
@@ -58,7 +58,7 @@ def test_failed_report_releases_unfinished_lease(monkeypatch):
             return {'released':1}
     async def scrape(*args): return {'productId':'lease','sku':'SKU1','error':'price_not_found'}
     monkeypatch.setattr(runner,'scrape',scrape)
-    with pytest.raises(RuntimeError): asyncio.run(runner.round_once(None,Api(),None))
+    assert asyncio.run(runner.round_once(None,Api(),None))==(1,0,0)
     assert calls[-1]==('/api/collector/release',{'product_ids':['lease']})
 
 def test_native_wrapper_preserves_quotes_but_never_verifies_identity():
@@ -153,3 +153,4 @@ def test_desktop_pause_cancels_capture_and_releases_lease(monkeypatch):
     asyncio.run(scenario())
     assert calls[-1]==('/api/collector/release',{'product_ids':['lease']})
     assert not any(path.endswith('/offers') for path,body in calls)
+
