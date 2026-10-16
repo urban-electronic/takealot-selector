@@ -1007,3 +1007,198 @@ def test_persist_failure_prevents_queued_scrapes(monkeypatch):
 
 
 
+
+
+class RawApi:
+    """返回任意（可能畸形）响应体的假接口；记录 release，用于验证格式异常时不会访问页面。"""
+
+    def __init__(self, claim_payload, offers_payload=None):
+        self.claim_payload = claim_payload
+        self.offers_payload = offers_payload if offers_payload is not None else {'processed': 1, 'successful': 1}
+        self.released = []
+
+    def call(self, path, body=None):
+        if path == '/api/collector/release':
+            self.released.extend((body or {}).get('product_ids', []))
+            return {}
+        if path == '/api/collector/offers':
+            return self.offers_payload
+        return self.claim_payload
+
+
+def _ok_scrape(visited):
+    async def fake_scrape(context, item, parser):
+        visited.append(item.get('sku'))
+        return {'productId': item['productId'], 'sku': item['sku'], 'buyboxPrice': 10, 'offers': []}
+    return fake_scrape
+
+
+def test_claim_response_not_dict_stops_round(monkeypatch):
+    """网关/代理返回 HTML 错误页时：识别为格式异常，停止本轮，不访问任何页面。"""
+    visited = []
+    monkeypatch.setattr(collector, 'scrape', _ok_scrape(visited))
+
+    async def scenario():
+        with pytest.raises(RuntimeError) as exc:
+            await collector.round_once(None, RawApi('gateway-error-html'), None, {}, asyncio.Lock(), None)
+        return exc.value
+
+    err = asyncio.run(scenario())
+    assert '格式异常' in str(err)
+    assert visited == []
+
+
+def test_claim_items_not_list_stops_round(monkeypatch):
+    visited = []
+    monkeypatch.setattr(collector, 'scrape', _ok_scrape(visited))
+
+    async def scenario():
+        with pytest.raises(RuntimeError) as exc:
+            await collector.round_once(None, RawApi({'items': 'oops'}), None, {}, asyncio.Lock(), None)
+        return exc.value
+
+    err = asyncio.run(scenario())
+    assert '格式异常' in str(err)
+    assert visited == []
+
+
+def test_unidentifiable_items_are_skipped(monkeypatch, capsys):
+    """无法识别的任务项被跳过：不访问、不回传、也不计入待释放租约。"""
+    visited = []
+    monkeypatch.setattr(collector, 'scrape', _ok_scrape(visited))
+    api = RawApi({'items': [{'productId': 'P1', 'sku': 'S1', 'url': URL}, {'no_id': 1}, 'junk']})
+
+    claimed, successful, blocked = asyncio.run(
+        collector.round_once(None, api, None, {}, asyncio.Lock(), None))
+
+    assert claimed == 1, '只处理可识别的任务项'
+    assert visited == ['S1'], '不可识别的项不得被访问'
+    assert api.released == [], '成功回传的租约由服务端接管，本机不再释放'
+    assert '无法识别' in capsys.readouterr().out
+
+
+def test_http_error_messages_are_actionable():
+    """3xx/403/404 给出可操作说明，避免被笼统归为「连接被拒绝或超时」。"""
+    import io
+    import urllib.error
+
+    def opener_raising(code):
+        class Opener:
+            def open(self, req, timeout=None):
+                raise urllib.error.HTTPError('u', code, 'm', {}, io.BytesIO(b'{}'))
+        return Opener()
+
+    api = collector.Api(collector.BASE, 'dummy-key-not-a-real-credential')
+    expected = {302: '跳转', 403: '无权', 404: '接口不存在', 401: '访问密钥'}
+    for code, word in expected.items():
+        api.opener = opener_raising(code)
+        with pytest.raises(RuntimeError) as exc:
+            api.call('/api/collector/status')
+        assert word in str(exc.value), (code, str(exc.value))
+
+
+# ---- 可维护性重构后的行为回归（常量化 / 纯函数 / 停止判据收敛）----
+
+_OFFERS_DEFAULT = object()
+
+
+class RecordingApi:
+    """记录回传报文与释放的租约；offers 响应可注入（含非对象）以验证降级。"""
+
+    def __init__(self, items, offers_response=_OFFERS_DEFAULT):
+        self.items = items
+        self.offers_response = offers_response
+        self.reported = []
+        self.released = []
+
+    def call(self, path, body=None):
+        if path == '/api/collector/products':
+            return {'items': self.items}
+        if path == '/api/collector/offers':
+            self.reported.extend(body['items'])
+            if self.offers_response is _OFFERS_DEFAULT:
+                return {'processed': len(body['items']), 'successful': len(body['items']), 'skipped': 0}
+            return self.offers_response
+        if path == '/api/collector/release':
+            self.released.extend(body['product_ids'])
+            return {'released': len(body['product_ids'])}
+        raise AssertionError('unexpected path: ' + path)
+
+
+class BareParser:
+    """解析器返回不含身份字段的报文（真实解析器结构不由本机担保）。"""
+
+    async def scrape_product(self, page, item):
+        return {'buyboxPrice': 199, 'offers': []}
+
+
+def test_scrape_backfills_identity_fields_on_report():
+    """解析器缺 productId/sku 时补齐，避免服务端无法把报价对回租约。"""
+    api = RecordingApi(items(1))
+    claimed, successful, _ = run(collector.round_once(FakeContext(), api, BareParser()))
+    assert (claimed, successful) == (1, 1)
+    assert api.reported[0]['productId'] == 'lease-0'
+    assert api.reported[0]['sku'] == 'SKU0'
+
+
+def test_scrape_does_not_override_parser_identity():
+    """解析器自带的身份字段不被覆盖（补齐仅限缺失时）。"""
+    api = RecordingApi(items(1))
+    run(collector.round_once(FakeContext(), api, FakeParser(ok)))
+    assert api.reported[0]['productId'] == 'lease-0'
+
+
+def test_item_without_sku_does_not_crash_round():
+    """任务项只保证有 productId；缺 sku 不得因 KeyError 拖垮整轮。"""
+    # 用不依赖 sku 的解析器（FakeParser 替身自身会取 item['sku']，不能用来测这条）
+    api = RecordingApi([{'productId': 'lease-x', 'url': URL}])
+    claimed, successful, _ = run(collector.round_once(FakeContext(), api, BareParser()))
+    assert (claimed, successful) == (1, 1), '缺 sku 的任务项仍应被正常处理'
+    assert api.reported[0]['productId'] == 'lease-x'
+
+
+def test_offers_response_not_dict_keeps_lease_and_continues():
+    """回传响应非对象（网关插页）不得抛 AttributeError；租约保留并在整轮释放。"""
+    api = RecordingApi(items(2), offers_response=None)
+    claimed, successful, _ = run(collector.round_once(FakeContext(), api, FakeParser(ok)))
+    assert claimed == 2
+    assert successful == 0, '未获服务端确认不得计成功'
+    assert sorted(api.released) == ['lease-0', 'lease-1'], '未确认的租约必须归还'
+
+
+def test_classify_reason_whitelist():
+    assert collector.classify_reason('site_challenge') == 'site_challenge'
+    assert collector.classify_reason('http_403') == 'http_403'
+    assert collector.classify_reason('SECRET_SENTINEL') == 'price_not_found'
+    assert collector.classify_reason(None) == 'price_not_found'
+    assert collector.classify_reason(123) == 'price_not_found'
+
+
+def test_stop_requested_reads_stop_file(tmp_path):
+    stop = tmp_path / 'x.stop'
+    assert collector.stop_requested(type('A', (), {'stop_file': None})()) is False
+    args = type('A', (), {'stop_file': str(stop)})()
+    assert collector.stop_requested(args) is False
+    stop.touch()
+    assert collector.stop_requested(args) is True
+
+
+def test_wait_round_returns_true_only_when_stopped(tmp_path):
+    stop = tmp_path / 'x.stop'
+    args = type('A', (), {'stop_file': str(stop)})()
+
+    async def scenario():
+        first = await collector.wait_round(args, 0.5)   # 未停止 -> 等满后 False
+        stop.touch()
+        second = await collector.wait_round(args, 0.5)  # 已停止 -> 立即 True
+        return first, second
+
+    assert asyncio.run(scenario()) == (False, True)
+
+
+def test_tuning_constants_are_positive():
+    """集中定义的调参常量必须为正，避免误改导致 0 秒轮询打爆后端。"""
+    for name in ('PAGE_TIMEOUT_SECONDS', 'ROUND_TIMEOUT_SECONDS', 'MAX_CONCURRENT_PAGES',
+                 'WAIT_AFTER_SUCCESS', 'WAIT_IDLE', 'WAIT_AFTER_FAILURE',
+                 'WAIT_AFTER_INTERCEPT', 'WAIT_UNRELIABLE', 'POLL_INTERVAL'):
+        assert getattr(collector, name) > 0, name
