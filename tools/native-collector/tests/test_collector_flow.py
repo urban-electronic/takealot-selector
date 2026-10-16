@@ -577,17 +577,20 @@ class _FakePlaywright:
 
 
 def _install_fake_playwright(monkeypatch):
-    """让 `from playwright.async_api import async_playwright` 拿到替身（不触碰真实 playwright/网络）。"""
-    fake_mod = _sys.modules.get('playwright.async_api')
-    if fake_mod is None:
-        import types
-        fake_mod = types.ModuleType('playwright.async_api')
-        pkg = _sys.modules.get('playwright')
-        if pkg is None:
-            pkg = types.ModuleType('playwright')
-            _sys.modules['playwright'] = pkg
-        _sys.modules['playwright.async_api'] = fake_mod
+    """让 `from playwright.async_api import async_playwright` 拿到替身（不触碰真实 playwright/网络）。
+
+    WB-103-R20 修复：旧实现把 `_sys.modules['playwright']` 直接赋值（未经 monkeypatch 托管），
+    测试结束后该假包残留在 sys.modules，导致后续 `import playwright.async_api` 拿到的是假顶层包、
+    再取 `.async_api` 属性时抛 `module 'playwright' has no attribute 'async_api'`。
+    现改为两个键都用 monkeypatch 托管：测试结束自动还原为进入前状态（真实模块或彻底删除键），
+    不论测试以何种顺序运行都不会污染后续用例。
+    """
+    import types
+    fake_pkg = types.ModuleType('playwright')
+    fake_pkg.__path__ = []  # 声明为包，确保 `import playwright.async_api` 解析到子模块而非假顶层包
+    fake_mod = types.ModuleType('playwright.async_api')
     fake_mod.async_playwright = _FakePlaywright
+    monkeypatch.setitem(_sys.modules, 'playwright', fake_pkg)
     monkeypatch.setitem(_sys.modules, 'playwright.async_api', fake_mod)
 
 
@@ -661,6 +664,24 @@ def test_run_persists_challenge_state_on_cancel(monkeypatch):
     assert os.path.exists(tmp_challenge), "取消/异常后拦截暂停状态文件必须已落盘"
     loaded = cs.load_challenge_state(tmp_challenge)
     assert loaded == {'blocked-sku': 1}, "取消后拦截暂停必须已持久化，避免重启重访"
+
+
+def test_fake_playwright_install_restores_sys_modules(monkeypatch):
+    # WB-103-R20 隔离回归：_install_fake_playwright 必须完全托管 sys.modules，
+    # 退出作用域后 'playwright' / 'playwright.async_api' 还原为进入前状态，不得泄漏假包。
+    # 旧实现直接赋值 _sys.modules['playwright'] 未托管，导致后续 `import playwright.async_api`
+    # 拿到假顶层包、再取 .async_api 属性时抛 "module 'playwright' has no attribute 'async_api'"。
+    snapshot = {k: _sys.modules.get(k) for k in ('playwright', 'playwright.async_api')}
+    _install_fake_playwright(monkeypatch)
+    # 作用域内必须是替身
+    assert _sys.modules.get('playwright.async_api') is not None
+    assert hasattr(_sys.modules['playwright.async_api'], 'async_playwright')
+    monkeypatch.undo()  # 模拟测试结束时的自动清理
+    for k in ('playwright', 'playwright.async_api'):
+        assert _sys.modules.get(k) == snapshot.get(k), (
+            f"sys.modules[{k!r}] 未还原（{snapshot.get(k)} -> {_sys.modules.get(k)}），"
+            "会污染后续测试"
+        )
 
 
 # ---- WB-103-R8 第1条：损坏状态禁止领取/访问，且不覆盖损坏原文件 ----
