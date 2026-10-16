@@ -187,6 +187,7 @@ export interface InventoryRow {
   image_url: string;
   purchased: number;
   in_transit: number;
+  overseas_in_transit?: number;
   adjusted: number;
   shipped: number;
   available: number;
@@ -223,7 +224,7 @@ export interface ShipmentRecord {
   mark: string;
   shipping: string;
   address: string;
-  status: 'confirmed' | 'void' | 'clearance' | 'exported';
+  status: 'confirmed' | 'void' | 'clearance' | 'exported' | 'transit';
   version: number;
   void_reason: string;
   total_skus: number;

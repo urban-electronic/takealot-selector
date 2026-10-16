@@ -12,9 +12,17 @@ from models import Product, ProcurementRecord, SystemSettings
 from api.store_routes import get_store_id
 from services.operations_planner import plan
 from services.replenishment_economics import logistics, profitable_plan
+from services.shipment_planning import with_shipments
 from services.seller_operations_sync import eligible, status as sync_status
 
 router = APIRouter(prefix='/api/operations', tags=['operations'])
+
+
+def runtime_plan(db, store, product, profile, purchases):
+    profile, purchases = with_shipments(db, store, product, logistics(profile), purchases)
+    result = profitable_plan(profile, purchases, product)
+    result['pending_source_note'] = '在途含已登记海外发货；到货日期按运输天数估算，尚未确认到仓。'
+    return result
 
 class Sale(BaseModel):
     date: date
@@ -114,7 +122,7 @@ def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     for product in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         if not eligible(db, store, product): continue
         if product.id not in saved: continue
-        output = profitable_plan(saved[product.id], purchases_for(db, store, product.id), product)
+        output = runtime_plan(db, store, product, saved[product.id], purchases_for(db, store, product.id))
         for mode, field in [('air', 'air_quantity'), ('sea', 'sea_quantity')]:
             if output[field] > 0:
                 result.append(dict(product_id=product.id, name=product.chinese_product_name or product.product_name,
@@ -129,7 +137,7 @@ def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         if not eligible(db, store, p): continue
         profile = saved.get(p.id)
         rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
-            sku=p.sku, profile=profile, plan=profitable_plan(profile, purchases_for(db, store, p.id), p) if profile else None))
+            sku=p.sku, profile=profile, plan=runtime_plan(db, store, p, profile, purchases_for(db, store, p.id)) if profile else None))
     rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('sea_quantity', 0), -(r['plan'] or {}).get('pre_sea_shortage', 0)))
     return {'rows': rows, 'sync': sync_status(db, store)}
 
@@ -145,7 +153,7 @@ def get_profile(product_id: str, db: Session = Depends(get_db), store: str = Dep
     products = db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all()
     purchases = purchases_for(db, store, product_id)
     can_replenish = eligible(db, store, product)
-    return dict(profile=profile, eligible=can_replenish, plan=profitable_plan(profile, purchases, product) if profile and can_replenish else None, purchases=purchases,
+    return dict(profile=profile, eligible=can_replenish, plan=runtime_plan(db, store, product, profile, purchases) if profile and can_replenish else None, purchases=purchases,
                 recommendations=recommendations(product, profile or {}, products, saved))
 
 @router.put('/{product_id}')

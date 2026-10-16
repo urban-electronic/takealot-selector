@@ -343,6 +343,9 @@ export const reverseInventoryAdjustment = (id: string): Promise<{ ok: boolean }>
 export const getShipments = (): Promise<ShipmentRecord[]> =>
   request<ShipmentRecord[]>('/api/inventory/shipments');
 
+export const reconcileShipmentManifest = (data: unknown, apply = false): Promise<any> =>
+  request(`/api/inventory/reconciliation/${apply ? 'apply' : 'preview'}`, { method: 'POST', body: JSON.stringify(data) });
+
 export const voidShipment = (id: string, reason: string): Promise<{ ok: boolean }> =>
   request(`/api/inventory/shipments/${encodeURIComponent(id)}/void`, {
     method: 'POST', body: JSON.stringify({ reason }),

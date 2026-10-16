@@ -17,7 +17,7 @@ const api={getInventory:async()=>[{product_id:'p',sku:'TEST',name:'Test',availab
 const file=path.resolve(__dirname,'../src/pages/Inventory.tsx');
 const compiled=new Module(file,module);compiled.filename=file;compiled.paths=Module._nodeModulePaths(path.dirname(file));
 const original=compiled.require.bind(compiled);
-compiled.require=name=>name==='../remoteApi'?api:name==='react-router-dom'?{useNavigate:()=>()=>{},useSearchParams:()=>[new URLSearchParams()]}:name==='../utils/imageFallback'?{ProductImage:()=>null}:original(name);
+compiled.require=name=>name==='../operations/ShipmentReconciliation'?{default:()=>null}:name==='../remoteApi'?api:name==='react-router-dom'?{useNavigate:()=>()=>{},useSearchParams:()=>[new URLSearchParams()]}:name==='../utils/imageFallback'?{ProductImage:()=>null}:original(name);
 compiled._compile(ts.transpileModule(fs.readFileSync(process.env.INVENTORY_SOURCE || file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText,file);
 const root=createRoot(document.getElementById('root'));
 const button=text=>[...document.querySelectorAll('button')].find(b=>b.textContent===text);
