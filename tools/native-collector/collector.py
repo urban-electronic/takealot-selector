@@ -207,8 +207,8 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
                 # 提示必须准确：暂停只持续到本次进程结束；重启会重新尝试，若仍被拦会再次暂停。
                 # 不承诺「点立即采集即可恢复」——同一 SKU 换租约仍指向同一被拦页面。
                 print(f"SKU {sku}: 上轮已被验证页/403 拦截，本机暂停访问该商品页以避免反复触发风控。"
-                      f"该暂停持续到本次采集进程结束（重启会重新尝试，仍被拦则再次暂停）；"
-                      f"恢复前提是先在本机浏览器人工确认该页面可正常访问。",flush=True)
+                      f"该暂停已持久化保存，重启后仍保持暂停直至显式人工恢复"
+                      f"（在 GUI 点击「恢复被拦截商品」或删除状态文件）；同一 SKU 换租约仍指向同一被拦页面。",flush=True)
                 return
             quote=None
             for attempt in range(2):
@@ -226,10 +226,8 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
                     async with lock:
                         challenged[sku]=challenged.get(sku,0)+1
                         if persist is not None:
-                            try:
-                                await persist(dict(challenged))
-                            except Exception:
-                                pass
+                            # persist 失败须上抛（不再吞掉）：run 循环捕获后停止新增领取/访问（WB-103-R9 第2条）
+                            await persist(dict(challenged))
                 else:
                     challenged[sku]=challenged.get(sku,0)+1
                 blocked+=1
@@ -302,43 +300,67 @@ async def run(args):
                 # 读盘损坏/缺失必须显式区分：缺失=从未暂停（安全空）；损坏=不可信，保留内存暂停并
                 # 提示人工核验，严禁冒充“无暂停”（WB-103-R7 第2条）。
                 challenged_unreliable=False
+                reload_on_unreliable=False
+                persist_unreliable={'v': False}
                 try:
                     challenged=load_challenge_state(challenge_path)
                 except ChallengeStateError as exc:
                     challenged={}
                     challenged_unreliable=True
+                    reload_on_unreliable=True
                     print('⚠ '+str(exc)+'（不输出路径或敏感内容）',flush=True)
-                # 首次确认即受控即时持久化的锁与回调（WB-103-R8 第4条）
+                # 首次确认即受控即时持久化的锁与回调（WB-103-R8 第4条 / WB-103-R9 第2条）
                 challenge_lock=asyncio.Lock()
                 async def persist_challenge(state):
-                    if challenged_unreliable: return
-                    try:
-                        save_challenge_state(state, challenge_path)
-                    except Exception:
-                        pass
+                    # 持久化不可信（已失败）或启动不可信：不再尝试写盘，避免重复失败/误冒充
+                    if persist_unreliable['v'] or challenged_unreliable:
+                        return False
+                    ok=save_challenge_state(state, challenge_path)
+                    if not ok:
+                        # 首次落盘失败：立即进入持久化不可信，停止新增领取/访问，保留内存暂停；
+                        # 抛受控异常（不再吞掉），由 run 循环捕获后停止本轮并准确提示（WB-103-R9 第2条）
+                        persist_unreliable['v']=True
+                        raise ChallengeStateError('拦截暂停状态写盘失败，持久化不可信')
+                    return True
                 round_no=0;wait=30;idle_noticed=False;state_save_failed=False
                 while True:
                     if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
-                    # 不可信状态（启动读盘损坏）：禁止领取/访问，避免放行已确认拦页并销毁证据
-                    # （WB-103-R8 第1条）。每轮重试重读：人工修复或删除原文件后即恢复采集，
-                    # 且绝不覆盖损坏原文件，直到显式人工恢复。
+                    # 显式人工恢复（GUI「恢复被拦截商品」写入恢复标志）：即使在不可信状态也允许
+                    # 明确的人工恢复协议——清空暂停并恢复采集（WB-103-R9 第1条）。
+                    if consume_recovery_flag(challenge_path, profile):
+                        challenged.clear()
+                        challenged_unreliable=False
+                        reload_on_unreliable=False
+                        persist_unreliable['v']=False
+                        print('已按人工恢复清空被拦截商品的暂停，将重新尝试访问这些商品。',flush=True)
+                    # 不可信状态（启动读盘损坏 或 持久化写盘失败）：禁止领取/访问，避免放行已确认
+                    # 拦页并销毁证据（WB-103-R8 第1条），或避免未确认保存却继续访问（WB-103-R9 第2条）。
                     if challenged_unreliable:
-                        try:
-                            challenged=load_challenge_state(challenge_path)
-                            challenged_unreliable=False
-                            print('拦截暂停状态已恢复（文件已修复或删除），重新开始采集。',flush=True)
-                        except ChallengeStateError:
-                            print('⚠ 拦截暂停状态仍不可信，已暂停采集；请人工修复或删除状态文件后再试。',flush=True)
+                        if reload_on_unreliable:
+                            # 启动损坏：每轮重试重读，人工修复或删除原文件后即恢复采集，且绝不覆盖
+                            # 损坏原文件，直到显式人工恢复。
+                            try:
+                                challenged=load_challenge_state(challenge_path)
+                                challenged_unreliable=False
+                                reload_on_unreliable=False
+                                print('拦截暂停状态已恢复（文件已修复或删除），重新开始采集。',flush=True)
+                            except ChallengeStateError:
+                                print('⚠ 拦截暂停状态仍不可信，已暂停采集；请人工修复或删除状态文件后再试。',flush=True)
+                                write_status('challenge_state_unreliable',paused=len(challenged))
+                                if args.once: break
+                                for _ in range(60):
+                                    if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
+                                    await asyncio.sleep(.5)
+                                continue
+                        else:
+                            # 持久化写盘失败：保留内存暂停、停止新增领取/访问，准确提示（WB-103-R9 第2条）
+                            print('⚠ 拦截暂停状态持久化不可信（写盘失败），已停止新增领取/访问，保留内存暂停；请人工核验被拦截商品并恢复后再继续。',flush=True)
                             write_status('challenge_state_unreliable',paused=len(challenged))
                             if args.once: break
                             for _ in range(60):
                                 if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
                                 await asyncio.sleep(.5)
                             continue
-                    # 显式人工恢复（GUI「恢复被拦截商品」写入恢复标志）：下一轮清空被拦截商品的暂停
-                    if consume_recovery_flag(challenge_path, profile):
-                        challenged.clear()
-                        print('已按人工恢复清空被拦截商品的暂停，将重新尝试访问这些商品。',flush=True)
                     try:
                         round_no+=1;_CURRENT['round']=round_no
                         # 轮次开始先写 running：在途阶段不应继续显示上一轮的汇总结果
@@ -358,7 +380,7 @@ async def run(args):
                                 cycle.cancel()
                             await asyncio.gather(cycle,return_exceptions=True)
                             # 不可信状态：绝不覆盖损坏原文件，直到显式人工恢复（WB-103-R8 第1条）
-                            if not challenged_unreliable:
+                            if not challenged_unreliable and not persist_unreliable['v']:
                                 saved=save_challenge_state(dict(challenged), challenge_path)
                                 if not saved and not state_save_failed:
                                     state_save_failed=True
@@ -384,6 +406,14 @@ async def run(args):
                                 write_status('failed',claimed=claimed,successful=0,failed=failed)
                                 wait=60
                     except asyncio.CancelledError: break
+                    except ChallengeStateError:
+                        # 持久化不可信（首次落盘失败）：停止新增领取/访问，保留内存暂停，准确提示
+                        # （WB-103-R9 第2条）。不覆盖损坏/失败状态，等待显式人工恢复或修复。
+                        challenged_unreliable=True
+                        reload_on_unreliable=False
+                        print('⚠ 拦截暂停状态持久化失败（写盘不可信），已停止新增领取/访问，保留内存暂停；请人工核验被拦截商品并恢复后再继续。',flush=True)
+                        write_status('challenge_state_unreliable',paused=len(challenged))
+                        wait=60
                     except Exception as exc:
                         # 只输出受控分类，绝不输出异常正文：异常可能含反射内容或敏感配置。
                         label='服务连接被拒绝或超时' if isinstance(exc,RuntimeError) else '页面或服务暂不可用'

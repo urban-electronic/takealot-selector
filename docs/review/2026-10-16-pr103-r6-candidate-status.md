@@ -37,9 +37,22 @@
 
 > 红线：未触碰 backend/，未改售价/调价/采购/SKU 校验，未读传密钥 Cookie；未做任何指纹规避/反爬绕过；未自行合并 main；未 force push。
 
+## WB-103-R9 要求与处理（issue id=6205300420，接续 id=6205307546）
+
+> R9 为 Codex 在隔离环境（假 Playwright/Api、无站点/凭据）给出的 4 项最小修复；全部以单测（替身）修复与覆盖，未对 Takealot 发起真实访问，未用证据模板充当采集结果。仅提交本最小修复，未引入新功能。
+
+| # | Codex 要求 | 本次处理 | 状态 |
+|---|-----------|----------|------|
+| 1 | GUI 恢复按钮对损坏状态无效：`challenged_unreliable` 分支在 `consume_recovery_flag` 之前 `continue`/`break`，显式恢复标志永远不消费 | `collector.run` 循环顶部把 `consume_recovery_flag` 提前到「不可信状态」判断**之前**：即使处于损坏/不可信态，明确人工恢复协议仍被消费（删除损坏文件 + 恢复标志），清空暂停并恢复采集；恢复成功才置 `challenged_unreliable=False` 并继续。新增 run 级测试 `test_run_recovers_from_corrupt_state_via_gui_flag`（损坏文件 + GUI 恢复标志 → 标志被消费、损坏内容不再残留、恢复后恢复领取） | 已修（单测级） |
+| 2 | `persist_challenge` 忽略 `save_challenge_state` 返回 False，worker 又吞异常，直到 finally 才警告；首次落盘失败未确认却继续整轮，进程在 finally 前退出仍丢暂停 | `persist_challenge` 改为返回 `bool` 且落盘失败**抛受控 `ChallengeStateError`**（不再吞掉）；worker 不再包裹 `except Exception: pass`，失败直接上抛；run 循环新增 `except ChallengeStateError`：立即进入「持久化不可信」，停止新增领取/访问、保留内存暂停、准确提示「需人工核验」；`finally` 整批保存加 `not persist_unreliable['v']` 守卫避免重复失败。新增 run 级测试 `test_run_stops_claims_when_first_persist_fails`（monkeypatch 写盘返回 False → 状态置 `challenge_state_unreliable`、不生成有效暂停文件） | 已修（单测级） |
+| 3 | GUI 状态映射未加入 `challenge_state_unreliable`，当前显示「启动中」而非「需人工恢复」；旧日志「暂停持续到进程结束」与跨重启持久化矛盾 | `status_view.STATE_VIEW` 新增 `challenge_state_unreliable → ('拦截状态不可信，需人工核验', '#b00000')`；`classify_state` 据此显示「需人工恢复」而非默认「启动中」；`collector` 拦截提示文案改为「已持久化保存，重启后仍保持暂停直至显式人工恢复」，与跨重启持久化一致。新增 `test_status_view_maps_challenge_state_unreliable`（映射非启动中蓝）+ `test_gui_refresh_state_shows_challenge_unreliable`（真实 `refresh_state` 调用，tkinter 可用时跑、本环境无 Tk 跳过） | 已修（单测级 / GUI 受 Tk 限制跳过） |
+| 4 | 只提交最小修复，不再引入新功能；收到后可做最终独立集成/打包/回归 | 改动仅限 `collector.py` / `status_view.py` / `tests/test_collector_flow.py` / 候选文档；未改 backend/、未回退、未引入新功能 | 已遵守 |
+
+> 验收补充（id=6205307546）：main `032f56df` 未变，Pages/Railway 成功；本轮正式版 native/GUI 再次通过；候选 `b73ca22` 的 46 测试通过且 R7/R8 已修复确认；R9 新增两项实际失败（显式恢复不消费、persist False 漏判）已分开记录并补最小修复。
+
 ## 回归测试（WorkBuddy 本机执行，非 Codex 运行）
 
-- `tools/native-collector/tests/`（pytest）：**46 passed**（R2–R7 既有 + R8 新增/调整 7 项：损坏状态禁止领取且不擦原文件、首次确认即时 persist、run 级即时落盘不依赖 finally、状态文件按 profile 隔离且稳定、双 profile 同 SKU 独立暂停、A 恢复不清除 B、并发保存不丢暂停；并修正 consume 顺序测试为「标志删除失败不丢暂停」）。
+- `tools/native-collector/tests/`（pytest）：**49 passed + 1 skipped**（R2–R8 既有 46 + R9 新增/调整 3 项：损坏状态经 GUI 恢复标志消费恢复、首次 persist 落盘失败即停、状态映射识别不可信；GUI 真实 `refresh_state` 受 Tk 限制跳过）。
 - `tools/test_codex_bridge.py` + `tools/_bridge_mp_worker.py`（R5 既有）：**6 passed**。
 - `py_compile` 校验：`collector.py` / `gui.py` / `status_view.py` / `challenge_state.py` 均通过。
 
@@ -53,6 +66,9 @@
 - **损坏状态端到端人工恢复（R8-1）**：单测覆盖「损坏不领取/不擦原文件 + 每轮重读恢复」，但真实场景「人工修复或删除损坏文件后采集器自动恢复采集」未在真实运行态实测。
 - **profile 隔离跨 profile 真实运行（R8-2）**：按 profile 哈希隔离状态/标志以单测覆盖，未在两 profile 同时运行的真实态实测「A 恢复不影响 B、并发保存互不覆盖」。
 - **即时持久化崩溃恢复（R8-4）**：首次确认即写盘的语义以单测覆盖，但「进程在整批 600s 结束前被强杀、重启读回暂停」未做真实强杀验收。
+- **损坏态经 GUI 按钮恢复的真实运行态（R9-1）**：单测覆盖「预写损坏文件 + 写入恢复标志 → 标志被消费、损坏内容不再残留、恢复后恢复领取」；但未在真实 Tk 窗口点击「恢复被拦截商品」+ 真实损坏文件恢复路径实测。
+- **持久化写盘失败的真实磁盘故障（R9-2）**：以 monkeypatch `save_challenge_state` 返回 False 覆盖「首次 persist 失败即停、状态置不可信、不生成有效暂停文件」；未做真实磁盘满/权限故障端到端验收。
+- **GUI 状态映射真实显示（R9-3）**：`status_view` 映射以单测验证；`gui.refresh_state` 真实调用受本环境无 Tk 限制跳过，需用户环境在真实窗口确认「不可信 → 需人工恢复（红色）」显示与恢复按钮反馈。
 
 ## 红线声明
 

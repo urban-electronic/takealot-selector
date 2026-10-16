@@ -13,6 +13,7 @@ STATE_VIEW = {
     'collecting_ok': ('采集中', '#007a00'),
     'challenged':    ('遇风控，已退避等待', '#b06000'),
     'failed':        ('本轮未取得有效报价', '#b06000'),
+    'challenge_state_unreliable': ('拦截状态不可信，需人工核验', '#b00000'),
 }
 STARTING = ('启动中…', '#0066cc')
 WAITING = ('等待本轮结果…', '#888888')

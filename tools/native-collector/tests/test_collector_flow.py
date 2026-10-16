@@ -785,3 +785,187 @@ def test_run_persists_during_round_not_only_on_exit(monkeypatch):
     assert loaded == {'blocked-sku': 1}, "取消前的即时持久化必须保留拦截暂停"
 
 
+# ---- WB-103-R9 第1条：损坏状态 + GUI 恢复标志，不可信状态仍允许明确人工恢复 ----
+
+def test_run_recovers_from_corrupt_state_via_gui_flag(monkeypatch):
+    # 确定性 run 级复现：预写损坏状态文件并写入 GUI 恢复标志，run 在不可信状态下必须
+    # 仍消费该标志（删除损坏文件 + 标志），清空暂停并恢复采集（WB-103-R9 第1条）。
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    tmp_challenge = os.path.join(tmp, 'challenge_state.json')
+    with open(tmp_challenge, 'w', encoding='utf-8') as f:
+        f.write('{not valid json')
+    monkeypatch.setattr(collector, 'challenge_state_path', lambda profile=None, state_path=None: tmp_challenge)
+
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setattr(collector, 'parser_module', lambda: FakeParser(ok))
+
+    # GUI「恢复被拦截商品」写入恢复标志（与 run 内 consume 同 profile/state_path 才匹配）
+    flag = cs.write_recovery_flag(tmp, tmp_challenge)
+    assert flag is not None and flag.exists(), "恢复标志应已写入"
+
+    class _Api:
+        products_called = False
+
+        def __init__(self, base, key):
+            pass
+
+        def call(self, path, body=None):
+            if path == '/api/collector/products':
+                _Api.products_called = True
+                return {'items': [{'productId': 'lease-0', 'sku': 'SKU0', 'url': URL}]}
+            if path == '/api/collector/status':
+                return {'ready': True}
+            if path == '/api/collector/release':
+                return {}
+            raise AssertionError('unexpected path in run-level test: ' + path)
+
+    monkeypatch.setattr(collector, 'Api', _Api)
+
+    class _Args:
+        profile = tmp
+        login = False
+        once = True  # 不可信状态 + 恢复标志：消费后应恢复采集一轮再退出
+        stop_file = None
+
+    saved_env = {}
+    for k in ('PP_COLLECTOR_KEY',):
+        saved_env[k] = os.environ.get(k)
+    os.environ['PP_COLLECTOR_KEY'] = 'TEST_KEY_NO_SITE'
+    try:
+        run(collector.run(_Args()))
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+        # 不可信状态下恢复标志必须被消费（不再永远不消费）
+    assert not flag.exists(), "不可信状态下恢复标志必须被消费（删除）"
+    # 显式恢复后损坏原文件不得再以损坏内容残留：应被删后重写为干净空暂停状态（{}）
+    assert cs.load_challenge_state(tmp_challenge) == {}, "显式恢复后损坏文件须不再存在/已重写为干净空暂停"
+    # 恢复后必须已恢复采集（领取被调用）
+    assert _Api.products_called is True, "显式恢复后必须恢复采集（调用 products）"
+
+
+# ---- WB-103-R9 第2条：首次 persist 落盘失败立即进入持久化不可信，停止新增领取/访问 ----
+
+def test_run_stops_claims_when_first_persist_fails(monkeypatch):
+    # 确定性 run 级复现：monkeypatch save_challenge_state 返回 False（模拟写盘失败）。
+    # 多商品批次首个被拦即 persist 失败 → 立即进入持久化不可信，状态置 challenge_state_unreliable，
+    # 不再把「未保存」当作成功继续整轮（WB-103-R9 第2条）。
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+    tmp = tempfile.mkdtemp()
+    tmp_challenge = os.path.join(tmp, 'challenge_state.json')
+    monkeypatch.setattr(collector, 'challenge_state_path', lambda profile=None, state_path=None: tmp_challenge)
+    monkeypatch.setattr(collector, 'STATUS_FILE', _Path(tmp) / 'collector_status.json')
+    calls = {'n': 0}
+
+    def fake_save(state, path=None, profile=None):
+        calls['n'] += 1
+        return False  # 模拟写盘失败
+
+    monkeypatch.setattr(collector, 'save_challenge_state', fake_save)
+
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setattr(collector, 'parser_module', lambda: FakeParser(challenged))
+
+    class _Api:
+        def __init__(self, base, key):
+            pass
+
+        def call(self, path, body=None):
+            if path == '/api/collector/status':
+                return {'ready': True}
+            if path == '/api/collector/products':
+                return {'items': [
+                    {'productId': 'l0', 'sku': 'SKU0', 'url': URL},
+                    {'productId': 'l1', 'sku': 'SKU1', 'url': URL},
+                    {'productId': 'l2', 'sku': 'SKU2', 'url': URL},
+                ]}
+            if path == '/api/collector/release':
+                return {}
+            raise AssertionError('unexpected path in run-level test: ' + path)
+
+    monkeypatch.setattr(collector, 'Api', _Api)
+
+    class _Args:
+        profile = tmp
+        login = False
+        once = True
+        stop_file = None
+
+    saved_env = {}
+    for k in ('PP_COLLECTOR_KEY',):
+        saved_env[k] = os.environ.get(k)
+    os.environ['PP_COLLECTOR_KEY'] = 'TEST_KEY_NO_SITE'
+    try:
+        run(collector.run(_Args()))
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert calls['n'] >= 1, "首次确认拦截应尝试 persist（落盘）"
+    # 持久化不可信：状态必须为 challenge_state_unreliable，且不可信态不得继续写盘冒充成功
+    status = _json.loads((_Path(tmp) / 'collector_status.json').read_text(encoding='utf-8'))
+    assert status.get('state') == 'challenge_state_unreliable', \
+        "持久化失败应进入 challenge_state_unreliable，实际：" + str(status.get('state'))
+    # 写盘失败不应把状态文件写成有效暂停
+    assert not os.path.exists(tmp_challenge), "写盘失败不应生成有效暂停状态文件"
+
+
+# ---- WB-103-R9 第3条：GUI 状态映射须识别 challenge_state_unreliable（显示需人工恢复，非启动中） ----
+
+def test_status_view_maps_challenge_state_unreliable():
+    # classify_state 必须把 challenge_state_unreliable 映射为「需人工核验」文案，
+    # 而非默认的「启动中…」（WB-103-R9 第3条）。
+    from status_view import classify_state, STATE_VIEW
+    assert 'challenge_state_unreliable' in STATE_VIEW, "STATE_VIEW 应含 challenge_state_unreliable"
+    now = datetime.now(timezone.utc)
+    data = {'pid': 1234, 'run_id': '', 'ts': now.isoformat(), 'round': 3,
+            'state': 'challenge_state_unreliable', 'paused': 2}
+    text, color, rnd, run_id = classify_state(data, 1234, 0, '', now=now)
+    assert ('人工核验' in text or '不可信' in text), f"应显示需人工核验，实际：{text}"
+    assert color != '#0066cc', "不应显示为启动中的蓝色"
+
+
+try:
+    import tkinter as _tk  # noqa: F401
+    _TK_AVAILABLE = True
+except Exception:
+    _TK_AVAILABLE = False
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.skipif(not _TK_AVAILABLE, reason='tkinter 不可用（测试 venv 无 Tk），GUI 逻辑已抽至 status_view 单测')
+def test_gui_refresh_state_shows_challenge_unreliable(monkeypatch, tmp_path):
+    # 真实 refresh_state 调用须反映 challenge_state_unreliable（WB-103-R9 第3条）。
+    import json as _json
+    import tkinter as tk
+    import gui as gui_mod
+    monkeypatch.setattr(gui_mod, 'STATE', tmp_path)
+    monkeypatch.setattr(gui_mod, 'default_path', lambda: tmp_path / 'challenge_state.json')
+    monkeypatch.setattr(gui_mod, 'write_recovery_flag', lambda profile=None, state_path=None: None)
+    win = tk.Tk()
+    try:
+        app = gui_mod.App(win)
+        status = {'pid': 999, 'run_id': '', 'ts': datetime.now(timezone.utc).isoformat(),
+                  'round': 1, 'state': 'challenge_state_unreliable'}
+        (tmp_path / 'collector_status.json').write_text(_json.dumps(status), encoding='utf-8')
+        app.process = type('P', (), {'poll': lambda self: None, 'pid': 999})()
+        app.refresh_state()
+        shown = app.state.get()
+        assert ('人工核验' in shown or '不可信' in shown), shown
+    finally:
+        win.destroy()
+
+
+
