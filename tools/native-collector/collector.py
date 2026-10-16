@@ -105,6 +105,10 @@ class Api:
                     if exc.code==400 and not detail:
                         detail='：请求被拒绝，未取得可识别的服务端说明；请检查本机代理/网络与服务地址'
                     if exc.code==401 and not detail: detail='：网站服务访问密钥无效或缺失'
+                    if exc.code==403 and not detail: detail='：服务密钥无权访问该接口或店铺'
+                    if exc.code==404 and not detail: detail='：任务接口不存在，请核对服务地址与版本'
+                    if 300 <= exc.code < 400 and not detail:
+                        detail='：服务地址发生跳转，请核对部署地址（不跟随重定向）'
                     raise RuntimeError(f'服务接口返回 HTTP {exc.code}{detail}') from None
             except (error.URLError, TimeoutError):
                 if attempt == 2: raise RuntimeError('服务连接超时，任务稍后重试') from None
@@ -165,7 +169,9 @@ async def claim_batch(api):
     except asyncio.CancelledError:
         try:
             batch = await _finish_pending(task)
-            pending = [item['productId'] for item in batch.get('items', [])]
+            raw = batch.get('items', []) if isinstance(batch, dict) else []
+            pending = [item['productId'] for item in raw
+                       if isinstance(item, dict) and item.get('productId')]
             if pending:
                 release = asyncio.create_task(
                     asyncio.to_thread(api.call, '/api/collector/release', {'product_ids': pending}))
@@ -195,7 +201,18 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
     # 领取走 PR105 的 shield 实现（已合并 main，e4da21d）：在途 HTTP 不被 await 取消丢失；
     # 暂停/重复取消后异步等真实响应再 release，不阻塞事件循环、不用 30 秒截止、不吞领取错误。
     batch = await claim_batch(api)
-    items = batch.get('items', [])
+    # 领取响应必须是 JSON 对象且 items 为列表：代理/网关返回 HTML 错误页或协议变更时，
+    # 这里若直接 .get 会抛 KeyError/TypeError，被上层笼统归为「页面不可用」而反复重试。
+    # 显式识别为「响应格式异常」，停止本轮领取（不访问任何页面、不回传、不改价）。
+    if not isinstance(batch, dict):
+        raise RuntimeError('任务接口返回格式异常（不是 JSON 对象）')
+    raw_items = batch.get('items', [])
+    if not isinstance(raw_items, list):
+        raise RuntimeError('任务接口返回格式异常（items 不是列表）')
+    # 只处理可识别的任务项；无法识别的项不领取也不访问（无法归还，故不计入已领租约）。
+    items = [item for item in raw_items if isinstance(item, dict) and item.get('productId')]
+    if len(items) != len(raw_items):
+        print('⚠ 任务接口返回了无法识别的任务项，已跳过这些项（不访问、不回传）。', flush=True)
     leased={item['productId'] for item in items}
     semaphore=asyncio.Semaphore(2)
     persistence_stopped=asyncio.Event()
@@ -279,7 +296,15 @@ async def run(args):
         api=Api(BASE,key)
         print('正在核对选品系统连接…',flush=True)
         readiness=await asyncio.to_thread(api.call,'/api/collector/status')
+        if not isinstance(readiness, dict):
+            raise RuntimeError('任务接口返回格式异常（状态响应不是 JSON 对象）')
         if readiness.get('ready') is not True: raise RuntimeError('系统连接未就绪，尚未打开采集浏览器')
+        # 服务端采集模式仅作可见性提示：未知模式不阻断、不自动改变任何行为，
+        # 由人工确认后再决定是否继续（避免新增合法模式时被本机误拒）。
+        mode=readiness.get('mode')
+        if mode not in (None, 'quote_only'):
+            print('⚠ 服务端采集模式为「%s」，与本机预期 quote_only 不一致（仅提示，未自动改变行为）。'
+                  % str(mode)[:40], flush=True)
         print('服务认证和自营店铺检查通过，正在启动采集浏览器。',flush=True)
     lock=singleton(profile)
     try:

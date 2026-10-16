@@ -1007,3 +1007,91 @@ def test_persist_failure_prevents_queued_scrapes(monkeypatch):
 
 
 
+
+
+class RawApi:
+    """返回任意（可能畸形）响应体的假接口；记录 release，用于验证格式异常时不会访问页面。"""
+
+    def __init__(self, claim_payload, offers_payload=None):
+        self.claim_payload = claim_payload
+        self.offers_payload = offers_payload if offers_payload is not None else {'processed': 1, 'successful': 1}
+        self.released = []
+
+    def call(self, path, body=None):
+        if path == '/api/collector/release':
+            self.released.extend((body or {}).get('product_ids', []))
+            return {}
+        if path == '/api/collector/offers':
+            return self.offers_payload
+        return self.claim_payload
+
+
+def _ok_scrape(visited):
+    async def fake_scrape(context, item, parser):
+        visited.append(item.get('sku'))
+        return {'productId': item['productId'], 'sku': item['sku'], 'buyboxPrice': 10, 'offers': []}
+    return fake_scrape
+
+
+def test_claim_response_not_dict_stops_round(monkeypatch):
+    """网关/代理返回 HTML 错误页时：识别为格式异常，停止本轮，不访问任何页面。"""
+    visited = []
+    monkeypatch.setattr(collector, 'scrape', _ok_scrape(visited))
+
+    async def scenario():
+        with pytest.raises(RuntimeError) as exc:
+            await collector.round_once(None, RawApi('gateway-error-html'), None, {}, asyncio.Lock(), None)
+        return exc.value
+
+    err = asyncio.run(scenario())
+    assert '格式异常' in str(err)
+    assert visited == []
+
+
+def test_claim_items_not_list_stops_round(monkeypatch):
+    visited = []
+    monkeypatch.setattr(collector, 'scrape', _ok_scrape(visited))
+
+    async def scenario():
+        with pytest.raises(RuntimeError) as exc:
+            await collector.round_once(None, RawApi({'items': 'oops'}), None, {}, asyncio.Lock(), None)
+        return exc.value
+
+    err = asyncio.run(scenario())
+    assert '格式异常' in str(err)
+    assert visited == []
+
+
+def test_unidentifiable_items_are_skipped(monkeypatch, capsys):
+    """无法识别的任务项被跳过：不访问、不回传、也不计入待释放租约。"""
+    visited = []
+    monkeypatch.setattr(collector, 'scrape', _ok_scrape(visited))
+    api = RawApi({'items': [{'productId': 'P1', 'sku': 'S1', 'url': URL}, {'no_id': 1}, 'junk']})
+
+    claimed, successful, blocked = asyncio.run(
+        collector.round_once(None, api, None, {}, asyncio.Lock(), None))
+
+    assert claimed == 1, '只处理可识别的任务项'
+    assert visited == ['S1'], '不可识别的项不得被访问'
+    assert api.released == [], '成功回传的租约由服务端接管，本机不再释放'
+    assert '无法识别' in capsys.readouterr().out
+
+
+def test_http_error_messages_are_actionable():
+    """3xx/403/404 给出可操作说明，避免被笼统归为「连接被拒绝或超时」。"""
+    import io
+    import urllib.error
+
+    def opener_raising(code):
+        class Opener:
+            def open(self, req, timeout=None):
+                raise urllib.error.HTTPError('u', code, 'm', {}, io.BytesIO(b'{}'))
+        return Opener()
+
+    api = collector.Api(collector.BASE, 'dummy-key-not-a-real-credential')
+    expected = {302: '跳转', 403: '无权', 404: '接口不存在', 401: '访问密钥'}
+    for code, word in expected.items():
+        api.opener = opener_raising(code)
+        with pytest.raises(RuntimeError) as exc:
+            api.call('/api/collector/status')
+        assert word in str(exc.value), (code, str(exc.value))
