@@ -119,6 +119,51 @@ def test_all_success_reports_every_sku():
     assert sorted(api.reported) == ['SKU0', 'SKU1']
 
 
+@pytest.mark.parametrize('bad', [None, [], {}, 1, '', '  ', ['bad']])
+def test_malformed_claim_releases_valid_lease_without_visiting(bad):
+    api = FakeApi([*items(1), {'productId': bad, 'sku': 'bad'}])
+    ctx, parser = FakeContext(), FakeParser(ok)
+    with pytest.raises(RuntimeError, match='任务响应格式异常'):
+        run(collector.round_once(ctx, api, parser))
+    assert api.released == ['lease-0']
+    assert not ctx.pages and not parser.visited and not api.reported
+
+
+@pytest.mark.parametrize('batch', [None, [], {'items': None}, {'items': {}}, {'items': 'bad'}])
+def test_non_list_claim_is_not_idle_or_success(batch):
+    class MalformedApi(FakeApi):
+        def call(self, path, body=None):
+            if path == '/api/collector/products':
+                return batch
+            return super().call(path, body)
+    api, ctx = MalformedApi([]), FakeContext()
+    with pytest.raises(RuntimeError, match='任务响应格式异常'):
+        run(collector.round_once(ctx, api, FakeParser(ok)))
+    assert not ctx.pages and not api.released
+
+
+def test_cancelled_malformed_claim_releases_identifiable_lease():
+    async def scenario():
+        entered, complete = threading.Event(), threading.Event()
+        class LateApi(FakeApi):
+            def call(self, path, body=None):
+                if path == '/api/collector/products':
+                    entered.set()
+                    assert complete.wait(5)
+                    return {'items': [None, *items(1), {'productId': ['bad']}]}
+                return super().call(path, body)
+        api = LateApi([])
+        task = asyncio.create_task(collector.claim_batch(api))
+        while not entered.is_set():
+            await asyncio.sleep(.001)
+        task.cancel()
+        complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert api.released == ['lease-0']
+    run(scenario())
+
+
 def test_all_failed_is_not_counted_as_success():
     # 全部失败时 successful 必须为 0，不得按领取数当成功（Codex 实测回归）
     api, ctx, parser = FakeApi(items()), FakeContext(), FakeParser(failed)
