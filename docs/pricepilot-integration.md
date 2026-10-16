@@ -319,3 +319,7 @@ WorkBuddy尚未更新PR113，Codex独立采纳其边界交互用例，补PR115�
 ## 2026-10-17 05:40 异常领取租约清理
 
 WorkBuddy PR114未更新；Codex在正式main3bfcb84源码独立复现混合异常ID的TypeError与合法租约未归还，最小修复批次形状校验、清理合法ID、取消后迟到异常响应清理，保留shield与取消语义并同步下载包。flow65项通过；可操作错误提示仍待接续，真实本机报价与实际库存更正未完成，不恢复调价。详见[同条件复现及验收边界](review/2026-10-17-malformed-claim-cleanup.md)。
+
+## 2026-10-17 06:40 服务错误提示接续
+
+WorkBuddy PR114仍未更新；Codex在main a73568a实际run入口复现HTTP403被误报连接超时，独立实现固定类别ServiceError并保留既有精确说明白名单，未知异常不输出正文。上轮77项复测通过，新增实际Api→run→状态/日志8项后完整85项通过，同步原生ZIP。代码/入口测试不等于Windows GUI或真实报价闭环；本机复测任务继续通过PR103/114交接，369件业务更正仍未提交。见[复现与验收](review/2026-10-17-service-error-classification.md)。
