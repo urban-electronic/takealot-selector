@@ -20,12 +20,26 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 BASE = 'https://takealot-selector-production.up.railway.app'
 
+# ---- 可调参数集中定义 ----
+# 原先这些数值散落在各函数里（魔数），改动与审计都要全文搜索；集中后行为不变，
+# 便于一处调整、回归复用（测试也可直接引用常量，避免断言里写死数字而失同步）。
+PAGE_TIMEOUT_SECONDS = 180     # 单个商品页解析上限，超时判为 navigation_timeout
+ROUND_TIMEOUT_SECONDS = 600    # 整轮硬上限：超时即取消并统一释放未回传租约
+MAX_CONCURRENT_PAGES = 2       # 并发页面数（保持保守，避免加剧风控）
+WAIT_AFTER_SUCCESS = 30        # 本轮有成功回传后的等待
+WAIT_IDLE = 60                 # 队列为空（领 0 任务）时的退避
+WAIT_AFTER_FAILURE = 60        # 本轮未取得有效报价后的退避
+WAIT_AFTER_INTERCEPT = 300     # 确认被验证页/403 拦截后的长退避
+WAIT_UNRELIABLE = 30           # 拦截状态不可信（读/写失败）时的退避
+POLL_INTERVAL = 0.5            # 停止文件轮询粒度：等待期间仍能秒级响应 GUI 暂停
+
 APP_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'TakealotCollector'
 try: APP_DIR.mkdir(parents=True, exist_ok=True)
 except Exception: pass
 STATUS_FILE = APP_DIR / 'collector_status.json'
 CHALLENGE_PATH = APP_DIR / 'challenge_state.json'
-_CURRENT = {'profile': '', 'round': 0}
+# 完整初始化：读取处不再依赖 dict.get 的隐式默认值，字段缺失一眼可见。
+_CURRENT = {'profile': '', 'round': 0, 'run_id': '', 'stage': ''}
 # 拦截暂停状态持久化：跨重启保存，需显式人工恢复（WB-103-R6）
 from challenge_state import (load_challenge_state, save_challenge_state, consume_recovery_flag, challenge_state_path, ChallengeStateError)  # noqa: E402
 
@@ -45,6 +59,39 @@ def write_status(state, **extra):
         os.replace(tmp, STATUS_FILE)
     except Exception:
         pass
+
+def stop_requested(args):
+    """GUI 是否已请求暂停/关闭（停止文件出现）。
+
+    原先这行判断在主循环里重复了 5 次（每处都得记得 getattr + Path + exists），
+    遗漏一处就会出现「点了暂停但采集器仍在下一轮继续」。收敛为单一判据。"""
+    path = getattr(args, 'stop_file', None)
+    return bool(path) and Path(path).exists()
+
+
+async def wait_round(args, seconds):
+    """分片等待下一轮，期间持续响应停止文件；返回 True 表示应立即结束循环。
+
+    原实现是三处各自手写的 `for _ in range(n): await asyncio.sleep(.5)`，
+    语义相同但停止响应与停止判据分散；统一后等待期间也能秒级响应暂停。
+    """
+    for _ in range(max(1, int(seconds / POLL_INTERVAL))):
+        if stop_requested(args):
+            return True
+        await asyncio.sleep(POLL_INTERVAL)
+    return stop_requested(args)
+
+
+def _notice_unreliable(challenged, notice):
+    """拦截状态不可信时的统一动作：写状态 + 受控提示。
+
+    原先「写状态文件 + 打印提示」在三个分支里各写一遍，文案一改就要改三处，
+    容易出现「状态显示已暂停但日志没提示」。此处只统一动作，不接管
+    break/continue —— 各分支的轮次控制流保持原样。
+    """
+    write_status('challenge_state_unreliable', paused=len(challenged))
+    print('⚠ ' + notice, flush=True)
+
 
 def parser_module():
     source = ROOT / 'pricepilot_collector.py'
@@ -115,12 +162,14 @@ class Api:
             time.sleep(2*(attempt+1))
 
 def valid_product_url(value):
-    import re
+    # 模块顶部已 import re；此处重复导入纯属冗余，掩盖了「本函数依赖 re」的事实。
     parsed=urlsplit(value or '')
     return parsed.scheme=='https' and parsed.hostname in ('takealot.com','www.takealot.com') and bool(re.search(r'PLID\d+',parsed.path,re.I))
 
 async def scrape(context, item, parser):
-    result={'productId':item['productId'],'sku':item['sku'],'offers':[]}
+    # sku 用 .get：任务项只保证有 productId（领取过滤也只认 productId），
+    # 缺 sku 时直接下标会让整轮在解析前就崩成「页面不可用」。
+    result={'productId':item['productId'],'sku':item.get('sku'),'offers':[]}
     if not valid_product_url(item.get('url')): return {**result,'error':'invalid_url'}
     page=await context.new_page()
     responses=[]
@@ -130,7 +179,13 @@ async def scrape(context, item, parser):
         page.on('response',on_response)
     quote=result
     try:
-        quote=await asyncio.wait_for(parser.scrape_product(page,item),timeout=180)
+        quote=await asyncio.wait_for(parser.scrape_product(page,item),timeout=PAGE_TIMEOUT_SECONDS)
+        if not isinstance(quote, dict): quote={}
+        # 解析器返回的报文结构不由本机担保：缺 productId/sku 会让服务端无法把报价
+        # 对回租约（整条被跳过却不报错，表现为「采了但不入库」）。仅在缺失时补齐，
+        # 绝不覆盖解析器自带的值。
+        quote.setdefault('productId', result['productId'])
+        quote.setdefault('sku', result['sku'])
         quote['collectedAt']=datetime.now(timezone.utc).isoformat()
         # Native PricePilot inferred ownership by matching prices. Keep identity unverified.
         quote['holdingBuybox']=False
@@ -165,6 +220,10 @@ async def _finish_pending(task):
 async def claim_batch(api):
     task = asyncio.create_task(asyncio.to_thread(api.call, '/api/collector/products'))
     try:
+        # 注意：这里**不能**换成 _finish_pending(task)。两者的取消语义不同——
+        # _finish_pending 会一直等到在途调用返回并正常 return，从而吞掉取消信号
+        # （回归：取消后本轮仍继续访问页面并回传）。这里需要的是「取消立即传播、
+        # 随后在 except 分支里等待真实响应并释放租约」，故保留 shield 直连。
         return await asyncio.shield(task)
     except asyncio.CancelledError:
         try:
@@ -190,6 +249,22 @@ RETRYABLE_HTTP = re.compile(r'http_(?:429|500|502|503|504)')
 def is_retryable(error):
     return error in RETRYABLE_ERRORS or (isinstance(error, str) and bool(RETRYABLE_HTTP.fullmatch(error)))
 
+# 允许直接展示的失败原因白名单；其余（未知错误码、None、非字符串）一律归为
+# 「未找到报价」——绝不把任意字符串打到日志（可能含反射内容或敏感配置）。
+KNOWN_ERRORS = ('site_challenge','blocked_or_load_failed','navigation_timeout',
+                'collector_error','unstable_price','invalid_url')
+HTTP_ERROR_RE = re.compile(r'http_\d{3}')
+
+def classify_reason(error):
+    """把采集结果归类为可展示的失败原因（纯函数，便于单测）。
+
+    原先这段是一行嵌套三元 + 正则的行内表达式，既无法单测，也容易在改动时
+    把「未知错误」误放行到日志里。
+    """
+    if isinstance(error, str) and (error in KNOWN_ERRORS or HTTP_ERROR_RE.fullmatch(error)):
+        return error
+    return 'price_not_found'
+
 # 「确认被验证拦截」的错误：连续出现说明该页面当前无法访问，应停止重复访问。
 # 注意与网络加载失败（blocked_or_load_failed / navigation_timeout）区分——后者可重试。
 INTERCEPT_ERRORS = {'site_challenge', 'http_403'}
@@ -214,7 +289,7 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
     if len(items) != len(raw_items):
         print('⚠ 任务接口返回了无法识别的任务项，已跳过这些项（不访问、不回传）。', flush=True)
     leased={item['productId'] for item in items}
-    semaphore=asyncio.Semaphore(2)
+    semaphore=asyncio.Semaphore(MAX_CONCURRENT_PAGES)
     persistence_stopped=asyncio.Event()
     successful=0;blocked=0
     async def worker(item):
@@ -267,19 +342,24 @@ async def round_once(context, api, parser, challenged=None, lock=None, persist=N
                 # 只输出受控分类，不输出异常正文（异常可能含反射内容或敏感配置）。
                 print(f"SKU {sku}: 回传失败（服务未接受），其余任务继续。",flush=True)
                 return
+            # 回传响应同样可能是非对象（代理/网关插页）：直接 .get 会抛 AttributeError，
+            # 使整轮被上层笼统归为「页面不可用」。降级为空响应 = 未获服务端确认，
+            # 租约保留并在整轮结束时释放，与回传失败的处理保持一致。
+            if not isinstance(response, dict): response={}
             if response.get('processed') or response.get('skipped'): leased.discard(item['productId'])
             accepted=response.get('successful')==1 and not quote.get('error') and not quote.get('variantSwitchFailed') and quote.get('buyboxPrice') is not None
             if accepted: successful+=1
             # blocked 已在上方「拦截判据」分支累计，此处不重复计数
             d=quote.get('diagnostics') or {}
-            error=quote.get('error')
-            reason=error if error in ('site_challenge','blocked_or_load_failed','navigation_timeout','collector_error','unstable_price','invalid_url') or isinstance(error,str) and re.fullmatch(r'http_\d{3}',error) else 'price_not_found'
+            reason=classify_reason(quote.get('error'))
             if response.get('skipped'): reason='任务已暂停或租约已失效'
             result=('Buybox R '+str(quote['buyboxPrice'])+' 已回传') if accepted else f"未取得报价：{reason} · HTTP {d.get('http_status') or '—'} · 报价卡 {d.get('buybox_cards','—')}"
-            print(f"SKU {item['sku']}: {result}",flush=True)
+            # 用已取到的 sku（可能为 None）：任务项只保证有 productId，直接 item['sku']
+            # 会在缺 sku 时抛 KeyError，把整轮拖成「页面不可用」。
+            print(f"SKU {sku}: {result}",flush=True)
     tasks=[asyncio.create_task(worker(item)) for item in items]
     try:
-        if tasks: await asyncio.wait_for(asyncio.gather(*tasks),timeout=600)
+        if tasks: await asyncio.wait_for(asyncio.gather(*tasks),timeout=ROUND_TIMEOUT_SECONDS)
     finally:
         for task in tasks: task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
@@ -318,7 +398,7 @@ async def run(args):
                     await page.goto('https://www.takealot.com',wait_until='domcontentloaded')
                     if getattr(args,'stop_file',None):
                         print('请在浏览器完成登录和南非配送地址，再点击“完成登录并保存”。',flush=True)
-                        while not Path(args.stop_file).exists(): await asyncio.sleep(.5)
+                        while not stop_requested(args): await asyncio.sleep(POLL_INTERVAL)
                     else: await asyncio.to_thread(input,'在浏览器完成登录和南非配送地址设置后，按回车保存并关闭：')
                     return
                 parser=parser_module()
@@ -357,9 +437,9 @@ async def run(args):
                         persist_unreliable['v']=True
                         raise ChallengeStateError('拦截暂停状态写盘失败，持久化不可信')
                     return True
-                round_no=0;wait=30;idle_noticed=False;state_save_failed=False
+                round_no=0;wait=WAIT_AFTER_SUCCESS;idle_noticed=False;state_save_failed=False
                 while True:
-                    if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
+                    if stop_requested(args):break
                     # 显式人工恢复（GUI「恢复被拦截商品」写入恢复标志）：即使在不可信状态也允许
                     # 明确的人工恢复协议——清空暂停并恢复采集（WB-103-R9 第1条）。
                     if consume_recovery_flag(challenge_path, profile):
@@ -380,21 +460,17 @@ async def run(args):
                                 reload_on_unreliable=False
                                 print('拦截暂停状态已恢复（文件已修复或删除），重新开始采集。',flush=True)
                             except ChallengeStateError:
-                                print('⚠ 拦截暂停状态仍不可信，已暂停采集；请人工修复或删除状态文件后再试。',flush=True)
-                                write_status('challenge_state_unreliable',paused=len(challenged))
+                                _notice_unreliable(challenged,
+                                    '拦截暂停状态仍不可信，已暂停采集；请人工修复或删除状态文件后再试。')
                                 if args.once: break
-                                for _ in range(60):
-                                    if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
-                                    await asyncio.sleep(.5)
+                                if await wait_round(args, WAIT_UNRELIABLE): break
                                 continue
                         else:
                             # 持久化写盘失败：保留内存暂停、停止新增领取/访问，准确提示（WB-103-R9 第2条）
-                            print('⚠ 拦截暂停状态持久化不可信（写盘失败），已停止新增领取/访问，保留内存暂停；请人工核验被拦截商品并恢复后再继续。',flush=True)
-                            write_status('challenge_state_unreliable',paused=len(challenged))
+                            _notice_unreliable(challenged,
+                                '拦截暂停状态持久化不可信（写盘失败），已停止新增领取/访问，保留内存暂停；请人工核验被拦截商品并恢复后再继续。')
                             if args.once: break
-                            for _ in range(60):
-                                if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
-                                await asyncio.sleep(.5)
+                            if await wait_round(args, WAIT_UNRELIABLE): break
                             continue
                     try:
                         round_no+=1;_CURRENT['round']=round_no
@@ -404,9 +480,9 @@ async def run(args):
                         cycle=asyncio.create_task(round_once(context,api,parser,challenged,challenge_lock,persist_challenge))
                         try:
                             while not cycle.done():
-                                if getattr(args,'stop_file',None) and Path(args.stop_file).exists():
+                                if stop_requested(args):
                                     cycle.cancel();break
-                                await asyncio.sleep(.5)
+                                await asyncio.sleep(POLL_INTERVAL)
                             claimed,successful,blocked=await cycle
                         finally:
                             # 取消/暂停或异常后也要持久化已确认的拦截暂停，避免重启重访已确认的拦页面
@@ -426,39 +502,37 @@ async def run(args):
                                 print('暂无到期任务（本机保持待命）；如需立即采集，请在网页点击 SKU「立即采集」或开启常态采集。',flush=True)
                                 idle_noticed=True
                             write_status('idle',claimed=0,successful=0,failed=0)
-                            wait=60
+                            wait=WAIT_IDLE
                         else:
                             idle_noticed=False
                             failed=claimed-successful
                             print(f'ROUND_DONE: 第 {round_no} 轮 · 领取 {claimed} 个 / 成功回传 {successful} 个 / 失败 {failed} 个',flush=True)
                             if successful>0:
                                 write_status('collecting_ok',claimed=claimed,successful=successful,failed=failed)
-                                wait=30
+                                wait=WAIT_AFTER_SUCCESS
                             elif blocked>=claimed:
                                 write_status('challenged',claimed=claimed,successful=0,failed=failed)
-                                wait=300
+                                wait=WAIT_AFTER_INTERCEPT
                             else:
                                 write_status('failed',claimed=claimed,successful=0,failed=failed)
-                                wait=60
+                                wait=WAIT_AFTER_FAILURE
                     except asyncio.CancelledError: break
                     except ChallengeStateError:
                         # 持久化不可信（首次落盘失败）：停止新增领取/访问，保留内存暂停，准确提示
                         # （WB-103-R9 第2条）。不覆盖损坏/失败状态，等待显式人工恢复或修复。
                         challenged_unreliable=True
                         reload_on_unreliable=False
-                        print('⚠ 拦截暂停状态持久化失败（写盘不可信），已停止新增领取/访问，保留内存暂停；请人工核验被拦截商品并恢复后再继续。',flush=True)
-                        write_status('challenge_state_unreliable',paused=len(challenged))
-                        wait=60
+                        _notice_unreliable(challenged,
+                            '拦截暂停状态持久化失败（写盘不可信），已停止新增领取/访问，保留内存暂停；请人工核验被拦截商品并恢复后再继续。')
+                        wait=WAIT_AFTER_FAILURE
                     except Exception as exc:
                         # 只输出受控分类，绝不输出异常正文：异常可能含反射内容或敏感配置。
                         label='服务连接被拒绝或超时' if isinstance(exc,RuntimeError) else '页面或服务暂不可用'
                         print(f'本轮失败：{label}；保留原价，稍后重试。',flush=True)
                         write_status('failed',error=label)
-                        wait=60
+                        wait=WAIT_AFTER_FAILURE
                     if args.once: break
-                    for _ in range(wait*2):
-                        if getattr(args,'stop_file',None) and Path(args.stop_file).exists():break
-                        await asyncio.sleep(.5)
+                    if await wait_round(args, wait): break
             finally: await context.close()
     finally: lock.close()
 
