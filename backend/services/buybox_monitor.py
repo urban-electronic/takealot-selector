@@ -14,6 +14,10 @@ from services.takealot_seller_api import configured_key
 PREFIX = '_pricing_monitor:'
 # 这三类错误是网站侧拦截，不是本程序故障，退避策略要分开处理。
 THROTTLED_CODES = ('site_challenge', 'rate_limited', 'http_forbidden')
+# 采集器自身暂时起不来（浏览器启动失败等）：这是可自愈的瞬时故障，按用户设定的
+# 间隔重试就行。用指数退避会把一次启动抖动放大成 6 小时停采——2026-10-17 那次
+# 浏览器起不来，界面就一直显示「约 8 小时后自动重试」。
+TRANSIENT_CODES = THROTTLED_CODES + ('collector_unavailable',)
 _stop = threading.Event()
 _thread = None
 
@@ -101,7 +105,7 @@ def process(row_id):
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat(),last_attempt_source='cloud_browser')
             delay=config.get('interval_minutes',5)*60
             if result.get('status')=='error':
-                if result.get('error_code') in THROTTLED_CODES:
+                if result.get('error_code') in TRANSIENT_CODES:
                     # 网站拦截随时可能解除，指数退避只会把"恢复检测"拖到 6 小时：
                     # 每轮都白等。这里按用户设定的间隔重试，且不低于 30 分钟。
                     delay=max(1800, delay)

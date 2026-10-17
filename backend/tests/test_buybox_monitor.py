@@ -127,8 +127,10 @@ def test_collector_crash_does_not_inherit_stale_price_not_found(monkeypatch):
     # 上一轮的计数必须清掉：留着 buybox_cards=2，界面会继续声称「Buybox 区块 2 个」。
     assert 'buybox_cards' not in result['diagnostics']
     assert result['diagnostics']['failure']=='RuntimeError'
-    # 采集器不可用不是网站拦截，别混进「等验证解除」的退避分支。
+    # 采集器不可用不是网站拦截，别混进「等验证解除」的分支；但也不该指数退避——
+    # 它是可自愈的瞬时故障，按用户间隔重试即可，否则一次启动抖动就是 6 小时停采。
     assert result['error_code'] not in monitor.THROTTLED_CODES
+    assert result['next_due'] <= monitor.time.time() + 1830
 
 def test_value_error_still_keeps_classified_code(monkeypatch):
     # 跑完了但判定无有效行情（ValueError）：仍沿用 classify 给出的具体码，
