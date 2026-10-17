@@ -5,6 +5,7 @@ const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
 const { JSDOM } = require('jsdom');
+const watchdog = setTimeout(() => { console.error('FAIL Buybox suite did not complete within 10s'); process.exit(1); }, 10000);
 const dom = new JSDOM('<div id="root"></div>', { url: 'https://example.invalid' });
 for (const name of ['window','document','navigator','HTMLElement','Node','Event'])
   Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true });
@@ -18,9 +19,12 @@ compiled.filename = file;
 compiled.paths = Module._nodeModulePaths(path.dirname(file));
 let fixture = [];
 let writes = 0;
+let readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+let pauseFixture;
 const originalRequire = compiled.require.bind(compiled);
 compiled.require = name => name === '../remoteApi' ? new Proxy({
-  getAutomaticPricing: async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' }),
+  getAutomaticPricing: () => readPricing(),
+  pauseAutomaticPricing: (...args) => pauseFixture ? pauseFixture(...args) : Promise.reject(Error('Unexpected pause')),
 }, { get: (target, key) => target[key] || (() => { writes++; throw Error('Unexpected mutation'); }) }) : originalRequire(name);
 compiled._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 },
@@ -104,5 +108,75 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(tr.textContent.includes('SKU与中文名对应不明确'), 'ambiguous variant mapping is visible');
   }, {chinese_name:null,name_status:'ambiguous'});
   check(writes === 0, 'rendering never triggers a mutation');
+  const deferred = () => { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return { promise, resolve, reject }; };
+  const payload = (price, enabled = false) => ({ rows: [{...row(known), price, rule:{enabled,use_system_min:true}}], configured:true });
+  const nativeSetInterval = globalThis.setInterval;
+  const nativeClearInterval = globalThis.clearInterval;
+  const timers = new Map(); let timerId = 0;
+  globalThis.setInterval = fn => { timers.set(++timerId,fn); return timerId; };
+  globalThis.clearInterval = id => timers.delete(id);
+  const click = text => [...host.querySelectorAll('button')].find(b=>b.textContent===text).click();
+  let root;
+  try {
+    let calls = 0;
+    const first = deferred();
+    readPricing = () => { calls++; return first.promise; };
+    root = createRoot(host);
+    await act(async () => root.render(React.createElement(Page)));
+    await act(async () => { click('刷新列表'); [...timers.values()][0](); });
+    check(calls===1, 'manual refresh and polling share the pending read');
+    check(host.querySelector('.dashboard-heading button').getAttribute('aria-busy')==='true', 'refresh exposes its pending state');
+    await act(async () => first.resolve(payload(269,true)));
+    check(!host.querySelector('.dashboard-heading button').disabled, 'refresh becomes available when read completes');
+
+    const old = deferred(), current = deferred();
+    readPricing = () => { calls++; return old.promise; };
+    await act(async () => { [...timers.values()][0](); });
+    let pauses = 0;
+    pauseFixture = async () => { pauses++; readPricing = () => { calls++; return current.promise; }; };
+    await act(async () => click('暂停调价'));
+    check(pauses===1 && calls===3, 'post-mutation refresh starts a new read instead of reusing the pre-pause snapshot');
+    await act(async () => current.resolve(payload(270,false)));
+    await act(async () => old.resolve(payload(269,true)));
+    check(host.querySelector('.own-price').textContent==='R 270', 'late pre-pause response cannot overwrite fresh data');
+    check(host.textContent.includes('调价关闭'), 'late pre-pause response cannot restore the running badge');
+
+    const staleError = deferred(), afterPause = deferred();
+    readPricing = async () => payload(270,true);
+    await act(async () => click('刷新列表'));
+    readPricing = () => staleError.promise;
+    await act(async () => { [...timers.values()][0](); });
+    pauseFixture = async () => { readPricing = () => afterPause.promise; };
+    await act(async () => click('暂停调价'));
+    await act(async () => afterPause.resolve(payload(272,false)));
+    await act(async () => staleError.reject(Error('obsolete polling failure')));
+    check(!host.querySelector('[role="alert"]'), 'obsolete request failure cannot replace a newer successful result');
+
+    readPricing = async () => { throw Error('current network failure'); };
+    await act(async () => click('刷新列表'));
+    check(host.querySelector('[role="alert"]').textContent==='current network failure', 'current failure remains visible');
+    check(host.querySelector('.own-price').textContent==='R 272', 'failed refresh preserves the last loaded data');
+    check(!host.querySelector('.dashboard-heading button').disabled, 'failed refresh releases its busy state');
+    readPricing = async () => payload(273,false);
+    await act(async () => click('刷新列表'));
+    check(!host.querySelector('[role="alert"]') && host.querySelector('.own-price').textContent==='R 273', 'retry updates data and clears the resolved read error');
+
+    const lateError = deferred();
+    readPricing = () => lateError.promise;
+    await act(async () => { [...timers.values()][0](); });
+    // Unmount with a pending read. No production API or pricing writes exist here.
+    act(() => root.unmount()); root = null;
+    readPricing = async () => payload(271,false);
+    root = createRoot(host);
+    await act(async () => root.render(React.createElement(Page)));
+    await act(async () => lateError.reject(Error('obsolete network error')));
+    check(!host.querySelector('[role="alert"]'), 'unmounted request errors cannot affect a new page');
+    check(host.querySelector('.own-price').textContent==='R 271', 'remounted page keeps its own current response');
+  } finally {
+    if (root) act(() => root.unmount());
+    check(timers.size===0, 'all polling timers are cleared on unmount');
+    globalThis.setInterval = nativeSetInterval;
+    globalThis.clearInterval = nativeClearInterval;
+  }
   console.log(`PASS ${checks} Buybox page assertions (jsdom, isolated API)`);
-})().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => dom.window.close());
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

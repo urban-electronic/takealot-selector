@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor } from '../remoteApi';
 export default function AutoPricing() {
@@ -11,12 +11,39 @@ export default function AutoPricing() {
   const [loaded, setLoaded] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [collectorSource, setCollectorSource] = useState('cloud_browser');
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshState = useRef<{ active: boolean; sequence: number; pending: Promise<void> | null }>({ active: false, sequence: 0, pending: null });
   const [segment, setSegment] = useState('all'); const [segmentName, setSegmentName] = useState('');
   const [selected, setSelected] = useState<string[]>([]); const [group, setGroup] = useState('all'); const [groupName, setGroupName] = useState('');
   useEffect(() => { setPage(1); }, [search, group, segment]);
   const key = (r: any) => `${r.product_id}:${r.offer_id}`;
-  const refresh = () => getAutomaticPricing().then(d => { setRows(d.rows.filter((r: any) => typeof r.stock === 'number' && r.stock > 0)); setConfigured(d.configured); setCollectorSource(d.collector_source || 'cloud_browser'); setLoaded(true); setError(''); });
-  useEffect(() => { refresh().catch(e => setError(e.message)); const t = setInterval(() => refresh().catch(e => setError(e.message)), 30000); return () => clearInterval(t); }, []);
+  const refresh = useCallback((afterMutation = false): Promise<void> => {
+    const state = refreshState.current;
+    if (!state.active) return Promise.resolve();
+    // Ordinary reads share one request; a completed write needs a newer snapshot.
+    if (state.pending && !afterMutation) return state.pending;
+    const sequence = ++state.sequence;
+    const isCurrent = () => state.active && sequence === state.sequence;
+    setRefreshing(true);
+    const pending = getAutomaticPricing().then(d => {
+      if (!isCurrent()) return;
+      setRows(d.rows.filter((r: any) => typeof r.stock === 'number' && r.stock > 0));
+      setConfigured(d.configured); setCollectorSource(d.collector_source || 'cloud_browser'); setLoaded(true); setError('');
+    }).catch(e => {
+      if (isCurrent()) setError(e.message);
+    }).finally(() => {
+      if (isCurrent()) { state.pending = null; setRefreshing(false); }
+    });
+    state.pending = pending;
+    return pending;
+  }, []);
+  useEffect(() => {
+    const state = refreshState.current;
+    state.active = true;
+    void refresh();
+    const t = setInterval(() => { void refresh(); }, 30000);
+    return () => { clearInterval(t); state.active = false; state.sequence++; state.pending = null; };
+  }, [refresh]);
   const act = async (r: any, action: string) => {
     setBusy(key(r)); setError('');
     try {
@@ -31,17 +58,17 @@ export default function AutoPricing() {
         await configureAutomaticPricing(r.product_id, r.offer_id, { min_price: useSystem ? null : min, use_system_min: useSystem, smart_raise: (draft.strategy || 'takealot_buybox') === 'takealot_buybox', max_price: draft.max_price ? Number(draft.max_price) : null, strategy: draft.strategy || 'takealot_buybox', lead_amount: 1, cooldown_minutes: 10, max_daily_changes: 10, enabled: action === 'start' ? true : !!r.rule.enabled });
         setDrafts(prev => { const next = { ...prev }; delete next[key(r)]; return next; });
       }
-      await refresh();
+      await refresh(true);
     } catch (e) { setError((e as Error).message); } finally { setBusy(''); }
   };
-  const emergencyStop = async () => { setBusy('all'); try { await pauseAllAutomaticPricing(); await refresh(); } catch (e) { setError((e as Error).message); } finally { setBusy(''); } };
+  const emergencyStop = async () => { setBusy('all'); try { await pauseAllAutomaticPricing(); await refresh(true); } catch (e) { setError((e as Error).message); } finally { setBusy(''); } };
   const bulk = async (action: string) => {
     if (!selected.length) { setError('请先勾选需要操作的SKU。'); return; }
     setBusy('bulk'); setError('');
     try {
       const chosen = rows.filter(r => selected.includes(key(r)));
       await bulkAutomaticPricing({ action, group: groupName, items: chosen.map(r => ({ product_id: r.product_id, offer_id: r.offer_id })) });
-      await refresh(); setSelected([]);
+      await refresh(true); setSelected([]);
     } catch (e) { setError((e as Error).message); } finally { setBusy(''); }
   };
   const monitor = async (r: any, action: string) => {
@@ -49,14 +76,14 @@ export default function AutoPricing() {
     try {
       if (action === 'once') await collectBuyboxNow(r.product_id,r.offer_id);
       else await configureBuyboxMonitor(r.product_id,r.offer_id,{enabled:action==='start',interval_minutes:interval});
-      await refresh();
+      await refresh(true);
     } catch(e) { setError((e as Error).message); } finally { setBusy(''); }
   };
   const monitorBulk = async (enabled: boolean, currentPage = false) => {
     setBusy('monitor'); setError('');
     try {
       await bulkBuyboxMonitor({enabled,interval_minutes:interval,segment:enabled?(segmentName.trim()||`第${activePage}段`):'',items:(currentPage?pageRows:rows.filter(r=>selected.includes(key(r)))).map(r=>({product_id:r.product_id,offer_id:r.offer_id}))});
-      await refresh();
+      await refresh(true);
     } catch(e) { setError((e as Error).message); } finally { setBusy(''); }
   };
   const visible = rows.filter(r => typeof r.stock === 'number' && r.stock > 0 && (group === 'all' || r.group === group) && (segment==='all' || (r.monitor?.segment||'未分段')===segment) && `${r.chinese_name || ''} ${r.name} ${r.sku}`.toLowerCase().includes(search.toLowerCase()));
@@ -81,7 +108,7 @@ export default function AutoPricing() {
     return '任务已提交，等待采集器领取；尚未收到本轮完成结果。持续等待时，请检查采集器运行日志或联系维护人员，勿反复提交。';
   };
   return <div className="operations-workspace pricing-workspace">
-    <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>共享商品与行情 · 采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" onClick={()=>refresh().catch(e=>setError(e.message))}>刷新列表</button></div>
+    <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>共享商品与行情 · 采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" disabled={refreshing} aria-busy={refreshing} onClick={()=>{void refresh();}}>刷新列表</button></div>
     <div className="operations-note">本店售价/库存：卖家API · Buybox/竞品：{collectorSource==='browser_extension'?'浏览器采集器心跳有效':collectorSource==='local_collector'?'本机采集器心跳有效':'后台采集'}</div>
     <div className="pricing-summary">{true&&<div className="card"><small>自动采集</small><strong className="text-info">{loaded ? rows.filter(r=>r.monitor?.enabled).length : '—'}<span> / {rows.length} SKU</span></strong></div>}{!buyboxOnly&&<div className="card"><small>实际调价运行中</small><strong className="text-success">{loaded ? rows.filter(r=>r.rule.enabled).length : '—'}<span> SKU</span></strong></div>}{true&&<div className="card"><small>采集失败</small><strong className="text-danger">{loaded ? rows.filter(r=>r.monitor?.status==='error').length : '—'}<span> SKU</span></strong></div>}{!buyboxOnly&&<div className="pricing-stop"><button className="btn btn-danger" disabled={!!busy||!rows.some(r=>r.rule.enabled)} onClick={emergencyStop}>停止全部调价</button></div>}</div>
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
@@ -105,7 +132,7 @@ export default function AutoPricing() {
       <div className="operations-pagination"><span>{visible.length} 个SKU · 每段10条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
       {loaded&&!rows.length&&<p className="operations-empty">暂无本店有库存的SKU，请先同步库存。</p>}
     </div>
-    <details className="operations-explanation" onToggle={e=>setMaintenance(e.currentTarget.open)}><summary>采集维护（高级）</summary><p>日常采集由服务器后台执行。仅排查网站验证或配送设置时打开；关闭此区域会释放操作会话。</p>{maintenance&&<Suspense fallback={<p>正在加载维护工具…</p>}><CloudBrowser rows={rows} onCollected={()=>{void refresh().catch(e=>setError(e.message));}} /></Suspense>}</details>
+    <details className="operations-explanation" onToggle={e=>setMaintenance(e.currentTarget.open)}><summary>采集维护（高级）</summary><p>日常采集由服务器后台执行。仅排查网站验证或配送设置时打开；关闭此区域会释放操作会话。</p>{maintenance&&<Suspense fallback={<p>正在加载维护工具…</p>}><CloudBrowser rows={rows} onCollected={()=>{void refresh(true);}} /></Suspense>}</details>
     {!buyboxOnly&&<details className="operations-explanation"><summary>查看 PricePilot 调价与试涨规则</summary><p>最低价默认使用系统20%利润底价。与Buybox同价但卖家身份未核实则保持现价；明确核实持有后才评估试涨。未持有时只降不升。确认竞品非现货时约3%试涨，12小时观察一次，累计不超过启用参考价20%；48小时无新成交时回退。采集失败保持现价，改价结果未确认时自动暂停。</p></details>}
   </div>;
 }

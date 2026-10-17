@@ -23,6 +23,8 @@ jobs:
         run: npm run test:audit-safety
       - name: Check visual consistency
         run: npm run check:visual
+      - name: Check Buybox states and refresh races
+        run: npm run test:buybox
       - name: Build
         run: npm run build
         env:
