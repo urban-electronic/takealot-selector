@@ -22,6 +22,28 @@ class FakeBrowser:
     async def goto(self, *args, **kwargs): raise RuntimeError('fixture: session unavailable')
     async def close(self): pass
 
+class ReadyLocator:
+    def __init__(self, missing=False): self.missing = missing; self.first = self
+    async def wait_for(self, **kwargs):
+        if self.missing: raise RuntimeError('fixture text is not rendered')
+    def get_by_role(self, role, **kwargs):
+        return ReadyLocator(self.missing or role != 'cell' or kwargs.get('name') != '1')
+
+class ReadyBrowser(FakeBrowser):
+    async def goto(self, url, **kwargs): self.current = url
+    def get_by_role(self, *args, **kwargs): return ReadyLocator()
+    def locator(self, *args): return ReadyLocator()
+    def get_by_text(self, text, **kwargs):
+        # Procurement displays product_no, not SKU. Other key fixture rows display SKU.
+        return ReadyLocator(self.current.endswith('/procurement') and text == 'TEST-001')
+    async def wait_for_load_state(self, *args, **kwargs): pass
+    async def evaluate(self, *args):
+        return {'lowContrastCount':0, 'controls':{'tooSmallCount':0}}
+
+class MissingProcurement(ReadyBrowser):
+    def locator(self, selector):
+        return ReadyLocator(selector == '.procurement-table-scroll tbody')
+
 async_module = types.ModuleType('playwright.async_api')
 async_module.async_playwright = FakeBrowser
 sync_module = types.ModuleType('playwright.sync_api')
@@ -39,6 +61,22 @@ class Route:
     async def fulfill(self, **kwargs): self.action = 'fixture'
 
 class SafetyTests(unittest.TestCase):
+    def test_procurement_without_sku_can_reach_measurement(self):
+        fn = audit['main']
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()) as output:
+            with patch.dict(fn.__globals__, {'OUT':directory, 'async_playwright':ReadyBrowser}):
+                asyncio.run(fn())
+            self.assertIn('"measured": 30', output.getvalue())
+            self.assertIn('"errors": 0', output.getvalue())
+
+    def test_missing_procurement_record_still_fails(self):
+        fn = audit['main']
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()) as output:
+            with patch.dict(fn.__globals__, {'OUT':directory, 'async_playwright':MissingProcurement}):
+                with self.assertRaisesRegex(RuntimeError, '视觉审计未通过'):
+                    asyncio.run(fn())
+            self.assertIn('"measured": 27', output.getvalue())
+            self.assertIn('"errors": 3', output.getvalue())
     def test_all_navigation_errors_fail_instead_of_zero_success(self):
         fn = audit['main']
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()) as output:

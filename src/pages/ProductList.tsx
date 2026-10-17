@@ -439,7 +439,7 @@ export default function ProductList() {
     }
   };
 
-  const handleFieldUpdate = async (id: string, field: string, value: any) => {
+  const handleFieldUpdate = async (id: string, field: string, value: any, reportError = (message: string) => alert(message)) => {
     try {
       const updated = await api.updateProduct(id, { [field]: value });
       setProducts((prev) => prev
@@ -452,8 +452,10 @@ export default function ProductList() {
           if (statusFilter) return p.selection_status === statusFilter;
           return true;
         }));
+      return updated;
     } catch (e: any) {
-      alert(e.message);
+      reportError(e.message);
+      return null;
     }
   };
 
@@ -567,32 +569,64 @@ export default function ProductList() {
   const [editingSkuValue, setEditingSkuValue] = useState('');
   const [editingCnameId, setEditingCnameId] = useState<string | null>(null);
   const [editingCnameValue, setEditingCnameValue] = useState('');
+  const inlineSession = useRef<string | null>(null);
+  const inlineWriting = useRef(false);
+  const inlineInput = useRef<HTMLInputElement>(null);
+  const [inlineBusy, setInlineBusy] = useState(false);
+  const [inlineError, setInlineError] = useState('');
+  useEffect(() => { if (inlineError && !inlineBusy) inlineInput.current?.focus(); }, [inlineError, inlineBusy]);
+  const beginInline = (id: string, field: string) => {
+    if (inlineWriting.current) return false;
+    inlineSession.current = `${id}:${field}`; setInlineError('');
+    setEditingPriceId(null); setEditingSkuId(null); setEditingCnameId(null);
+    return true;
+  };
+  const cancelInline = (close: () => void) => {
+    if (inlineWriting.current) return;
+    inlineSession.current = null; setInlineError(''); close();
+  };
+  const commitInline = async (id: string, field: string, value: any, close: () => void) => {
+    if (inlineWriting.current || inlineSession.current !== `${id}:${field}`) return;
+    inlineWriting.current = true; setInlineBusy(true); setInlineError('');
+    const oldSku = products.find(p => p.id === id)?.sku;
+    try {
+      const updated = await handleFieldUpdate(id, field, value, message => setInlineError(`保存失败：${message}，回车重试`));
+      if (!updated) return;
+      if (field === 'sku' && oldSku && updated.sku !== oldSku) {
+        setSelectedSkus(prev => { const next = new Set(prev); if (next.delete(oldSku)) skuVariants(updated.sku).forEach(sku => next.add(sku)); return next; });
+      }
+      inlineSession.current = null; close();
+    } finally { inlineWriting.current = false; setInlineBusy(false); }
+  };
+  const inlineFeedback = <>{inlineBusy && <small role="status">保存中…</small>}{inlineError && <small id="inline-save-error" role="alert" className="text-danger">{inlineError}</small>}</>;
 
   const startEditPrice = (p: Product) => {
+    if (!beginInline(p.id, 'actual_sale_price_zar')) return;
     setEditingPriceId(p.id);
     setEditingPriceValue(p.actual_sale_price_zar != null ? String(p.actual_sale_price_zar) : '');
   };
   const commitEditPrice = async (id: string) => {
+    if (inlineWriting.current || inlineSession.current !== `${id}:actual_sale_price_zar`) return;
     const val = parseFloat(editingPriceValue);
-    if (!isNaN(val)) await handleFieldUpdate(id, 'actual_sale_price_zar', val);
-    setEditingPriceId(null);
+    if (!Number.isFinite(val)) { setInlineError('请输入有效售价'); return; }
+    await commitInline(id, 'actual_sale_price_zar', val, () => setEditingPriceId(null));
   };
   const startEditSku = (p: Product) => {
+    if (!beginInline(p.id, 'sku')) return;
     setEditingSkuId(p.id);
     setEditingSkuValue(p.sku || '');
   };
   const commitEditSku = async (id: string) => {
-    await handleFieldUpdate(id, 'sku', editingSkuValue || null);
-    setEditingSkuId(null);
+    await commitInline(id, 'sku', editingSkuValue || null, () => setEditingSkuId(null));
   };
   const startEditCname = (p: Product) => {
+    if (!beginInline(p.id, 'chinese_product_name')) return;
     setEditingCnameId(p.id);
     setEditingCnameValue(p.chinese_product_name || '');
   };
   const commitEditCname = async (id: string) => {
     const trimmed = editingCnameValue.trim().slice(0, 10);
-    await handleFieldUpdate(id, 'chinese_product_name', trimmed || null);
-    setEditingCnameId(null);
+    await commitInline(id, 'chinese_product_name', trimmed || null, () => setEditingCnameId(null));
   };
 
   const feeCategories = [...new Set(products.map((p) => p.fee_category).filter(Boolean))] as string[];
@@ -694,18 +728,21 @@ export default function ProductList() {
         );
       case 'chinese_product_name':
         return editingCnameId === p.id ? (
+          <span className="product-inline-editor">
           <input
+            ref={inlineInput} disabled={inlineBusy} aria-busy={inlineBusy} aria-invalid={!!inlineError} aria-describedby={inlineError ? 'inline-save-error' : undefined}
             type="text" value={editingCnameValue}
             aria-label={`中文品名：${p.sku}`} name="chinese_product_name" autoComplete="off"
             maxLength={10}
             onChange={(e) => setEditingCnameValue(e.target.value)}
             onBlur={() => commitEditCname(p.id)}
-            onKeyDown={(e) => { if (e.key === 'Enter') commitEditCname(p.id); if (e.key === 'Escape') setEditingCnameId(null); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitEditCname(p.id); if (e.key === 'Escape') cancelInline(() => setEditingCnameId(null)); }}
             autoFocus
             className="cell-control"
           />
+          {inlineFeedback}</span>
         ) : (
-          <button type="button" className="product-cell-edit" aria-label={`编辑中文品名：${p.sku}`} onClick={() => startEditCname(p)} title={p.chinese_product_name || '编辑中文品名'} style={{ minWidth: 30, maxWidth: 120 }}>
+          <button type="button" disabled={inlineBusy} className="product-cell-edit" aria-label={`编辑中文品名：${p.sku}`} onClick={() => startEditCname(p)} title={p.chinese_product_name || '编辑中文品名'} style={{ minWidth: 30, maxWidth: 120 }}>
             {p.chinese_product_name || '-'}
           </button>
         );
@@ -713,19 +750,22 @@ export default function ProductList() {
         return (
           <div className="price-refresh-cell">
             {editingPriceId === p.id ? (
+              <span className="product-inline-editor">
               <input
+                ref={inlineInput} disabled={inlineBusy} aria-busy={inlineBusy} aria-invalid={!!inlineError} aria-describedby={inlineError ? 'inline-save-error' : undefined}
                 type="number" step="0.01"
                 aria-label={`售价：${p.sku}`} name="actual_sale_price_zar" autoComplete="off"
                 value={editingPriceValue}
                 onChange={(e) => setEditingPriceValue(e.target.value)}
                 onBlur={() => commitEditPrice(p.id)}
-                onKeyDown={(e) => { if (e.key === 'Enter') commitEditPrice(p.id); if (e.key === 'Escape') setEditingPriceId(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') commitEditPrice(p.id); if (e.key === 'Escape') cancelInline(() => setEditingPriceId(null)); }}
                 autoFocus
                 className="cell-control"
                 style={{ width: 70 }}
               />
+              {inlineFeedback}</span>
             ) : (
-              <button type="button" className="product-cell-edit" aria-label={`编辑售价：${p.sku}`} onClick={() => startEditPrice(p)} title="编辑售价" style={{ minWidth: 50 }}>
+              <button type="button" disabled={inlineBusy} className="product-cell-edit" aria-label={`编辑售价：${p.sku}`} onClick={() => startEditPrice(p)} title="编辑售价" style={{ minWidth: 50 }}>
                 {formatPrice(p.actual_sale_price_zar, 'ZAR')}
               </button>
             )}
@@ -772,17 +812,20 @@ export default function ProductList() {
           return <span className="sku-branch-summary"><b>{skuOptions[0]}</b><button type="button" onClick={() => setExpandedVariantRows(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })}>{expanded ? '收起规格' : `展开 ${skuOptions.length} 个规格`}</button></span>;
         }
         return editingSkuId === p.id ? (
+          <span className="product-inline-editor">
           <input
+            ref={inlineInput} disabled={inlineBusy} aria-busy={inlineBusy} aria-invalid={!!inlineError} aria-describedby={inlineError ? 'inline-save-error' : undefined}
             type="text" value={editingSkuValue}
             aria-label={`SKU：${p.sku}`} name="sku" autoComplete="off" spellCheck={false}
             onChange={(e) => setEditingSkuValue(e.target.value)}
             onBlur={() => commitEditSku(p.id)}
-            onKeyDown={(e) => { if (e.key === 'Enter') commitEditSku(p.id); if (e.key === 'Escape') setEditingSkuId(null); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitEditSku(p.id); if (e.key === 'Escape') cancelInline(() => setEditingSkuId(null)); }}
             autoFocus
             className="cell-control"
           />
+          {inlineFeedback}</span>
         ) : (
-          <button type="button" className="product-cell-edit" aria-label={`编辑SKU：${p.sku}`} onClick={() => startEditSku(p)} title={p.sku || '编辑SKU'} style={{ minWidth: 30 }} translate="no">
+          <button type="button" disabled={inlineBusy} className="product-cell-edit" aria-label={`编辑SKU：${p.sku}`} onClick={() => startEditSku(p)} title={p.sku || '编辑SKU'} style={{ minWidth: 30 }} translate="no">
             {p.sku || '-'}
           </button>
         );

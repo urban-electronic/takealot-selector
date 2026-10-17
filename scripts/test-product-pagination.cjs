@@ -6,6 +6,7 @@ const watchdog=setTimeout(()=>{console.error('FAIL product interaction suite did
 const dom=new JSDOM('<header class="app-header"></header><div id="root"></div>',{url:'https://example.invalid/products'});
 for(const key of ['window','document','navigator','HTMLElement','Node','Event','localStorage'])Object.defineProperty(globalThis,key,{value:dom.window[key],configurable:true});
 globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+globalThis.alert=()=>{}; // Capture old-page alerts locally; never a browser/production dialog.
 const React=require('react'),{act}=React,{createRoot}=require('react-dom/client');
 const {MemoryRouter}=require('react-router-dom');
 const rows=Array.from({length:65},(_,i)=>({id:`p${i+1}`,product_no:i+1,sku:`SKU${i+1}`,product_name:`Product ${i+1}`,chinese_product_name:`商品${i+1}`,selection_status:'数据待补充',link_status:'未购买',is_archived:false}));
@@ -81,5 +82,33 @@ const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT
  assert.ok(document.querySelector('.variant-editor-modal'),'Escape cannot dismiss an in-flight save');
  await act(async()=>resolveUpdate(rows[1]));
  assert.equal(document.querySelector('.variant-editor-modal'),null,'successful fixture save closes dialog');
+ for(const [label,field,value] of [['中文品名','chinese_product_name','新商品名'],['售价','actual_sale_price_zar','123.45'],['SKU','sku','SKU1-NEW']]){
+   writes.length=0;
+   act(()=>click(document.querySelector(`[aria-label="编辑${label}：SKU1"]`)));
+   let input=document.querySelector(`input[aria-label="${label}：SKU1"]`);
+   act(()=>setValue(input,value));
+   let fail;pendingUpdate=new Promise((resolve,reject)=>{fail=reject;});
+   act(()=>{
+     input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+     input.dispatchEvent(new dom.window.FocusEvent('focusout',{bubbles:true}));
+   });
+   assert.equal(writes.length,1,label+': Enter then blur must send one update');
+   await act(async()=>fail(Error('fixture offline')));
+   input=document.querySelector(`input[aria-label="${label}：SKU1"]`);
+   assert.ok(input,label+': failure keeps editor open');assert.equal(input.value,value,label+': failure preserves draft');
+   assert.equal(document.activeElement,input,label+': failed field regains focus for retry');
+   assert.ok(document.querySelector('[role="alert"]').textContent.includes('fixture offline'),label+': actionable inline error');
+   let retry;pendingUpdate=new Promise(resolve=>{retry=resolve;});
+   act(()=>input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true})));
+   assert.equal(writes.length,2,label+': failed save can be retried');
+   const saved=field==='actual_sale_price_zar'?Number(value):value;
+   await act(async()=>retry({...rows[0],[field]:saved}));
+   assert.equal(document.querySelector(`input[aria-label="${label}：SKU1"]`),null,label+': successful save closes editor');
+ }
+ assert.deepEqual(JSON.parse(localStorage.getItem('productListSelectedSkus')),['SKU1-NEW'],'inline SKU rename updates the selected packing SKU');
+ const editSku=document.querySelector('[aria-label="编辑SKU：SKU1-NEW"]');act(()=>click(editSku));
+ const cancelled=document.querySelector('input[aria-label="SKU：SKU1-NEW"]');act(()=>setValue(cancelled,'DO-NOT-SAVE'));
+ const count=writes.length;act(()=>{cancelled.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));cancelled.dispatchEvent(new dom.window.FocusEvent('focusout',{bubbles:true}));});
+ assert.equal(writes.length,count,'Escape followed by late blur cannot save a cancelled draft');
  act(()=>root.unmount());console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, real product links, modal focus/Tab/Escape/restore and duplicate-save protection (isolated fixtures).');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{clearTimeout(watchdog);dom.window.close();});
