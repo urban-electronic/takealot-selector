@@ -30,32 +30,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Type check
-        run: npm run check:types
-
-      - name: Check visual consistency
-        run: npm run check:visual
-
-      - name: Check audit isolation and failure handling
-        run: npm run test:audit-safety
-
-      - name: Check Buybox states and refresh races
-        run: npm run test:buybox
-
-      - name: Check product interactions and dialog keyboard safety
-        run: npm run test:products
-
-      - name: Check inventory actions
-        run: npm run test:inventory
-
-      - name: Check product image fallback
-        run: npm run test:images
-
-      - name: Check pricing and replenishment logic
-        run: npm run test:operations
-
-      - name: Check procurement identity consistency
-        run: npm run test:procurement
+      # 清单只维护一份：package.json 的 check 脚本。这条命令之前在这里和
+      # deploy.yml 各抄了一遍，两边都漏了用例（这里漏 price / bookmarklet / values）。
+      - name: Run the full check suite
+        run: npm run check
 
       - name: Build
         run: npm run build

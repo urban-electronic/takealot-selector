@@ -19,18 +19,12 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install
-      - name: Check audit isolation and failure handling
-        run: npm run test:audit-safety
-      - name: Check visual consistency
-        run: npm run check:visual
-      - name: Check Buybox states and refresh races
-        run: npm run test:buybox
-      - name: Check product interactions and dialog keyboard safety
-        run: npm run test:products
-      - name: Check inventory actions
-        run: npm run test:inventory
-      - name: Check product image fallback
-        run: npm run test:images
+      # 与 PR 门禁共用同一个入口。这里原本是手抄的 6 条，漏掉了
+      # price / bookmarklet / values / operations / procurement 五套用例，
+      # 于是「PR 上跑过的」和「上线前跑过的」变成两份清单，迟早会漂移。
+      # 现在只认 npm run check，新增用例只要进 check 就自动挡住上线。
+      - name: Run the full check suite
+        run: npm run check
       - name: Build
         run: npm run build
         env:
