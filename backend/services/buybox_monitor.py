@@ -12,6 +12,9 @@ from services.automatic_pricing import collect, official_offer
 from services.takealot_seller_api import configured_key
 
 PREFIX = '_pricing_monitor:'
+# 采集循环自己的心跳。之前系统里没有任何地方能回答「循环还在转吗」：
+# 界面只能看到每个 SKU 的 last_attempt_at，看不出是循环在跑还是有人手动点了。
+WORKER_STATE = '_buybox_worker_state'
 # 这三类错误是网站侧拦截，不是本程序故障，退避策略要分开处理。
 THROTTLED_CODES = ('site_challenge', 'rate_limited', 'http_forbidden')
 # 采集器自身暂时起不来（浏览器启动失败等）：这是可自愈的瞬时故障，按用户设定的
@@ -20,6 +23,8 @@ THROTTLED_CODES = ('site_challenge', 'rate_limited', 'http_forbidden')
 TRANSIENT_CODES = THROTTLED_CODES + ('collector_unavailable',)
 _stop = threading.Event()
 _thread = None
+_supervisor = None
+_stopped = False
 
 def process(row_id):
     from database import SessionLocal
@@ -97,7 +102,8 @@ def process(row_id):
             finished = isinstance(error, ValueError)
             code = result.get('error_code') if finished else 'collector_unavailable'
             if not finished:
-                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__}
+                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__,
+                                         'failure_message': str(error)[:200]}
             result.update(status='error', error_stage=stage, error_code=code or ('seller_read_failed' if stage=='seller_api' else type(error).__name__),
                           error=str(error) if finished else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:
@@ -118,8 +124,9 @@ def process(row_id):
             db.commit()
 
 def start_worker():
-    global _thread
+    global _thread, _supervisor, _stopped
     if _thread and _thread.is_alive(): return
+    _stopped = False
     _stop.clear()
     def run():
         from database import SessionLocal
@@ -128,12 +135,14 @@ def start_worker():
                 with SessionLocal() as db:
                     from api.collector_routes import connected
                     if connected(db):
+                        _record_cycle(db, 0, 'local_collector')
                         _stop.wait(10)
                         continue
                     jobs=[]
                     for row in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+DEFAULT_STORE_ID+':')).all():
                         value=json.loads(row.value)
                         if not (value.get('web_requested') and not value.get('enabled')) and (value.get('enabled') or value.get('request_once')) and value.get('next_due',0)<=time.time(): jobs.append((value.get('next_due',0),row.key))
+                    _record_cycle(db, len(jobs), None)
                 # Two bounded jobs; never open an unbounded browser fleet.
                 with ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read') as pool:
                     pending=set()
@@ -150,8 +159,77 @@ def start_worker():
                 print('Buybox collection worker unavailable; retry scheduled',flush=True)
             _stop.wait(10)
     _thread=threading.Thread(target=run,daemon=True,name='buybox-monitor');_thread.start()
+    if _supervisor is None or not _supervisor.is_alive():
+        _supervisor=threading.Thread(target=_supervise,daemon=True,name='buybox-supervisor');_supervisor.start()
 
-def stop_worker(): _stop.set()
+
+def _supervise():
+    """采集是自动调价的上游。线程万一死掉不能静默停摆，这里每 30 秒确认一次并拉起。"""
+    while True:
+        time.sleep(30)
+        try:
+            if not _stopped and not (_thread and _thread.is_alive()):
+                print('Buybox worker was not alive; restarting',flush=True)
+                start_worker()
+        except Exception:
+            pass
+
+
+def _record_cycle(db, jobs, paused_by):
+    """每轮循环写一次心跳：证明循环在转，也让界面能说清「为什么这一轮没采」。"""
+    try:
+        row=db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
+        value=json.loads(row.value) if row else {}
+        value.update(alive_at=time.time(), cycles=int(value.get('cycles',0))+1,
+                     last_cycle_at=datetime.now(timezone.utc).isoformat(),
+                     last_jobs=jobs, paused_by=paused_by)
+        if row: row.value=json.dumps(value,ensure_ascii=False)
+        else: db.add(SystemSettings(key=WORKER_STATE,value=json.dumps(value,ensure_ascii=False)))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def loop_status(db, store=DEFAULT_STORE_ID):
+    """采集循环健康度：循环活着吗、有没有在采、下一轮还有多久。
+
+    原来界面上只有每个 SKU 的 last_attempt_at，看不出「循环停了」和
+    「这一条刚好没到期」的区别，用户只能反复点立即采集。
+    """
+    now=time.time()
+    row=db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
+    state=json.loads(row.value) if row else {}
+    alive_at=state.get('alive_at') or 0
+    monitors=[]
+    for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+store+':')).all():
+        try: monitors.append(json.loads(r.value))
+        except Exception: pass
+    enabled=[m for m in monitors if m.get('enabled') or m.get('request_once')]
+    dues=[m.get('next_due') for m in enabled if isinstance(m.get('next_due'),(int,float))]
+    intervals=[m.get('interval_minutes') for m in enabled if isinstance(m.get('interval_minutes'),int)]
+    return {
+        'worker_alive': bool(alive_at and now-alive_at < 60),
+        'worker_last_seen_at': datetime.fromtimestamp(alive_at,timezone.utc).isoformat() if alive_at else None,
+        'cycles': state.get('cycles'),
+        'last_cycle_at': state.get('last_cycle_at'),
+        'last_jobs': state.get('last_jobs'),
+        # 有本机采集器在线时云端循环会让位，这不是故障，要说清楚。
+        'paused_by': state.get('paused_by'),
+        'enabled': len(enabled),
+        'due_now': len([m for m in enabled if (m.get('next_due') or 0) <= now]),
+        'running': len([m for m in enabled if m.get('status') in ('running','queued')]),
+        'success': len([m for m in enabled if m.get('status')=='success']),
+        'error': len([m for m in enabled if m.get('status')=='error']),
+        'interval_minutes': max(set(intervals),key=intervals.count) if intervals else None,
+        'next_due_in': int(min(dues)-now) if dues else None,
+        'last_attempt_at': max([m.get('last_attempt_at') or '' for m in enabled],default='') or None,
+    }
+
+
+def stop_worker():
+    global _stopped
+    _stopped=True
+    _stop.set()
 
 
 def catalog(db, store):
