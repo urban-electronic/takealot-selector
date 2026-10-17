@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getOperationsOverview, getProduct } from '../remoteApi';
 import PipelinePlan from '../operations/PipelinePlan';
 import type { Product } from '../types';
+import { formatPercent, formatPrice } from '../types';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 
 const levels: Record<string,string> = { out_of_stock: '断货', urgent: '紧急', watch: '关注', healthy: '健康', slow_moving: '滞销', no_data: '观察中' };
@@ -34,7 +35,11 @@ export default function Replenishment() {
   const shown = dataset.slice((activePage-1)*25, activePage*25);
   const totals = all.reduce((a,r) => { a.air += r.plan?.air_quantity || 0; a.sea += r.plan?.sea_quantity || 0; a.future += r.plan?.total_sea_quantity || 0; return a; }, { air: 0, sea: 0, future: 0 });
   const share = totals.future + totals.air ? Math.round(totals.future / (totals.future+totals.air) * 100) : 0;
-  const margin = (r: any, m: string) => r.plan?.economics?.available ? `R ${r.plan.economics[m].profit_zar} · ${(r.plan.economics[m].profit_margin*100).toFixed(0)}%` : '待核对成本';
+  // 金额与百分比统一走 formatPrice / formatPercent：原来直接拼 profit_zar，
+  // 字段是字符串时显示原始值，且百分比用 toFixed(0) 与其余页面两位小数不一致
+  const margin = (r: any, m: string) => r.plan?.economics?.available
+    ? `${formatPrice(r.plan.economics[m].profit_zar, 'ZAR')} · ${formatPercent(r.plan.economics[m].profit_margin)}`
+    : '待核对成本';
   const qty = (r: any, m: string) => {
     const p = r.plan;
     if (!p) return '待匹配';

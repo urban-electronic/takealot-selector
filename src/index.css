@@ -1148,23 +1148,11 @@ table tbody tr:hover {
   margin-bottom: 16px;
 }
 
-.alert-error {
-  background: #fff2f0;
-  color: var(--color-danger);
-  border: 1px solid #ffccc7;
-}
-
-.alert-success {
-  background: #f6ffed;
-  color: var(--color-success);
-  border: 1px solid #b7eb8f;
-}
-
-.alert-warning {
-  background: #fffbe6;
-  color: #a35400;
-  border: 1px solid #ffe58f;
-}
+/* .alert-error / .alert-success / .alert-warning 的最终样式定义在文件后段
+   （"视觉刷新"层，紧随 .alert 的盒模型覆盖规则）。此处原有三份同选择器定义
+   已被后段完整覆盖（background / color / border-color 全部重设），属于死代码：
+   改这里不会有任何效果，且极易让人以为已经改了。已删除，避免二次踩坑。
+   注意：不要在此处重新定义这三个类。 */
 
 /* Section */
 .section {
@@ -1702,6 +1690,8 @@ input, select, textarea { font-family: inherit; }
 .product-context-menu button, .management-menu-panel a { border-radius: 9px; }
 .alert, .product-task-banner, .refresh-detail-panel, .image-recovery-bar { border-radius: 16px; border: 1px solid var(--surface-border); padding: 14px 18px; box-shadow: none; }
 .product-task-banner, .refresh-detail-panel, .image-recovery-bar { background: var(--surface-soft); color: #183354; }
+/* 以下是 .alert-error / .alert-success / .alert-warning 的唯一生效定义。
+   文件前段曾有三份同选择器定义，已被这里的颜色完整覆盖并删除。 */
 .alert-error { background: #fff4f5; color: #ab3243; border-color: #f1d3d9; }
 .alert-success { background: #eff9f3; color: #236a4b; border-color: #cce8d8; }
 .alert-warning { background: #fff9ed; color: #8d601d; border-color: #eee0bc; }
