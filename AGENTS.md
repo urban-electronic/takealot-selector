@@ -2,6 +2,11 @@
 
 Maintain the existing operator application; user instructions take precedence.
 
+- For a specific capability gap or an explicit skill request, use the installed
+  [find-skills](.agents/skills/find-skills/SKILL.md) and the scoped
+  [discovery/update workflow](docs/engineering/design-and-validation.md#skill-discovery-and-updates).
+  Reuse an adequate installed skill before searching or installing another.
+
 - First read the affected code and current issue/PR evidence. Choose one concrete,
   executable defect. Preserve concurrent work in a separate branch/worktree.
 - For UI, async state, naming, inventory or collection changes, read the relevant
