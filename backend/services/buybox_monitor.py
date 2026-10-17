@@ -102,8 +102,7 @@ def process(row_id):
             finished = isinstance(error, ValueError)
             code = result.get('error_code') if finished else 'collector_unavailable'
             if not finished:
-                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__,
-                                         'failure_message': str(error)[:200]}
+                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__}
             result.update(status='error', error_stage=stage, error_code=code or ('seller_read_failed' if stage=='seller_api' else type(error).__name__),
                           error=str(error) if finished else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:

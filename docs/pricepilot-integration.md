@@ -385,3 +385,7 @@ CI-GATE-01（P1，Codex；候选来源WorkBuddy PR139/8b91f474）：基线8ff48d
 DIAG-SAFE-01（P1，Codex）：基线 f4368de 新增任意标量诊断回传及异常原文输出。隔离数据库/内存采集器用 fixture-only 字符串复现：未知 cookie/debug_url 字段、URL 用户信息、preview 异常、monitor 启动异常均保留了不该回传的内容。四个同条件回归基线全部失败；修复后限定已知计数与 URL/验证标记，去除 URL 用户信息/查询串/fragment，异常仅保留类型和阶段。新诊断版本、节点数、卡片金额计数仍保留，不改变报价/变体/调价保护。
 
 验收为实际 Python 路由、租约回写和 monitor.process 的隔离运行，未向生产注入诊断、未发起商品采集或调价；未读取真实密钥/Cookie/profile。线上仅核对部署版本及公开入口，不以健康接口代替真实报价验收。此前 PR147 的指定 SKU 图片代理 400→200 实测沿用原证据，不重复报作本次进展；Windows 同轮报价、中文名写回及369件业务更正仍需各自真实读回。
+
+### DIAG-SAFE-01 再次回归（2026-10-18）
+
+基线3c1eb21的循环状态改动重新引入preview.error_detail和monitor.failure_message，覆盖了PR148的异常原文保护。Codex只恢复这两处保护，保留worker心跳、守护线程、UI轨道与浏览器释放延时。用原fixture反例复测，不以新增心跳代替真实行情验收。该回归由直接进入main的改动带入；PR后端用例仍在，因此后续提交必须经过最新head检查，不得以此前通过结果代替新版本。
