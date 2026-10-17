@@ -21,6 +21,7 @@ let fixture = [];
 let writes = 0;
 let readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
 let pauseFixture;
+const bulkCalls = [];
 // 未显式 mock 的相对导入按真实 .ts/.tsx 编译，避免新增一个模块就让整组测试失败。
 const localModule = name => {
   if (typeof name !== 'string' || !name.startsWith('.')) return null;
@@ -39,6 +40,7 @@ const originalRequire = compiled.require.bind(compiled);
 compiled.require = name => name === '../remoteApi' ? new Proxy({
   getAutomaticPricing: () => readPricing(),
   pauseAutomaticPricing: (...args) => pauseFixture ? pauseFixture(...args) : Promise.reject(Error('Unexpected pause')),
+  bulkBuyboxMonitor: (...args) => { bulkCalls.push(args[0]); return Promise.resolve({ updated: 1 }); },
 }, { get: (target, key) => target[key] || (() => { writes++; throw Error('Unexpected mutation'); }) }) : (localModule(name) || originalRequire(name));
 compiled._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 },
@@ -68,31 +70,36 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(tr.textContent.includes('测试商品'), 'Chinese name is displayed separately');
     check(tr.textContent.includes('英文名：Test product'), 'English title remains labelled');
     check(tr.textContent.includes('R 269'), 'queued job retains last valid quote');
-    check(tr.textContent.includes('卖家：Urban Electronics'), 'actual quoted seller is visible');
-    check(tr.textContent.includes('历史同价 · 推定持有'), 'historical comparison is inferred rather than freshly verified');
+    check(tr.textContent.includes('页面卖家：Urban Electronics'), 'actual quoted seller is visible');
+    check(tr.textContent.includes('同价 · 卖家未核实'), 'equal price is never presented as verified holding');
     check(!tr.textContent.includes('同价 · 待确认'), 'ambiguous badge removed');
-    check(tr.textContent.includes('报价来源：后台采集'), 'quote origin is visible');
-    check(tr.querySelector('.pricing-result').textContent.includes('采集：排队中'), 'task result does not say fresh success');
-    check(tr.querySelector('.pricing-result').textContent.includes('调价：未启动'), 'pricing state has its own label');
+    check(tr.textContent.includes('报价来源：后台采集器'), 'quote origin is visible');
+    check(tr.querySelector('.collection-status-cell').textContent.includes('排队中'), 'collection state is stated in its own cell');
+    check(tr.querySelectorAll('td')[4].textContent.includes('调价：关闭'), 'pricing state has its own label');
     check(tr.querySelector('.collection-status-cell').textContent.includes('最近成功'), 'timestamp meaning is explicit');
   });
   await scenario({ ...known, status: 'error', error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
-    check(tr.querySelector('.pricing-result').textContent.includes('采集：本轮失败'), 'failure not hidden by pricing state');
+    check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');
     check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
   });
   await scenario({ ...known, status: 'success', source: 'local_collector', holding_buybox: true }, tr => {
-    check(tr.textContent.includes('报价来源：本机采集'), 'native quote source preserved');
-    check(tr.querySelectorAll('td')[2].textContent.includes('持有'), 'verified holding remains visible');
+    check(tr.textContent.includes('报价来源：本机采集器'), 'native quote source preserved');
+    // 历史 holding_buybox=true 只代表当时同价，不是卖家身份证据，不能显示成"已确认持有"。
+    check(tr.querySelectorAll('td')[2].textContent.includes('卖家未核实'), 'legacy holding flag is not verified identity');
+    check(!tr.querySelectorAll('td')[2].textContent.includes('已确认'), 'legacy holding flag never claims confirmation');
   });
   await scenario({ status: 'queued' }, tr => {
     check(tr.querySelectorAll('td')[2].textContent.includes('未采集'), 'empty quote does not show success');
-    check(tr.querySelectorAll('td')[2].textContent.includes('卖家：未读取'), 'missing seller is not invented');
+    check(tr.querySelectorAll('td')[2].textContent.includes('页面卖家：未读取'), 'missing seller is not invented');
   });
-  for (const [state,label] of Object.entries({matched:'同价 · 推定持有',mismatch_pending:'推定持有 · 失去复核1/2',mismatch:'异价 · 推定未持有',checking:'本店售价待复核',verification_failed:'本店售价复核未完成'})) {
+  for (const [state,label] of Object.entries({matched:'疑似在持位',mismatch_pending:'疑似在持位 · 复核中',mismatch:'不在持位',checking:'正在核对本店价',verification_failed:'本店价核对失败'})) {
     await scenario({ ...known, status: 'success', price_ownership: {state,own_price:269,own_price_source:'official_live',own_price_asof:'2026-10-15T01:58:10Z',identity_verified:false} }, tr => {
       check(tr.textContent.includes(label), `price estimate ${state} is explicit`);
       check(tr.textContent.includes('对照本店价：R 269 · 实时API'), 'comparison source is visible');
-      check(tr.querySelectorAll('td')[2].querySelector('.status-pill').title.includes('不证明卖家身份'), 'estimate is not verified identity');
+      const pill = tr.querySelectorAll('td')[2].querySelector('.status-pill');
+      check((pill.title||'').length > 10, `price estimate ${state} explains itself on hover`);
+      // 同价是最容易被误读成"已持有"的状态，单独钉死这条限定。
+      if (state === 'matched') check(pill.title.includes('不能证明是本店在占位'), 'equal price is never verified identity');
     });
   }
   await scenario({ ...known, status: 'success', source: undefined, snapshot: {} }, tr => {
@@ -101,13 +108,13 @@ async function scenario(monitor, inspect, overrides = {}) {
   });
   await scenario({ ...known, status: 'queued', enabled:true, next_due:Date.now()/1000+300 }, tr => {
     check(tr.textContent.includes('等待下轮'), 'future scheduled work is not shown as waiting for a worker');
-    check(tr.textContent.includes('尚未到计划时间'), 'scheduled waiting has a reason');
-    check(tr.textContent.includes('上次有效报价 · 非本轮结果'), 'retained quote is not a new collection result');
+    check(tr.textContent.includes('到点自动开始'), 'scheduled waiting has a reason');
+    check(tr.textContent.includes('上一次成功采到的报价，不是本轮结果'), 'retained quote is not a new collection result');
     check([...tr.querySelectorAll('button')].find(b=>b.textContent==='立即采集').disabled, 'queued work cannot be repeatedly submitted');
   });
   await scenario({ ...known, status:'queued', next_due:0 }, tr => {
-    check(tr.textContent.includes('等待采集器领取'), 'due queue explains what it is waiting for');
-    check(tr.textContent.includes('尚未收到本轮完成结果'), 'queue never implies success');
+    check(tr.textContent.includes('已排队，后台马上执行'), 'due queue explains what it is waiting for');
+    check(!tr.textContent.includes('正在采这一轮'), 'queue never implies success');
     check(!tr.textContent.includes('离线'), 'queue alone does not prove an offline collector');
   });
   await scenario({ ...known, status:'paused', enabled:false }, tr => {
@@ -121,6 +128,64 @@ async function scenario(monitor, inspect, overrides = {}) {
   await scenario({status:'success'}, tr => {
     check(tr.textContent.includes('SKU与中文名对应不明确'), 'ambiguous variant mapping is visible');
   }, {chinese_name:null,name_status:'ambiguous'});
+  // 信息密度与一键重试：列数必须收敛，重试必须真的打到接口上。
+  {
+    fixture = [row({ status: 'error', error_code: 'site_challenge', enabled: true,
+      last_success_at: new Date(Date.now() - 30 * 60000).toISOString(), next_due: Date.now() / 1000 + 28800 })];
+    readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+    const dense = createRoot(host);
+    try {
+      await act(async () => dense.render(React.createElement(Page)));
+      check(host.querySelectorAll('thead th').length === 5, 'table collapses to five columns');
+      const bar = host.querySelector('.collection-bar');
+      check(!!bar && bar.querySelectorAll('li').length === 0, 'header status is one line, not a list');
+      check(bar.textContent.includes('网站要求人工验证'), 'header names the cause in plain language');
+      // 被网站挡住时只改间隔，不立刻再试一次——否则页面正文劝「别反复点」，
+      // 按钮自己却在点。
+      const widen = [...bar.querySelectorAll('button')].find(b => b.textContent.includes('改为 120 分钟'));
+      check(!!widen, 'a widen-interval action is offered for blocked rows');
+      check(!bar.textContent.includes('并重试'), 'blocked rows are not retried immediately');
+      await act(async () => widen.click());
+      check(bulkCalls.length === 1, 'widening the interval calls the bulk endpoint once');
+      check(bulkCalls[0].enabled === true, 'widening keeps collection enabled');
+      check(bulkCalls[0].interval_minutes === 120, 'throttled rows widen the interval instead of hammering');
+      check(bulkCalls[0].keep_backoff === true, 'blocked rows keep their existing backoff');
+      check(bulkCalls[0].items.length === 1, 'only the stuck rows are targeted');
+    } finally { act(() => dense.unmount()); }
+  }
+  {
+    // 自身故障（解析器/网络）才是可以立刻重试的。
+    bulkCalls.length = 0;
+    fixture = [row({ status: 'error', error_code: 'collector_error', enabled: true,
+      last_success_at: new Date(Date.now() - 30 * 60000).toISOString(), next_due: Date.now() / 1000 + 1800 })];
+    readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+    const fault = createRoot(host);
+    try {
+      await act(async () => fault.render(React.createElement(Page)));
+      const retry = [...host.querySelector('.collection-bar').querySelectorAll('button')].find(b => b.textContent.includes('重试'));
+      check(!!retry && retry.textContent.includes('重试 1 个'), 'self-inflicted faults offer an immediate retry');
+      await act(async () => retry.click());
+      check(bulkCalls.length === 1 && !bulkCalls[0].keep_backoff, 'immediate retry clears the backoff');
+      check(bulkCalls[0].interval_minutes === 5, 'immediate retry does not silently widen the interval');
+    } finally { act(() => fault.unmount()); }
+  }
+  {
+    // 接口返回形状不对时保留上一次的有效列表并明确报错。整表清空比显示旧数据更危险：
+    // 用户会以为 SKU 都没了，然后重新开一遍采集。
+    const good = [row({ status: 'success', enabled: true, last_success_at: new Date().toISOString() })];
+    readPricing = async () => ({ rows: good, configured: true, collector_source: 'cloud_browser' });
+    const box = createRoot(host);
+    try {
+      await act(async () => box.render(React.createElement(Page)));
+      check(host.querySelectorAll('tbody tr').length === 1, 'a valid load renders its row');
+      readPricing = async () => ({ configured: true });
+      const refreshBtn = [...host.querySelectorAll('button')].find(b => b.textContent === '刷新列表');
+      await act(async () => { refreshBtn.click(); });
+      check(host.querySelectorAll('tbody tr').length === 1, 'a malformed refresh keeps the previous rows');
+      check((host.querySelector('[role="alert"]')?.textContent || '').includes('保留'), 'a malformed refresh says the old list is kept');
+      check(!host.textContent.includes('暂无本店有库存的SKU'), 'a malformed refresh never claims the store has no stock');
+    } finally { act(() => box.unmount()); }
+  }
   check(writes === 0, 'rendering never triggers a mutation');
   const deferred = () => { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return { promise, resolve, reject }; };
   const payload = (price, enabled = false) => ({ rows: [{...row(known), price, rule:{enabled,use_system_min:true}}], configured:true });
@@ -153,7 +218,7 @@ async function scenario(monitor, inspect, overrides = {}) {
     await act(async () => current.resolve(payload(270,false)));
     await act(async () => old.resolve(payload(269,true)));
     check(host.querySelector('.own-price').textContent==='R 270', 'late pre-pause response cannot overwrite fresh data');
-    check(host.textContent.includes('调价关闭'), 'late pre-pause response cannot restore the running badge');
+    check(host.textContent.includes('调价：关闭'), 'late pre-pause response cannot restore the running badge');
 
     const staleError = deferred(), afterPause = deferred();
     readPricing = async () => payload(270,true);

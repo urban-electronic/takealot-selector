@@ -1137,7 +1137,7 @@ table tbody tr:hover {
 
 .status-qualified { background: #f6ffed; color: var(--color-success); border: 1px solid #b7eb8f; }
 .status-not-recommended { background: #fff2f0; color: var(--color-danger); border: 1px solid #ffccc7; }
-.status-pending { background: #fffbe6; color: var(--warning-strong); border: 1px solid #ffe58f; }
+.status-pending { background: var(--surface-warning); color: var(--warning-strong); border: 1px solid #ffe58f; }
 .status-incomplete { background: #e6f7ff; color: var(--link-strong); border: 1px solid #91d5ff; }
 
 /* Alerts */
@@ -2068,6 +2068,18 @@ table tbody tr:hover { background: #f8fafc; }
 .operations-workspace .replenishment-metrics .card:nth-child(3) strong { color:var(--success-strong); }
 .operations-workspace .replenishment-metrics .card:nth-child(4) strong { color:#bd364b; }
 .pricing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:12px; margin-bottom:16px; }
+/* 采集状态条：一行讲完「什么情况 / 为什么 / 该怎么办」，不再铺成列表。 */
+.collection-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px; padding:10px 16px; border:1px solid var(--surface-border); border-left:4px solid var(--text-muted); border-radius:16px; background:var(--surface-soft); }
+.collection-bar.tone-success { border-left-color:#21825c; }
+.collection-bar.tone-info { border-left-color:#3465c2; }
+.collection-bar.tone-warning { border-left-color:var(--warning-strong); }
+.collection-bar.tone-danger { border-left-color:#bd364b; }
+.collection-bar small { color:var(--text-body); font-size:12px; }
+.collection-bar .btn { margin-left:auto; }
+.collection-status-cell .collection-headline { color:var(--text-body); font-weight:500; }
+.collection-status-cell .collection-advice { color:var(--warning-strong); }
+.operations-explanation ul { margin:6px 0 0; padding-left:20px; }
+.operations-explanation li { line-height:1.8; }
 .pricing-summary strong { display:block; font-size:26px; margin-top:5px; }
 .pricing-summary strong span { font-size:12px; font-weight:400; color:var(--text-muted); }
 .pricing-stop { display:flex; align-items:center; }

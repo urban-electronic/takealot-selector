@@ -274,4 +274,41 @@ const outlineColorOf = (ruleSource) => {
   assert.match(productList, /LINK_STATUS_MAP\[[^\]]*\]\?\.text/, 'ProductList 的状态下拉必须使用 LINK_STATUS_MAP 的深色文字取值');
 }
 
-console.log('视觉一致性检查通过：字号下限、文字对比度黑名单、控件尺寸、表头度量、令牌引入顺序、状态配色（含对比度计算与白字突变自测）、占位提示、焦点圈、静态全量扫描、渲染层白字禁令 共 13 组约束均满足。');
+// --- 14. 组件内联 style 不得直接写裸色值 -----------------------------------------
+// 审计时界面里有 332 个硬编码色值，令牌层收敛了样式表，但 .tsx 的 style={{...}}
+// 里还留着 52 个（#fff / #ddd / #eee / #f0f0f0 / #555 …）。它们绕过令牌，
+// 换主题时要翻 6 个页面逐个改，而且同一个语义在不同页面深浅不一。
+// 允许的例外只有两类：
+//   1. var(--token, #hex) 的兜底形式（有令牌就生效，裸色值只是保险）；
+//   2. src/types.ts 里的状态配色表（那是数据，不是主题；本身已带对比度注释）。
+{
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.tsx')) {
+        const rel = path.relative(root, full).split(path.sep).join('/');
+        fs.readFileSync(full, 'utf8').split('\n').forEach((text, i) => {
+          if (/^\s*(\/\/|\*|\/\*)/.test(text)) return;              // 注释
+          const stripped = text.replace(/var\([^)]*\)/g, '');        // 令牌兜底
+          if (/'#[0-9a-fA-F]{3,8}'/.test(stripped)) offenders.push(`${rel}:${i + 1}  ${text.trim()}`);
+        });
+      }
+    }
+  };
+  walk(path.join(root, 'src'));
+  assert.deepEqual(offenders, [], `组件内联 style 不得写裸色值，请改用 ui-tokens.css 里的令牌（如 var(--color-border) / var(--surface-muted) / var(--text-muted)）:\n${offenders.join('\n')}`);
+}
+
+// --- 15. 动效必须尊重 reduced-motion ---------------------------------------------
+// 页面里有 transition / animation，但只有 .btn 和头部导航做了降级。
+// 统一在令牌层兜底：任何过渡与动画在 reduced-motion 下都退化为无。
+{
+  assert.match(tokensCss, /@media\s*\(prefers-reduced-motion:\s*reduce\)/, 'ui-tokens.css 必须提供 prefers-reduced-motion 兜底');
+  const block = tokensCss.slice(tokensCss.search(/@media\s*\(prefers-reduced-motion:\s*reduce\)/));
+  assert.match(block, /animation-duration:\s*0?\.01ms\s*!important/, 'reduced-motion 下必须把 animation-duration 压到近零');
+  assert.match(block, /transition-duration:\s*0?\.01ms\s*!important/, 'reduced-motion 下必须把 transition-duration 压到近零');
+}
+
+console.log('视觉一致性检查通过：字号下限、文字对比度黑名单、控件尺寸、表头度量、令牌引入顺序、状态配色（含对比度计算与白字突变自测）、占位提示、焦点圈、静态全量扫描、渲染层白字禁令、组件裸色值禁令、reduced-motion 兜底 共 15 组约束均满足。');

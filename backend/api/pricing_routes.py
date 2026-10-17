@@ -219,6 +219,9 @@ class MonitorConfig(BaseModel):
 class MonitorBulk(MonitorConfig):
     items: list[Item] = Field(min_length=1, max_length=2000)
     request_once: bool = False
+    # 只改设置、不要立刻试一次。被网站验证/限流挡住时用：界面一边劝用户
+    # 「反复点立即采集没有用」，按钮就不能自己又点一次。
+    keep_backoff: bool = False
 
 
 def save_monitors(data, db, store):
@@ -229,10 +232,16 @@ def save_monitors(data, db, store):
     for product_id,offer_id in dict.fromkeys((i.product_id,i.offer_id) for i in data.items):
         item=catalog.get((product_id,offer_id))
         if not item or not item['url']: raise HTTPException(400, '选中SKU未匹配或缺少公开页，本次未更改')
-        old=item['monitor'];value={**old,'product_id':product_id,'offer_id':offer_id,'sku':item['sku'],
+        old=item['monitor']
+        # 手动开启/立即采集 = 重新开始：清 next_due 与失败计数，否则下一次失败会
+        # 立刻跳回退避上限，让"重试"这个动作失去意义。keep_backoff 时保留原计划。
+        restart=(data.enabled or data.request_once) and not data.keep_backoff
+        value={**old,'product_id':product_id,'offer_id':offer_id,'sku':item['sku'],
             'enabled':data.enabled, 'web_requested':False, 'interval_minutes':data.interval_minutes, 'segment':data.segment.strip() or old.get('segment','未分段'), 'request_once':data.request_once,
-            'revision':old.get('revision',0)+1,'next_due':0 if data.enabled or data.request_once else old.get('next_due',0),
-            'status':'queued' if data.enabled or data.request_once else 'paused'}
+            'revision':old.get('revision',0)+1,
+            'next_due':0 if restart else old.get('next_due',0),
+            'failures':0 if restart else old.get('failures',0),
+            'status':'queued' if restart else (old.get('status') or 'queued') if (data.enabled or data.request_once) else 'paused'}
         staged.append((MONITOR_PREFIX+store+':'+product_id+':'+offer_id,value))
     for key,value in staged:
         row=db.query(SystemSettings).filter(SystemSettings.key==key).first()

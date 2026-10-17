@@ -180,22 +180,28 @@ export function evaluatePricing(input: PricingInput): PricingResult {
     }
   }
 
+  // 行情过期/时间在未来/价格非法时保持现价，这是既定口径（docs/pricepilot-integration.md：
+  // 「行情过期均保持现价」），不能为了"少卡一轮"把这条守卫放宽。任意一条竞品报价
+  // 不可信就说明这一轮的市场快照不完整，此时改价是在猜。
   if (offers.some(o => !Number.isFinite(o.price) || o.price <= 0 ||
       !Number.isFinite(o.fetchedAt.getTime()) || o.fetchedAt > input.state.now ||
       input.state.now.getTime() - o.fetchedAt.getTime() > input.state.offersMaxAgeMs)) {
     return reject("竞品价格或时间无效，或数据已过期，拒绝调价");
   }
+  // 有现货竞品时只跟现货竞价；缺货/预售的挂价不代表市场价，跟着它降价是白送利润。
+  const inStock = offers.filter(o => (o.status ?? "in_stock") === "in_stock");
+  if (inStock.length > 0) offers = inStock;
 
   if (input.state.maxDailyChanges > 0 && input.state.todayChanges >= input.state.maxDailyChanges) {
     return reject(`超过当日最大调价次数（${input.state.maxDailyChanges}）`);
   }
 
+  // 冷却对所有情形生效：原来只在持有 Buybox 时检查，未持有时可以连续改价。
   if (
-    input.state.holdingBuybox &&
     input.state.lastPricedAt &&
     input.state.now.getTime() - input.state.lastPricedAt.getTime() < input.rule.cooldownMinutes * 60_000
   ) {
-    return skip(`持有 Buybox 处于冷却时间内（${input.rule.cooldownMinutes} 分钟）`);
+    return skip(`处于冷却时间内（${input.rule.cooldownMinutes} 分钟）`);
   }
 
   let raw: number;
