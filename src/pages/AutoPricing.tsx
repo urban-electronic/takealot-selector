@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor } from '../remoteApi';
+import { useVisibleInterval } from '../utils/useVisibleInterval';
 export default function AutoPricing() {
   const buyboxOnly = false;
   const [rows, setRows] = useState<any[]>([]); const [drafts, setDrafts] = useState<Record<string, any>>({});
@@ -27,8 +28,11 @@ export default function AutoPricing() {
     setRefreshing(true);
     const pending = getAutomaticPricing().then(d => {
       if (!isCurrent()) return;
-      setRows(d.rows.filter((r: any) => typeof r.stock === 'number' && r.stock > 0));
-      setConfigured(d.configured); setCollectorSource(d.collector_source || 'cloud_browser'); setLoaded(true); setError('');
+      // 响应形状不保证：缺 rows 时按空列表展示并明说，而不是抛 reading 'filter' 让整页崩
+      const list = Array.isArray(d?.rows) ? d.rows : null;
+      setRows((list ?? []).filter((r: any) => typeof r.stock === 'number' && r.stock > 0));
+      setConfigured(!!d?.configured); setCollectorSource(d?.collector_source || 'cloud_browser'); setLoaded(true);
+      setError(list ? '' : '接口返回格式异常：缺少 rows 数组，已按空列表展示，请刷新或联系维护人员。');
     }).catch(e => {
       if (isCurrent()) setError(e.message);
     }).finally(() => {
@@ -41,9 +45,10 @@ export default function AutoPricing() {
     const state = refreshState.current;
     state.active = true;
     void refresh();
-    const t = setInterval(() => { void refresh(); }, 30000);
-    return () => { clearInterval(t); state.active = false; state.sequence++; state.pending = null; };
+    return () => { state.active = false; state.sequence++; state.pending = null; };
   }, [refresh]);
+  // 隐藏标签页时不轮询，回到前台若已过期立即补一次
+  useVisibleInterval(() => { void refresh(); }, 30000);
   const act = async (r: any, action: string) => {
     setBusy(key(r)); setError('');
     try {

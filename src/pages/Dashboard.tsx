@@ -7,6 +7,7 @@ import type { SkuAuditResult } from '../remoteApi';
 import type { DashboardStats, InventoryRow, ProcurementRecord, Product, ShipmentRecord } from '../types';
 import { formatPercent } from '../types';
 import { missingSkuTasks } from '../utils/dashboardTasks';
+import { isPlaceholderLabel, skuVariants, variantLabels } from '../utils/variants';
 
 export default function Dashboard() {
   const api = useApi();
@@ -60,9 +61,10 @@ export default function Dashboard() {
     const skuOwners = new Map<string, Set<string>>();
     let unresolvedMultiSkuProducts = 0;
     products.forEach(product => {
-      const tokens = (product.sku || '').split(/[\s,，;；]+/).map(value => value.trim()).filter(Boolean);
-      const labels = (product.chinese_product_name || '').split(/[\r\n]+/).map(value => value.trim()).filter(Boolean);
-      if (tokens.length > 1 && (labels.length !== tokens.length || labels.some(label => /待识别|待确认|历史分支/.test(label)))) unresolvedMultiSkuProducts += 1;
+      // 与 ProductList 共用同一套切分规则，避免"列表里能认出、主页认不出"的口径分裂
+      const tokens = skuVariants(product.sku);
+      const labels = variantLabels(product);
+      if (tokens.length > 1 && labels.some(isPlaceholderLabel)) unresolvedMultiSkuProducts += 1;
       new Set(tokens).forEach(sku => {
         if (!skuOwners.has(sku)) skuOwners.set(sku, new Set());
         skuOwners.get(sku)!.add(product.id);
