@@ -393,3 +393,9 @@ DIAG-SAFE-01（P1，Codex）：基线 f4368de 新增任意标量诊断回传及�
 ### DIAG-SAFE-02 历史记录读取边界（2026-10-18）
 
 基线d2a1b2d的排期统计再次带回monitor.failure_message。除修正写入端外，在collection_diagnostics.displayed_monitor的统一读取边界去掉异常原文，覆盖顶层、diagnostics和snapshot.diagnostics；旧进程写下的记录也不会把异常正文带到页面。复制对应层，不修改原始历史记录；保留错误类型、计数与报价。实际执行同一历史记录fixture：修复前泄露断言失败，修复后通过，另两项诊断保护回归通过。完整API/worker回归由最新head的后端CI执行，未在生产注入故障或触发采集；最终提交、部署和真实报价仍分别验收。
+
+### LOOP-HEARTBEAT-01 长轮次误报停止（2026-10-18）
+
+Codex，P1；基线7dc9b30。实际start_worker循环接入隔离SQLite、受控Future和虚拟时钟，分别执行1个/3个两分钟任务；旧代码只在轮次开始写心跳，60秒后loop_status.worker_alive变false，两个同条件反例均失败。将等待并发槽位与最终任务完成统一为有界等待，由持有本轮的线程每10秒更新alive_at；不使用独立守护线程代报，不增加cycles、不更改报价时间/成功状态，不扩并发、不触发真实采集或调价。停止更新61秒后仍判离线。
+
+同触发复测及loop_status、monitor、diagnostics、collector_bridge共57项通过；这证明隔离程序状态修正，不代表生产真实商品已采到。提交/CI/部署须按本修复PR核对，Windows同轮报价、品名与369件业务更正仍沿用各自验收标准。本轮新增main7dc9b30为装箱/显示修改；未将其提交说明中的自测计数当作Codex独立业务验收。

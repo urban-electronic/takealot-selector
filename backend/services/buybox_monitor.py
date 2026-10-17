@@ -152,12 +152,14 @@ def start_worker():
                     for _,key in sorted(jobs):
                         if _stop.is_set(): break
                         while len(pending)>=2 and not _stop.is_set():
-                            done,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
+                            done,pending=_wait_with_heartbeat(pending, SessionLocal)
                             for finished in done: finished.result()
                         if _stop.is_set(): break
                         pending.add(pool.submit(process,key))
                         if _stop.wait(2): break
-                    for future in pending: future.result()
+                    while pending:
+                        done,pending=_wait_with_heartbeat(pending, SessionLocal)
+                        for future in done: future.result()
                 if jobs:
                     with SessionLocal() as db:
                         _record_round_seconds(db, time.time()-round_started, len(jobs))
@@ -179,6 +181,28 @@ def _supervise():
                 start_worker()
         except Exception:
             pass
+
+
+def _wait_with_heartbeat(pending, session_factory):
+    """Keep the owning loop observable while bounded collection jobs run.
+
+    No supervisor heartbeat: a dead owner must still become stale. Waiting does
+    not count as another cycle or a successful quote, and never starts new jobs.
+    """
+    while True:
+        done, remaining = wait(pending, timeout=10, return_when=FIRST_COMPLETED)
+        with session_factory() as db:
+            try:
+                row = db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
+                if row:
+                    value = json.loads(row.value)
+                    value['alive_at'] = time.time()
+                    row.value = json.dumps(value, ensure_ascii=False)
+                    db.commit()
+            except Exception:
+                db.rollback()
+        if done:
+            return done, remaining
 
 
 def _record_cycle(db, jobs, paused_by):
