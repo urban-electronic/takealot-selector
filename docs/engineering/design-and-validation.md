@@ -28,6 +28,36 @@ that action, not a prettier screenshot or an HTTP 200.
 Read only the code and references relevant to that task. Reuse existing issue IDs,
 PRs and evidence. Fix the highest-priority executable problem before cosmetic work.
 
+## Skill discovery and updates
+
+The user's [vercel-labs/skills](https://github.com/vercel-labs/skills/tree/13e4063a1cf913f5606d57d42ab83a86f5001e04)
+reference is the CLI/skill manager, distinct from `vercel-labs/agent-skills`.
+Its `find-skills` instruction is installed unchanged at project scope for Codex.
+Its README, discovery logic and local-lock implementation informed this workflow:
+
+1. Identify a concrete task and capability gap. Check the installed skills first.
+   If the selected source already meets the request, do not perform a redundant
+   popularity search. Use the leaderboard/search only when discovery is needed.
+2. Inspect the matching SKILL.md, scripts/references, source and license before
+   adoption. Install counts, stars and publisher reputation are candidate signals,
+   not evidence that a skill is correct or safe for this task. Verify any reported
+   counts live rather than repeating example numbers from the skill text.
+3. Load only the selected instructions. Use `skills use` or direct reading for a
+   one-off task; install only useful repeatable skills, to this project and the
+   intended agent. Do not install all skills/agents or change global configuration.
+4. Commit the original skill and `skills-lock.json` together. Retain source,
+   skillPath and content hash. Verify existing entries remain intact; the hash
+   tracks local file contents, not trustworthiness or model capability.
+5. Review updates on an explicit request or a concrete compatibility/fix need.
+   Compare the selected skill's differences before acceptance, preserve local
+   changes and validate affected behavior. No unconditional periodic reinstall,
+   automatic bulk update or arbitrary external agent launch.
+6. Apply the useful method to the actual task and verify its outcome. Reading or
+   installing a skill is tooling preparation, not a product fix or business pass.
+
+Use the already-authorized tools/sessions; acquiring skills does not grant new
+permissions. This workflow never requests or transfers credentials.
+
 ## Design for clear actions and truthful state
 
 - Reuse existing colors, spacing, type, rounded controls and focus styles. Avoid
