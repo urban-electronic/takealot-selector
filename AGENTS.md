@@ -7,6 +7,9 @@ Maintain the existing operator application; user instructions take precedence.
 - For UI, async state, naming, inventory or collection changes, read the relevant
   section of [design and validation](docs/engineering/design-and-validation.md).
   Load only the references needed for the current task.
+- UI reviews also use the installed [web-design-guidelines](.agents/skills/web-design-guidelines/SKILL.md).
+  Fetch its current upstream rules through available HTTP/GitHub tools. Infer the
+  affected files from the user's task; do not ask again when scope is already clear.
 - Use existing tokens/components and dependencies. Keep the rounded, compact UI,
   clear primary actions and collapsed advanced explanations. No redesign without
   a task requirement.

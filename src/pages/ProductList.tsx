@@ -127,6 +127,32 @@ export default function ProductList() {
   const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
   const [variantEditor, setVariantEditor] = useState<{ productId: string; index: number; sku: string; label: string; makePrimary: boolean } | null>(null);
   const [savingVariant, setSavingVariant] = useState(false);
+  const variantDialogRef = useRef<HTMLDivElement>(null);
+  const variantSavingRef = useRef(false);
+  variantSavingRef.current = savingVariant;
+  const variantEditorOpen = variantEditor !== null;
+  useEffect(() => {
+    if (!variantEditorOpen) return;
+    const opener = document.activeElement as HTMLElement | null;
+    const dialog = variantDialogRef.current;
+    if (!dialog) return;
+    const controls = () => [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]')];
+    (controls()[0] || dialog).focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation();
+        if (!variantSavingRef.current) setVariantEditor(null);
+      } else if (event.key === 'Tab') {
+        const items = controls(); const first = items[0]; const last = items[items.length - 1];
+        if (!first) { event.preventDefault(); dialog.focus(); }
+        else if (!dialog.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault(); (event.shiftKey ? last : first).focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKey, true);
+    return () => { document.removeEventListener('keydown', handleKey, true); if (opener?.isConnected) opener.focus(); };
+  }, [variantEditorOpen]);
   const [contextProduct, setContextProduct] = useState<{ id: string; x: number; y: number } | null>(null);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
@@ -507,7 +533,7 @@ export default function ProductList() {
   };
 
   const saveVariant = async () => {
-    if (!variantEditor) return;
+    if (!variantEditor || variantSavingRef.current) return;
     const product = products.find(item => item.id === variantEditor.productId);
     if (!product) return;
     const skus = skuVariants(product.sku);
@@ -523,6 +549,7 @@ export default function ProductList() {
       skus.unshift(...skus.splice(variantEditor.index, 1));
       labels.unshift(...labels.splice(variantEditor.index, 1));
     }
+    variantSavingRef.current = true;
     setSavingVariant(true);
     try {
       const updated = await api.updateProduct(product.id, { sku: skus.join(' '), chinese_product_name: labels.join(' ') });
@@ -530,7 +557,7 @@ export default function ProductList() {
       setSelectedSkus(prev => { const next = new Set(prev); if (next.delete(oldSku)) next.add(nextSku); return next; });
       setVariantEditor(null);
     } catch (e: any) { alert(e.message || '分支保存失败'); }
-    finally { setSavingVariant(false); }
+    finally { variantSavingRef.current = false; setSavingVariant(false); }
   };
 
   // --- 内联编辑 ---
@@ -620,6 +647,7 @@ export default function ProductList() {
         return (
           <input
             type="checkbox"
+            aria-label={`选择产品：${p.sku || p.product_no}`}
             checked={allVariantsChecked}
             onChange={() => {
               setSelectedSkus(prev => {
@@ -650,13 +678,15 @@ export default function ProductList() {
         return (
           <span style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
             {p.takealot_url ? (
-              <span
-                onClick={() => openUrl(p.takealot_url!)}
+              <a
+                href={p.takealot_url}
+                target="_blank" rel="noreferrer"
+                onClick={e => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) { e.preventDefault(); void openUrl(p.takealot_url!); } }}
                 title={p.product_name || ''}
                 style={{ textDecoration: 'none', color: 'var(--color-primary)', cursor: 'pointer' }}
               >
                 {p.product_name || '(无标题)'}
-              </span>
+              </a>
             ) : (
               <span title={p.product_name || ''}>{p.product_name || '(无标题)'}</span>
             )}
@@ -666,6 +696,7 @@ export default function ProductList() {
         return editingCnameId === p.id ? (
           <input
             type="text" value={editingCnameValue}
+            aria-label={`中文品名：${p.sku}`} name="chinese_product_name" autoComplete="off"
             maxLength={10}
             onChange={(e) => setEditingCnameValue(e.target.value)}
             onBlur={() => commitEditCname(p.id)}
@@ -674,9 +705,9 @@ export default function ProductList() {
             className="cell-control"
           />
         ) : (
-          <span onDoubleClick={() => startEditCname(p)} title="双击编辑中文品名" style={{ cursor: 'pointer', display: 'inline-block', minWidth: 30, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <button type="button" className="product-cell-edit" aria-label={`编辑中文品名：${p.sku}`} onClick={() => startEditCname(p)} title={p.chinese_product_name || '编辑中文品名'} style={{ minWidth: 30, maxWidth: 120 }}>
             {p.chinese_product_name || '-'}
-          </span>
+          </button>
         );
       case 'actual_sale_price_zar':
         return (
@@ -684,6 +715,7 @@ export default function ProductList() {
             {editingPriceId === p.id ? (
               <input
                 type="number" step="0.01"
+                aria-label={`售价：${p.sku}`} name="actual_sale_price_zar" autoComplete="off"
                 value={editingPriceValue}
                 onChange={(e) => setEditingPriceValue(e.target.value)}
                 onBlur={() => commitEditPrice(p.id)}
@@ -693,9 +725,9 @@ export default function ProductList() {
                 style={{ width: 70 }}
               />
             ) : (
-              <span onClick={() => startEditPrice(p)} title="点击编辑售价" style={{ cursor: 'pointer', minWidth: 50, display: 'inline-block' }}>
+              <button type="button" className="product-cell-edit" aria-label={`编辑售价：${p.sku}`} onClick={() => startEditPrice(p)} title="编辑售价" style={{ minWidth: 50 }}>
                 {formatPrice(p.actual_sale_price_zar, 'ZAR')}
-              </span>
+              </button>
             )}
             <button
               onClick={() => handleRefreshPrice(p.id)}
@@ -713,6 +745,7 @@ export default function ProductList() {
       case 'fee_category':
         return (
           <select
+            aria-label={`Fee品类：${p.sku}`}
             value={p.fee_category || ''}
             onChange={(e) => handleFieldUpdate(p.id, 'fee_category', e.target.value || null)}
             className="cell-control"
@@ -741,6 +774,7 @@ export default function ProductList() {
         return editingSkuId === p.id ? (
           <input
             type="text" value={editingSkuValue}
+            aria-label={`SKU：${p.sku}`} name="sku" autoComplete="off" spellCheck={false}
             onChange={(e) => setEditingSkuValue(e.target.value)}
             onBlur={() => commitEditSku(p.id)}
             onKeyDown={(e) => { if (e.key === 'Enter') commitEditSku(p.id); if (e.key === 'Escape') setEditingSkuId(null); }}
@@ -748,9 +782,9 @@ export default function ProductList() {
             className="cell-control"
           />
         ) : (
-          <span onClick={() => startEditSku(p)} title="点击编辑SKU" style={{ cursor: 'pointer', display: 'inline-block', minWidth: 30 }}>
+          <button type="button" className="product-cell-edit" aria-label={`编辑SKU：${p.sku}`} onClick={() => startEditSku(p)} title={p.sku || '编辑SKU'} style={{ minWidth: 30 }} translate="no">
             {p.sku || '-'}
-          </span>
+          </button>
         );
       case 'minimum_price_at_20_margin':
         return p.minimum_price_at_20_margin != null ? `R ${p.minimum_price_at_20_margin.toFixed(0)}` : '-';
@@ -759,6 +793,7 @@ export default function ProductList() {
       case 'shipping_method':
         return (
           <select
+            aria-label={`运输方式：${p.sku}`}
             value={p.shipping_method || ''}
             onChange={(e) => handleFieldUpdate(p.id, 'shipping_method', e.target.value || null)}
             className="cell-control"
@@ -771,6 +806,7 @@ export default function ProductList() {
       case 'link_status':
         return (
           <select
+            aria-label={`链接状态：${p.sku}`}
             value={p.link_status || '未购买'}
             onChange={(e) => handleFieldUpdate(p.id, 'link_status', e.target.value)}
             className="cell-control cell-control--tinted"
@@ -1152,12 +1188,12 @@ export default function ProductList() {
         </div>
       )}
       {variantEditor && <div className="packing-modal-mask" onClick={() => !savingVariant && setVariantEditor(null)}>
-        <div className="packing-modal variant-editor-modal" onClick={e => e.stopPropagation()}>
-          <h3>修改 SKU 分支</h3>
-          <div className="form-group"><label>分支 SKU</label><input value={variantEditor.sku} onChange={e => setVariantEditor({ ...variantEditor, sku: e.target.value })} /></div>
-          <div className="form-group"><label>真实规格名称</label><input value={variantEditor.label} onChange={e => setVariantEditor({ ...variantEditor, label: e.target.value })} placeholder="例如：军绿色、XL、128GB" /><small>填写用户能直接辨认的颜色、尺码、容量或型号。</small></div>
-          <label className="variant-primary-toggle"><input type="checkbox" checked={variantEditor.makePrimary} onChange={e => setVariantEditor({ ...variantEditor, makePrimary: e.target.checked })} />设为主款（保存后移动到第一位）</label>
-          <div className="modal-actions"><button className="btn btn-outline" disabled={savingVariant} onClick={() => setVariantEditor(null)}>取消</button><button className="btn btn-primary" disabled={savingVariant} onClick={saveVariant}>{savingVariant ? '保存中...' : '保存分支'}</button></div>
+        <div ref={variantDialogRef} role="dialog" aria-modal="true" aria-labelledby="variant-editor-title" aria-busy={savingVariant} tabIndex={-1} className="packing-modal variant-editor-modal" onClick={e => e.stopPropagation()}>
+          <h3 id="variant-editor-title">修改 SKU 分支</h3>
+          <div className="form-group"><label htmlFor="variant-sku">分支 SKU</label><input id="variant-sku" name="variant_sku" autoComplete="off" spellCheck={false} disabled={savingVariant} value={variantEditor.sku} onChange={e => setVariantEditor({ ...variantEditor, sku: e.target.value })} /></div>
+          <div className="form-group"><label htmlFor="variant-label">真实规格名称</label><input id="variant-label" name="variant_label" autoComplete="off" disabled={savingVariant} aria-describedby="variant-label-hint" value={variantEditor.label} onChange={e => setVariantEditor({ ...variantEditor, label: e.target.value })} placeholder="例如：军绿色、XL、128GB…" /><small id="variant-label-hint">填写用户能直接辨认的颜色、尺码、容量或型号。</small></div>
+          <label className="variant-primary-toggle"><input type="checkbox" disabled={savingVariant} checked={variantEditor.makePrimary} onChange={e => setVariantEditor({ ...variantEditor, makePrimary: e.target.checked })} />设为主款（保存后移动到第一位）</label>
+          <div className="modal-actions"><button className="btn btn-outline" disabled={savingVariant} onClick={() => setVariantEditor(null)}>取消</button><button className="btn btn-primary" disabled={savingVariant} onClick={saveVariant}>{savingVariant ? '保存中…' : '保存分支'}</button></div>
         </div>
       </div>}
       {contextProduct && <div className="product-context-menu" style={{ left: contextProduct.x, top: contextProduct.y }} onClick={e => e.stopPropagation()}>

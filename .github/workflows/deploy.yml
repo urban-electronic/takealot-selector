@@ -25,6 +25,8 @@ jobs:
         run: npm run check:visual
       - name: Check Buybox states and refresh races
         run: npm run test:buybox
+      - name: Check product interactions and dialog keyboard safety
+        run: npm run test:products
       - name: Build
         run: npm run build
         env:
