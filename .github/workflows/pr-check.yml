@@ -54,6 +54,9 @@ jobs:
       - name: Check pricing and replenishment logic
         run: npm run test:operations
 
+      - name: Check procurement identity consistency
+        run: npm run test:procurement
+
       - name: Build
         run: npm run build
 

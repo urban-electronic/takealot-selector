@@ -60,6 +60,16 @@ check(
 );
 check(quoteFreshness({}, NOW).fresh === 'none', '从未成功过就是 none，不是 stale');
 check(quoteFreshness({ last_success_at: 'not-a-date' }, NOW).fresh === 'none', '坏时间戳不得当成新鲜');
+// 未来时间戳：旧实现用 Math.max(0, now-at) 把负数压成 0，于是"明天成功过"会显示成
+// 「刚刚」。时钟错、时区错、脏数据都会走到这里，不能当成最新报价。
+const future = quoteFreshness({ last_success_at: new Date(NOW + 24 * 3600_000).toISOString() }, NOW);
+check(future.fresh === 'invalid', 'future timestamp is invalid, not fresh');
+check(future.ageText !== '刚刚', 'future timestamp never renders as 刚刚');
+check(future.tone === 'danger', 'future timestamp is a danger state');
+check(
+  quoteFreshness({ last_success_at: new Date(NOW + 30_000).toISOString() }, NOW).fresh === 'fresh',
+  '几十秒的时钟偏差仍然按新鲜处理，不误报',
+);
 
 // ---- 每个状态都要同时给出：现状、依据、动作 ------------------------------------
 const required = view => {
@@ -150,7 +160,16 @@ check(describeOwnership({}).label === '未采集', 'no quote means 未采集, ne
 const matched = describeOwnership({ buybox_price: 269, price_ownership: { state: 'matched' } });
 check(matched.label === '疑似在持位', 'equal price is only 疑似在持位');
 check(matched.explain.includes('不能证明是本店在占位'), 'equal price is explicitly not proof of identity');
-check(describeOwnership({ buybox_price: 269, holding_buybox: true }).label === '已确认在持位', 'verified holding keeps its own label');
+// Codex 复核：holding_buybox 是历史字段——后端现在只会写 False（价不同）或
+// None（价相同），从不写 True。旧记录里残留的 true 只说明"当时同价"，不构成
+// 卖家身份证据（buybox_monitor.py:65），所以不能给成功态。
+const legacyHolding = describeOwnership({ buybox_price: 269, holding_buybox: true });
+check(legacyHolding.label === '同价 · 卖家未核实', 'legacy holding flag is not presented as verified identity');
+check(legacyHolding.tone === 'warning', 'legacy holding flag never gets a success tone');
+check(
+  describeOwnership({ buybox_price: 269, holding_buybox: true }).label !== '已确认在持位',
+  'no field in the current backend constitutes identity evidence',
+);
 check(describeOwnership({ buybox_price: 269, price_matches_buybox: true }).label === '同价 · 卖家未核实', 'legacy equal price is not upgraded to holding');
 check(describeOwnership({ buybox_price: 0 }).label === '未采集', 'a zero quote is not a real quote');
 check(describeOwnership({ buybox_price: 269, price_ownership: { state: 'mismatch_pending' } }).label.includes('复核中'), 'one lost round is still pending');
@@ -165,9 +184,17 @@ const fleetBad = describeFleet(rows, ctx());
 check(fleetBad.summary.includes('1 个 SKU 采集失败'), 'fleet states how many failed');
 check(fleetBad.summary.includes('网站要求人工验证'), 'fleet states the dominant plain-language reason');
 check(fleetBad.action.length > 0, 'fleet always offers an action when something is broken');
-check(fleetBad.retryable === 1, 'fleet counts rows that can be retried in one click');
+check(fleetBad.retryable === 0 && fleetBad.blocked === 1, '被网站挡住的行只算 blocked，不算可重试');
 check(fleetBad.suggestedInterval === 120, 'throttling suggests a longer interval');
 check(fleetBad.tone === 'warning', 'partial failure is a warning, not a neutral state');
+
+// 自身故障（解析器/网络）才是可以一键重试的；这两类必须分开计数，
+// 否则界面一边劝"别反复点采集"，按钮自己就在点。
+const fleetFault = describeFleet([
+  { monitor: { status: 'error', error_code: 'collector_error', enabled: true } },
+], ctx());
+check(fleetFault.retryable === 1 && fleetFault.blocked === 0, '自身故障行算可重试');
+check(fleetFault.suggestedInterval === null, '自身故障不建议改间隔');
 
 const fleetAllBad = describeFleet([
   { monitor: { status: 'error', error_code: 'site_challenge', enabled: true } },

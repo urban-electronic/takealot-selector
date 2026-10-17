@@ -130,6 +130,27 @@ def test_manual_retry_clears_failure_counter(monkeypatch):
         # 只是暂停不是重试，历史失败次数要保留，恢复后才知道真实状况。
         assert value['failures']==9 and not value['enabled']
 
+def test_keep_backoff_changes_settings_without_retrying_blocked_pages(monkeypatch):
+    # 被网站验证挡住时，界面劝用户"反复点立即采集没有用"，所以"改为 120 分钟"
+    # 这个动作本身也不能顺手再打开一次被挡住的页面。
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    key=monitor.PREFIX+DEFAULT_STORE_ID+':one:one'
+    items=[{'product_id':'one','offer_id':'one'}]
+    with route_db()as db:
+        routes.monitor_bulk(routes.MonitorBulk(enabled=True,interval_minutes=30,items=items),db,DEFAULT_STORE_ID)
+        row=db.query(SystemSettings).filter_by(key=key).first()
+        value=json.loads(row.value);value.update(failures=5,status='error',next_due=1234567.0,error_code='site_challenge')
+        row.value=json.dumps(value);db.commit()
+        routes.monitor_bulk(routes.MonitorBulk(enabled=True,keep_backoff=True,interval_minutes=120,items=items),db,DEFAULT_STORE_ID)
+        value=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        assert value['interval_minutes']==120 and value['enabled']
+        assert value['next_due']==1234567.0 and value['failures']==5 and value['status']=='error'
+        # 不带 keep_backoff 时仍是"重新开始"，两种语义必须分得开。
+        routes.monitor_bulk(routes.MonitorBulk(enabled=True,interval_minutes=120,items=items),db,DEFAULT_STORE_ID)
+        value=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        assert value['next_due']==0 and value['failures']==0 and value['status']=='queued'
+
+
 def test_concurrent_stop_is_not_overwritten(monkeypatch):
     client,result=run(monkeypatch,pause=True)
     assert not result['enabled'] and result['revision']==2 and result['status']=='paused'

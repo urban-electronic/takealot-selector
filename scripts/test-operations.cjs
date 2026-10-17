@@ -21,8 +21,11 @@ try {
   assert.equal(evaluatePricing({ ...input, state: { ...input.state, stock: 0 } }).decision, 'reject');
   assert.equal(evaluatePricing({ ...input, state: { ...input.state, todayChanges: 5 } }).decision, 'reject');
   assert.equal(evaluatePricing({ ...input, competitorOffers: [{ ...offer(260), fetchedAt: new Date(now - 3600000) }] }).decision, 'reject');
-  assert.equal(evaluatePricing({ ...input, competitorOffers: [offer(300), { ...offer(200), fetchedAt: new Date(now - 3600000) }] }).decision, 'skip', '过期报价被剔除，不能借新报价的时间参与竞价');
-  assert.notEqual(evaluatePricing({ ...input, competitorOffers: [offer(263, 'best_price'), { ...offer(200), fetchedAt: new Date(now - 3600000) }] }).decision, 'reject', '一条过期报价不得否决整轮调价');
+  // 行情过期/未来/非法时保持现价，这是既定口径（docs/pricepilot-integration.md：
+  // 「行情过期均保持现价」）。不能改成"只挑新的用"：一条报价不可信就说明这一轮
+  // 的市场快照不完整，此时改价是在猜。
+  assert.equal(evaluatePricing({ ...input, competitorOffers: [offer(300), { ...offer(200), fetchedAt: new Date(now - 3600000) }] }).decision, 'reject', '一条过期报价就保持现价，不能只挑新的用');
+  assert.equal(evaluatePricing({ ...input, competitorOffers: [offer(263, 'best_price'), { ...offer(200), fetchedAt: new Date(now - 3600000) }] }).decision, 'reject', '新 263 + 旧 200 不得压到 262');
   assert.equal(evaluatePricing({ ...input, competitorOffers: [offer(250, 'best_price', 'backorder'), offer(263, 'best_price')] }).newPrice, 262, '缺货竞品不参与压价');
   assert.equal(evaluatePricing({ ...input, state: { ...input.state, lastPricedAt: new Date(now.getTime() - 5 * 60000) } }).decision, 'skip', '未持有时冷却同样生效');
   assert.equal(evaluatePricing({ ...input, competitorOffers: [{ ...offer(260), fetchedAt: new Date(now.getTime() + 60000) }] }).decision, 'reject', '拒绝未来快照');

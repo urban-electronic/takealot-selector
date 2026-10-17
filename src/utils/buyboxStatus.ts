@@ -18,7 +18,7 @@
  */
 
 export type Tone = 'success' | 'info' | 'warning' | 'danger' | 'neutral';
-export type Freshness = 'fresh' | 'aging' | 'stale' | 'none';
+export type Freshness = 'fresh' | 'aging' | 'stale' | 'none' | 'invalid';
 
 export const COLLECTOR_NAMES: Record<string, string> = {
   cloud_browser: '后台采集器',
@@ -65,6 +65,9 @@ export interface FreshnessView {
   tone: Tone;
 }
 
+/** 服务器与浏览器有几十秒时钟差异是正常的；超过这个量就不是差异，是数据有问题。 */
+const FUTURE_TOLERANCE_MS = 5 * 60_000;
+
 /**
  * 报价新鲜度。阈值按该行自己的采集间隔算，而不是写死 5 分钟：
  *   2 个间隔内 = 新鲜；6 个间隔内 = 偏旧；再久 = 过期。
@@ -74,6 +77,11 @@ export interface FreshnessView {
 export function quoteFreshness(monitor: any, now: number): FreshnessView {
   const at = Date.parse(monitor?.last_success_at || '');
   if (!Number.isFinite(at)) return { fresh: 'none', ageText: '尚无成功记录', ageMs: null, tone: 'neutral' };
+  // 未来时间戳不是"刚刚"：旧实现用 Math.max(0, now-at) 把负数压成 0，
+  // 于是时钟错、时区错或脏数据都会显示成最新成功的报价，这是最危险的一种错。
+  if (at > now + FUTURE_TOLERANCE_MS) {
+    return { fresh: 'invalid', ageText: '记录时间在未来', ageMs: null, tone: 'danger' };
+  }
   const ageMs = Math.max(0, now - at);
   const intervalMs = Math.max(1, Number(monitor?.interval_minutes) || 5) * 60_000;
   if (ageMs <= intervalMs * 2) return { fresh: 'fresh', ageText: humanAge(ageMs), ageMs, tone: 'success' };
@@ -286,10 +294,24 @@ export function describeCollection(monitor: any, ctx: CollectionContext): Collec
       label: '已停采',
       headline: '这个 SKU 不会自动采',
       detail:
-        freshness.ageMs !== null
-          ? `最后一次成功是${freshness.ageText}，之后价格不会再更新。`
-          : '还没有成功采过。',
+        freshness.fresh === 'invalid'
+          ? '记录里的成功时间在未来，判断不了这份报价有多旧。'
+          : freshness.ageMs !== null
+            ? `最后一次成功是${freshness.ageText}，之后价格不会再更新。`
+            : '还没有成功采过。',
       action: '需要更新时点「自动」重新开启。',
+    };
+  }
+
+  // 时间戳不可信时不能落进下面的"成功"分支：宁可说不知道，也不能说这是最新价。
+  if (freshness.fresh === 'invalid') {
+    return {
+      ...freshness,
+      tone: 'danger',
+      label: '时间异常',
+      headline: '成功时间晚于当前时间',
+      detail: '这条记录的成功时间在未来，通常来自时钟或时区错误，不能当作最新报价使用。',
+      action: '点「立即采集」重新采一次；如果仍然如此，请检查服务器时间。',
     };
   }
 
@@ -375,7 +397,12 @@ const OWNERSHIP_COPY: Record<string, OwnershipView> = {
 
 /**
  * 「本店是不是这个 Buybox 的持有者」的翻译。
- * 注意：后端 identity_verified 恒为 False —— 这是价格推断，不是卖家身份核实。
+ *
+ * 这里故意没有"已确认"态：后端 identity_verified 恒为 False，
+ * buybox_monitor.py:65 也写明「A price match alone is not proof of seller identity」。
+ * holding_buybox 是历史字段——后端现在只会写 False（价不同）或 None（价相同），
+ * 从不写 True；旧记录里残留的 True 也只能说明"当时价相同"，不构成卖家身份证据。
+ * 所以它和 price_matches_buybox 合并到同一条"同价但未核实"的结论，不给成功态。
  */
 export function describeOwnership(monitor: any): OwnershipView {
   const m = monitor || {};
@@ -385,14 +412,15 @@ export function describeOwnership(monitor: any): OwnershipView {
   }
   const state = m.price_ownership?.state;
   if (state && OWNERSHIP_COPY[state]) return OWNERSHIP_COPY[state];
-  if (m.holding_buybox === true) {
-    return { tone: 'success', label: '已确认在持位', explain: '卖家接口确认本店就是当前 Buybox 的持有者。' };
+  if (m.holding_buybox === true || m.price_matches_buybox) {
+    return {
+      tone: 'warning',
+      label: '同价 · 卖家未核实',
+      explain: '本店售价与 Buybox 价相同，但这是价格推断，没有卖家身份证据，不能据此认定本店在持位。',
+    };
   }
   if (m.holding_buybox === false) {
     return { tone: 'neutral', label: '不在持位', explain: 'Buybox 价和本店售价不同，本店不在持位。' };
-  }
-  if (m.price_matches_buybox) {
-    return { tone: 'warning', label: '同价 · 卖家未核实', explain: 'Buybox 价和本店售价一样，但没核实占位的到底是不是本店。' };
   }
   return { tone: 'neutral', label: '待核对卖家', explain: '已有报价，但还没能判断本店是否在持位。' };
 }
@@ -403,8 +431,13 @@ export interface FleetView {
   summary: string;
   /** 建议动作，空串表示不需要用户动手。 */
   action: string;
-  /** 可以一键重试的行数（清掉 8 小时退避）。 */
+  /** 可以立刻重试的行数：自身故障类，清掉退避是合理的。 */
   retryable: number;
+  /**
+   * 被网站验证/限流挡住的行数。这些行只能改间隔，不能立刻重试——
+   * 否则界面一边劝"别反复点采集"，按钮自己就在反复点。
+   */
+  blocked: number;
   /** 被限流/被验证阻挡时建议调大的间隔，null 表示不建议改。 */
   suggestedInterval: number | null;
 }
@@ -429,13 +462,15 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const queued = monitors.filter(m => m.status === 'queued').length;
   const errored = monitors.filter(m => m.status === 'error');
   const failing = errored.length;
-  const retryable = list.filter(r => r?.monitor?.status === 'error' && r?.monitor?.enabled).length;
+  const failedRows = list.filter(r => r?.monitor?.status === 'error' && r?.monitor?.enabled);
+  const blocked = failedRows.filter(r => THROTTLED.has(r?.monitor?.error_code || '')).length;
+  const retryable = failedRows.length - blocked;
   const newest = monitors.reduce((max, m) => {
     const at = Date.parse(m.last_success_at || '');
     return Number.isFinite(at) && at > max ? at : max;
   }, 0);
 
-  const base = { retryable, suggestedInterval: null as number | null };
+  const base = { retryable, blocked, suggestedInterval: null as number | null };
   const none = (tone: Tone, summary: string, action = ''): FleetView => ({ ...base, tone, summary, action });
 
   if (ctx.configured === false) return none('danger', '卖家接口没配置，采集无法开始', '到「设置」完成卖家接口配置');

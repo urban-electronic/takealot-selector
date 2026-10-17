@@ -121,6 +121,12 @@ export default function Procurement() {
     return '';
   })();
 
+  // 序列号被改掉、但产品关联还指着原产品：这时候提交会写进一条
+  // 「序列号属于 A、关联却指向 B」的记录，之后补货、成本、毛利全按错的产品算。
+  // 所以关联没解决之前不允许提交，而不是只在旁边给一句提示。
+  const linkedNo = linkedProductNo.trim();
+  const identityMismatch = !!form.product_id && !!linkedNo && form.product_no.trim() !== linkedNo;
+
   const resetForm = () => {
     setForm({ product_no: '', product_name: '', product_id: '', quantity: '', total_amount: '', notes: '', status: 'in_transit', recorded_at: todayLocal() });
     setEditingId(null);
@@ -132,6 +138,10 @@ export default function Procurement() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (identityMismatch) {
+      setError(`序列号 ${form.product_no.trim() || '（空）'} 与已关联的产品 #${linkedNo} 不一致。请重新选择匹配的产品，或点「解除关联」后再保存。`);
+      return;
+    }
     const payload = {
       product_id: form.product_id,
       product_no: parseInt(form.product_no) || 0,
@@ -306,9 +316,10 @@ export default function Procurement() {
                   </div>
                 )}
                 {searching && <small style={{ color: 'var(--text-subtle)' }}>搜索中...</small>}
-                {form.product_id && linkedProductNo && form.product_no.trim() !== linkedProductNo && (
-                  <small style={{ color: 'var(--text-subtle)', display: 'block', marginTop: 4 }}>
+                {identityMismatch && (
+                  <small role="alert" style={{ color: 'var(--warning, #a15c00)', display: 'block', marginTop: 4 }}>
                     序列号已改为 {form.product_no.trim() || '（空）'}，当前仍关联原产品 #{linkedProductNo}。
+                    先解决关联才能保存，否则这条记录会挂到错的产品上。
                     <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }}
                       onClick={() => { setForm(prev => ({ ...prev, product_id: '', product_name: '' })); setLinkedProductNo(''); }}>
                       解除关联
@@ -366,7 +377,8 @@ export default function Procurement() {
             </div>
 
             <div className="page-actions">
-              <button type="submit" className="btn btn-primary">{editingId ? '保存修改' : '创建记录'}</button>
+              <button type="submit" className="btn btn-primary" disabled={identityMismatch}
+                title={identityMismatch ? '序列号与已关联产品不一致，请先重新选择产品或解除关联' : ''}>{editingId ? '保存修改' : '创建记录'}</button>
               <button type="button" className="btn" onClick={resetForm}>取消</button>
             </div>
           </form>

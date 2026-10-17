@@ -180,18 +180,17 @@ export function evaluatePricing(input: PricingInput): PricingResult {
     }
   }
 
-  // 单个过期报价不再否决整轮：把无效/过期的剔掉，只在一条都不剩时才拒绝。
-  // 原来只要有一个竞品报价超时就整轮不调价，一个慢半拍的竞品能把整个 SKU 冻住。
-  const usable = offers.filter(o =>
-    Number.isFinite(o.price) && o.price > 0 &&
-    Number.isFinite(o.fetchedAt.getTime()) && o.fetchedAt <= input.state.now &&
-    input.state.now.getTime() - o.fetchedAt.getTime() <= input.state.offersMaxAgeMs);
-  if (usable.length === 0) {
-    return reject("竞品报价全部无效或已过期，拒绝调价");
+  // 行情过期/时间在未来/价格非法时保持现价，这是既定口径（docs/pricepilot-integration.md：
+  // 「行情过期均保持现价」），不能为了"少卡一轮"把这条守卫放宽。任意一条竞品报价
+  // 不可信就说明这一轮的市场快照不完整，此时改价是在猜。
+  if (offers.some(o => !Number.isFinite(o.price) || o.price <= 0 ||
+      !Number.isFinite(o.fetchedAt.getTime()) || o.fetchedAt > input.state.now ||
+      input.state.now.getTime() - o.fetchedAt.getTime() > input.state.offersMaxAgeMs)) {
+    return reject("竞品价格或时间无效，或数据已过期，拒绝调价");
   }
   // 有现货竞品时只跟现货竞价；缺货/预售的挂价不代表市场价，跟着它降价是白送利润。
-  const inStock = usable.filter(o => (o.status ?? "in_stock") === "in_stock");
-  offers = inStock.length > 0 ? inStock : usable;
+  const inStock = offers.filter(o => (o.status ?? "in_stock") === "in_stock");
+  if (inStock.length > 0) offers = inStock;
 
   if (input.state.maxDailyChanges > 0 && input.state.todayChanges >= input.state.maxDailyChanges) {
     return reject(`超过当日最大调价次数（${input.state.maxDailyChanges}）`);

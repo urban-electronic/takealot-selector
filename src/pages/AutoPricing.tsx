@@ -29,11 +29,17 @@ export default function AutoPricing() {
     setRefreshing(true);
     const pending = getAutomaticPricing().then(d => {
       if (!isCurrent()) return;
-      // 响应形状不保证：缺 rows 时按空列表展示并明说，而不是抛 reading 'filter' 让整页崩
+      // 响应形状不保证。缺 rows 时保留上一次的有效快照并明说：整表清空比显示
+      // 旧数据更危险——用户会以为 SKU 都没了，还会顺手重新开启采集。
       const list = Array.isArray(d?.rows) ? d.rows : null;
-      setRows((list ?? []).filter((r: any) => typeof r.stock === 'number' && r.stock > 0));
-      setConfigured(!!d?.configured); setCollectorSource(d?.collector_source || 'cloud_browser'); setLoaded(true);
-      setError(list ? '' : '接口返回格式异常：缺少 rows 数组，已按空列表展示，请刷新或联系维护人员。');
+      if (list) {
+        setRows(list.filter((r: any) => typeof r.stock === 'number' && r.stock > 0));
+        setConfigured(!!d?.configured); setCollectorSource(d?.collector_source || 'cloud_browser');
+        setError('');
+      } else {
+        setError('接口返回格式异常：缺少 rows 数组。已保留上一次成功加载的列表，请稍后重试。');
+      }
+      setLoaded(true);
     }).catch(e => {
       if (isCurrent()) setError(e.message);
     }).finally(() => {
@@ -92,16 +98,24 @@ export default function AutoPricing() {
       await refresh(true);
     } catch(e) { setError((e as Error).message); } finally { setBusy(''); }
   };
-  // 一键重试：save_monitors 会把 next_due 归零，因此这一次调用能清掉
-  // backend/services/buybox_monitor.py 里那个 8 小时退避（failures 从不归零导致的）。
+  // 一键处理失败行。两类失败要分开：
+  //   自身故障（解析器、网络、配置）→ 清 next_due 立刻重试，这一步有意义；
+  //   被网站验证/限流挡住 → 只改间隔，不清 next_due。界面正文已经在劝用户
+  //   「反复点立即采集没有用」，按钮自己就不能偷偷再点一次。
+  // backend/api/pricing_routes.py 的 keep_backoff 就是为这件事加的。
+  const BLOCKED = ['site_challenge', 'rate_limited', 'http_forbidden'];
   const retryFailed = async (minutes?: number) => {
-    const targets = rows.filter(r => r.monitor?.status === 'error' && r.monitor?.enabled);
-    if (!targets.length) return;
+    const failed = rows.filter(r => r.monitor?.status === 'error' && r.monitor?.enabled);
+    if (!failed.length) return;
+    const next = minutes ?? intervalMinutes;
+    const blocked = failed.filter(r => BLOCKED.includes(r.monitor?.error_code));
+    const retryable = failed.filter(r => !BLOCKED.includes(r.monitor?.error_code));
     setBusy('retry'); setError('');
     try {
       if (minutes) setIntervalMinutes(minutes);
-      await bulkBuyboxMonitor({ enabled: true, interval_minutes: minutes ?? intervalMinutes, segment: '',
-        items: targets.map(r => ({ product_id: r.product_id, offer_id: r.offer_id })) });
+      const items = (list: any[]) => list.map(r => ({ product_id: r.product_id, offer_id: r.offer_id }));
+      if (retryable.length) await bulkBuyboxMonitor({ enabled: true, interval_minutes: next, segment: '', items: items(retryable) });
+      if (blocked.length) await bulkBuyboxMonitor({ enabled: true, keep_backoff: true, interval_minutes: next, segment: '', items: items(blocked) });
       await refresh(true);
     } catch (e) { setError((e as Error).message); } finally { setBusy(''); }
   };
@@ -114,6 +128,11 @@ export default function AutoPricing() {
   // 这里显式取一次时钟，保证同一屏内所有相对时间用的是同一个基准。
   const ctx = { now: Date.now(), collectorSource, configured };
   const fleet = describeFleet(rows, ctx);
+  // 被网站挡住的行没有"立刻重试"这个选项，只有"把间隔调长"；只有自身故障才给重试。
+  const canAct = fleet.retryable > 0 || (fleet.blocked > 0 && !!fleet.suggestedInterval);
+  const fleetAction = fleet.suggestedInterval
+    ? `改为 ${fleet.suggestedInterval} 分钟${fleet.retryable ? `，重试 ${fleet.retryable} 个` : ''}`
+    : `重试 ${fleet.retryable} 个`;
   // 取更近的一份行情：采集成功晚于上次调价评估时用采集结果，否则用调价评估时留下的。
   const market = (r: any) => r.monitor?.last_success_at && (!r.rule.last_evaluated_at || r.monitor.last_success_at > r.rule.last_evaluated_at) ? r.monitor : r.rule;
   const collection = (r:any) => describeCollection(r.monitor, ctx);
@@ -124,7 +143,7 @@ export default function AutoPricing() {
     {loaded&&<div className={`collection-bar tone-${fleet.tone}`}>
       <span className={`status-pill tone-${fleet.tone}`}>{fleet.summary}</span>
       {fleet.action&&<small>{fleet.action}</small>}
-      {fleet.retryable>0&&<button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>retryFailed(fleet.suggestedInterval??undefined)}>{fleet.suggestedInterval?`改为 ${fleet.suggestedInterval} 分钟并重试`:`重试 ${fleet.retryable} 个`}</button>}
+      {canAct&&<button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>retryFailed(fleet.suggestedInterval??undefined)}>{fleetAction}</button>}
     </div>}
 
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
@@ -142,7 +161,7 @@ export default function AutoPricing() {
           <td><div className="price-range">{input(r,'min_price','最低')}{input(r,'max_price','最高')}</div><small>{(drafts[key(r)]?.use_system_min??r.rule.use_system_min??true)?'系统利润底价':'手动底价'} · 最高可留空</small><select aria-label={`${r.sku}调价策略`} value={drafts[key(r)]?.strategy??r.rule.strategy??'takealot_buybox'} onChange={e=>setDrafts({...drafts,[key(r)]:{...drafts[key(r)],strategy:e.target.value}})}><option value="takealot_buybox">Buybox / 智能试涨</option><option value="follow_lowest">跟随现货最低价</option></select><div className="row-buttons"><button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>act(r,'save')}>保存区间</button><button className={`btn btn-sm ${r.rule.enabled?'btn-outline':'btn-success'}`} disabled={!!busy||!configured} title={r.rule.last_result||''} onClick={()=>act(r,r.rule.write_pending?'reconcile':r.rule.enabled?'pause':'start')}>{busy===key(r)?'处理中…':r.rule.write_pending?'核验现价':r.rule.enabled?'暂停调价':'启动调价'}</button></div><small className={r.rule.write_pending?'text-warning':r.rule.enabled?'text-success':''}>调价：{r.rule.write_pending?'待核验':r.rule.enabled?'运行中':'关闭'}{r.rule.last_result?` · ${r.rule.last_result}`:''}</small></td></tr>;
       })}</tbody></table></div>
       <div className="operations-pagination"><span>{visible.length} 个SKU · 每页10条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
-      {loaded&&!rows.length&&<p className="operations-empty">暂无本店有库存的SKU，请先同步库存。</p>}
+      {loaded&&!rows.length&&!error&&<p className="operations-empty">暂无本店有库存的SKU，请先同步库存。</p>}
     </div>
     <details className="operations-explanation" onToggle={e=>setMaintenance(e.currentTarget.open)}><summary>采集维护（高级）</summary><p>日常采集由当前在线的采集器执行。这里只用于人工排查网站验证或配送设置；关闭会释放操作会话。</p>{maintenance&&<Suspense fallback={<p>正在加载维护工具…</p>}><CloudBrowser rows={rows} onCollected={()=>{void refresh(true);}} /></Suspense>}</details>
     <details className="operations-explanation"><summary>调价与试涨规则（点开看具体判定）</summary><ul><li><b>最低价</b>默认用系统 20% 利润底价；可以手动填一个固定底价。</li><li><b>Buybox 价和本店售价相同</b>只说明价格一样，不能证明占位的是本店，所以此时保持现价，不涨价。</li><li><b>确认本店在持位</b>才评估试涨；<b>不在持位</b>时只降不升。</li><li><b>确认竞品非现货</b>时约 3% 试涨，12 小时观察一次，累计不超过启用时参考价的 20%。</li><li><b>48 小时没有新成交</b>则回退到之前的价位。</li><li><b>采集失败</b>保持现价；<b>改价结果未确认</b>时自动暂停调价，等你核验。</li></ul></details>

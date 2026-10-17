@@ -84,7 +84,9 @@ async function scenario(monitor, inspect, overrides = {}) {
   });
   await scenario({ ...known, status: 'success', source: 'local_collector', holding_buybox: true }, tr => {
     check(tr.textContent.includes('报价来源：本机采集器'), 'native quote source preserved');
-    check(tr.querySelectorAll('td')[2].textContent.includes('持有'), 'verified holding remains visible');
+    // 历史 holding_buybox=true 只代表当时同价，不是卖家身份证据，不能显示成"已确认持有"。
+    check(tr.querySelectorAll('td')[2].textContent.includes('卖家未核实'), 'legacy holding flag is not verified identity');
+    check(!tr.querySelectorAll('td')[2].textContent.includes('已确认'), 'legacy holding flag never claims confirmation');
   });
   await scenario({ status: 'queued' }, tr => {
     check(tr.querySelectorAll('td')[2].textContent.includes('未采集'), 'empty quote does not show success');
@@ -138,15 +140,51 @@ async function scenario(monitor, inspect, overrides = {}) {
       const bar = host.querySelector('.collection-bar');
       check(!!bar && bar.querySelectorAll('li').length === 0, 'header status is one line, not a list');
       check(bar.textContent.includes('网站要求人工验证'), 'header names the cause in plain language');
-      const retry = [...bar.querySelectorAll('button')].find(b => b.textContent.includes('重试'));
-      check(!!retry, 'a batch retry is offered when rows are stuck in backoff');
-      await act(async () => retry.click());
-      check(bulkCalls.length === 1, 'batch retry calls the bulk endpoint once');
-      check(bulkCalls[0].enabled === true, 'batch retry keeps collection enabled');
-      check(bulkCalls[0].interval_minutes === 120, 'throttled retry widens the interval instead of hammering');
-      check(bulkCalls[0].items.length === 1, 'batch retry targets only the stuck rows');
+      // 被网站挡住时只改间隔，不立刻再试一次——否则页面正文劝「别反复点」，
+      // 按钮自己却在点。
+      const widen = [...bar.querySelectorAll('button')].find(b => b.textContent.includes('改为 120 分钟'));
+      check(!!widen, 'a widen-interval action is offered for blocked rows');
+      check(!bar.textContent.includes('并重试'), 'blocked rows are not retried immediately');
+      await act(async () => widen.click());
+      check(bulkCalls.length === 1, 'widening the interval calls the bulk endpoint once');
+      check(bulkCalls[0].enabled === true, 'widening keeps collection enabled');
+      check(bulkCalls[0].interval_minutes === 120, 'throttled rows widen the interval instead of hammering');
+      check(bulkCalls[0].keep_backoff === true, 'blocked rows keep their existing backoff');
+      check(bulkCalls[0].items.length === 1, 'only the stuck rows are targeted');
     } finally { act(() => dense.unmount()); }
+  }
+  {
+    // 自身故障（解析器/网络）才是可以立刻重试的。
+    bulkCalls.length = 0;
+    fixture = [row({ status: 'error', error_code: 'collector_error', enabled: true,
+      last_success_at: new Date(Date.now() - 30 * 60000).toISOString(), next_due: Date.now() / 1000 + 1800 })];
     readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+    const fault = createRoot(host);
+    try {
+      await act(async () => fault.render(React.createElement(Page)));
+      const retry = [...host.querySelector('.collection-bar').querySelectorAll('button')].find(b => b.textContent.includes('重试'));
+      check(!!retry && retry.textContent.includes('重试 1 个'), 'self-inflicted faults offer an immediate retry');
+      await act(async () => retry.click());
+      check(bulkCalls.length === 1 && !bulkCalls[0].keep_backoff, 'immediate retry clears the backoff');
+      check(bulkCalls[0].interval_minutes === 5, 'immediate retry does not silently widen the interval');
+    } finally { act(() => fault.unmount()); }
+  }
+  {
+    // 接口返回形状不对时保留上一次的有效列表并明确报错。整表清空比显示旧数据更危险：
+    // 用户会以为 SKU 都没了，然后重新开一遍采集。
+    const good = [row({ status: 'success', enabled: true, last_success_at: new Date().toISOString() })];
+    readPricing = async () => ({ rows: good, configured: true, collector_source: 'cloud_browser' });
+    const box = createRoot(host);
+    try {
+      await act(async () => box.render(React.createElement(Page)));
+      check(host.querySelectorAll('tbody tr').length === 1, 'a valid load renders its row');
+      readPricing = async () => ({ configured: true });
+      const refreshBtn = [...host.querySelectorAll('button')].find(b => b.textContent === '刷新列表');
+      await act(async () => { refreshBtn.click(); });
+      check(host.querySelectorAll('tbody tr').length === 1, 'a malformed refresh keeps the previous rows');
+      check((host.querySelector('[role="alert"]')?.textContent || '').includes('保留'), 'a malformed refresh says the old list is kept');
+      check(!host.textContent.includes('暂无本店有库存的SKU'), 'a malformed refresh never claims the store has no stock');
+    } finally { act(() => box.unmount()); }
   }
   check(writes === 0, 'rendering never triggers a mutation');
   const deferred = () => { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return { promise, resolve, reject }; };
