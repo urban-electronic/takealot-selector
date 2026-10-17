@@ -2141,6 +2141,9 @@ table tbody tr:hover { background: #f8fafc; }
   .loop-strip { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .loop-track { order: 2; height: 18px; }
   .loop-facts { order: 3; flex-wrap: wrap; gap: 10px 16px; }
+  /* 窄屏会换行，点名和解释必须排到最后：先看「还在转吗 / 哪几个红」，
+     再看「为什么晚」。夹在轨道前面会把 28 个格子挤到首屏之外。 */
+  .loop-notes { order: 4; }
 }
 @media (prefers-reduced-motion: reduce) {
   .loop-strip .loop-dot, .loop-cell.is-live { animation: none; }
