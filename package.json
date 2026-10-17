@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test:inventory": "node scripts/test-inventory-actions.cjs && node scripts/test-inventory-actions-edge.cjs",
-    "test:products": "node scripts/test-product-pagination.cjs"
+    "test:products": "node scripts/test-product-pagination.cjs",
+    "test:audit-safety": "python scripts/test-ui-audit-safety.py"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

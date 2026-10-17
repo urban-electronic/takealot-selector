@@ -19,6 +19,8 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install
+      - name: Check audit isolation and failure handling
+        run: npm run test:audit-safety
       - name: Build
         run: npm run build
         env:
