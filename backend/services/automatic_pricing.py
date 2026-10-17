@@ -142,6 +142,24 @@ async def collect(product, offer):
                 except Exception: pass
             except Exception: pass
             if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
+            # 变体控件的可读标签。只读、不点击：用来判断"确认不了是哪个变体"到底是
+            # 页面上没有这个规格，还是控件本身没有文本（单选/下拉），后者属于我们
+            # 匹配逻辑的缺口，不是商品的问题。
+            if isinstance(snapshot.get('variantControls'),int) and snapshot['variantControls']>0:
+                try:
+                    from services.pricepilot_collector import main_variant_elements
+                    els,_=await main_variant_elements(page)
+                    sample=[]
+                    for b in els[:10]:
+                        try:
+                            info=await b.evaluate(
+                                "el=>({tag:el.tagName,text:(el.innerText||'').trim().slice(0,24),"
+                                "aria:(el.getAttribute('aria-label')||'').slice(0,24),"
+                                "sel:!!el.querySelector('input:checked')||el.getAttribute('aria-checked')==='true'})")
+                            sample.append(info)
+                        except Exception: continue
+                    diagnostics['variant_sample']=sample
+                except Exception: pass
             diagnostics['raw_error']=re.sub(r'https?://[^\s]+',lambda m:safe_url(m.group()),str(snapshot.get('error') or ''))[:200]
             snapshot['diagnostics']=diagnostics
             code,message=classify(snapshot)
