@@ -15,8 +15,8 @@
   --text-strong: #1f2937;
   --text-body: #253247;
   --text-muted: #5a6b82;        /* 5.44:1 —— 表内次要信息、说明文字 */
-  --text-subtle: #64748b;       /* 4.76:1 —— 辅助标签、单位 */
-  --text-placeholder: #6b7a90;  /* 4.63:1（#f5f7fa 底）—— 占位提示 */
+  --text-subtle: #5f6e84;       /* 4.75:1（#f3f5f9 底）/ 5.19:1（白底）—— 辅助标签、单位 */
+  --text-placeholder: #5a6b82;  /* 5.07:1（#f5f7fa 底）/ 5.44:1（白底）—— 占位提示 */
   --text-neutral-strong: #5a6472; /* 5.31:1（#f1f3f5 底）—— 中性胶囊/状态字 */
   --text-inverse: #ffffff;
 
@@ -90,8 +90,10 @@
   border-color: transparent;
 }
 
+/* 焦点圈必须与浅色底保持 >=3:1（WCAG 2.2 非文字对比）。
+   旧值 #ffffff 在 #e8f1ff/#fff4d6 等着色底上只有约 1.1:1，等于看不见。 */
 .cell-control--tinted:focus-visible {
-  outline-color: #ffffff;
+  outline-color: #1d4ed8;
   outline-offset: 1px;
 }
 

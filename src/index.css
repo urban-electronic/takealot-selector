@@ -13,7 +13,7 @@
   --color-bg: #f5f7fa;
   --color-card: #ffffff;
   --color-text: #1f2937;
-  --color-text-secondary: #6b7280;
+  --color-text-secondary: var(--text-subtle); /* 唯一来源见 ui-tokens.css，避免两处定义不一致 */
   --color-border: #e5e7eb;
   --radius: 12px;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -467,7 +467,7 @@ button {
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .muted { color: var(--text-subtle); font-size: 12px; }
 .stock-value { color: var(--link-strong); }
-.stock-danger { color: #d9363e; }
+.stock-danger { color: #c22f38; }
 .status-confirmed, .status-void { padding: 3px 8px; font-size: 12px; border-radius: 3px; }
 .status-confirmed { color: #237804; background: #f0ffe8; }
 .status-void { color: #5a6472; background: #f1f1f1; }
@@ -853,14 +853,14 @@ button {
   border: 0;
   border-radius: 50%;
   background: #f3f4f6;
-  color: #717784;
+  color: #5f6e84;
   font-size: 18px;
   line-height: 20px;
 }
 
 .packing-remove-btn:hover {
   background: #fff0f0;
-  color: #d9363e;
+  color: #c22f38;
 }
 
 .packing-selected-controls {
@@ -1082,7 +1082,7 @@ button {
   background: var(--color-danger);
   color: #fff;
 }
-.btn-danger:hover { background: #d9363e; }
+.btn-danger:hover { background: #c22f38; }
 
 .btn-outline {
   background: transparent;
@@ -1581,7 +1581,7 @@ table tbody tr:hover {
 .store-form-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 13px; margin-bottom: 16px; }
 .store-form-grid label { color: #40516a; font-size: 12px; font-weight: 600; }
 .store-form-grid input, .store-form-grid select { display: block; width: 100%; height: 38px; margin-top: 5px; padding: 0 10px; border: 1px solid #ccd5e1; border-radius: 7px; background: #fff; color: var(--color-text); }
-.store-form-grid select:disabled { background: #f3f5f8; color: #9aa3af; }
+.store-form-grid select:disabled { background: #f3f5f8; color: #5f6e84; } /* 4.75:1，原 #9aa3af 仅 2.34:1 */
 .store-risk-toggle { display: flex; align-items: flex-start; gap: 10px; max-width: 620px; margin: 0 0 16px; padding: 11px 13px; border: 1px solid #dce3eb; border-radius: 8px; background: #f8fafc; cursor: pointer; }
 .store-risk-toggle.enabled { border-color: #ffd591; background: #fff7e6; }
 .store-risk-toggle input { width: auto; margin-top: 4px; accent-color: #d46b08; }
@@ -1659,12 +1659,12 @@ table tbody tr:hover {
 .world-clocks time { color: #fff; font-weight: 500; }
 .price-refresh-cell { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 5px; white-space: nowrap; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .price-refresh-button { display: inline-flex; align-items: center; justify-content: center; width: var(--control-h-compact); height: var(--control-h-compact); padding: 0; flex-shrink: 0; border: 1px solid #d6e0eb; border-radius: 8px; background: #fff; color: #54718e; font-size: 14px; line-height: 1; }
-.price-refresh-button:hover { background: #edf4ff; color: #1a73e8; }
+.price-refresh-button:hover { background: #edf4ff; color: #0b5fd9; }
 .price-refresh-button:disabled { opacity: .5; cursor: wait; }
 .price-refresh-button[aria-busy="true"] span { animation: price-refresh-spin 1s linear infinite; }
 @keyframes price-refresh-spin { to { transform: rotate(360deg); } }
 .price-refresh-status { display: inline-flex; align-items: center; justify-content: center; width: var(--control-h-min); height: var(--control-h-min); padding: 0; flex-shrink: 0; border: 0; border-radius: 50%; background: #e2f1e8; color: var(--success-strong); font-size: var(--fs-caption); font-weight: 600; cursor: pointer; line-height: 1; }
-.price-refresh-status[data-result="error"] { background: #fff0ed; color: #c14a37; }
+.price-refresh-status[data-result="error"] { background: #fff0ed; color: #b03a26; }
 input, select, textarea { font-family: inherit; }
 
 .refresh-detail-panel { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid #b8cce5; border-radius: 8px; background: #eef5ff; color: #183354; white-space: normal; overflow-wrap: anywhere; }
@@ -1742,13 +1742,13 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .integration-status-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .integration-status-copy .card-title { margin-bottom: 4px; }
 .integration-status-copy p { margin: 0; color: var(--text-subtle); font-size: 13px; line-height: 1.5; }
-.integration-status-badge { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 999px; background: #f0f3f7; color: #66768b; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.integration-status-badge { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 999px; background: #f0f3f7; color: #5a6b82; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .integration-status-badge i { width: 7px; height: 7px; border-radius: 50%; background: #9aa7b7; }
 .integration-status-badge.configured { background: #eaf7ef; color: #26734c; }
 .integration-status-badge.configured i { background: #35a568; box-shadow: 0 0 0 3px #d6f0df; }
-.integration-status-badge.missing, .integration-status-badge.unavailable { background: #fff5e5; color: #986b20; }
+.integration-status-badge.missing, .integration-status-badge.unavailable { background: #fff5e5; color: #8a5900; }
 .integration-status-badge.missing i, .integration-status-badge.unavailable i { background: #d8a33d; }
-.integration-status-badge.local { background: #edf3fb; color: #58728e; }
+.integration-status-badge.local { background: #edf3fb; color: #4a6480; }
 .store-api-note { margin: -7px 0 12px; color: var(--text-subtle); font-size: 12px; }
 @media (max-width: 700px) { .create-page-heading { align-items: flex-start; flex-direction: column; padding: 17px; } .create-flow-chip { white-space: normal; } .integration-status-card { align-items: flex-start; flex-direction: column; } .seller-assist-shortcut { margin-left: 0; } }
 
@@ -1761,7 +1761,7 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
   --color-bg: #f3f5f9;
   --color-card: #ffffff;
   --color-text: #253247;
-  --color-text-secondary: #627084;
+  --color-text-secondary: var(--text-subtle);
   --color-border: #dee4ed;
   --surface-soft: #f2f5f1;
   --surface-border: #d9e0da;

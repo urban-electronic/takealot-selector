@@ -5,7 +5,7 @@
   --radius-panel: 16px;
   --radius-control: 9px;
   --color-text: #253247;
-  --color-text-secondary: #64748b;
+  --color-text-secondary: var(--text-subtle); /* 唯一来源见 ui-tokens.css，避免两处定义不一致 */
 }
 body { font-size: 14px; }
 button, input, select, textarea { font-family: inherit; }
