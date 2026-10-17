@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { productLabels } from '../utils/productLabels';
 import { useApi } from '../DataSourceContext';
+import { todayLocal } from '../utils/datetime';
 import type { ProcurementRecord, Product } from '../types';
 
 export default function Procurement() {
@@ -27,7 +28,7 @@ export default function Procurement() {
     total_amount: '',
     notes: '',
     status: 'in_transit',
-    recorded_at: new Date().toISOString().slice(0, 10),
+    recorded_at: todayLocal(),
   });
 
   // delete confirm
@@ -118,7 +119,7 @@ export default function Procurement() {
   })();
 
   const resetForm = () => {
-    setForm({ product_no: '', product_name: '', product_id: '', quantity: '', total_amount: '', notes: '', status: 'in_transit', recorded_at: new Date().toISOString().slice(0, 10) });
+    setForm({ product_no: '', product_name: '', product_id: '', quantity: '', total_amount: '', notes: '', status: 'in_transit', recorded_at: todayLocal() });
     setEditingId(null);
     setShowForm(false);
     setProductSearch('');

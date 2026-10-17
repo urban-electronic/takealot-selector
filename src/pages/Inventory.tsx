@@ -3,11 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInventory, getInventoryAdjustments, getOperationLogs, getShipments, getStoreStorageKey, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
 import type { InventoryAdjustment, InventoryRow, OperationLog, ShipmentRecord } from '../types';
 import { ProductImage } from '../utils/imageFallback';
+import { todayLocal } from '../utils/datetime';
 
 import ShipmentReconciliation from '../operations/ShipmentReconciliation';
 
 type Tab = 'inventory' | 'shipments' | 'adjustments' | 'activity';
-const today = () => new Date().toISOString().slice(0, 10);
 const draftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}`;
 
 export default function Inventory() {
@@ -24,7 +24,7 @@ export default function Inventory() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [adjustSku, setAdjustSku] = useState('');
-  const [form, setForm] = useState({ mode: 'increase', quantity: '', reason: '盘点调整', notes: '', occurred_at: today() });
+  const [form, setForm] = useState({ mode: 'increase', quantity: '', reason: '盘点调整', notes: '', occurred_at: todayLocal() });
   const adjustmentPending = useRef(false);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [exportingInbound, setExportingInbound] = useState(false);
