@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getOperationsProfile, saveOperationsProfile } from '../remoteApi';
+import { todayLocal } from '../utils/datetime';
+import { useVisibleInterval } from '../utils/useVisibleInterval';
 import type { Product } from '../types';
 
-const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
 export default function PipelinePlan({ product, open = false }: { product: Product; open?: boolean }) {
   const [data, setData] = useState<any>(null);
   const [form, setForm] = useState<any>(null);
@@ -14,16 +15,18 @@ export default function PipelinePlan({ product, open = false }: { product: Produ
   const load = async (init = false) => {
     const d = await getOperationsProfile(product.id); setData(d);
     if (init) {
-      const p = d.profile || { stock: '', stock_date: today(), observed_from: today(), air_days: 17, sea_days: 58, air_head_days: 14, sea_head_days: 55, tail_days: 3, minimum_margin: .15, safety_days: 7, cycle_days: 30, sea_coverage_days: 60, planning_days: 120, procurement_days: 0, allow_emergency_air: true, emergency_air_days: 21, adaptive_dispatch: true, dispatch_policy: 'balanced', air_share_cap: .2, first_sea_share: .75, sea_split_days: 15, batch_quantity: null, group: '', related_groups: [], allocations: [], sales: [] };
+      const p = d.profile || { stock: '', stock_date: todayLocal(), observed_from: todayLocal(), air_days: 17, sea_days: 58, air_head_days: 14, sea_head_days: 55, tail_days: 3, minimum_margin: .15, safety_days: 7, cycle_days: 30, sea_coverage_days: 60, planning_days: 120, procurement_days: 0, allow_emergency_air: true, emergency_air_days: 21, adaptive_dispatch: true, dispatch_policy: 'balanced', air_share_cap: .2, first_sea_share: .75, sea_split_days: 15, batch_quantity: null, group: '', related_groups: [], allocations: [], sales: [] };
       setForm(p); setSales(p.sales.map((s: any) => `${s.date} | ${s.quantity}`).join('\n')); setRelated(p.related_groups.join('，'));
     }
   };
+  const active = useRef(true);
   useEffect(() => {
-    let active = true;
-    load(true).catch(e => active && setMessage(e.message));
-    const timer = setInterval(() => load().catch(e => active && setMessage(e.message)), 60000);
-    return () => { active = false; clearInterval(timer); };
+    active.current = true;
+    load(true).catch(e => active.current && setMessage(e.message));
+    return () => { active.current = false; };
   }, [product.id]);
+  // 隐藏标签页时不轮询；回到前台若已过期立即补一次
+  useVisibleInterval(() => { load().catch(e => active.current && setMessage(e.message)); }, 60000);
   const save = async () => {
     setBusy(true); setMessage('');
     try {
@@ -45,7 +48,7 @@ export default function PipelinePlan({ product, open = false }: { product: Produ
   };
   const field = (key: string, label: string, type = 'number') => <div className="form-group"><label>{label}</label><input type={type} value={form[key] ?? ''} disabled={form.data_source === 'seller_api' && ['stock', 'stock_date', 'observed_from'].includes(key)} min={type === 'number' ? 0 : undefined} onChange={e => setForm({ ...form, [key]: key==='batch_quantity' && e.target.value==='' ? null : type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value })} /></div>;
   const etaFor = (mode: string) => {
-    const date=new Date(today()+'T00:00:00Z');
+    const date=new Date(todayLocal()+'T00:00:00Z');
     date.setUTCDate(date.getUTCDate()+(mode==='air'?form.air_head_days:form.sea_head_days)+form.tail_days+(form.procurement_days||0));
     return date.toISOString().slice(0,10);
   };
