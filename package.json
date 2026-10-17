@@ -15,10 +15,11 @@
     "test:price": "node scripts/test-price-parse.cjs",
     "test:bookmarklet": "node scripts/test-takealot-bookmarklet.cjs",
     "test:values": "node scripts/test-value-coercion.cjs",
+    "test:operations": "node scripts/test-operations.cjs",
     "test:audit-safety": "python scripts/test-ui-audit-safety.py && python scripts/test-longtitle-audit-safety.py && node scripts/test-longtitle-focus.cjs",
     "check:visual": "node scripts/check-visual-consistency.cjs",
     "check:types": "tsc --noEmit",
-    "check": "npm run check:types && npm run check:visual && npm run test:audit-safety && npm run test:buybox && npm run test:products && npm run test:inventory && npm run test:images && npm run test:price && npm run test:bookmarklet && npm run test:values"
+    "check": "npm run check:types && npm run check:visual && npm run test:audit-safety && npm run test:buybox && npm run test:products && npm run test:inventory && npm run test:images && npm run test:price && npm run test:bookmarklet && npm run test:values && npm run test:operations"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

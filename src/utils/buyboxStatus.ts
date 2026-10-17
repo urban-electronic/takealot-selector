@@ -399,73 +399,83 @@ export function describeOwnership(monitor: any): OwnershipView {
 
 export interface FleetView {
   tone: Tone;
-  title: string;
-  lines: string[];
+  /** 一句话讲清现在什么情况，页头直接显示。 */
+  summary: string;
+  /** 建议动作，空串表示不需要用户动手。 */
   action: string;
+  /** 可以一键重试的行数（清掉 8 小时退避）。 */
+  retryable: number;
+  /** 被限流/被验证阻挡时建议调大的间隔，null 表示不建议改。 */
+  suggestedInterval: number | null;
 }
 
+/** 被这些原因挡住时，加长间隔是唯一能在前端做的减损动作。 */
+const THROTTLED = new Set(['site_challenge', 'rate_limited', 'http_forbidden']);
+
 /**
- * 页面顶部的「采集运行状态」总览。
- * 这一块专门回答「到底有没有在采」——用户此前无法判断的根因是：界面只给了
- * 每行的机器状态，没有说清当前由谁执行、最近一次成功是什么时候。
+ * 页头一句话状态。
+ *
+ * 之前这里是六行列表，信息全但没人看——用户的原话是「不需要那么多东西显示出来」。
+ * 所以只保留「什么坏了 / 为什么 / 该怎么办」三件事，其余交给表格行。
  */
 export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const list = Array.isArray(rows) ? rows : [];
   const total = list.length;
   const source = ctx.collectorSource || 'cloud_browser';
   const isCloud = source === 'cloud_browser';
-  const executor = collectorName(source);
   const monitors = list.map(r => r?.monitor || {});
   const auto = monitors.filter(m => m.enabled).length;
   const running = monitors.filter(m => m.status === 'running').length;
   const queued = monitors.filter(m => m.status === 'queued').length;
-  const failing = monitors.filter(m => m.status === 'error').length;
-  const paused = monitors.filter(m => m.status === 'paused').length;
-  const never = monitors.filter(m => !m.last_success_at).length;
-  const fresh = monitors.filter(m => quoteFreshness(m, ctx.now).fresh === 'fresh').length;
+  const errored = monitors.filter(m => m.status === 'error');
+  const failing = errored.length;
+  const retryable = list.filter(r => r?.monitor?.status === 'error' && r?.monitor?.enabled).length;
   const newest = monitors.reduce((max, m) => {
     const at = Date.parse(m.last_success_at || '');
     return Number.isFinite(at) && at > max ? at : max;
   }, 0);
 
-  if (ctx.configured === false) {
-    return {
-      tone: 'danger',
-      title: '卖家接口没配置，采集无法开始',
-      lines: ['采集要先读到本店售价，才能判断 Buybox 归属。', '配置完成前，所有采集和调价按钮都不可用。'],
-      action: '到「设置」完成卖家接口配置',
-    };
-  }
-  if (!total) {
-    return {
-      tone: 'neutral',
-      title: '没有可采集的 SKU',
-      lines: ['列表只显示本店有库存的 SKU，当前一个都没有。', '先在库存页同步一次，再回来开启采集。'],
-      action: '先同步库存',
-    };
-  }
+  const base = { retryable, suggestedInterval: null as number | null };
+  const none = (tone: Tone, summary: string, action = ''): FleetView => ({ ...base, tone, summary, action });
 
-  const lines: string[] = [
-    isCloud
-      ? '当前没有任何本机采集器在线，采集由后台执行（每 10 秒取一次任务）。'
-      : `${executor}在线，采集由它执行；后台不会重复采，它掉线后才会由后台接手。`,
-    newest ? `最近一次成功：${humanAge(ctx.now - newest)}` : '还没有任何一次成功采集。',
-    `报价新鲜：${fresh}/${total} 个 SKU${auto ? ` · 自动采集 ${auto} 个` : ''}${paused ? ` · 已停采 ${paused} 个` : ''}`,
-  ];
-  if (queued) lines.push(`${queued} 个 SKU 已排队，等待执行。`);
-  if (failing) lines.push(`${failing} 个 SKU 本轮失败，原因见各行。`);
-  if (never) lines.push(`${never} 个 SKU 从未成功采集过。`);
+  if (ctx.configured === false) return none('danger', '卖家接口没配置，采集无法开始', '到「设置」完成卖家接口配置');
+  if (!total) return none('neutral', '没有可采集的 SKU', '先在库存页同步一次');
 
-  // 排序即优先级：正在跑 > 需要人动手的失败 > 没人领取的队列 > 能自愈的失败 > 能自愈的队列。
-  if (running) return { tone: 'info', title: `正在采集 ${running} 个 SKU`, lines, action: '' };
+  // 失败原因取众数：一屏 30 行里通常是同一个原因，说一次就够。
+  const counts: Record<string, number> = {};
+  for (const m of errored) {
+    const code = m.error_code || 'unknown';
+    counts[code] = (counts[code] || 0) + 1;
+  }
+  const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const reason = dominant && dominant !== 'unknown' ? errorCopy(dominant).title : '采集未取得报价';
+  const throttled = dominant ? THROTTLED.has(dominant) : false;
+  const interval = Math.max(1, Number(monitors.find(m => m.interval_minutes)?.interval_minutes) || 5);
+  const suggestedInterval = throttled && interval < 120 ? 120 : null;
+
+  const advice = throttled
+    ? isCloud
+      ? '启动本机采集器，或把间隔调到 120 分钟'
+      : '把间隔调到 120 分钟'
+    : '';
+
+  if (running) return none('info', `正在采集 ${running} 个 SKU`, '');
+  if (failing && failing === total) {
+    return { ...base, suggestedInterval, tone: 'danger', summary: `全部 ${total} 个 SKU 采集失败 · ${reason}`, action: advice || '看下方失败详情' };
+  }
   if (failing && !auto) {
-    return { tone: 'danger', title: `${failing} 个 SKU 采集失败，且自动采集未开启`, lines, action: '按各行的失败原因处理后点「自动」' };
+    return { ...base, suggestedInterval, tone: 'danger', summary: `${failing} 个 SKU 采集失败 · ${reason}`, action: advice || '处理原因后点「自动」' };
   }
   if (queued && !isCloud) {
-    return { tone: 'warning', title: `${queued} 个 SKU 在等${executor}领取`, lines, action: `确认${executor}正在运行` };
+    return none('warning', `${queued} 个 SKU 等${collectorName(source)}领取`, `确认${collectorName(source)}正在运行`);
   }
-  if (failing) return { tone: 'warning', title: `自动采集运行中，但 ${failing} 个 SKU 本轮失败`, lines, action: '' };
-  if (queued) return { tone: 'info', title: `${queued} 个 SKU 排队中，后台马上执行`, lines, action: '' };
-  if (auto) return { tone: 'success', title: `自动采集运行中 · ${auto} 个 SKU`, lines, action: '' };
-  return { tone: 'neutral', title: '自动采集未开启', lines, action: '选中 SKU 后点「开启选中采集」' };
+  if (failing) {
+    return { ...base, suggestedInterval, tone: 'warning', summary: `${failing} 个 SKU 采集失败 · ${reason}`, action: advice };
+  }
+  if (queued) return none('info', `${queued} 个 SKU 排队中，马上执行`, '');
+  if (auto) {
+    const when = newest ? ` · 最近 ${humanAge(ctx.now - newest)}更新` : '';
+    return none('success', `${auto} 个 SKU 自动采集中${when}`, '');
+  }
+  return none('neutral', '自动采集未开启', '选中 SKU 后点「开启选中采集」');
 }

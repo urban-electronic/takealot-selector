@@ -180,22 +180,29 @@ export function evaluatePricing(input: PricingInput): PricingResult {
     }
   }
 
-  if (offers.some(o => !Number.isFinite(o.price) || o.price <= 0 ||
-      !Number.isFinite(o.fetchedAt.getTime()) || o.fetchedAt > input.state.now ||
-      input.state.now.getTime() - o.fetchedAt.getTime() > input.state.offersMaxAgeMs)) {
-    return reject("竞品价格或时间无效，或数据已过期，拒绝调价");
+  // 单个过期报价不再否决整轮：把无效/过期的剔掉，只在一条都不剩时才拒绝。
+  // 原来只要有一个竞品报价超时就整轮不调价，一个慢半拍的竞品能把整个 SKU 冻住。
+  const usable = offers.filter(o =>
+    Number.isFinite(o.price) && o.price > 0 &&
+    Number.isFinite(o.fetchedAt.getTime()) && o.fetchedAt <= input.state.now &&
+    input.state.now.getTime() - o.fetchedAt.getTime() <= input.state.offersMaxAgeMs);
+  if (usable.length === 0) {
+    return reject("竞品报价全部无效或已过期，拒绝调价");
   }
+  // 有现货竞品时只跟现货竞价；缺货/预售的挂价不代表市场价，跟着它降价是白送利润。
+  const inStock = usable.filter(o => (o.status ?? "in_stock") === "in_stock");
+  offers = inStock.length > 0 ? inStock : usable;
 
   if (input.state.maxDailyChanges > 0 && input.state.todayChanges >= input.state.maxDailyChanges) {
     return reject(`超过当日最大调价次数（${input.state.maxDailyChanges}）`);
   }
 
+  // 冷却对所有情形生效：原来只在持有 Buybox 时检查，未持有时可以连续改价。
   if (
-    input.state.holdingBuybox &&
     input.state.lastPricedAt &&
     input.state.now.getTime() - input.state.lastPricedAt.getTime() < input.rule.cooldownMinutes * 60_000
   ) {
-    return skip(`持有 Buybox 处于冷却时间内（${input.rule.cooldownMinutes} 分钟）`);
+    return skip(`处于冷却时间内（${input.rule.cooldownMinutes} 分钟）`);
   }
 
   let raw: number;

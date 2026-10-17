@@ -51,6 +51,9 @@ jobs:
       - name: Check product image fallback
         run: npm run test:images
 
+      - name: Check pricing and replenishment logic
+        run: npm run test:operations
+
       - name: Build
         run: npm run build
 

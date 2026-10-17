@@ -155,23 +155,49 @@ check(describeOwnership({ buybox_price: 269, price_matches_buybox: true }).label
 check(describeOwnership({ buybox_price: 0 }).label === '未采集', 'a zero quote is not a real quote');
 check(describeOwnership({ buybox_price: 269, price_ownership: { state: 'mismatch_pending' } }).label.includes('复核中'), 'one lost round is still pending');
 
-// ---- 整页总览：必须说清「谁在采」 ----------------------------------------------
+// ---- 页头一句话：说清什么坏了、为什么、该怎么办 --------------------------------
 const rows = [
   { monitor: { status: 'success', enabled: true, last_success_at: ago(2 * MIN) } },
-  { monitor: { status: 'error', error_code: 'site_challenge', last_success_at: ago(30 * MIN) } },
-  { monitor: {} },
+  { monitor: { status: 'error', error_code: 'site_challenge', enabled: true, last_success_at: ago(30 * MIN) } },
+  { monitor: { enabled: true } },
 ];
-const fleetCloud = describeFleet(rows, ctx());
-check(fleetCloud.title.includes('1 个 SKU 本轮失败'), 'fleet surfaces the failure count');
-check(fleetCloud.lines[0].includes('没有任何本机采集器在线'), 'cloud path states that no local collector is online');
-check(fleetCloud.lines.some(line => line.includes('报价新鲜：1/3')), 'fleet reports how many quotes are fresh');
-check(fleetCloud.lines.some(line => line.includes('从未成功采集')), 'fleet reports rows that never succeeded');
+const fleetBad = describeFleet(rows, ctx());
+check(fleetBad.summary.includes('1 个 SKU 采集失败'), 'fleet states how many failed');
+check(fleetBad.summary.includes('网站要求人工验证'), 'fleet states the dominant plain-language reason');
+check(fleetBad.action.length > 0, 'fleet always offers an action when something is broken');
+check(fleetBad.retryable === 1, 'fleet counts rows that can be retried in one click');
+check(fleetBad.suggestedInterval === 120, 'throttling suggests a longer interval');
+check(fleetBad.tone === 'warning', 'partial failure is a warning, not a neutral state');
+
+const fleetAllBad = describeFleet([
+  { monitor: { status: 'error', error_code: 'site_challenge', enabled: true } },
+  { monitor: { status: 'error', error_code: 'site_challenge', enabled: true } },
+], ctx());
+check(fleetAllBad.summary.startsWith('全部 2 个 SKU 采集失败'), 'total failure says so explicitly');
+check(fleetAllBad.tone === 'danger', 'total failure is a danger');
 
 const fleetLocal = describeFleet(rows, ctx({ collectorSource: 'local_collector' }));
-check(fleetLocal.lines[0].includes('本机采集器在线'), 'local path states the collector owns collection');
-check(fleetLocal.lines[0].includes('后台不会重复采'), 'local path explains the mutual exclusion');
+check(fleetBad.action.includes('启动本机采集器'), 'cloud path points at the local collector as the workaround');
+check(!fleetLocal.action.includes('启动本机采集器'), 'an already-online collector is not told to start itself');
+check(fleetLocal.action.includes('120 分钟'), 'local path still suggests a longer interval');
 
-check(describeFleet([], ctx()).title === '没有可采集的 SKU', 'empty fleet is explained, not blank');
+const fleetHealthy = describeFleet([
+  { monitor: { status: 'success', enabled: true, last_success_at: ago(2 * MIN) } },
+  { monitor: { status: 'success', enabled: true, last_success_at: ago(4 * MIN) } },
+], ctx());
+check(fleetHealthy.summary.includes('2 个 SKU 自动采集中'), 'healthy fleet states the running count');
+check(fleetHealthy.summary.includes('2 分钟前'), 'healthy fleet states data age');
+check(fleetHealthy.action === '', 'a healthy fleet asks nothing of the user');
+check(fleetHealthy.retryable === 0, 'a healthy fleet offers no retry');
+check(fleetHealthy.suggestedInterval === null, 'a healthy fleet does not suggest interval changes');
+
+// 一句话就必须是一句话：超过两行说明又在堆信息了。
+for (const view of [fleetBad, fleetAllBad, fleetHealthy, describeFleet([], ctx()), describeFleet(rows, ctx({ configured: false }))]) {
+  check(view.summary.length <= 40, `fleet summary stays one short line: ${view.summary}`);
+  check(!view.summary.includes('\n'), 'fleet summary is a single line');
+}
+
+check(describeFleet([], ctx()).summary === '没有可采集的 SKU', 'empty fleet is explained, not blank');
 check(describeFleet(rows, ctx({ configured: false })).tone === 'danger', 'unconfigured fleet is a danger');
 check(describeFleet([{ monitor: { enabled: true, last_success_at: ago(MIN) } }], ctx()).tone === 'success', 'healthy auto fleet is a success');
 check(collectorName('browser_extension') === '浏览器扩展', 'collector names are translated');
@@ -193,7 +219,7 @@ for (const state of ['matched', 'mismatch_pending', 'mismatch', 'checking', 'ver
   corpus.push(view.label, view.explain);
 }
 const fleetCorpus = describeFleet(rows, ctx());
-corpus.push(fleetCorpus.title, ...fleetCorpus.lines, fleetCorpus.action);
+corpus.push(fleetCorpus.summary, fleetCorpus.action);
 for (const word of forbidden) {
   check(!corpus.some(text => String(text).includes(word)), `用户看不懂的旧术语不得回流：${word}`);
 }
