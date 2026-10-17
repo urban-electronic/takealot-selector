@@ -4,8 +4,34 @@ import re
 
 
 def safe_url(url):
-    p=urlsplit(url or '')
-    return urlunsplit((p.scheme,p.netloc,p.path,'',''))
+    try:
+        p=urlsplit(url or '')
+        if p.scheme not in ('https','http') or not p.hostname: return ''
+        host=p.hostname
+        if ':' in host: host='['+host+']'
+        if p.port: host+=':'+str(p.port)
+        return urlunsplit((p.scheme,host,p.path,'',''))
+    except (ValueError,TypeError):
+        return ''
+
+
+def safe_diagnostics(raw):
+    """Preserve named measurements, never arbitrary collector text/credentials."""
+    if not isinstance(raw,dict): return {}
+    out={}
+    counters=('http_status','buybox_cards','variant_controls','price_nodes',
+              'diag_version','buybox_card_text_len','buybox_card_amounts','buybox_card_struck')
+    for key in counters:
+        value=raw.get(key)
+        if isinstance(value,int) and not isinstance(value,bool) and 0<=value<=1000000:
+            out[key]=value
+    for key in ('requested_url','final_url'):
+        if isinstance(raw.get(key),str): out[key]=safe_url(raw[key])
+    if isinstance(raw.get('page_title'),str): out['page_title']=raw['page_title'][:160]
+    if raw.get('block_reason') in ('verify you are human','checking your browser',
+            'automated traffic','unusual traffic','complete the captcha','challenge_page_title'):
+        out['block_reason']=raw['block_reason']
+    return out
 
 
 def classify(snapshot):

@@ -104,3 +104,21 @@ def test_reconcile_requires_the_same_seller_sku(monkeypatch):
         value=routes.reconcile('one','one',db,DEFAULT_STORE_ID)
         assert not value['write_pending'] and not value['enabled']
         assert value['current_price']==91 and value['stock']==4 and value['revision']==4
+
+
+def test_preview_exception_does_not_expose_profile_or_token(monkeypatch):
+    import httpx
+    from contextlib import nullcontext
+    import services.automatic_pricing as pricing
+    monkeypatch.setattr(httpx,'Client',lambda **kwargs:nullcontext(object()))
+    monkeypatch.setattr(routes,'configured_key',lambda db:'fixture')
+    monkeypatch.setattr(pricing,'official_offer',lambda *a:{'selling_price':100,'stock_at_takealot_total':5})
+    async def failed(*args):
+        raise RuntimeError('/private/profile Authorization=fixture-private-token')
+    monkeypatch.setattr(pricing,'collect',failed)
+    with database() as db:
+        result=routes.preview('one','one',db,DEFAULT_STORE_ID)
+    assert result['error_type']=='RuntimeError'
+    assert result['price_changed'] is False and result['enabled'] is False
+    assert 'fixture-private' not in json.dumps(result)
+    assert '/private/profile' not in json.dumps(result)

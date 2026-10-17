@@ -234,3 +234,10 @@ def test_buybox_catalog_does_not_read_price_settings_or_compute_floors(monkeypat
         assert len(info)==2 and all(r['rule']=={}for r in info)
         routes.monitor_configure('two','two',routes.MonitorConfig(enabled=True,interval_minutes=5),db,DEFAULT_STORE_ID)
         assert not db.query(SystemSettings).filter(SystemSettings.key.startswith(routes.PREFIX)).count()
+
+
+def test_collector_exception_keeps_type_without_private_message(monkeypatch):
+    _,result=run(monkeypatch,raises=RuntimeError('/private/profile token=fixture-private'))
+    assert result['diagnostics']['failure']=='RuntimeError'
+    assert 'fixture-private' not in json.dumps(result)
+    assert '/private/profile' not in json.dumps(result)

@@ -221,3 +221,20 @@ def test_expired_job_cannot_restore_a_concurrent_pause(monkeypatch):
         value=json.loads(db.query(SystemSettings).filter_by(key=PREFIX+DEFAULT_STORE_ID+':one:one').first().value)
         assert value['status']=='paused' and not value['enabled'] and not value['request_once']
 
+
+
+def test_diagnostics_drop_unknown_secret_fields_but_keep_new_counters(monkeypatch):
+    with database() as db:
+        item=setup(db,monkeypatch)
+        bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'diagnostics':{
+            'cookie':'fixture-private-cookie','debug_url':'https://example.test/?token=fixture-private-token',
+            'price_nodes':4,'diag_version':3,'buybox_card_amounts':1,
+            'requested_url':'https://user:fixture-private-password@www.takealot.com/x/PLID1?token=fixture-private-token',
+            'final_url':'https://www.takealot.com/x/PLID1',
+        }}]),db,DEFAULT_STORE_ID)
+        row=db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX)).first()
+        value=json.loads(row.value)
+        assert 'fixture-private' not in json.dumps(value['diagnostics'])
+        assert value['diagnostics']['price_nodes']==4
+        assert value['diagnostics']['buybox_card_amounts']==1
+        assert value['diagnostics']['diag_version']==3
