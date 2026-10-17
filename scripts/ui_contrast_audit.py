@@ -172,7 +172,12 @@ async def main():
                     await page.get_by_role('heading', name=TITLES[route], exact=False).first.wait_for(timeout=8000)
                     await page.locator('.loading').wait_for(state='hidden')
                     await page.wait_for_load_state("networkidle", timeout=20000)
-                    if route in ('/products', '/inventory', '/auto-pricing', '/packing', '/procurement'):
+                    if route == '/procurement':
+                        # Procurement renders a product number, not the product SKU.
+                        await page.locator('.procurement-table-scroll tbody').get_by_role(
+                            'cell', name=str(FIXTURES['PROCUREMENT']['product_no']), exact=True
+                        ).first.wait_for(timeout=8000)
+                    elif route in ('/products', '/inventory', '/auto-pricing', '/packing'):
                         await page.get_by_text('TEST-001', exact=False).first.wait_for(timeout=8000)
                     result = await page.evaluate(AUDIT)
                     if not isinstance(result, dict) or not isinstance(result.get('lowContrastCount'), int) or not isinstance(result.get('controls', {}).get('tooSmallCount'), int):
