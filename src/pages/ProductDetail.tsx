@@ -6,6 +6,7 @@ import type { Product, FeeCategory } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { toNumber } from '../utils/number';
+import { copyText } from '../utils/clipboard';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -20,6 +21,14 @@ export default function ProductDetail() {
 
   // edit form
   const [editData, setEditData] = useState<Partial<Product>>({});
+  const [copiedSku, setCopiedSku] = useState(false);
+  const copySku = async () => {
+    if (!product?.sku) return;
+    const ok = await copyText(product.sku);
+    if (!ok) return;
+    setCopiedSku(true);
+    setTimeout(() => setCopiedSku(false), 2000);
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -238,7 +247,17 @@ export default function ProductDetail() {
             </div>
             <div className="form-group">
               <label>SKU</label>
-              <input value={editData.sku || ''} onChange={(e) => updateField('sku', e.target.value)} />
+              {/* SKU 是平台侧唯一标识，改了它采集/调价/装箱单就对不上号，所以只读 + 复制。 */}
+              <div className="sku-cell">
+                <span className="sku-value" translate="no">{product.sku || '-'}</span>
+                <button
+                  type="button" className={`sku-copy${copiedSku ? ' is-done' : ''}`}
+                  aria-label={`复制SKU：${product.sku || ''}`}
+                  disabled={!product.sku}
+                  onClick={() => { void copySku(); }}
+                >{copiedSku ? '已复制' : '复制'}</button>
+              </div>
+              <small style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>暂不支持修改</small>
             </div>
             <div className="form-group">
               <label>中文品名</label>

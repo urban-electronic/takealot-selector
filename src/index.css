@@ -758,6 +758,20 @@ button {
 
 .sku-branch-summary { display: flex; flex-direction: column; gap: 3px; }
 .sku-branch-summary button { width: max-content; min-height: var(--control-h-min); padding: 0; border: 0; background: transparent; color: var(--link-strong); font-size: var(--fs-caption); cursor: pointer; }
+/* SKU 只读：它是平台侧的唯一标识，改了采集/调价/装箱单就对不上号。
+   所以这里只有「看」和「复制」，没有输入框。数字用等宽字体，逐位对齐好核对。 */
+.sku-cell { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
+.sku-cell .sku-branch-summary { min-width: 0; }
+.sku-value { min-width: 0; overflow-wrap: anywhere; color: var(--text-body); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--fs-label); }
+.sku-value.is-empty { color: var(--text-subtle); font-family: inherit; font-size: var(--fs-caption); }
+.sku-copy {
+  flex: none; min-height: var(--control-h-min); padding: 0 6px;
+  border: 1px solid var(--surface-border); border-radius: 6px; background: var(--color-card);
+  color: var(--text-muted); font: inherit; font-size: var(--fs-caption); line-height: 1; cursor: pointer;
+}
+.sku-copy:hover, .sku-copy:focus-visible { border-color: var(--link-strong); color: var(--link-strong); }
+.sku-copy.is-done { border-color: var(--color-success); color: var(--color-success); }
+.sku-copy.is-failed { border-color: var(--danger-strong); color: var(--danger-strong); }
 .product-parent-row td { border-bottom: 0; }
 .product-branch-row td { padding: 0; background: #fbfdff; border-top: 0; }
 .product-branch-rail { display: flex; flex-direction: column; border-left: 3px solid #d6e4ff; background: #fbfdff; }

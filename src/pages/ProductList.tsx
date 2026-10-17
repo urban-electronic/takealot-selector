@@ -8,6 +8,7 @@ import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LIN
 import { ProductImage } from '../utils/imageFallback';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
+import { copyText } from '../utils/clipboard';
 
 // --- 列定义 ---
 interface ColumnDef {
@@ -28,7 +29,8 @@ const allColumns: ColumnDef[] = [
   { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
   { key: 'profit_zar', label: '利润', defaultWidth: 80 },
-  { key: 'sku', label: 'SKU', defaultWidth: 140 },
+  // SKU 列要同时放下 13 位数字和「复制」按钮，140 会挤成两行。
+  { key: 'sku', label: 'SKU', defaultWidth: 168 },
   { key: 'minimum_price_at_20_margin', label: '最低@20%', defaultWidth: 80 },
   { key: 'minimum_price_at_15_margin', label: '最低@15%', defaultWidth: 80 },
   { key: 'shipping_method', label: '运输方式', defaultWidth: 90 },
@@ -354,7 +356,10 @@ export default function ProductList() {
   };
 
   const getColWidth = (colKey: string, defaultWidth: number): number =>
-    colKey === 'actual_sale_price_zar' ? Math.max(132, colWidths[colKey] || defaultWidth) : colWidths[colKey] || defaultWidth;
+    colKey === 'actual_sale_price_zar' ? Math.max(132, colWidths[colKey] || defaultWidth)
+      // SKU 列再窄也留得下 13 位数字 + 复制按钮，否则数字会断成两行。
+      : colKey === 'sku' ? Math.max(150, colWidths[colKey] || defaultWidth)
+      : colWidths[colKey] || defaultWidth;
 
   // --- 列可见性 ---
   const toggleColumn = (key: string) => {
@@ -565,12 +570,14 @@ export default function ProductList() {
   };
 
   // --- 内联编辑 ---
+  // SKU 不在此列：它是外部平台的唯一标识，改了就跟 Takealot 上的商品对不上，
+  // 采集和调价会一起失准。这里只给复制，暂时不允许在列表里改。
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState('');
-  const [editingSkuId, setEditingSkuId] = useState<string | null>(null);
-  const [editingSkuValue, setEditingSkuValue] = useState('');
   const [editingCnameId, setEditingCnameId] = useState<string | null>(null);
   const [editingCnameValue, setEditingCnameValue] = useState('');
+  const [copiedSku, setCopiedSku] = useState<string | null>(null);
+  const [copyFailedSku, setCopyFailedSku] = useState<string | null>(null);
   const inlineSession = useRef<string | null>(null);
   const inlineWriting = useRef(false);
   const inlineInput = useRef<HTMLInputElement>(null);
@@ -580,7 +587,7 @@ export default function ProductList() {
   const beginInline = (id: string, field: string) => {
     if (inlineWriting.current) return false;
     inlineSession.current = `${id}:${field}`; setInlineError('');
-    setEditingPriceId(null); setEditingSkuId(null); setEditingCnameId(null);
+    setEditingPriceId(null); setEditingCnameId(null);
     return true;
   };
   const cancelInline = (close: () => void) => {
@@ -590,13 +597,9 @@ export default function ProductList() {
   const commitInline = async (id: string, field: string, value: any, close: () => void) => {
     if (inlineWriting.current || inlineSession.current !== `${id}:${field}`) return;
     inlineWriting.current = true; setInlineBusy(true); setInlineError('');
-    const oldSku = products.find(p => p.id === id)?.sku;
     try {
       const updated = await handleFieldUpdate(id, field, value, message => setInlineError(`保存失败：${message}，回车重试`));
       if (!updated) return;
-      if (field === 'sku' && oldSku && updated.sku !== oldSku) {
-        setSelectedSkus(prev => { const next = new Set(prev); if (next.delete(oldSku)) skuVariants(updated.sku).forEach(sku => next.add(sku)); return next; });
-      }
       inlineSession.current = null; close();
     } finally { inlineWriting.current = false; setInlineBusy(false); }
   };
@@ -613,13 +616,17 @@ export default function ProductList() {
     if (!Number.isFinite(val)) { setInlineError('请输入有效售价'); return; }
     await commitInline(id, 'actual_sale_price_zar', val, () => setEditingPriceId(null));
   };
-  const startEditSku = (p: Product) => {
-    if (!beginInline(p.id, 'sku')) return;
-    setEditingSkuId(p.id);
-    setEditingSkuValue(p.sku || '');
-  };
-  const commitEditSku = async (id: string) => {
-    await commitInline(id, 'sku', editingSkuValue || null, () => setEditingSkuId(null));
+  // 复制 SKU：只写剪贴板，不发请求。成功/失败都在按钮上就地反馈，
+  // 不用 toast——用户点完手还在那一格，眼睛也在那一格。
+  const copySku = async (sku: string) => {
+    const ok = await copyText(sku);
+    if (ok) {
+      setCopiedSku(sku); setCopyFailedSku(null);
+      setTimeout(() => setCopiedSku(current => current === sku ? null : current), 2000);
+    } else {
+      setCopyFailedSku(sku); setCopiedSku(null);
+      setTimeout(() => setCopyFailedSku(current => current === sku ? null : current), 3000);
+    }
   };
   const startEditCname = (p: Product) => {
     if (!beginInline(p.id, 'chinese_product_name')) return;
@@ -809,30 +816,36 @@ export default function ProductList() {
 
       case 'profit_zar':
         return formatPrice(p.profit_zar, 'ZAR');
-      case 'sku':
-        const skuOptions = skuVariants(p.sku);
-        if (skuOptions.length > 1) {
-          const expanded = expandedVariantRows.has(p.id);
-          return <span className="sku-branch-summary"><b>{skuOptions[0]}</b><button type="button" onClick={() => setExpandedVariantRows(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })}>{expanded ? '收起规格' : `展开 ${skuOptions.length} 个规格`}</button></span>;
-        }
-        return editingSkuId === p.id ? (
-          <span className="product-inline-editor">
-          <input
-            ref={inlineInput} disabled={inlineBusy} aria-busy={inlineBusy} aria-invalid={!!inlineError} aria-describedby={inlineError ? 'inline-save-error' : undefined}
-            type="text" value={editingSkuValue}
-            aria-label={`SKU：${p.sku}`} name="sku" autoComplete="off" spellCheck={false}
-            onChange={(e) => setEditingSkuValue(e.target.value)}
-            onBlur={() => commitEditSku(p.id)}
-            onKeyDown={(e) => { if (e.key === 'Enter') commitEditSku(p.id); if (e.key === 'Escape') cancelInline(() => setEditingSkuId(null)); }}
-            autoFocus
-            className="cell-control"
-          />
-          {inlineFeedback}</span>
-        ) : (
-          <button type="button" disabled={inlineBusy} className="product-cell-edit" aria-label={`编辑SKU：${p.sku}`} onClick={() => startEditSku(p)} title={p.sku || '编辑SKU'} style={{ minWidth: 30 }} translate="no">
-            {p.sku || '-'}
-          </button>
+      case 'sku': {
+        // SKU 是平台侧的唯一标识：改了它，采集、调价、装箱单就都对不上号，
+        // 所以这里只读 + 复制，不给改。多规格时「展开」只是摊开看，不是编辑。
+        if (!p.sku) return <span className="sku-cell"><span className="sku-value is-empty">无SKU</span></span>;
+        const sku = p.sku;
+        const skuOptions = skuVariants(sku);
+        const expanded = expandedVariantRows.has(p.id);
+        return (
+          <span className="sku-cell">
+            {skuOptions.length > 1 ? (
+              <span className="sku-branch-summary">
+                <b translate="no">{skuOptions[0]}</b>
+                <button
+                  type="button" aria-expanded={expanded}
+                  onClick={() => setExpandedVariantRows(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })}
+                >{expanded ? '收起规格' : `展开 ${skuOptions.length} 个规格`}</button>
+              </span>
+            ) : (
+              <span className="sku-value" translate="no" title={sku}>{sku}</span>
+            )}
+            <button
+              type="button"
+              className={`sku-copy${copiedSku === sku ? ' is-done' : ''}${copyFailedSku === sku ? ' is-failed' : ''}`}
+              aria-label={`复制SKU：${sku}`}
+              title={skuOptions.length > 1 ? `复制 ${skuOptions.length} 个规格的 SKU（空格分隔）` : '复制 SKU'}
+              onClick={() => { void copySku(sku); }}
+            >{copyFailedSku === sku ? '复制失败' : copiedSku === sku ? '已复制' : '复制'}</button>
+          </span>
         );
+      }
       case 'minimum_price_at_20_margin':
         return formatPrice(p.minimum_price_at_20_margin, 'ZAR');
       case 'minimum_price_at_15_margin':

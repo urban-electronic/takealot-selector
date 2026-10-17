@@ -7,6 +7,9 @@ const dom=new JSDOM('<header class="app-header"></header><div id="root"></div>',
 for(const key of ['window','document','navigator','HTMLElement','Node','Event','localStorage'])Object.defineProperty(globalThis,key,{value:dom.window[key],configurable:true});
 globalThis.IS_REACT_ACT_ENVIRONMENT=true;
 globalThis.alert=()=>{}; // Capture old-page alerts locally; never a browser/production dialog.
+// jsdom 没有剪贴板；这里记下被复制的内容，用来断言「复制的是 SKU 本身」。
+let clipboardText=null;
+Object.defineProperty(dom.window.navigator,'clipboard',{value:{writeText:async text=>{clipboardText=text;}},configurable:true});
 const React=require('react'),{act}=React,{createRoot}=require('react-dom/client');
 const {MemoryRouter}=require('react-router-dom');
 const rows=Array.from({length:65},(_,i)=>({id:`p${i+1}`,product_no:i+1,sku:`SKU${i+1}`,product_name:`Product ${i+1}`,chinese_product_name:`商品${i+1}`,selection_status:'数据待补充',link_status:'未购买',is_archived:false}));
@@ -43,15 +46,26 @@ const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT
  assert.equal(document.querySelector('.product-search-input').value,'test','search filter survives pagination');
  // Same real page; all reads/writes below use in-memory fixtures, never a backend.
  act(()=>click(button('首页')));
- const cellEdit=(field)=>document.querySelector(`[aria-label="编辑${field}：SKU1"]`);
- for(const [field,label] of [['中文品名','中文品名：SKU1'],['SKU','SKU：SKU1'],['售价','售价：SKU1']]){
-   const edit=cellEdit(field);assert.ok(edit,field+' has a named edit control');
-   assert.equal(edit.tagName,'BUTTON',field+' supports native keyboard activation');
-   edit.focus();act(()=>click(edit));
-   const input=document.querySelector(`input[aria-label="${label}"]`);assert.ok(input,field+' editor has a label');
-   assert.equal(document.activeElement,input,field+' editor receives focus');
-   act(()=>input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true})));
- }
+const cellEdit=(field)=>document.querySelector(`[aria-label="编辑${field}：SKU1"]`);
+for(const [field,label] of [['中文品名','中文品名：SKU1'],['售价','售价：SKU1']]){
+  const edit=cellEdit(field);assert.ok(edit,field+' has a named edit control');
+  assert.equal(edit.tagName,'BUTTON',field+' supports native keyboard activation');
+  edit.focus();act(()=>click(edit));
+  const input=document.querySelector(`input[aria-label="${label}"]`);assert.ok(input,field+' editor has a label');
+  assert.equal(document.activeElement,input,field+' editor receives focus');
+  act(()=>input.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true})));
+}
+// SKU 只读：它是平台侧唯一标识，改了采集/调价/装箱单就对不上号。
+// 这里守两件事——没有编辑入口，且「复制」复制的是 SKU 原文。
+assert.equal(document.querySelector('[aria-label="编辑SKU：SKU1"]'),null,'SKU has no inline editor');
+assert.ok(document.querySelector('.sku-value'),'SKU is plain text, not a button that opens an editor');
+const copySkuBtn=document.querySelector('[aria-label="复制SKU：SKU1"]');
+assert.ok(copySkuBtn,'SKU offers a copy control');
+assert.equal(copySkuBtn.tagName,'BUTTON','copy is a native button (keyboard activatable)');
+await act(async()=>click(copySkuBtn));
+assert.equal(clipboardText,'SKU1','copy writes the SKU itself to the clipboard');
+assert.ok(copySkuBtn.textContent.includes('已复制'),'copy confirms success on the control');
+assert.equal(writes.length,0,'copying a SKU never writes to the backend');
  const external=document.querySelector('a[href="https://example.invalid/product"]');
  assert.ok(external,'product navigation uses a real link for keyboard and new-tab navigation');
  assert.equal(external.target,'_blank');
@@ -84,7 +98,7 @@ const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT
  assert.ok(document.querySelector('.variant-editor-modal'),'Escape cannot dismiss an in-flight save');
  await act(async()=>resolveUpdate(rows[1]));
  assert.equal(document.querySelector('.variant-editor-modal'),null,'successful fixture save closes dialog');
- for(const [label,field,value] of [['中文品名','chinese_product_name','新商品名'],['售价','actual_sale_price_zar','123.45'],['SKU','sku','SKU1-NEW']]){
+ for(const [label,field,value] of [['中文品名','chinese_product_name','新商品名'],['售价','actual_sale_price_zar','123.45']]){
    writes.length=0;
    act(()=>click(document.querySelector(`[aria-label="编辑${label}：SKU1"]`)));
    let input=document.querySelector(`input[aria-label="${label}：SKU1"]`);
@@ -107,10 +121,13 @@ const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT
    await act(async()=>retry({...rows[0],[field]:saved}));
    assert.equal(document.querySelector(`input[aria-label="${label}：SKU1"]`),null,label+': successful save closes editor');
  }
- assert.deepEqual(JSON.parse(localStorage.getItem('productListSelectedSkus')),['SKU1-NEW'],'inline SKU rename updates the selected packing SKU');
- const editSku=document.querySelector('[aria-label="编辑SKU：SKU1-NEW"]');act(()=>click(editSku));
- const cancelled=document.querySelector('input[aria-label="SKU：SKU1-NEW"]');act(()=>setValue(cancelled,'DO-NOT-SAVE'));
+ // 取消后迟到的 blur 不能把草稿写回去（用中文品名验证，SKU 已不可编辑）。
+ act(()=>click(document.querySelector('[aria-label="编辑中文品名：SKU1"]')));
+ const cancelled=document.querySelector('input[aria-label="中文品名：SKU1"]');act(()=>setValue(cancelled,'DO-NOT-SAVE'));
  const count=writes.length;act(()=>{cancelled.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));cancelled.dispatchEvent(new dom.window.FocusEvent('focusout',{bubbles:true}));});
  assert.equal(writes.length,count,'Escape followed by late blur cannot save a cancelled draft');
- act(()=>root.unmount());console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, real product links, modal focus/Tab/Escape/restore and duplicate-save protection (isolated fixtures).');
+ // 多规格行的 SKU 也只读：展开/收起是看，不是改；复制拿得到整串。
+ assert.equal(document.querySelector('[aria-label^="编辑SKU："]'),null,'no SKU in the list is editable');
+ assert.ok(document.querySelector('[aria-label="复制SKU：SKU2 SKU2B"]'),'multi-variant row copies the whole SKU string');
+ act(()=>root.unmount());console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, read-only SKU with copy, real product links, modal focus/Tab/Escape/restore and duplicate-save protection (isolated fixtures).');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{clearTimeout(watchdog);dom.window.close();});
