@@ -6,6 +6,7 @@ import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAs
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
+import { skuVariants, variantLabels } from '../utils/variants';
 
 // --- 列定义 ---
 interface ColumnDef {
@@ -47,16 +48,6 @@ function validateColumnOrder(saved: string[], canonical: string[]): string[] {
   const cleanedSet = new Set(cleaned);
   const missing = canonical.filter(k => !cleanedSet.has(k));
   return [...cleaned, ...missing];
-}
-
-function skuVariants(sku: string | null): string[] {
-  return (sku || '').split(/[\s,，;；]+/).map(value => value.trim()).filter(Boolean);
-}
-
-function variantLabels(product: Product): string[] {
-  const skus = skuVariants(product.sku);
-  const labels = (product.chinese_product_name || '').split(/[\s,，;；/]+/).map(value => value.trim()).filter(Boolean);
-  return labels.length === skus.length ? labels : skus.map((_, index) => index === 0 ? (product.chinese_product_name || '主商品') : '规格待识别');
 }
 
 function variantKind(label: string): string {
