@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getOperationsOverview, getProduct } from '../remoteApi';
 import PipelinePlan from '../operations/PipelinePlan';
 import type { Product } from '../types';
+import { useVisibleInterval } from '../utils/useVisibleInterval';
 
 const levels: Record<string,string> = { out_of_stock: '断货', urgent: '紧急', watch: '关注', healthy: '健康', slow_moving: '滞销', no_data: '观察中' };
 export default function Replenishment() {
@@ -13,7 +14,9 @@ export default function Replenishment() {
   const [view, setView] = useState('products'); const [mode, setMode] = useState('all');
   const [page, setPage] = useState(1); const [error, setError] = useState('');
   const refresh = async () => { setOverview(await getOperationsOverview()); setError(''); };
-  useEffect(() => { refresh().catch(e => setError(e.message)); const t = setInterval(() => refresh().catch(e => setError(e.message)), 60000); return () => clearInterval(t); }, []);
+  useEffect(() => { refresh().catch(e => setError(e.message)); }, []);
+  // 隐藏标签页时不轮询；回到前台若已过期立即补一次
+  useVisibleInterval(() => { refresh().catch(e => setError(e.message)); }, 60000);
   useEffect(() => { setPage(1); }, [search, level, mode, view, onlyAction, hideEmpty]);
   useEffect(() => {
     if (!selected) return;

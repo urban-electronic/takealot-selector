@@ -23,6 +23,8 @@ export default function Procurement() {
   // form state
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** 当前记录已关联的产品序号；用于判断用户是否改了序列号（改了就提示会解除关联） */
+  const [linkedProductNo, setLinkedProductNo] = useState('');
   const [form, setForm] = useState({
     product_no: '',
     product_name: '',
@@ -107,6 +109,7 @@ export default function Procurement() {
       product_name: p.product_name ?? '',
       product_id: p.id ?? '',
     }));
+    setLinkedProductNo(String(p.product_no ?? ''));
     setProductSearch('');
     setSearchResults([]);
   };
@@ -121,6 +124,7 @@ export default function Procurement() {
   const resetForm = () => {
     setForm({ product_no: '', product_name: '', product_id: '', quantity: '', total_amount: '', notes: '', status: 'in_transit', recorded_at: todayLocal() });
     setEditingId(null);
+    setLinkedProductNo('');
     setShowForm(false);
     setProductSearch('');
     setSearchResults([]);
@@ -163,6 +167,7 @@ export default function Procurement() {
       recorded_at: r.recorded_at ?? '',
     });
     setEditingId(r.id);
+    setLinkedProductNo(String(r.product_no ?? ''));
     setShowForm(true);
   };
 
@@ -278,9 +283,11 @@ export default function Procurement() {
                 <input type="text" value={productSearch || form.product_no}
                   placeholder="输入 serial number 搜索..."
                   onChange={e => {
-                    const v = e.target.value;
-                    setProductSearch(v);
-                    setForm(prev => ({ ...prev, product_no: v, product_name: '', product_id: '' }));
+                    // 不再在每次按键时清空 product_id/product_name：编辑已有记录时
+                    // 点一下输入框就会把产品关联永久丢掉，且没有任何提示。
+                    // 关联只在用户真正选中搜索结果、或点「解除关联」时才变化。
+                    setProductSearch(e.target.value);
+                    setForm(prev => ({ ...prev, product_no: e.target.value }));
                   }}
                   style={{ width: '100%', boxSizing: 'border-box' }} />
                 {searchResults.length > 0 && (
@@ -299,6 +306,15 @@ export default function Procurement() {
                   </div>
                 )}
                 {searching && <small style={{ color: 'var(--text-subtle)' }}>搜索中...</small>}
+                {form.product_id && linkedProductNo && form.product_no.trim() !== linkedProductNo && (
+                  <small style={{ color: 'var(--text-subtle)', display: 'block', marginTop: 4 }}>
+                    序列号已改为 {form.product_no.trim() || '（空）'}，当前仍关联原产品 #{linkedProductNo}。
+                    <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }}
+                      onClick={() => { setForm(prev => ({ ...prev, product_id: '', product_name: '' })); setLinkedProductNo(''); }}>
+                      解除关联
+                    </button>
+                  </small>
+                )}
               </div>
 
               {/* product name (auto-filled, editable as fallback) */}

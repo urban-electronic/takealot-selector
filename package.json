@@ -13,9 +13,10 @@
     "test:buybox": "node scripts/test-buybox-status.cjs",
     "test:price": "node scripts/test-price-parse.cjs",
     "test:bookmarklet": "node scripts/test-takealot-bookmarklet.cjs",
+    "test:values": "node scripts/test-value-coercion.cjs",
     "test:audit-safety": "python scripts/test-ui-audit-safety.py && python scripts/test-longtitle-audit-safety.py && node scripts/test-longtitle-focus.cjs",
     "check:visual": "node scripts/check-visual-consistency.cjs",
-    "check": "npm run check:visual && npm run test:price && npm run test:bookmarklet"
+    "check": "npm run check:visual && npm run test:price && npm run test:bookmarklet && npm run test:values"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

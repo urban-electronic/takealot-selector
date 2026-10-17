@@ -5,6 +5,7 @@ import { openUrl } from '../api';
 import type { Product, FeeCategory } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
+import { toNumber } from '../utils/number';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -575,17 +576,18 @@ export default function ProductDetail() {
             </tr>
             <tr>
               <td style={{ fontWeight: 700 }}>利润率</td>
-              <td style={{ fontWeight: 700, fontSize: 22, color: (product.profit_margin ?? 0) >= 0.25 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+              {/* 缺数据不能当成 0%：?? 0 会把"没算出来"渲染成红色低毛利 */}
+              <td style={{ fontWeight: 700, fontSize: 22, color: product.profit_margin == null ? 'var(--color-text-secondary)' : (toNumber(product.profit_margin) ?? 0) >= 0.25 ? 'var(--color-success)' : 'var(--color-danger)' }}>
                 {formatPercent(product.profit_margin)}
               </td>
             </tr>
             <tr>
               <td style={{ fontWeight: 600 }}>20% 利润率最低售价</td>
-              <td>{product.minimum_price_at_20_margin != null ? `R ${product.minimum_price_at_20_margin.toFixed(0)}` : '-'}</td>
+              <td>{formatPrice(product.minimum_price_at_20_margin, 'ZAR')}</td>
             </tr>
             <tr>
               <td style={{ fontWeight: 600 }}>15% 利润率最低售价</td>
-              <td>{product.minimum_price_at_15_margin != null ? `R ${product.minimum_price_at_15_margin.toFixed(0)}` : '-'}</td>
+              <td>{formatPrice(product.minimum_price_at_15_margin, 'ZAR')}</td>
             </tr>
           </tbody>
         </table>

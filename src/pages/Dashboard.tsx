@@ -8,6 +8,7 @@ import type { DashboardStats, InventoryRow, ProcurementRecord, Product, Shipment
 import { formatPercent } from '../types';
 import { missingSkuTasks } from '../utils/dashboardTasks';
 import { isPlaceholderLabel, skuVariants, variantLabels } from '../utils/variants';
+import { applySettled, failureSummary, reasonText } from '../utils/settle';
 
 export default function Dashboard() {
   const api = useApi();
@@ -18,6 +19,7 @@ export default function Dashboard() {
   const [shipments, setShipments] = useState<ShipmentRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [partialError, setPartialError] = useState('');
   const [auditing, setAuditing] = useState(false);
   const [audit, setAudit] = useState<SkuAuditResult | null>(null);
   const [auditError, setAuditError] = useState('');
@@ -49,11 +51,21 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    Promise.all([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
+    // 分区降级：主页统计失败才走整页错误态，其余四个区块各自降级
+    Promise.allSettled([api.getDashboard(), getInventory(), getShipments(), api.listProcurementRecords(), api.getProducts()])
       .then(([dashboard, inventoryRows, shipmentRows, procurementRows, productRows]) => {
-        setStats(dashboard); setInventory(inventoryRows); setShipments(shipmentRows); setProcurements(procurementRows); setProducts(productRows);
+        if (dashboard.status === 'rejected') {
+          setError(reasonText(dashboard.reason));
+          return;
+        }
+        setStats(dashboard.value);
+        const failures: string[] = [];
+        applySettled(inventoryRows, '库存', setInventory, failures);
+        applySettled(shipmentRows, '发货单', setShipments, failures);
+        applySettled(procurementRows, '采购记录', setProcurements, failures);
+        applySettled(productRows, '产品列表', setProducts, failures);
+        setPartialError(failureSummary(failures));
       })
-      .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, [api]);
 
@@ -127,6 +139,7 @@ export default function Dashboard() {
           </button>
         </div>
 
+        {partialError && <div className="alert alert-error">{partialError}</div>}
         {auditError && <div className="alert alert-error">核对失败：{auditError} <button className="btn btn-sm" onClick={checkSkus} disabled={auditing}>重新检查</button></div>}
         {auditMessage && <div className="alert alert-success">{auditMessage}</div>}
         {audit && <div className="sku-audit-panel">
