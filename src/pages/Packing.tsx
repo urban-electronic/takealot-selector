@@ -724,7 +724,7 @@ export default function Packing() {
         </div>
 
         {filteredProducts.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#888', padding: 24 }}>
+          <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 24 }}>
             暂无产品，点击右上角「从选品库导入」添加。
           </div>
         ) : (
@@ -823,7 +823,7 @@ export default function Packing() {
       <div className="card packing-selected-card">
         <h3 style={{ marginTop: 0, marginBottom: 12 }}>已选产品</h3>
         {selectedRows.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#888', padding: 24 }}>
+          <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 24 }}>
             尚未选择产品，请在上方产品库勾选，或通过产品列表「加入装箱单」直达。
           </div>
         ) : (
@@ -893,7 +893,7 @@ export default function Packing() {
           <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
           </button>
-          <span style={{ fontSize: 13, color: '#888' }}>将导出 {selectedRows.length} 行装箱单数据（带产品图）</span>
+          <span style={{ fontSize: 13, color: 'var(--text-subtle)' }}>将导出 {selectedRows.length} 行装箱单数据（带产品图）</span>
         </div>
       </div>
       </aside>
@@ -981,7 +981,7 @@ export default function Packing() {
         <div className="packing-modal-mask">
           <div className="packing-modal" style={{ maxWidth: 720 }}>
             <h3 style={{ margin: '0 0 12px' }}>从选品库导入</h3>
-            <p style={{ margin: '0 0 12px', fontSize: 13, color: '#888' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-subtle)' }}>
               勾选选品产品后导入装箱单库（SKU 已存在则自动跳过，不会覆盖已有编辑；图片自动抓取转存）。
             </p>
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(160px, 240px)', gap: 8, marginBottom: 10 }}>
@@ -998,15 +998,15 @@ export default function Packing() {
                 {importCategories.map(category => <option key={category} value={category}>{category}</option>)}
               </select>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: '#666' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: 'var(--text-muted)' }}>
               <span>产品库 {importResults.length} 条 · 当前结果 {filteredImportResults.length} 条 · 可导入 {selectableImportResults.length} 条</span>
               <button className="btn btn-outline" style={{ marginLeft: 'auto', padding: '3px 9px' }} disabled={selectableImportResults.length === 0} onClick={() => {
                 setImportSelected(prev => new Set([...prev, ...selectableImportResults.map(p => String(p.id))]));
               }}>选择当前全部</button>
             </div>
-            {importSearching && <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>正在加载完整产品库...</div>}
+            {importSearching && <div style={{ fontSize: 13, color: 'var(--text-subtle)', marginBottom: 8 }}>正在加载完整产品库...</div>}
             {!importSearching && filteredImportResults.length === 0 ? (
-              <div style={{ textAlign: 'center', color: '#888', padding: 20 }}>未找到匹配的选品产品</div>
+              <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 20 }}>未找到匹配的选品产品</div>
             ) : (
               <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #eee', borderRadius: 4 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1053,7 +1053,7 @@ export default function Packing() {
               </div>
             )}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-              <span style={{ fontSize: 13, color: '#888', marginRight: 'auto', alignSelf: 'center' }}>
+              <span style={{ fontSize: 13, color: 'var(--text-subtle)', marginRight: 'auto', alignSelf: 'center' }}>
                 已选 {importSelected.size} 项
               </span>
               <button className="btn" onClick={() => setImportOpen(false)} disabled={importing}>取消</button>
