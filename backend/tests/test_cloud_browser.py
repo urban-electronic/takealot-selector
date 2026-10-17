@@ -43,6 +43,66 @@ def test_historical_false_price_error_shown_as_challenge_without_mutating_record
     assert displayed_monitor(old)['error_code']=='site_challenge'
     assert old['error_code']=='price_not_found'
 
+def test_real_error_message_is_not_overwritten_by_classification():
+    # 浏览器起不来时，库里存的是「采集器不可用」；displayed_monitor 不能再把它
+    # 改写成「未找到 Buybox 价」——2026-10-17 就是因为这个改写查错了方向。
+    real={'status':'error','error':'采集器不可用（浏览器或接口未就绪）；未改价','error_code':'collector_unavailable',
+          'diagnostics':{'stage':'public_page','failure':'TargetClosedError'}}
+    shown=displayed_monitor(real)
+    assert shown['error_code']=='collector_unavailable'
+    assert shown['error'].startswith('采集器不可用')
+
+
+class _FakeCtx:
+    async def close(self): pass
+
+
+class _FakePW:
+    async def stop(self): pass
+
+
+def test_launch_is_retried_once_when_profile_lock_is_stale(monkeypatch, tmp_path):
+    import services.quote_browser as qb
+    monkeypatch.setenv('BUYBOX_BROWSER_PROFILE', str(tmp_path / 'profile'))
+    monkeypatch.setattr(qb, 'browser_display', lambda: None)
+    attempts = []
+
+    async def flaky(profile, display, args):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError('Target page, context or browser has been closed')
+        return _FakePW(), _FakeCtx()
+
+    monkeypatch.setattr(qb, '_launch', flaky)
+
+    async def check():
+        async with qb.quote_context() as context:
+            assert context is not None
+    asyncio.run(check())
+    assert len(attempts) == 2, '启动失败要重试一次，否则一次残留锁就让采集全线停摆'
+
+
+def test_caller_errors_are_not_retried_by_quote_context(monkeypatch, tmp_path):
+    # 关键回归：yield 之后的异常属于调用方（采集逻辑），不能触发重试，
+    # 否则整轮采集会被悄悄重跑，可能重复抓页面甚至重复判定报价。
+    import services.quote_browser as qb
+    monkeypatch.setenv('BUYBOX_BROWSER_PROFILE', str(tmp_path / 'profile'))
+    monkeypatch.setattr(qb, 'browser_display', lambda: None)
+    calls = []
+
+    async def ok(profile, display, args):
+        calls.append('launch')
+        return _FakePW(), _FakeCtx()
+
+    monkeypatch.setattr(qb, '_launch', ok)
+
+    async def check():
+        with pytest.raises(ValueError):
+            async with qb.quote_context():
+                raise ValueError('collector bug')
+    asyncio.run(check())
+    assert calls == ['launch'], '调用方异常不得触发重试'
+
 @pytest.mark.parametrize('token',[None,'wrong-session'])
 def test_session_token_required_before_capture(token):
     async def check():

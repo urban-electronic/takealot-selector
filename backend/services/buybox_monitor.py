@@ -85,7 +85,18 @@ def process(row_id):
             except Exception:
                 result['price_ownership']=pending(config.get('price_ownership'),failed=True)
         except Exception as error:
-            result.update(status='error', error_stage=stage, error_code=result.get('error_code') or ('seller_read_failed' if stage=='seller_api' else type(error).__name__), error=str(error) if isinstance(error,ValueError) else '采集或接口暂不可用；未改价', failures=config.get('failures',0)+1)
+            # 非 ValueError 表示这一轮根本没跑完（浏览器起不来、卖家接口超时）。
+            # 这时不能沿用上一轮的 error_code 和 diagnostics：上一轮的
+            # price_not_found 会让界面把「浏览器坏了」显示成「页面没有 Buybox 价」，
+            # 旧计数（buybox_cards=2 等）也会被当成这一轮的结果。2026-10-17 就是
+            # 这样被误导了好几轮。清掉，如实记下失败类型。
+            finished = isinstance(error, ValueError)
+            code = result.get('error_code') if finished else 'collector_unavailable'
+            if not finished:
+                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__,
+                                         'failure_message': str(error)[:200]}
+            result.update(status='error', error_stage=stage, error_code=code or ('seller_read_failed' if stage=='seller_api' else type(error).__name__),
+                          error=str(error) if finished else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat(),last_attempt_source='cloud_browser')
             delay=config.get('interval_minutes',5)*60

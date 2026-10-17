@@ -97,6 +97,12 @@ async function scenario(monitor, inspect, overrides = {}) {
     const copy = [...host.querySelectorAll('.collection-bar-actions button')].find(b => b.textContent === '复制诊断');
     check(!!copy, 'a failing fleet offers a one-click diagnostics export');
   });
+  // 采集器自己没起来时，不能显示成「页面打开了但没有 Buybox 价」——那是把基础设施
+  // 故障说成页面问题，2026-10-17 就因此查错了方向。
+  await scenario({ ...known, status: 'error', error: '采集器不可用（浏览器或接口未就绪）；未改价', error_code: 'collector_unavailable' }, tr => {
+    check(tr.textContent.includes('采集器没起来'), 'collector outage is named as an infrastructure failure');
+    check(!tr.textContent.includes('页面打开了但没有 Buybox 价'), 'collector outage is not blamed on the product page');
+  });
   await scenario({ ...known, status: 'success', source: 'local_collector', holding_buybox: true }, tr => {
     check(tr.textContent.includes('报价来源：本机采集器'), 'native quote source preserved');
     // 历史 holding_buybox=true 只代表当时同价，不是卖家身份证据，不能显示成"已确认持有"。

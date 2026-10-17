@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 
-def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial_source=None, error_payload=None, failures=0):
+def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial_source=None, error_payload=None, failures=0, raises=None, prior=None):
     engine=create_engine('sqlite://');Base.metadata.create_all(engine);factory=sessionmaker(bind=engine)
     key=monitor.PREFIX+DEFAULT_STORE_ID+':p:1'
     with factory() as db:
@@ -22,6 +22,9 @@ def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial
             value=json.loads(row.value)
             value.update(source=initial_source,quote_time_source='collector_timestamp')
             row.value=json.dumps(value);db.commit()
+        if prior:
+            row=db.query(SystemSettings).filter_by(key=key).first()
+            value=json.loads(row.value);value.update(prior);row.value=json.dumps(value);db.commit()
     import database
     monkeypatch.setattr(database,'SessionLocal',factory)
     monkeypatch.setattr(monitor,'configured_key',lambda db:'test')
@@ -34,6 +37,7 @@ def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial
                 row=db.query(SystemSettings).filter_by(key=key).first()
                 value=json.loads(row.value);value.update(enabled=False,revision=2,status='paused');row.value=json.dumps(value);db.commit()
         if error_payload is not None: return error_payload
+        if raises is not None: raise raises
         return {'error':'unavailable'} if error else {'buyboxPrice':100,'holdingBuybox':True,'offers':[{'price':90,'status':'in_stock'}]}
     monkeypatch.setattr(monitor,'collect',collect)
     monitor.process(key)
@@ -110,6 +114,28 @@ def test_genuine_fault_keeps_exponential_backoff(monkeypatch):
     _,result=run(monkeypatch,error_payload={'error':'TypeError: cannot read price'},failures=5)
     assert result['error_code']=='collector_error' and result['error_code'] not in monitor.THROTTLED_CODES
     assert result['next_due'] > monitor.time.time()+21000
+
+def test_collector_crash_does_not_inherit_stale_price_not_found(monkeypatch):
+    # 线上复现（2026-10-17）：浏览器 launch_persistent_context 抛 TargetClosedError，
+    # collect() 根本没跑完，页面从未打开。旧逻辑却沿用上一轮的 error_code 和旧诊断，
+    # 界面把「浏览器坏了」显示成「页面打开了但没有 Buybox 价」，连续几轮都查错了方向。
+    _,result=run(monkeypatch, raises=RuntimeError('Target page, context or browser has been closed'),
+                 prior={'error_code':'price_not_found','diagnostics':{'buybox_cards':2,'price_nodes':0}})
+    assert result['error_code']=='collector_unavailable'
+    assert result['error_stage']=='public_page'
+    assert result['error'].startswith('采集器不可用')
+    # 上一轮的计数必须清掉：留着 buybox_cards=2，界面会继续声称「Buybox 区块 2 个」。
+    assert 'buybox_cards' not in result['diagnostics']
+    assert result['diagnostics']['failure']=='RuntimeError'
+    # 采集器不可用不是网站拦截，别混进「等验证解除」的退避分支。
+    assert result['error_code'] not in monitor.THROTTLED_CODES
+
+def test_value_error_still_keeps_classified_code(monkeypatch):
+    # 跑完了但判定无有效行情（ValueError）：仍沿用 classify 给出的具体码，
+    # 不能一律变成 collector_unavailable，否则又丢失了「页面结构变了」这类判断。
+    _,result=run(monkeypatch,error_payload={'error':'price_not_found','diagnostics':{'buybox_cards':2,'price_nodes':0}})
+    assert result['error_code']=='price_not_found'
+    assert result['diagnostics']['buybox_cards']==2
 
 def test_manual_retry_clears_failure_counter(monkeypatch):
     monkeypatch.setattr(routes,'configured_key',lambda db:'test')

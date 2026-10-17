@@ -49,6 +49,12 @@ def displayed_monitor(monitor):
     """Reclassify historical diagnostics consistently in BOTH collection/pricing views."""
     value=dict(monitor)
     if value.get('status')=='error' and value.get('diagnostics'):
-        code,message=classify({'diagnostics':value['diagnostics'],'error':value['diagnostics'].get('raw_error')})
-        if code: value.update(error_code=code,error=message)
+        # 只在库里的错误文案为空、或是那句通用兜底时才用诊断重判。
+        # 原来无条件覆盖，会把真实异常改写成「未找到 Buybox 价」：
+        # 2026-10-17 浏览器 TargetClosedError 起不来，界面却一直显示
+        # 「页面打开了但没有 Buybox 价」，排查被误导了整整几轮。
+        current=(value.get('error') or '').strip()
+        if current in ('','采集或接口暂不可用；未改价'):
+            code,message=classify({'diagnostics':value['diagnostics'],'error':value['diagnostics'].get('raw_error')})
+            if code: value.update(error_code=code,error=message)
     return value
