@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "test:inventory": "node scripts/test-inventory-actions.cjs && node scripts/test-inventory-actions-edge.cjs",
     "test:products": "node scripts/test-product-pagination.cjs",
-    "test:buybox": "node scripts/test-buybox-status.cjs",
+    "test:buybox": "node scripts/test-buybox-status.cjs && node scripts/test-buybox-copy.cjs",
     "test:images": "node scripts/test-product-image.cjs",
     "test:price": "node scripts/test-price-parse.cjs",
     "test:bookmarklet": "node scripts/test-takealot-bookmarklet.cjs",

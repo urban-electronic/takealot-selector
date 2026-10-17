@@ -68,10 +68,10 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(tr.textContent.includes('测试商品'), 'Chinese name is displayed separately');
     check(tr.textContent.includes('英文名：Test product'), 'English title remains labelled');
     check(tr.textContent.includes('R 269'), 'queued job retains last valid quote');
-    check(tr.textContent.includes('卖家：Urban Electronics'), 'actual quoted seller is visible');
-    check(tr.textContent.includes('历史同价 · 推定持有'), 'historical comparison is inferred rather than freshly verified');
+    check(tr.textContent.includes('页面上挂的卖家：Urban Electronics'), 'actual quoted seller is visible');
+    check(tr.textContent.includes('同价 · 卖家未核实'), 'equal price is never presented as verified holding');
     check(!tr.textContent.includes('同价 · 待确认'), 'ambiguous badge removed');
-    check(tr.textContent.includes('报价来源：后台采集'), 'quote origin is visible');
+    check(tr.textContent.includes('报价来源：后台采集器'), 'quote origin is visible');
     check(tr.querySelector('.pricing-result').textContent.includes('采集：排队中'), 'task result does not say fresh success');
     check(tr.querySelector('.pricing-result').textContent.includes('调价：未启动'), 'pricing state has its own label');
     check(tr.querySelector('.collection-status-cell').textContent.includes('最近成功'), 'timestamp meaning is explicit');
@@ -81,18 +81,21 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
   });
   await scenario({ ...known, status: 'success', source: 'local_collector', holding_buybox: true }, tr => {
-    check(tr.textContent.includes('报价来源：本机采集'), 'native quote source preserved');
+    check(tr.textContent.includes('报价来源：本机采集器'), 'native quote source preserved');
     check(tr.querySelectorAll('td')[2].textContent.includes('持有'), 'verified holding remains visible');
   });
   await scenario({ status: 'queued' }, tr => {
     check(tr.querySelectorAll('td')[2].textContent.includes('未采集'), 'empty quote does not show success');
-    check(tr.querySelectorAll('td')[2].textContent.includes('卖家：未读取'), 'missing seller is not invented');
+    check(tr.querySelectorAll('td')[2].textContent.includes('页面上挂的卖家：未读取'), 'missing seller is not invented');
   });
-  for (const [state,label] of Object.entries({matched:'同价 · 推定持有',mismatch_pending:'推定持有 · 失去复核1/2',mismatch:'异价 · 推定未持有',checking:'本店售价待复核',verification_failed:'本店售价复核未完成'})) {
+  for (const [state,label] of Object.entries({matched:'疑似在持位',mismatch_pending:'疑似在持位 · 复核中',mismatch:'不在持位',checking:'正在核对本店价',verification_failed:'本店价核对失败'})) {
     await scenario({ ...known, status: 'success', price_ownership: {state,own_price:269,own_price_source:'official_live',own_price_asof:'2026-10-15T01:58:10Z',identity_verified:false} }, tr => {
       check(tr.textContent.includes(label), `price estimate ${state} is explicit`);
       check(tr.textContent.includes('对照本店价：R 269 · 实时API'), 'comparison source is visible');
-      check(tr.querySelectorAll('td')[2].querySelector('.status-pill').title.includes('不证明卖家身份'), 'estimate is not verified identity');
+      const pill = tr.querySelectorAll('td')[2].querySelector('.status-pill');
+      check((pill.title||'').length > 10, `price estimate ${state} explains itself on hover`);
+      // 同价是最容易被误读成"已持有"的状态，单独钉死这条限定。
+      if (state === 'matched') check(pill.title.includes('不能证明是本店在占位'), 'equal price is never verified identity');
     });
   }
   await scenario({ ...known, status: 'success', source: undefined, snapshot: {} }, tr => {
@@ -101,13 +104,13 @@ async function scenario(monitor, inspect, overrides = {}) {
   });
   await scenario({ ...known, status: 'queued', enabled:true, next_due:Date.now()/1000+300 }, tr => {
     check(tr.textContent.includes('等待下轮'), 'future scheduled work is not shown as waiting for a worker');
-    check(tr.textContent.includes('尚未到计划时间'), 'scheduled waiting has a reason');
-    check(tr.textContent.includes('上次有效报价 · 非本轮结果'), 'retained quote is not a new collection result');
+    check(tr.textContent.includes('到点自动开始'), 'scheduled waiting has a reason');
+    check(tr.textContent.includes('这是上一次成功采到的报价，不是本轮结果'), 'retained quote is not a new collection result');
     check([...tr.querySelectorAll('button')].find(b=>b.textContent==='立即采集').disabled, 'queued work cannot be repeatedly submitted');
   });
   await scenario({ ...known, status:'queued', next_due:0 }, tr => {
-    check(tr.textContent.includes('等待采集器领取'), 'due queue explains what it is waiting for');
-    check(tr.textContent.includes('尚未收到本轮完成结果'), 'queue never implies success');
+    check(tr.textContent.includes('已排队，后台马上执行'), 'due queue explains what it is waiting for');
+    check(!tr.textContent.includes('正在采这一轮'), 'queue never implies success');
     check(!tr.textContent.includes('离线'), 'queue alone does not prove an offline collector');
   });
   await scenario({ ...known, status:'paused', enabled:false }, tr => {
