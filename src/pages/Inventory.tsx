@@ -4,6 +4,7 @@ import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInven
 import type { InventoryAdjustment, InventoryRow, OperationLog, ShipmentRecord } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { todayLocal } from '../utils/datetime';
+import { applySettled, failureSummary } from '../utils/settle';
 
 import ShipmentReconciliation from '../operations/ShipmentReconciliation';
 
@@ -32,11 +33,15 @@ export default function Inventory() {
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
-    try {
-      const [inventory, shipmentRows, adjustmentRows, activityRows] = await Promise.all([getInventory(), getShipments(), getInventoryAdjustments(), getOperationLogs()]);
-      setRows(inventory); setShipments(shipmentRows); setAdjustments(adjustmentRows); setActivity(activityRows);
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
+    // 分区降级：四个区块互不依赖，任一失败不应让其余数据一起消失
+    const results = await Promise.allSettled([getInventory(), getShipments(), getInventoryAdjustments(), getOperationLogs()]);
+    const failures: string[] = [];
+    applySettled(results[0], '库存', setRows, failures);
+    applySettled(results[1], '发货单', setShipments, failures);
+    applySettled(results[2], '库存调整', setAdjustments, failures);
+    applySettled(results[3], '操作日志', setActivity, failures);
+    setError(failureSummary(failures));
+    setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
 

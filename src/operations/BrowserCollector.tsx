@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { safeSetItem } from '../utils/storage';
 export default function BrowserCollector() {
   const [enabled,setEnabled]=useState(()=>localStorage.getItem('browser_auto_collect')!=='false');
   const [state,setState]=useState({status:'not_installed',message:'安装采集助手后，打开系统网页即可自动采集本店有库存商品。'});
@@ -12,7 +13,7 @@ export default function BrowserCollector() {
     return ()=>window.removeEventListener('message',receive);
   },[]);
   const toggle=()=>{
-    localStorage.setItem('browser_auto_collect',String(!enabled));setEnabled(!enabled);
+    safeSetItem('browser_auto_collect', String(!enabled));setEnabled(!enabled);
     window.postMessage({source:'takealot-browser-ui',type:'PING'},location.origin);
   };
   return <section className="card browser-collector-panel">

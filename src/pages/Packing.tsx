@@ -19,6 +19,7 @@ import {
   readStoreStorage,
 } from '../remoteApi';
 import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
+import { safeSetItem } from '../utils/storage';
 
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
@@ -227,7 +228,8 @@ export default function Packing() {
   }, [contextMenu]);
 
   useEffect(() => {
-    localStorage.setItem(getStoreStorageKey(PACKING_DRAFT_KEY), JSON.stringify({
+    // 每次勾选/改数量都会写；配额满时若抛出会让装箱单整页崩掉
+    safeSetItem(getStoreStorageKey(PACKING_DRAFT_KEY), JSON.stringify({
       selected: Array.from(selected),
       lines,
       exportForm,
