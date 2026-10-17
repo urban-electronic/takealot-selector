@@ -1,5 +1,20 @@
 from services.collection_diagnostics import classify,safe_url
 
+def test_display_boundary_hides_legacy_exception_text_without_losing_counts():
+    import json
+    from services.collection_diagnostics import displayed_monitor
+    original={'status':'error','error':'采集器不可用（浏览器或接口未就绪）；未改价',
+              'error_code':'collector_unavailable','diagnostics':{
+                  'stage':'public_page','failure':'RuntimeError','price_nodes':4,
+                  'failure_message':'/private/profile token=fixture-private'},
+              'snapshot':{'diagnostics':{'failure_message':'fixture-private','buybox_cards':2}}}
+    shown=displayed_monitor(original)
+    assert 'fixture-private' not in json.dumps(shown)
+    assert shown['diagnostics']['failure']=='RuntimeError'
+    assert shown['diagnostics']['price_nodes']==4
+    assert shown['snapshot']['diagnostics']['buybox_cards']==2
+    assert original['diagnostics']['failure_message'].endswith('fixture-private')
+
 def test_diagnostics_never_store_query_tokens():
     assert safe_url('https://www.takealot.com/x/PLID1?token=private#section')=='https://www.takealot.com/x/PLID1'
 

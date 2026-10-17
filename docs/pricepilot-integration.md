@@ -389,3 +389,7 @@ DIAG-SAFE-01（P1，Codex）：基线 f4368de 新增任意标量诊断回传及�
 ### DIAG-SAFE-01 再次回归（2026-10-18）
 
 基线3c1eb21的循环状态改动重新引入preview.error_detail和monitor.failure_message，覆盖了PR148的异常原文保护。Codex只恢复这两处保护，保留worker心跳、守护线程、UI轨道与浏览器释放延时。用原fixture反例复测，不以新增心跳代替真实行情验收。该回归由直接进入main的改动带入；PR后端用例仍在，因此后续提交必须经过最新head检查，不得以此前通过结果代替新版本。
+
+### DIAG-SAFE-02 历史记录读取边界（2026-10-18）
+
+基线d2a1b2d的排期统计再次带回monitor.failure_message。除修正写入端外，在collection_diagnostics.displayed_monitor的统一读取边界去掉异常原文，覆盖顶层、diagnostics和snapshot.diagnostics；旧进程写下的记录也不会把异常正文带到页面。复制对应层，不修改原始历史记录；保留错误类型、计数与报价。实际执行同一历史记录fixture：修复前泄露断言失败，修复后通过，另两项诊断保护回归通过。完整API/worker回归由最新head的后端CI执行，未在生产注入故障或触发采集；最终提交、部署和真实报价仍分别验收。

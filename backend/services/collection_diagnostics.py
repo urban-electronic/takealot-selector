@@ -74,6 +74,19 @@ def classify(snapshot):
 def displayed_monitor(monitor):
     """Reclassify historical diagnostics consistently in BOTH collection/pricing views."""
     value=dict(monitor)
+    # Read boundary also protects historical rows and writes from older workers.
+    # Copy each affected level: listing must never mutate the stored snapshot.
+    private_fields=('failure_message','error_detail')
+    for key in private_fields: value.pop(key,None)
+    def public_diagnostics(raw):
+        return {k:v for k,v in raw.items() if k not in private_fields} if isinstance(raw,dict) else raw
+    if 'diagnostics' in value:
+        value['diagnostics']=public_diagnostics(value['diagnostics'])
+    if isinstance(value.get('snapshot'),dict):
+        snapshot=dict(value['snapshot'])
+        if 'diagnostics' in snapshot:
+            snapshot['diagnostics']=public_diagnostics(snapshot['diagnostics'])
+        value['snapshot']=snapshot
     if value.get('status')=='error' and value.get('diagnostics'):
         # 只在库里的错误文案为空、或是那句通用兜底时才用诊断重判。
         # 原来无条件覆盖，会把真实异常改写成「未找到 Buybox 价」：
