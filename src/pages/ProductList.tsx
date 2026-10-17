@@ -600,7 +600,7 @@ export default function ProductList() {
     const isRefreshing = refreshingIds.has(p.id);
     switch (colKey) {
       case 'select':
-        if (!p.sku) return <span style={{ color: '#ccc', fontSize: 11 }}>无SKU</span>;
+        if (!p.sku) return <span style={{ color: 'var(--text-subtle)', fontSize: 11 }}>无SKU</span>;
         const variants = skuVariants(p.sku);
         const allVariantsChecked = variants.length > 0 && variants.every(sku => selectedSkus.has(sku));
         return (
@@ -630,7 +630,7 @@ export default function ProductList() {
             style={{ width: 68, height: 68, objectFit: 'cover', borderRadius: 4 }}
           />
         ) : (
-          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 11 }}>无图</div>
+          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-subtle)', fontSize: 11 }}>无图</div>
         );
       case 'product_name':
         return (
@@ -657,7 +657,7 @@ export default function ProductList() {
             onBlur={() => commitEditCname(p.id)}
             onKeyDown={(e) => { if (e.key === 'Enter') commitEditCname(p.id); if (e.key === 'Escape') setEditingCnameId(null); }}
             autoFocus
-            style={{ width: '100%', padding: '2px 4px', fontSize: 12 }}
+            className="cell-control"
           />
         ) : (
           <span onDoubleClick={() => startEditCname(p)} title="双击编辑中文品名" style={{ cursor: 'pointer', display: 'inline-block', minWidth: 30, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -675,7 +675,8 @@ export default function ProductList() {
                 onBlur={() => commitEditPrice(p.id)}
                 onKeyDown={(e) => { if (e.key === 'Enter') commitEditPrice(p.id); if (e.key === 'Escape') setEditingPriceId(null); }}
                 autoFocus
-                style={{ width: 70, padding: '2px 4px', fontSize: 13 }}
+                className="cell-control"
+                style={{ width: 70 }}
               />
             ) : (
               <span onClick={() => startEditPrice(p)} title="点击编辑售价" style={{ cursor: 'pointer', minWidth: 50, display: 'inline-block' }}>
@@ -700,7 +701,7 @@ export default function ProductList() {
           <select
             value={p.fee_category || ''}
             onChange={(e) => handleFieldUpdate(p.id, 'fee_category', e.target.value || null)}
-            style={{ width: '100%', padding: '2px 4px', fontSize: 12 }}
+            className="cell-control"
           >
             <option value="">-</option>
             {feeCategories.map((fc) => <option key={fc} value={fc}>{fc}</option>)}
@@ -730,7 +731,7 @@ export default function ProductList() {
             onBlur={() => commitEditSku(p.id)}
             onKeyDown={(e) => { if (e.key === 'Enter') commitEditSku(p.id); if (e.key === 'Escape') setEditingSkuId(null); }}
             autoFocus
-            style={{ width: '100%', padding: '2px 4px', fontSize: 12 }}
+            className="cell-control"
           />
         ) : (
           <span onClick={() => startEditSku(p)} title="点击编辑SKU" style={{ cursor: 'pointer', display: 'inline-block', minWidth: 30 }}>
@@ -746,7 +747,8 @@ export default function ProductList() {
           <select
             value={p.shipping_method || ''}
             onChange={(e) => handleFieldUpdate(p.id, 'shipping_method', e.target.value || null)}
-            style={{ width: '100%', padding: '2px 4px', fontSize: 12, whiteSpace: 'nowrap' }}
+            className="cell-control"
+            style={{ whiteSpace: 'nowrap' }}
           >
             <option value="">-</option>
             {SHIPPING_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
@@ -757,10 +759,11 @@ export default function ProductList() {
           <select
             value={p.link_status || '未购买'}
             onChange={(e) => handleFieldUpdate(p.id, 'link_status', e.target.value)}
+            className="cell-control cell-control--tinted"
             style={{
-              width: '100%', padding: '2px 4px', fontSize: 12,
-              background: LINK_STATUS_MAP[p.link_status || '未购买']?.color || '#999',
-              color: '#fff', border: 'none', borderRadius: 8,
+              background: LINK_STATUS_MAP[p.link_status || '未购买']?.color || '#f1f3f5',
+              color: LINK_STATUS_MAP[p.link_status || '未购买']?.text || '#5a6472',
+              border: 'none', borderRadius: 8,
             }}
           >
             {LINK_STATUS_OPTIONS.map((s) => (
@@ -1101,7 +1104,8 @@ export default function ProductList() {
                       if (n >= 1 && n <= totalPages) { goToPage(n); setJumpPage(''); }
                     }
                   }}
-                  style={{ width: 42, padding: '2px 4px', textAlign: 'center', fontSize: 13 }}
+                  className="cell-control"
+                  style={{ width: 42, textAlign: 'center' }}
                 />
                 页
                 <button

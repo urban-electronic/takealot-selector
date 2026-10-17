@@ -1,0 +1,110 @@
+/* 视觉令牌层 —— 字号 / 文字色 / 控件高度 / 表头度量的唯一来源。
+ *
+ * 为什么需要它：审计发现同一套界面里并存 332 个硬编码色值、11px 以下的字号（最低 9px）、
+ * 以及 21~23px 高的行内控件；同一张表头在三处写成四种度量。把规则收敛成令牌后，
+ * "界面该长什么样"只有一个地方可改，回归脚本 scripts/check-visual-consistency.cjs 据此设卡。
+ *
+ * 引入顺序：必须在 index.css / workspace.css 之后（见 main.tsx），
+ * 这样令牌既可直接被引用，其兜底约束也不会反向压掉页面自己的细化规则。
+ *
+ * 对比度依据：WCAG 2.1 AA，正文 4.5:1。每条文字色令牌都标注了实测值。
+ */
+
+:root {
+  /* ---- 文字色阶（实测对比度按白底计）---- */
+  --text-strong: #1f2937;
+  --text-body: #253247;
+  --text-muted: #5a6b82;        /* 5.44:1 —— 表内次要信息、说明文字 */
+  --text-subtle: #64748b;       /* 4.76:1 —— 辅助标签、单位 */
+  --text-placeholder: #6b7a90;  /* 4.63:1（#f5f7fa 底）—— 占位提示 */
+  --text-neutral-strong: #5a6472; /* 5.31:1（#f1f3f5 底）—— 中性胶囊/状态字 */
+  --text-inverse: #ffffff;
+
+  /* ---- 语义色（文字用法，均 ≥4.5:1）---- */
+  --link-strong: #0b5fd9;       /* 5.75:1 */
+  --warning-strong: #8a5900;    /* 5.98:1；#fff8db 底 5.61:1 */
+  --success-strong: #17694a;    /* 6.08:1（#eaf8f0 底）*/
+  --danger-strong: #b0303f;     /* 5.66:1 */
+
+  /* ---- 中性徽标 ---- */
+  --badge-neutral-bg: #5a6675;  /* 白字 5.85:1 */
+  --badge-neutral-fg: #ffffff;
+
+  /* ---- 字号刻度（下限 11px；正文 14px）---- */
+  --fs-caption: 11px;
+  --fs-label: 12px;
+  --fs-body: 13px;
+  --fs-body-lg: 14px;
+  --fs-title: 17px;
+  --fs-page-title: 26px;
+
+  /* ---- 控件高度 ---- */
+  --control-h: 36px;
+  --control-h-compact: 28px;  /* 表格行内控件 */
+  --control-h-min: 24px;      /* 图标按钮下限（WCAG 2.5.8 目标尺寸）*/
+
+  /* ---- 表格表头：三个表格体系共用一套度量 ---- */
+  --table-head-bg: #f3f6fa;
+  --table-head-fg: #52657f;
+  --table-head-fs: var(--fs-label);
+  --table-head-pad-y: 10px;
+  --table-head-pad-x: 12px;
+
+  /* ---- 布局 ---- */
+  --app-header-h: 68px;
+}
+
+/* 兜底约束：任何按钮 / 下拉 / 图标控件都不小于 24px 目标尺寸。
+   用 :where() 保持 0 特异性，页面自己更明确的规则（.btn 的 36px 等）依然优先。 */
+:where(button, select) {
+  min-height: var(--control-h-min);
+}
+
+:where(button) {
+  min-width: var(--control-h-min);
+}
+
+/* 表格行内控件：原来散落在 7 处内联 style（padding:2px 4px + fontSize），
+   高度只有 21~23px；统一成一个类，点击目标补到 28px。 */
+.cell-control {
+  width: 100%;
+  height: var(--control-h-compact);
+  min-height: var(--control-h-compact);
+  padding: 0 6px;
+  border: 1px solid var(--surface-border, #dce4ed);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text-body);
+  font-size: var(--fs-label);
+  font-family: inherit;
+}
+
+.cell-control:focus-visible {
+  outline: 2px solid #5182ce;
+  outline-offset: 2px;
+}
+
+/* 着色版：背景由调用方按状态内联给出（浅底 + 深字，见 types.ts 的 LINK_STATUS_MAP）。 */
+.cell-control--tinted {
+  font-weight: 600;
+  border-color: transparent;
+}
+
+.cell-control--tinted:focus-visible {
+  outline-color: #ffffff;
+  outline-offset: 1px;
+}
+
+/* 页面顶部提示条里的行内跳转（"查看采集"）：别让 12px 文字成为唯一热区。 */
+.container > .operations-note a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-min);
+}
+
+/* 首页右侧面板标题里的"查看产品 / 全部记录"同样只有 21px 高。 */
+.dashboard-panel-title > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-min);
+}

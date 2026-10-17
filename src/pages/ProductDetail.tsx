@@ -304,7 +304,7 @@ export default function ProductDetail() {
               <tr><td style={{ fontWeight: 600 }}>采购数量</td><td>{product.purchase_quantity}</td></tr>
               <tr><td style={{ fontWeight: 600 }}>包装费/个</td><td>{formatPrice(product.packaging_cost_per_unit_cny, 'CNY')}</td></tr>
               <tr><td style={{ fontWeight: 600 }}>链接状态</td>
-                <td><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 12, color: '#fff', background: LINK_STATUS_MAP[product.link_status || '未购买']?.color || '#999' }}>
+                <td><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, color: LINK_STATUS_MAP[product.link_status || '未购买']?.text || '#5a6472', background: LINK_STATUS_MAP[product.link_status || '未购买']?.color || '#f1f3f5' }}>
                   {LINK_STATUS_MAP[product.link_status || '未购买']?.label || '未购买'}
                 </span></td></tr>
             </tbody>
@@ -354,7 +354,7 @@ export default function ProductDetail() {
               </table>
             </div>
             <div>
-              <div className="section-title">计费重量计算 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>体积重 = 长(cm) × 宽(cm) × 高(cm) ÷ 6000</span></div>
+              <div className="section-title">计费重量计算 <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-subtle)' }}>体积重 = 长(cm) × 宽(cm) × 高(cm) ÷ 6000</span></div>
               <table>
                 <tbody>
                   <tr><td style={{ fontWeight: 600, width: 180 }}>体积重 (kg)</td><td>{product.volumetric_weight_kg != null ? `${product.volumetric_weight_kg.toFixed(3)} kg` : '-'}</td></tr>
@@ -363,7 +363,7 @@ export default function ProductDetail() {
                     <td style={{ fontWeight: 700 }}>
                       {product.chargeable_weight_kg != null ? `${product.chargeable_weight_kg.toFixed(3)} kg` : '-'}
                       {product.volumetric_weight_kg != null && product.actual_weight_kg != null && (
-                        <span style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
+                        <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-muted)' }}>
                           (取{product.volumetric_weight_kg > product.actual_weight_kg ? '体积重' : '实际重'}较大者)
                         </span>
                       )}
