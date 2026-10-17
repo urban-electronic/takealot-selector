@@ -59,7 +59,7 @@ async function scenario(monitor, inspect, overrides = {}) {
   const root = createRoot(host);
   try {
     await act(async () => root.render(React.createElement(Page)));
-    inspect(host.querySelector('tbody tr'));
+    await inspect(host.querySelector('tbody tr'));
   } finally { act(() => root.unmount()); }
 }
 (async () => {
@@ -78,7 +78,9 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(tr.textContent.includes('报价来源：后台采集器'), 'quote origin is visible');
     check(tr.querySelector('.collection-status-cell').textContent.includes('排队中'), 'collection state is stated in its own cell');
     check(tr.querySelectorAll('td')[4].textContent.includes('调价：关闭'), 'pricing state has its own label');
-    check(tr.querySelector('.collection-status-cell').textContent.includes('最近成功'), 'timestamp meaning is explicit');
+    // 绝对时间戳是证据，已收进行尾的统一详情面板；采集格里留的是「几分钟前」。
+    // 要守的是「这个时间点说明它是什么时间」，不是它落在哪一格。
+    check(tr.textContent.includes('最近成功'), 'timestamp meaning is explicit');
   });
   // 采集循环轨道：一个格子一个 SKU，颜色即状态。运营要回答的是"自动化还在转吗、
   // 哪几个没在采"，不是"总共多少条"，所以这里断言的是格子数与状态词，不是数字。
@@ -150,7 +152,9 @@ async function scenario(monitor, inspect, overrides = {}) {
   });
   await scenario({ status: 'queued' }, tr => {
     check(tr.querySelectorAll('td')[2].textContent.includes('未采集'), 'empty quote does not show success');
-    check(tr.querySelectorAll('td')[2].textContent.includes('页面卖家：未读取'), 'missing seller is not invented');
+    // 「页面卖家」是证据，已随判断依据一起收进行尾的统一详情面板，所以按整行断言。
+    // 这条要守的是「没采到就说未读取、不许编一个卖家名」，与它落在哪一格无关。
+    check(tr.textContent.includes('页面卖家：未读取'), 'missing seller is not invented');
   });
   for (const [state,label] of Object.entries({matched:'疑似在持位',mismatch_pending:'疑似在持位 · 复核中',mismatch:'不在持位',checking:'正在核对本店价',verification_failed:'本店价核对失败'})) {
     await scenario({ ...known, status: 'success', price_ownership: {state,own_price:269,own_price_source:'official_live',own_price_asof:'2026-10-15T01:58:10Z',identity_verified:false} }, tr => {
@@ -188,6 +192,43 @@ async function scenario(monitor, inspect, overrides = {}) {
   await scenario({status:'success'}, tr => {
     check(tr.textContent.includes('SKU与中文名对应不明确'), 'ambiguous variant mapping is visible');
   }, {chinese_name:null,name_status:'ambiguous'});
+  // ---- 去冗余 / 变体无定语 / 决策卡片 ----
+  await scenario({ ...known, status: 'success' }, tr => {
+    const text = [...tr.querySelectorAll('td')].map(td => td.textContent).join('|');
+    // 同一个金额在一行里只出现一次。原来本店价、Buybox 列、判断依据各印一遍。
+    check((text.match(/R 269/g) || []).length === 1, 'the same price is printed once, not three times');
+    check(tr.querySelectorAll('.row-details').length === 1, 'one detail panel per row instead of two');
+  });
+
+  await scenario({ ...known, status: 'success' }, tr => {
+    check(!tr.querySelector('.variant-toggle'), 'single-variant product has no variant control');
+  }, { variant: { base: '', count: 1, siblings: [] } });
+
+  const variants = { base: '女士运动套装', count: 3, siblings: [
+    { sku: 'test-sku', label: '黑色·S', price: 269, stock: 1 },
+    { sku: 'b', label: '粉色·L', price: 269, stock: 2 },
+    { sku: 'c', label: '红色·XL', price: 275, stock: 3 }] };
+  await scenario({ ...known, status: 'success' }, tr => {
+    check(tr.querySelector('.product-link').textContent === '女士运动套装', 'collapsed row shows the base name without qualifiers');
+    check(!tr.textContent.includes('粉色·L'), 'qualifiers stay hidden until the variant list is expanded');
+    check(tr.querySelector('.variant-toggle').textContent.includes('3'), 'collapsed state shows only the variant count');
+  }, { variant: variants });
+
+  await scenario({ ...known, status: 'success' }, async tr => {
+    await act(async () => tr.querySelector('.variant-toggle').click());
+    check(tr.textContent.includes('粉色·L') && tr.textContent.includes('红色·XL'), 'expanding reveals the qualifiers (colour / size)');
+    check(!!tr.querySelector('.variant-list li.is-current'), 'the variant this row belongs to is marked');
+  }, { variant: variants });
+
+  await scenario({ ...known, status: 'success' }, tr => {
+    const card = tr.querySelector('.decision-card');
+    check(!!card && card.textContent.includes('抢位让利'), 'the pricing direction is named, not implied');
+    check(card.textContent.includes('R 170') && card.textContent.includes('R 263'), 'floor and cheapest rival are on the card');
+    check(card.textContent.includes('R 262'), 'the planned target is on the card');
+  }, { rule: { enabled: true, use_system_min: true, plan: { regime: 'compete', target: 262,
+    reason: '未持有 Buybox，降到 R 262 抢位', confidence: 'medium', risk: 'medium',
+    floor: 170, ceiling: null, cheapest: 263, gap_pct: 2.6 } } });
+
   // 信息密度与一键重试：列数必须收敛，重试必须真的打到接口上。
   {
     fixture = [row({ status: 'error', error_code: 'site_challenge', enabled: true,

@@ -86,7 +86,7 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     groups = {r.key: json.loads(r.value).get('group', '') for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
     from services.collection_diagnostics import displayed_monitor
     monitors = {r.key: displayed_monitor(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
-    from services.product_names import chinese_name
+    from services.product_names import chinese_name, variant_view
     rows = []
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         setting = db.query(SystemSettings).filter(SystemSettings.key == f'operations_profile:{store}:{p.id}').first()
@@ -97,16 +97,22 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
             skus = re.split(r'[\s,，;；]+', (p.sku or '').strip())
             if len(skus) == 1 and skus[0]: offers = [dict(id=profile['offer_ids'][0], sku=skus[0], title=p.product_name, price=profile.get('current_price'), stock=profile.get('stock'))]
         suggested_min = system_floor(p)
+        # 先把整页分支的中文定语算完，再收成「本体 + 定语」。
+        # 逐行各算一次的话，同一个商品页的公共前缀会被重复推导 24 次，
+        # 而且没有任何地方能知道「这一行属于哪一组」。
+        names = {str(o.get('sku') or ''): chinese_name(p, o.get('sku')) for o in offers}
+        variants = variant_view(p, offers, {sku: value[0] for sku, value in names.items()})
         for offer in offers:
             rule = rules.get(prefix + p.id + ':' + offer['id'], {})
             price, stock = _own_metrics(profile, offer, rule)
             if rule.get('holding_buybox') is True and not rule.get('holding_verified'):
                 rule = {**rule, 'holding_buybox':None, 'price_matches_buybox':True}
-            cn, name_status = chinese_name(p, offer['sku'])
+            cn, name_status = names.get(str(offer['sku'] or ''), (None, 'missing'))
             rows.append(dict(product_id=p.id, product_no=p.product_no, offer_id=offer['id'], sku=offer['sku'],
                 name=offer.get('title') or p.product_name, chinese_name=cn, name_status=name_status, url=p.takealot_url, price=price,
                 stock=stock, suggested_min=suggested_min,
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
+                variant=variants,
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
     from api.collector_routes import collector_source
     from services.buybox_monitor import loop_status

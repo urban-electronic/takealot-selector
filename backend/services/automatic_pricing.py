@@ -18,70 +18,200 @@ _stop = threading.Event()
 _thread = None
 
 def decide(current, stock, rule, snapshot):
-    if stock <= 0: return None, '无库存，跳过'
-    if snapshot.get('error'): return None, '公开页采集失败，保持现价'
+    """保留 (target, reason) 的旧契约，内部走 plan()。
+
+    调价只有两种方向，用户的原话是：抢价格的时候必然是让利的，
+    能自己持住价的时候就要尽可能多要。这里把这两种方向写成两套显式规则，
+    而不是一堆 if 里靠顺序隐式决定——因为「现在是抢位还是守位」直接决定
+    这一步是降价还是涨价，判错了就是真金白银。
+    """
+    result = plan(current, stock, rule, snapshot)
+    return result['target'], result['reason']
+
+
+REGIMES = {'off': '无库存', 'blind': '证据不足', 'compete': '抢位让利',
+           'climb': '守位提价', 'scarcity': '独家提价', 'hold': '保持现价'}
+
+
+def _pools(raw_offers, typed):
+    """把竞品分成「能抢走 Buybox 的」和「抢不走的」。
+
+    Takealot 的 Buybox 只给现货报价，预售/缺货/预订单抢不走它。
+    旧实现把所有非本店报价一起取最小值，于是一个缺货的低价会把整条 SKU
+    拖进「建议价低于最低价，放弃竞争」——明明还有一个打得过的竞品在。
+    """
+    foreign = [o for o in raw_offers if not o.get('isMine') and (not typed or o.get('offerType') != 'buybox')]
+    live = [o for o in foreign if o.get('status') == 'in_stock'
+            and isinstance(o.get('price'), (int, float)) and math.isfinite(o['price']) and o['price'] > 0]
+    dark = [o for o in foreign if o.get('status') in ('pre_order', 'backorder', 'out_of_stock')]
+    return foreign, live, dark
+
+
+def _winnable(pool, rule):
+    """这个卡位里，哪些价格我们跟得起（跟完之后仍不低于利润底价）。
+
+    旧实现直接取整池最低价：池里只要有一个低于底价的报价，
+    整条 SKU 就判「放弃竞争」——哪怕旁边还有一个完全打得过的竞品。
+    等于被一个我们本来就抢不起的低价钉死在原地。
+    """
+    lead = rule.get('lead_amount', 1)
+    floor = rule['min_price']
+    return [o for o in pool if math.floor(o['price'] - lead) >= floor]
+
+
+def _raise_ceiling(rule, current):
+    """提价的天花板：人工上限，与「参考价 + 累计涨幅」取小。"""
+    pct = rule.get('raise_ceiling_pct', 20)
+    reference = rule.get('reference_price') or current
+    return min(rule.get('max_price') or math.inf, math.floor(reference * (1 + pct / 100.0)))
+
+
+def plan(current, stock, rule, snapshot):
+    """一份可解释的调价决策：动不动、为什么、底在哪、顶在哪、有几分把握。
+
+    返回结构直接进 rule['plan']，界面据此渲染「决策卡片」，
+    不再需要用户从 last_result 的一句话里反推系统在想什么。
+    """
+    floor = rule.get('min_price')
+    p = dict(regime='hold', target=None, reason='', confidence='low', risk='low',
+             current=current, floor=floor, ceiling=rule.get('max_price'),
+             cheapest=None, gap_pct=None, live_count=0, dark_count=0, sole_seller=False)
+    if stock <= 0:
+        p.update(regime='off', reason='无库存，跳过')
+        return p
+    if snapshot.get('error'):
+        p.update(regime='blind', reason='公开页采集失败，保持现价')
+        return p
     raw_offers = snapshot.get('offers') or []
-    offers = raw_offers
-    typed = any(o.get('offerType') in ('fastest', 'best_price') for o in offers)
-    offers = [o for o in offers if not o.get('isMine') and o.get('status') == 'in_stock'
-              and (not typed or o.get('offerType') != 'buybox')
-              and isinstance(o.get('price'), (int, float)) and math.isfinite(o['price']) and o['price'] > 0]
+    typed = any(o.get('offerType') in ('fastest', 'best_price') for o in raw_offers)
+    foreign, live, dark = _pools(raw_offers, typed)
     buybox = snapshot.get('buyboxPrice')
-    price_matches = not isinstance(buybox,bool) and isinstance(buybox, (int, float)) and math.isfinite(buybox) and abs(current - buybox) < .01
+    price_matches = (not isinstance(buybox, bool) and isinstance(buybox, (int, float))
+                     and math.isfinite(buybox) and abs(current - buybox) < .01)
     holding = price_matches and snapshot.get('holdingBuyboxVerified') is True
+    cheapest = min((o['price'] for o in live), default=None)
+    p.update(live_count=len(live), dark_count=len(dark), cheapest=cheapest,
+             sole_seller=bool(raw_offers) and not foreign)
+    if cheapest is not None and current:
+        p['gap_pct'] = round((current - cheapest) / current * 100, 1)
+    # 置信度只由证据强度决定：能证明「谁在持位」、且竞品报价带类型信息，才算高。
+    if holding and len(live) >= 2 and typed:
+        p['confidence'] = 'high'
+    elif holding or (live and typed):
+        p['confidence'] = 'medium'
+    # 风险看的是「不跟价会怎样」，和抢不抢得到无关。
+    if not holding and cheapest is not None and floor and cheapest < floor:
+        p['risk'] = 'high'          # 现货最低价已在利润底价之下，这个位置抢不起
+    elif p['gap_pct'] is not None:
+        gap = p['gap_pct']
+        p['risk'] = 'urgent' if gap >= 15 else 'high' if gap >= 8 else 'medium' if gap >= 3 else 'low'
     if price_matches and not holding:
-        return None, '与Buybox同价但卖家身份未核实，保持现价'
+        p.update(regime='blind', reason='与Buybox同价但卖家身份未核实，保持现价')
+        return p
     if holding and time.time() - rule.get('last_changed_epoch', 0) < rule.get('cooldown_minutes', 10) * 60:
-        return None, '持有 Buybox，处于冷却期'
+        p.update(regime='climb' if live else 'scarcity', reason='持有 Buybox，处于冷却期')
+        return p
     day = datetime.now(ZoneInfo('Africa/Johannesburg')).date().isoformat()
     if rule.get('change_day') == day and rule.get('today_changes', 0) >= rule['max_daily_changes']:
-        return None, '达到每日调价次数上限'
-    if not offers:
-        foreign = [o for o in raw_offers if not o.get('isMine') and (not typed or o.get('offerType') != 'buybox')]
-        verified = foreign and all(o.get('status') in ('pre_order', 'backorder', 'out_of_stock') for o in foreign)
-        if not (verified and holding and rule.get('smart_raise')):
-            return None, '没有明确的竞品缺货证据，保持现价'
+        p.update(reason='达到每日调价次数上限')
+        return p
+    if holding:
+        ceiling = _raise_ceiling(rule, current)
+        p['ceiling'] = ceiling
+        if live:
+            low = min(o['price'] for o in live)
+            if low <= current:
+                p.update(regime='hold', reason='现货竞品持平或更低，保持现价')
+                return p
+            # 守位时唯一正确的方向：贴着下一个现货竞品的价，把价格顶到
+            # 「刚好还是最低」的位置。这不是猜测——对手的报价就是证据。
+            target = min(math.floor(low - rule.get('lead_amount', 1)), ceiling)
+            if rule.get('smart_raise'):
+                step = max(1, math.floor(current * rule.get('raise_step_pct', 3) / 100.0))
+                target = min(target, current + step)
+            if target <= current:
+                p.update(regime='climb', reason='已到守位上限，保持现价')
+                return p
+            p.update(regime='climb', target=target,
+                     reason=f'持有 Buybox，现货次低价 R {int(low)}，提价到 R {int(target)} 仍最低')
+            return p
+        if not raw_offers:
+            # 一条报价都没采到，和「我是独家」是两件完全不同的事。
+            # 前者是证据缺失，后者是最大的定价权，判错方向就会乱涨价。
+            p.update(regime='hold', reason='页面没有采到任何报价，无法判断竞争格局，保持现价')
+            return p
+        # 走到这里说明有报价、但都不是现货：竞品全缺货，或只有本店在售。
+        # 两种都是「此刻没人能抢走 Buybox」，提价有依据，但必须可回滚。
         now = time.time()
         trial = rule.get('scarcity_trial_started', 0)
-        if trial and now - trial >= 48 * 3600 and rule.get('sales_recent') and rule.get('sku_last_sale_epoch') is not None and rule['sku_last_sale_epoch'] <= trial:
-            target = rule.get('scarcity_base_price', current)
-            if target >= rule['min_price'] and target < current:
-                return target, '试涨48小时未见新成交，回退试涨前价格并暂停试涨24小时'
-        if now < rule.get('scarcity_pause_until', 0) or now - rule.get('last_scarcity_raise', 0) < 12 * 3600:
-            return None, '缺货试涨观察中，暂不重复涨价'
-        reference = rule.get('reference_price') or current
-        ceiling = min(rule.get('max_price') or math.inf, math.floor(reference * 1.20))
-        target = min(ceiling, max(current + 1, math.floor(current * 1.03)))
-        if target <= current or target < rule['min_price']: return None, '已达智能试涨上限，保持现价'
-        return target, '确认竞品非现货，智能试涨（每次约3%，累计不超过参考价20%）'
-    raw = None
-    if holding:
-        if time.time() - rule.get('last_changed_epoch', 0) < rule.get('cooldown_minutes', 10) * 60:
-            return None, '持有 Buybox，处于冷却期'
-        low = min(o['price'] for o in offers)
-        if low == current: return None, '现货竞品持平，保持现价'
-        raw = low if rule['strategy'] == 'follow_lowest' else math.floor(low - rule['lead_amount'])
-    elif rule['strategy'] == 'follow_lowest':
-        raw = math.floor(min(o['price'] for o in offers) - rule['lead_amount'])
-        if raw >= current: return None, '未持有 Buybox，只降不升'
+        if (trial and now - trial >= 48 * 3600 and rule.get('sales_recent')
+                and rule.get('sku_last_sale_epoch') is not None and rule['sku_last_sale_epoch'] <= trial):
+            back = rule.get('scarcity_base_price', current)
+            if back >= rule['min_price'] and back < current:
+                p.update(regime='scarcity', target=back, trial='rollback',
+                         reason='试涨48小时未见新成交，回退试涨前价格并暂停试涨24小时')
+                return p
+        interval = rule.get('raise_interval_hours', 12) * 3600
+        if now < rule.get('scarcity_pause_until', 0) or now - rule.get('last_scarcity_raise', 0) < interval:
+            p.update(regime='scarcity', reason='缺货试涨观察中，暂不重复涨价')
+            return p
+        step = max(1, math.floor(current * rule.get('raise_step_pct', 3) / 100.0))
+        target = min(ceiling, max(current + 1, current + step))
+        if target <= current or target < rule['min_price']:
+            p.update(regime='scarcity', reason='已达智能试涨上限，保持现价')
+            return p
+        p.update(regime='scarcity', target=target, trial='raise',
+                 reason=('本店是唯一在售，' if p['sole_seller'] else '确认竞品非现货，')
+                        + f'智能试涨到 R {int(target)}（每次约3%，累计不超过参考价20%）')
+        return p
+    # 抢位：只降不升。降价就是让利，所以下限必须由利润底价来守。
+    if rule['strategy'] == 'follow_lowest':
+        able = _winnable(live, rule)
+        if not able:
+            below = cheapest is not None and floor is not None and cheapest < floor
+            p.update(regime='compete',
+                     reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
+                             else '没有现货竞品，保持现价'))
+            return p
+        raw = math.floor(min(o['price'] for o in able) - rule.get('lead_amount', 1))
+        if raw >= current:
+            p.update(regime='compete', reason='未持有 Buybox，只降不升')
+            return p
     else:
-        fastest = [o for o in offers if o.get('offerType') == 'fastest']
-        if not fastest: fastest = [o for o in offers if o.get('offerType') == 'buybox']
-        if not typed and not fastest: fastest = offers
-        best = [o for o in offers if o.get('offerType') == 'best_price']
-        for pool in [fastest, best]:
-            if not pool: continue
-            candidate = math.floor(min(o['price'] for o in pool) - rule['lead_amount'])
-            if rule['min_price'] <= candidate < current:
-                raw = candidate; break
-        if raw is None: return None, '两个现货卡位均不可达，保持现价'
-    if raw < rule['min_price']: return None, '建议价低于最低价，放弃竞争'
-    if holding and raw > current and rule.get('smart_raise'):
-        raw = min(raw, max(current + 1, math.floor(current * 1.03)))
+        fastest = [o for o in live if o.get('offerType') == 'fastest']
+        if not fastest:
+            fastest = [o for o in live if o.get('offerType') == 'buybox']
+        if not typed and not fastest:
+            fastest = live
+        best = [o for o in live if o.get('offerType') == 'best_price']
+        raw = None
+        for pool in (fastest, best):
+            able = _winnable(pool, rule)
+            if not able:
+                continue
+            candidate = math.floor(min(o['price'] for o in able) - rule.get('lead_amount', 1))
+            if candidate < current:
+                raw = candidate
+                break
+        if raw is None:
+            below = cheapest is not None and floor is not None and cheapest < floor
+            p.update(regime='compete',
+                     reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
+                             else '两个现货卡位均不可达，保持现价'))
+            return p
+    if raw < rule['min_price']:
+        p.update(regime='compete', reason='建议价低于最低价，放弃竞争')
+        return p
     target = min(math.floor(raw), rule.get('max_price') or math.inf)
-    if not holding and target >= current: return None, '未持有时不跟涨'
-    if abs(target - current) < rule.get('min_change', 1): return None, '变化小于调整阈值'
-    return target, '按 PricePilot 现货 Buybox 规则调价'
+    if target >= current:
+        p.update(regime='compete', reason='未持有时不跟涨')
+        return p
+    if abs(target - current) < rule.get('min_change', 1):
+        p.update(regime='compete', reason='变化小于调整阈值')
+        return p
+    p.update(regime='compete', target=target,
+             reason=f'未持有 Buybox，降到 R {int(target)} 抢位（让利 {int(current - target)}，底价 R {int(floor)}）')
+    return p
 
 async def collect(product, offer):
     from services.quote_browser import quote_context
@@ -231,10 +361,18 @@ def process(row_id):
                 try: rule['sales_recent'] = time.time() - datetime.fromisoformat(profile['synced_at']).timestamp() < 7200
                 except (KeyError, ValueError): rule['sales_recent'] = False
                 if offer['stock_at_takealot_total'] <= 0:
-                    snapshot = {'offers': []}; target, reason = None, '无库存，跳过'
+                    snapshot = {'offers': []}
+                    decision = dict(regime='off', target=None, reason='无库存，跳过')
                 else:
                     snapshot = shared_snapshot(db, product.id, rule['offer_id'], rule['sku'])
-                    target, reason = decide(offer['selling_price'], offer['stock_at_takealot_total'], rule, snapshot)
+                    decision = plan(offer['selling_price'], offer['stock_at_takealot_total'], rule, snapshot)
+                target, reason = decision.get('target'), decision.get('reason') or ''
+                # 决策本身要落库：界面上的「决策卡片」读的就是它，而不是
+                # 从 last_result 的一句话里反推系统当时在想什么。
+                result['plan'] = {k: v for k, v in decision.items()
+                                  if k in ('regime', 'target', 'reason', 'confidence', 'risk',
+                                           'floor', 'ceiling', 'cheapest', 'gap_pct',
+                                           'live_count', 'dark_count', 'sole_seller', 'current')}
                 result.update(current_price=offer['selling_price'], stock=offer['stock_at_takealot_total'],
                     buybox_price=snapshot.get('buyboxPrice'), holding_buybox=True if snapshot.get('holdingBuyboxVerified') is True else None,
                     holding_verified=snapshot.get('holdingBuyboxVerified') is True,
@@ -272,11 +410,11 @@ def process(row_id):
                     result['today_changes'] = rule.get('today_changes', 0) + 1 if rule.get('change_day') == day else 1
                     result['change_day'] = day; result['enabled'] = True
                     result['history'] = ([{'at': result['last_changed_at'], 'from': offer['selling_price'], 'to': target}] + rule.get('history', []))[:50]
-                    if reason.startswith('确认竞品非现货'):
+                    if decision.get('trial') == 'raise':
                         result['last_scarcity_raise'] = time.time()
                         if not rule.get('scarcity_trial_started'):
                             result['scarcity_trial_started'] = time.time(); result['scarcity_base_price'] = offer['selling_price']
-                    elif reason.startswith('试涨48小时'):
+                    elif decision.get('trial') == 'rollback':
                         result['scarcity_trial_started'] = 0; result['scarcity_pause_until'] = time.time() + 86400
                     reason = f'已核验改价 R {offer["selling_price"]} → R {target}'
                 result['last_result'] = reason

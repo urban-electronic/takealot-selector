@@ -121,3 +121,48 @@ def test_global_emergency_stop_invalidates_pending_patch(monkeypatch):
     client,rule=run_cycle(monkeypatch,pause_all_before_patch=True)
     assert not client.patch.called and not rule['enabled'] and rule['write_pending']
     assert rule['revision']==2 and '待核验' in rule['last_result']
+
+
+def test_unwinnable_cheapest_does_not_pin_the_whole_sku():
+    """一个抢不起的低价，不能把旁边打得过的竞品也一起废掉。"""
+    rule = {**RULE, 'min_price': 100, 'max_price': 500}
+    snapshot = {'buyboxPrice': 50, 'offers': [offer(50), offer(200)]}
+    target, reason = pricing.decide(300, 5, rule, snapshot)
+    assert target == 199, reason            # 打 200 那个，不是对着 50 认输
+    plan = pricing.plan(300, 5, rule, snapshot)
+    assert plan['risk'] == 'high' and plan['cheapest'] == 50   # 但如实标记风险
+
+
+def test_hold_regime_raises_toward_next_competitor_not_past_ceiling():
+    """守位时贴着下一个现货竞品的价，且不越过人工上限。"""
+    rule = {**RULE, 'min_price': 80, 'max_price': 500, 'reference_price': 100}
+    snapshot = {'buyboxPrice': 100, 'holdingBuyboxVerified': True, 'offers': [offer(100, isMine=True), offer(120)]}
+    assert pricing.decide(100, 5, rule, snapshot)[0] == 119          # 顶到 119 仍是最低
+    assert pricing.decide(100, 5, {**rule, 'max_price': 105}, snapshot)[0] == 105
+    stepped = {**rule, 'smart_raise': True}
+    assert pricing.decide(100, 5, stepped, snapshot)[0] == 103       # 开智能试涨就一步一步走
+
+
+def test_sole_seller_climbs_but_missing_quotes_hold():
+    """只有本店在售 = 最大定价权，可以试涨；一条报价都没采到 = 证据缺失，不许动。"""
+    rule = {**RULE, 'smart_raise': True, 'reference_price': 100, 'max_price': None}
+    only_mine = {'buyboxPrice': 100, 'holdingBuyboxVerified': True, 'offers': [offer(100, isMine=True)]}
+    plan = pricing.plan(100, 5, rule, only_mine)
+    assert plan['sole_seller'] is True and plan['target'] == 103 and plan['regime'] == 'scarcity'
+    empty = pricing.plan(100, 5, rule, {'buyboxPrice': 100, 'holdingBuyboxVerified': True, 'offers': []})
+    assert empty['target'] is None and empty['sole_seller'] is False
+
+
+def test_plan_carries_the_numbers_the_ui_shows():
+    """界面上的决策卡片读 plan，不再从 last_result 的一句话反推。"""
+    rule = {**RULE, 'min_price': 113, 'max_price': 400, 'reference_price': 273}
+    plan = pricing.plan(273, 5, rule, {'buyboxPrice': 263, 'offers': [offer(274), offer(263, 'best_price')]})
+    assert plan['regime'] == 'compete' and plan['target'] == 262
+    assert plan['floor'] == 113 and plan['ceiling'] == 400
+    assert plan['cheapest'] == 263 and plan['confidence'] in ('medium', 'high')
+    assert 'R 262' in plan['reason']
+
+
+def test_blind_regime_when_ownership_unproven():
+    plan = pricing.plan(100, 5, {**RULE, 'smart_raise': True}, {'buyboxPrice': 100, 'offers': [offer(120)]})
+    assert plan['regime'] == 'blind' and plan['target'] is None and '身份未核实' in plan['reason']

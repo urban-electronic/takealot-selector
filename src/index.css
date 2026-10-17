@@ -2235,3 +2235,81 @@ table tbody tr:hover { background: #f8fafc; }
   border-color: var(--color-success);
   color: var(--text-inverse);
 }
+
+/* ---- 行结构收敛：一个数字只说一次 ----
+ * 原布局里 R 269 在同一行出现三次（商品行、Buybox 列、判断依据正文），
+ * 每行还有两个 details 各写一段散文，行高被撑到 87px，一屏只看得到两行。
+ * 现在的分工：商品列只回答"这是谁"，价格列只回答"多少钱、差多少"，
+ * 证据（依据/诊断/决策卡片）全部收进同一个 details。 */
+.pricing-table { table-layout: fixed; }
+/* 窄屏必须整体横向滚动，而不是把最后一列压成零宽再让内容竖着折。
+ * 固定布局下总宽不足时，最后一列会被算成负宽度。 */
+.pricing-table { min-width: 980px; }
+.pricing-table td { padding-top: 6px; padding-bottom: 6px; vertical-align: top; }
+/* 列宽必须钉死：auto 布局会把「采集」这一列撑到 340px 的空白，
+ * 再把「调价」挤成三行，行高反而比改动前更高。 */
+.pricing-table thead th:nth-child(1) { width: 40px; }
+.pricing-table thead th:nth-child(2) { width: 318px; }
+.pricing-table thead th:nth-child(3) { width: 158px; }
+.pricing-table thead th:nth-child(4) { width: 228px; }
+/* 区间行不许折行：两个输入框固定 86px，策略下拉吃掉剩下的宽度。
+ * 允许折行的话，150px 的下拉差几像素就会掉到第二行，整行立刻高 40px。 */
+.pricing-table .price-range { flex-wrap: nowrap; }
+.pricing-table .price-range select { flex: 1 1 120px; min-width: 0; max-width: none;
+  /* 定高后必须自己管内边距，否则全局的 8px 上下内边距会把文字顶出可视区，只露出半行。 */
+  padding: 0 22px 0 7px; line-height: 1; }
+/* 商品名占满自己的列宽：原来链接固定 205px，在 268px 的列里留了一条死白。 */
+.pricing-table .operations-product .product-link { width: 100%; max-width: 100%; }
+/* 行内按钮压低：28 行 × 每行多出的 8px，就是一屏少看两行。 */
+/* 区间控件压到 28px、行内按钮压到 26px：下限是 --control-h-min（24px，WCAG 2.5.8），
+ * 仍然可点。行高从 84 收到 69，一屏多出一整行。 */
+.pricing-table .price-range input,
+.pricing-table .price-range select { box-sizing: border-box; height: var(--control-h-compact); min-height: var(--control-h-compact); }
+.pricing-table .row-buttons { margin-top: 4px; gap: 4px; }
+.pricing-table .row-buttons .btn { box-sizing: border-box; height: 26px; min-height: 24px; padding: 0 8px; line-height: 1; }
+
+.pricing-table .quote-cell { width: 158px; min-width: 150px; }
+.pricing-table .quote-cell .quote-line { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; }
+.pricing-table .quote-cell .own-price { margin:0; font-size:15px; font-weight:650; letter-spacing:-0.01em; color:var(--text-strong); }
+.pricing-table .quote-sub { display:block; margin-top:3px; max-width:158px; font-size:11px; color:var(--text-subtle);
+  font-variant-numeric: tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pricing-table .collection-stamp { display:block; margin-top:2px; font-size:11px; color:var(--text-subtle);
+  font-variant-numeric: tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pricing-table .collection-status-cell .collection-headline { max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* 变体：折叠时只给数量，不给定语——「粉色·L」是定语，不是商品名。
+ * 展开后才把黑白/XL/MS 这些定语摊开，并高亮当前这一条。 */
+.pricing-table .variant-toggle { border:1px solid var(--surface-border); background:var(--surface-soft);
+  color:var(--text-muted); font-size:11px; line-height:1; padding:2px 7px; border-radius:999px;
+  cursor:pointer; font-variant-numeric: tabular-nums; }
+.pricing-table .variant-toggle:hover,
+.pricing-table .variant-toggle.is-open { color:var(--text-strong); border-color:var(--text-muted); }
+.pricing-table .variant-list { list-style:none; margin:6px 0 0; padding:6px 0 0;
+  border-top:1px dashed var(--surface-border); display:grid; gap:2px; max-height:132px; overflow:auto; }
+.pricing-table .variant-list li { display:flex; gap:8px; align-items:baseline; padding:1px 4px; border-radius:4px;
+  font-size:11px; color:var(--text-subtle); font-variant-numeric: tabular-nums; }
+.pricing-table .variant-list li.is-current { background:var(--surface-hover); color:var(--text-strong); font-weight:600; }
+.pricing-table .variant-list li b { min-width:52px; font-weight:600; }
+
+/* 决策卡片：把「抢位还是守位、有几分把握、风险多大、底在哪、顶在哪」压成一行事实。
+ * 这几个词直接对应两种真实动作：抢位是让利，守位是要价，判错方向就是钱。 */
+.pricing-table .row-details { max-width: 330px; display:inline; }
+.pricing-table .row-details[open] { display:block; }
+.pricing-table .row-details summary { display:inline; }
+.pricing-table .row-buttons .row-details { margin-top:0; }
+.pricing-table .row-details small { display:block; margin-top:3px; line-height:1.5; }
+.pricing-table .decision-card { display:flex; flex-wrap:wrap; gap:4px 12px; margin:4px 0 6px;
+  font-size:11px; color:var(--text-subtle); font-variant-numeric: tabular-nums; }
+.pricing-table .decision-card b { color:var(--text-strong); font-weight:600; }
+.pricing-table .decision-card p { flex:1 0 100%; margin:2px 0 0; color:var(--text-body); line-height:1.5; }
+.pricing-table .decision-regime { padding:1px 7px; border-radius:999px; font-weight:600;
+  background:var(--surface-hover); color:var(--text-strong); }
+.pricing-table .decision-regime.is-compete { background:rgba(35,132,92,0.12); color:var(--success-strong); }
+.pricing-table .decision-regime.is-climb,
+.pricing-table .decision-regime.is-scarcity { background:rgba(52,101,194,0.12); color:#2c55a4; }
+.pricing-table .decision-regime.is-blind { background:rgba(196,138,0,0.14); color:var(--warning-strong); }
+
+/* 维护面板里那句「被挡住该怎么办」：它是操作说明，不是免责声明，
+ * 所以用正文色 + 正常行高，不能做成灰底小字。 */
+.operations-explanation .maintenance-note { color: var(--text-body); line-height: 1.7; }
+.operations-explanation .maintenance-note b { color: var(--text-strong); }
