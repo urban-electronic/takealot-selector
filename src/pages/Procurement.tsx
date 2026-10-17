@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { productLabels } from '../utils/productLabels';
-import { useApi } from '../DataSourceContext';
+import { toAmount, toNumber } from '../utils/number';
+import { useApi, useDataSource } from '../DataSourceContext';
+import { migrateToRemote } from '../remoteApi';
 import { todayLocal } from '../utils/datetime';
 import type { ProcurementRecord, Product } from '../types';
 
 export default function Procurement() {
   const navigate = useNavigate();
   const api = useApi();
+  const { dataSource } = useDataSource();
   const [productNames, setProductNames] = useState<Record<string, string>>({});
   const [records, setRecords] = useState<ProcurementRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,21 +66,18 @@ export default function Procurement() {
   }, [api]);
 
   const handleSyncToRemote = async () => {
-    const baseUrl = localStorage.getItem('api_base_url') || 'https://takealot-selector-production.up.railway.app';
-    if (!baseUrl) { setError('请先设置远程库 API 地址'); return; }
+    // 远程模式下 listProcurementRecords 读到的已经是远端数据，再 POST 回 /api/migrate
+    // 等于把远端数据覆盖回远端，没有意义且可能覆盖并发写入。
+    if (dataSource !== 'local') {
+      setError('当前是远程数据源，数据已在远端，无需同步。');
+      return;
+    }
     setSyncing(true);
     setSyncMsg('');
     setError('');
     try {
       const rows = await api.listProcurementRecords();
-      const payload = [{ table: 'procurement_records', rows }];
-      const res = await fetch(`${baseUrl}/api/migrate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await migrateToRemote([{ table: 'procurement_records', rows }]);
       setSyncMsg(`同步成功！已导出 ${data.imported?.procurement_records ?? rows.length} 条采购记录`);
     } catch (e: any) {
       setError(`同步失败: ${e.message}`);
@@ -213,15 +213,18 @@ export default function Procurement() {
     }
   };
 
-  const formatPrice = (v: number | null | undefined) =>
-    v != null ? `¥${v.toFixed(2)}` : '-';
+  const formatPrice = (v: number | string | null | undefined) => {
+    const amount = toNumber(v);
+    return amount != null ? `¥${amount.toFixed(2)}` : '-';
+  };
 
-  const totalProcurement = records.reduce((sum, r) => sum + (r.total_amount ?? 0), 0);
+  // total_amount 可能是字符串（"120.00"），直接相加会变成字符串拼接
+  const totalProcurement = records.reduce((sum, r) => sum + toAmount(r.total_amount), 0);
 
   const filteredRecords = filterProductNo.trim()
     ? records.filter(r => String(r.product_no) === filterProductNo.trim())
     : records;
-  const filteredTotal = filteredRecords.reduce((sum, r) => sum + (r.total_amount ?? 0), 0);
+  const filteredTotal = filteredRecords.reduce((sum, r) => sum + toAmount(r.total_amount), 0);
 
   if (loading) return <div className="loading">加载中...</div>;
 
@@ -241,7 +244,8 @@ export default function Procurement() {
           )}
         </div>
         <div className="page-actions">
-          <button className="btn btn-outline" onClick={handleSyncToRemote} disabled={syncing}>
+          <button className="btn btn-outline" onClick={handleSyncToRemote} disabled={syncing || dataSource !== 'local'}
+            title={dataSource !== 'local' ? '当前是远程数据源，数据已在远端' : undefined}>
             {syncing ? '同步中...' : '同步到远程'}
           </button>
           <button className="btn btn-primary" onClick={() => { resetForm(); setShowForm(true); }}>

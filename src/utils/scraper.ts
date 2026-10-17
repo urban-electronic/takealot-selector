@@ -4,6 +4,8 @@
  * then parses HTML with DOMParser.
  */
 
+import { parseZarPrice } from './price';
+
 export interface ScrapeResult {
   normalized_url: string;
   tsin: string | null;
@@ -26,16 +28,6 @@ function normalizeUrl(url: string): string {
   } catch {
     return url;
   }
-}
-
-function parsePrice(text: string): number | null {
-  const cleaned = text.replace(/\s/g, '');
-  const match = cleaned.match(/[\d,]+\.?\d*/);
-  if (match) {
-    const val = parseFloat(match[0].replace(/,/g, ''));
-    return isNaN(val) ? null : val;
-  }
-  return null;
 }
 
 const CATEGORY_KEYWORDS = [
@@ -184,10 +176,19 @@ export async function scrapeTakealot(productUrl: string): Promise<ScrapeResult> 
 
   // Price - look for elements with price-buybox class
   let actualSalePrice: number | null = null;
+  let outOfStock = false;
   const priceEl = doc.querySelector('[class*="price-buybox"]');
   if (priceEl) {
-    const priceText = priceEl.textContent || '';
-    actualSalePrice = parsePrice(priceText);
+    // 优先取专门的金额节点，避免整块 textContent 把划线价 / "Save R 200" 拼在一起
+    const currencyEl = priceEl.querySelector('[class*="currency"]') || doc.querySelector('[data-ref="price"] .currency');
+    const priceText = (currencyEl ? currencyEl.textContent : priceEl.textContent) || '';
+    actualSalePrice = parseZarPrice(priceText);
+  }
+  // 缺货判定与 takealotPageImport.captureTakealotPage 保持同一口径
+  const pageText = doc.body ? doc.body.textContent || '' : '';
+  outOfStock = /supplier out of stock|out of stock/i.test(pageText);
+  if (outOfStock) {
+    warnings.push('官网显示缺货，展示价不代表当前可购买价格。');
   }
 
   // Category path from .pdp area
@@ -220,7 +221,7 @@ export async function scrapeTakealot(productUrl: string): Promise<ScrapeResult> 
     product_name: productName,
     product_image_url: productImageUrl,
     actual_sale_price_zar: actualSalePrice,
-    in_stock_price: actualSalePrice,
+    in_stock_price: outOfStock ? null : actualSalePrice,
     takealot_category_path: categoryPath,
     recommended_fee_category: feeRec.name,
     fee_category_confidence: feeRec.confidence,
