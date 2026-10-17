@@ -55,7 +55,7 @@ async def quote_context(wait=True):
                 break
             except Exception:
                 if attempt == 0:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     continue
                 raise
         try:
@@ -65,6 +65,11 @@ async def quote_context(wait=True):
                 await context.close()
             finally:
                 await playwright.stop()
+                # 释放宽限：worker 是 2 并发、共用同一个 profile，前一个 Chromium
+                # 刚 stop 就立刻启动下一个会偶发 TargetClosedError（线上实测约 7%
+                # 的采集因此失败）。这里在**仍持有 _lock** 时多等一会儿，确保上一个
+                # 进程真的退出、把 profile 交出来，再让下一轮进来。
+                await asyncio.sleep(1.2)
     finally:
         _lock.release()
 
