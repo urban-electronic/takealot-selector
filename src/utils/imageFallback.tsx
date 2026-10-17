@@ -52,7 +52,7 @@ export const ProductImage: FC<ProductImageProps> = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          color: '#bbb',
+          color: 'var(--text-muted)',
           fontSize: 11,
           flex: 'none',
           overflow: 'hidden',

@@ -293,7 +293,7 @@ export default function Procurement() {
                     ))}
                   </div>
                 )}
-                {searching && <small style={{ color: '#888' }}>搜索中...</small>}
+                {searching && <small style={{ color: 'var(--text-subtle)' }}>搜索中...</small>}
               </div>
 
               {/* product name (auto-filled, editable as fallback) */}
@@ -378,7 +378,7 @@ export default function Procurement() {
         )}
       </div>
       {filteredRecords.length === 0 ? (
-        <div style={{ textAlign: 'center', color: '#888', padding: 40 }}>暂无采购记录，点击上方按钮新建。</div>
+        <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 40 }}>暂无采购记录，点击上方按钮新建。</div>
       ) : (
         <div className="table-wrapper procurement-table-scroll"><table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>

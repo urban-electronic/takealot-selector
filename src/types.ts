@@ -121,11 +121,13 @@ export const SHIPPING_METHODS = ['空运普货', '空运带电', '海运普货',
 
 export const LINK_STATUS_OPTIONS = ['未购买', '已购买', '已上架', '已发货'] as const;
 
-export const LINK_STATUS_MAP: Record<string, { label: string; color: string }> = {
-  '未购买': { label: '未购买', color: '#faad14' },
-  '已购买': { label: '已购买', color: '#1677ff' },
-  '已上架': { label: '已上架', color: '#52c41a' },
-  '已发货': { label: '已发货', color: '#ff9800' },
+// 链接状态配色：浅底 + 深字，保证正文级对比度（WCAG AA 4.5:1）。
+// 旧版用饱和底色配白字，"未购买/已上架/已发货"实测只有 1.9~2.3:1，黄绿底上几乎看不清。
+export const LINK_STATUS_MAP: Record<string, { label: string; color: string; text: string }> = {
+  '未购买': { label: '未购买', color: '#fff4d6', text: '#8a5900' }, // 5.46:1
+  '已购买': { label: '已购买', color: '#e8f1ff', text: '#0b5fd9' }, // 5.05:1
+  '已上架': { label: '已上架', color: '#e8f6ea', text: '#17694a' }, // 5.96:1
+  '已发货': { label: '已发货', color: '#ffeddb', text: '#a35400' }, // 4.81:1
 };
 
 export interface ProcurementRecord {

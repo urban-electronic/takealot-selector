@@ -16,3 +16,6 @@ backend/packing_images/
 
 # Private collector browser sessions
 **/buybox_browser_profile/
+
+# 视觉审计输出（可再生产物，不入库）
+ui_audit_out/
