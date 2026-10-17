@@ -32,6 +32,10 @@ def process(row_id):
         if db.query(SystemSettings).filter(SystemSettings.key==row_id, SystemSettings.value==original).update({'value':claim}) != 1:
             db.rollback(); return
         db.commit(); result = dict(config)
+        # 自证标记：这一条记录是哪个版本的采集代码写的。诊断字段有可能被中间层
+        # 丢掉，所以标记放在 result 顶层——顶层一定落库。排查「代码上线了但线上
+        # 行为没变」时，先看这个字段就能分清是部署没生效还是另有进程在写。
+        result['diag_build'] = 'bb-v7'
         stage='catalog'
         try:
             product = db.query(Product).filter(Product.id==config['product_id'], Product.store_id==DEFAULT_STORE_ID, Product.is_archived==False).first()
