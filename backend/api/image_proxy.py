@@ -14,7 +14,7 @@ import asyncio
 import ipaddress
 import os
 import time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, unquote
 
 from fastapi import APIRouter, Query, Header, HTTPException
 from fastapi.responses import Response
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api", tags=["image-proxy"])
 _API_KEY = os.environ.get("API_KEY", "").strip()
 
 # 已确认的图片 CDN 主机白名单（HTTPS、443 标准端口）
-ALLOWED_IMAGE_HOSTS = frozenset({"media.takealot.com"})
+ALLOWED_IMAGE_HOSTS = frozenset({"media.takealot.com", "takealot.s3.amazonaws.com"})
 MAX_REDIRECTS = 3
 NEGATIVE_TTL_SECONDS = 300.0   # 上游 403/404 负缓存时长
 POSITIVE_TTL_SECONDS = 30.0    # 正向微缓存时长（承接同屏/滚动重复请求）
@@ -72,6 +72,14 @@ def _validate_image_url(url: str) -> str:
         is_ip_literal = False
     if is_ip_literal or host not in ALLOWED_IMAGE_HOSTS:
         raise HTTPException(status_code=400, detail="图片主机不在允许列表")
+    # Seller API also returns the legacy Takealot image bucket. Allow only
+    # its product-image directory, never arbitrary S3 buckets or object paths.
+    if host == "takealot.s3.amazonaws.com":
+        decoded_path = unquote(parts.path)
+        if (not decoded_path.startswith('/covers_images/') or
+                any(p in ('.', '..') for p in decoded_path.split('/')) or
+                '\\' in decoded_path):
+            raise HTTPException(status_code=400, detail="图片路径不在允许列表")
     try:
         port = parts.port
     except ValueError:
