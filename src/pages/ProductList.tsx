@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, useRef } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
@@ -574,6 +574,16 @@ export default function ProductList() {
   const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
   const safeCurrentPage = Math.min(currentPage, totalPages);
   const pagedProducts = products.slice((safeCurrentPage - 1) * pageSize, safeCurrentPage * pageSize);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const resetPageScroll = useRef(false);
+  useLayoutEffect(() => {
+    if (!resetPageScroll.current || !tableScrollRef.current) return;
+    resetPageScroll.current = false;
+    const table = tableScrollRef.current;
+    table.scrollTop = 0; // Keep horizontal column position, reset only the new page's rows.
+    const headerHeight = document.querySelector('.app-header')?.getBoundingClientRect().height || 0;
+    window.scrollTo({ top: Math.max(0, window.scrollY + table.getBoundingClientRect().top - headerHeight - 12), behavior: 'auto' });
+  }, [currentPage, pageSize]);
 
   const syncPageToUrl = (page: number, size: number) => {
     const next = new URLSearchParams(searchParams);
@@ -585,12 +595,16 @@ export default function ProductList() {
   };
 
   const handlePageSizeChange = (size: number) => {
+    if (size === pageSize) return;
+    resetPageScroll.current = true;
     setPageSize(size);
     setCurrentPage(1);
     syncPageToUrl(1, size);
   };
 
   const goToPage = (page: number) => {
+    if (page === safeCurrentPage) return;
+    resetPageScroll.current = true;
     setCurrentPage(page);
     syncPageToUrl(page, pageSize);
   };
@@ -1015,7 +1029,7 @@ export default function ProductList() {
         </div>
       ) : (
         <div className="table-wrapper product-list-table-wrapper">
-          <div className="product-table-scroll">
+          <div className="product-table-scroll" ref={tableScrollRef}>
             <table className="product-table" style={{ whiteSpace: 'nowrap' }}>
             <thead>
               <tr>
