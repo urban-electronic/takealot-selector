@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from services.takealot_scraper import scrape_product, validate_takealot_url
+from services.takealot_scraper import scrape_product, validate_takealot_url, _scrape_with_curl_cffi
 from services.fee_category_matcher import match_fee_category
 from services.takealot_seller_api import configured_key, seller_product
 from fastapi import Request
@@ -44,6 +44,23 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db), re
                 seller_warning = '卖家 API 暂时不可用，已暂停重复请求；改用现有资料来源。'
     if result is None:
         result = await scrape_product(url)
+    elif not result.get('product_image_url'):
+        # Seller offers may omit images. One bounded public-page read fills only
+        # the missing image, never replacing seller SKU, title or own price.
+        # Do not escalate a blocked response through additional browsers.
+        try:
+            page, _ = await asyncio.wait_for(asyncio.to_thread(
+                _scrape_with_curl_cffi, url, result['normalized_url']), timeout=32)
+        except Exception:
+            page = None
+        if page and page.get('product_image_url'):
+            result['product_image_url'] = page['product_image_url']
+            result['warnings'] = [w for w in result.get('warnings', [])
+                                  if w != '卖家接口未提供商品图片，请补充。']
+            result['warnings'].append('图片补充自官网；售价与 SKU 仍来自本店卖家 API。')
+            result['success'] = bool(result.get('actual_sale_price_zar'))
+        else:
+            result.setdefault('warnings', []).append('官网图片未获取，可从已打开的商品页导入图片。')
     if seller_warning:
         result.setdefault('warnings', []).append(seller_warning)
 
