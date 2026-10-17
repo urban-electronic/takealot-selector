@@ -12,6 +12,8 @@ from services.automatic_pricing import collect, official_offer
 from services.takealot_seller_api import configured_key
 
 PREFIX = '_pricing_monitor:'
+# 这三类错误是网站侧拦截，不是本程序故障，退避策略要分开处理。
+THROTTLED_CODES = ('site_challenge', 'rate_limited', 'http_forbidden')
 _stop = threading.Event()
 _thread = None
 
@@ -84,8 +86,13 @@ def process(row_id):
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat(),last_attempt_source='cloud_browser')
             delay=config.get('interval_minutes',5)*60
             if result.get('status')=='error':
-                delay=min(6*3600,max(300, delay*2**min(result['failures']-1,4)))
-                if result.get('error_code') in ('site_challenge','rate_limited','http_forbidden'): delay=max(delay,1800)
+                if result.get('error_code') in THROTTLED_CODES:
+                    # 网站拦截随时可能解除，指数退避只会把"恢复检测"拖到 6 小时：
+                    # 每轮都白等。这里按用户设定的间隔重试，且不低于 30 分钟。
+                    delay=max(1800, delay)
+                else:
+                    # 自身故障（解析器、配置、网络）才用指数退避，避免反复空转。
+                    delay=min(6*3600,max(300, delay*2**min(result['failures']-1,4)))
             result['next_due']=time.time()+delay if result.get('status')=='error' else max(time.time()+10,started_at+delay)
             db.expire_all()
             # Keep a concurrent stop or changed schedule intact.

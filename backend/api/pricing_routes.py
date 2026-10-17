@@ -232,6 +232,9 @@ def save_monitors(data, db, store):
         old=item['monitor'];value={**old,'product_id':product_id,'offer_id':offer_id,'sku':item['sku'],
             'enabled':data.enabled, 'web_requested':False, 'interval_minutes':data.interval_minutes, 'segment':data.segment.strip() or old.get('segment','未分段'), 'request_once':data.request_once,
             'revision':old.get('revision',0)+1,'next_due':0 if data.enabled or data.request_once else old.get('next_due',0),
+            # 手动开启或立即采集等于重新开始：清空失败计数，否则下一次失败会
+            # 立刻跳回退避上限，让"重试"这个动作失去意义。
+            'failures':0 if data.enabled or data.request_once else old.get('failures',0),
             'status':'queued' if data.enabled or data.request_once else 'paused'}
         staged.append((MONITOR_PREFIX+store+':'+product_id+':'+offer_id,value))
     for key,value in staged:

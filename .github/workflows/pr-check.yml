@@ -57,3 +57,24 @@ jobs:
       - name: Build
         run: npm run build
 
+  backend:
+    # 前端门禁之前完全没有覆盖 backend/：采集退避、调价、补货这些"算错了会亏钱"
+    # 的逻辑只有本地 pytest 在跑，改坏了没人拦。这里补上。
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -q -r backend/requirements.txt pytest
+
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest -q
+

@@ -5,6 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 import pytest
 
+# gui.py 依赖 tkinter；缺少 tk 的运行环境（部分精简版 Python 发行包）应跳过，
+# 而不是让整个测试套件在收集阶段直接中断。
+pytest.importorskip('tkinter')
+
 spec = importlib.util.spec_from_file_location('collector_gui_modes', Path(__file__).resolve().parents[2] / 'tools/native-collector/gui.py')
 gui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gui)

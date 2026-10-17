@@ -11,12 +11,12 @@ import pytest
 from fastapi import HTTPException
 
 
-def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial_source=None):
+def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial_source=None, error_payload=None, failures=0):
     engine=create_engine('sqlite://');Base.metadata.create_all(engine);factory=sessionmaker(bind=engine)
     key=monitor.PREFIX+DEFAULT_STORE_ID+':p:1'
     with factory() as db:
         db.add(Product(id='p',store_id=DEFAULT_STORE_ID,takealot_url='https://www.takealot.com/p/PLID1'))
-        db.add(SystemSettings(key=key,value=json.dumps(dict(product_id='p',offer_id='1',sku='a',enabled=enabled,request_once=once,interval_minutes=30,revision=1,buybox_price=95,last_success_at='2026-10-12T00:00:00+00:00'))));db.commit()
+        db.add(SystemSettings(key=key,value=json.dumps(dict(product_id='p',offer_id='1',sku='a',enabled=enabled,request_once=once,interval_minutes=30,revision=1,buybox_price=95,last_success_at='2026-10-12T00:00:00+00:00',failures=failures))));db.commit()
         if initial_source:
             row=db.query(SystemSettings).filter_by(key=key).first()
             value=json.loads(row.value)
@@ -33,6 +33,7 @@ def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial
             with factory()as db:
                 row=db.query(SystemSettings).filter_by(key=key).first()
                 value=json.loads(row.value);value.update(enabled=False,revision=2,status='paused');row.value=json.dumps(value);db.commit()
+        if error_payload is not None: return error_payload
         return {'error':'unavailable'} if error else {'buyboxPrice':100,'holdingBuybox':True,'offers':[{'price':90,'status':'in_stock'}]}
     monkeypatch.setattr(monitor,'collect',collect)
     monitor.process(key)
@@ -89,6 +90,45 @@ def test_failed_collection_preserves_old_quote_and_backs_off(monkeypatch):
     assert result['status']=='error' and result['buybox_price']==95 and result['failures']==1
     assert result['last_success_at']=='2026-10-12T00:00:00+00:00' and not client.patch.called
     assert result['next_due']>monitor.time.time()+1700
+
+def test_site_challenge_retries_at_user_interval_instead_of_six_hours(monkeypatch):
+    # 复现：站点持续拦截时，第 5 次失败后旧逻辑排到 6 小时后（17:26 -> 03:44）。
+    _,result=run(monkeypatch,error_payload={'error':'site_challenge'},failures=5)
+    assert result['status']=='error' and result['error_code']=='site_challenge'
+    assert result['failures']==6
+    # 30 分钟间隔、已失败 6 次：新逻辑仍按间隔重试，不再放大到 6 小时。
+    assert monitor.time.time()+1700 < result['next_due'] <= monitor.time.time()+1830
+
+def test_rate_limited_and_forbidden_are_both_treated_as_site_block(monkeypatch):
+    for payload in ({'diagnostics':{'http_status':429}},{'diagnostics':{'http_status':403}}):
+        _,result=run(monkeypatch,error_payload=payload,failures=5)
+        assert result['error_code'] in monitor.THROTTLED_CODES
+        assert result['next_due'] <= monitor.time.time()+1830
+
+def test_genuine_fault_keeps_exponential_backoff(monkeypatch):
+    # 解析器异常是本程序故障，指数退避仍然生效：5 次失败后间隔 30 分钟 -> 8 小时封顶 6 小时。
+    _,result=run(monkeypatch,error_payload={'error':'TypeError: cannot read price'},failures=5)
+    assert result['error_code']=='collector_error' and result['error_code'] not in monitor.THROTTLED_CODES
+    assert result['next_due'] > monitor.time.time()+21000
+
+def test_manual_retry_clears_failure_counter(monkeypatch):
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    key=monitor.PREFIX+DEFAULT_STORE_ID+':one:one'
+    def seed(db,count):
+        row=db.query(SystemSettings).filter_by(key=key).first()
+        value=json.loads(row.value);value.update(failures=count,status='error',next_due=0);row.value=json.dumps(value);db.commit()
+    with route_db()as db:
+        routes.monitor_bulk(routes.MonitorBulk(enabled=True,interval_minutes=30,items=[{'product_id':'one','offer_id':'one'}]),db,DEFAULT_STORE_ID)
+        seed(db,9)
+        routes.monitor_bulk(routes.MonitorBulk(enabled=True,interval_minutes=30,items=[{'product_id':'one','offer_id':'one'}]),db,DEFAULT_STORE_ID)
+        value=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        # 重试等于重新开始：计数归零、立即到期，否则下一次失败会直接跳回退避上限。
+        assert value['failures']==0 and value['next_due']==0 and value['status']=='queued'
+        seed(db,9)
+        routes.monitor_bulk(routes.MonitorBulk(enabled=False,interval_minutes=30,items=[{'product_id':'one','offer_id':'one'}]),db,DEFAULT_STORE_ID)
+        value=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        # 只是暂停不是重试，历史失败次数要保留，恢复后才知道真实状况。
+        assert value['failures']==9 and not value['enabled']
 
 def test_concurrent_stop_is_not_overwritten(monkeypatch):
     client,result=run(monkeypatch,pause=True)
