@@ -1,0 +1,56 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck / visual / tests / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type check
+        run: npm run check:types
+
+      - name: Check visual consistency
+        run: npm run check:visual
+
+      - name: Check audit isolation and failure handling
+        run: npm run test:audit-safety
+
+      - name: Check Buybox states and refresh races
+        run: npm run test:buybox
+
+      - name: Check product interactions and dialog keyboard safety
+        run: npm run test:products
+
+      - name: Check inventory actions
+        run: npm run test:inventory
+
+      - name: Check product image fallback
+        run: npm run test:images
+
+      - name: Build
+        run: npm run build
+
