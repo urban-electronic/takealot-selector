@@ -31,6 +31,16 @@ def classify(snapshot):
     landed=re.search(r'PLID\d+',d.get('final_url',''),re.I)
     if requested and (not landed or requested.group().lower()!=landed.group().lower()): return 'product_redirect','页面跳转到其他地址，未确认目标商品'
     if error=='unstable_price': return 'unstable_price','多次读取的报价不一致，本轮不采信'
+    # 下面两条靠「数元素」区分三种长得一样的失败。原来一律报 price_not_found
+    # （页面打开了但没有 Buybox 价），用户无法判断该等一等、还是该叫维护，只能反复点采集。
+    #   buybox_cards>0                → 有区块，价格没读出来（落到最后的 parse_error）
+    #   buybox_cards==0 且 price_nodes>0 → 商品页在，价格也在，只有 Buybox 锚点没命中 = 改版
+    #   buybox_cards==0 且 price_nodes==0 → 什么都没认出来 = 落地页不是商品页
+    cards=d.get('buybox_cards');prices=d.get('price_nodes')
+    if isinstance(cards,int) and cards==0 and isinstance(prices,int):
+        if prices>0:
+            return 'page_structure_changed',f'页面能打开，也有 {prices} 处价格，但 Buybox 区块一个都没匹配到（0 个）。这是解析锚点失效，不是商品下架'
+        return 'page_not_recognized','页面里没认出任何商品元素（0 处价格、0 个 Buybox 区块），落地页不像商品页'
     if not snapshot.get('buyboxPrice'): return 'price_not_found','页面已读取，但未找到有效Buybox价格'
     if error: return 'parse_error','商品报价解析失败'
     return '', ''

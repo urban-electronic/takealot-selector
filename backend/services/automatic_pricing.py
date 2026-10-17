@@ -103,14 +103,24 @@ async def collect(product, offer):
                 'name': offer.get('title') or product.product_name, 'myPrice': offer['selling_price'],
                 'myStock': offer.get('stock_at_takealot_total'), 'shopId': DEFAULT_STORE_ID})
             diagnostics={'http_status':responses[-1] if responses else None,'requested_url':safe_url(url),'final_url':safe_url(page.url)}
+            # 每一项诊断各自兜底。原来整段共用一个 try：只要 body.inner_text 超时一次，
+            # 后面的元素计数就全丢——恰恰是页面最慢、最需要诊断的时候什么都没留下。
+            async def _count(selector):
+                try: return await page.locator(selector).count()
+                except Exception: return None
+            try: diagnostics['page_title']=(await page.title())[:160]
+            except Exception: pass
             try:
-                diagnostics['page_title']=(await page.title())[:160]
                 text=(await page.locator('body').inner_text(timeout=2000)).lower()
                 markers=['verify you are human','checking your browser','automated traffic','unusual traffic','complete the captcha']
                 diagnostics['block_reason']=next((m for m in markers if m in text),None)
-                diagnostics['buybox_cards']=await page.locator('[data-ref="buybox-offer"]').count()
-                if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
             except Exception: pass
+            # 只记数量，不存页面内容。两个计数合起来才能分清「商品没 Buybox」和
+            # 「我们的锚点失效了」：有价格却没有 Buybox 区块 = 页面结构变了；
+            # 两者都是 0 = 落地页根本不是商品页（验证页/跳转页）。
+            diagnostics['buybox_cards']=await _count('[data-ref="buybox-offer"]')
+            diagnostics['price_nodes']=await _count('[data-ref="price"]')
+            if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
             diagnostics['raw_error']=re.sub(r'https?://[^\s]+',lambda m:safe_url(m.group()),str(snapshot.get('error') or ''))[:200]
             snapshot['diagnostics']=diagnostics
             code,message=classify(snapshot)

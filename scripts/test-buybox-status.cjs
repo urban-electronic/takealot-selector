@@ -66,9 +66,9 @@ async function scenario(monitor, inspect, overrides = {}) {
     snapshot: { buyboxSeller: 'Urban Electronics' } };
   await scenario({ ...known, status: 'queued' }, tr => {
     check([...tr.querySelectorAll('.row-details')].every(d=>!d.open), 'verbose explanations are collapsed by default');
-    check(tr.querySelector('.product-english-name').title==='Test product', 'full English name remains available on hover');
+    check(tr.querySelector('.product-link').title==='Test product', 'full English name remains available on hover');
     check(tr.textContent.includes('测试商品'), 'Chinese name is displayed separately');
-    check(tr.textContent.includes('英文名：Test product'), 'English title remains labelled');
+    check(!tr.querySelector('.product-english-name'), 'English title is not repeated as its own line');
     check(tr.textContent.includes('R 269'), 'queued job retains last valid quote');
     check(tr.textContent.includes('页面卖家：Urban Electronics'), 'actual quoted seller is visible');
     check(tr.textContent.includes('同价 · 卖家未核实'), 'equal price is never presented as verified holding');
@@ -81,6 +81,21 @@ async function scenario(monitor, inspect, overrides = {}) {
   await scenario({ ...known, status: 'error', error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
     check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');
     check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
+  });
+  // 采集失败的原因有一半藏在页面里。诊断数字必须能在行内看到，否则用户只能反复点采集。
+  await scenario({ ...known, status: 'error', error: '页面已读取，但未找到有效Buybox价格', error_code: 'price_not_found',
+    diagnostics: { http_status: 200, page_title: 'Product page', buybox_cards: 0, price_nodes: 3 } }, tr => {
+    const diag = tr.querySelector('.diag-line');
+    check(!!diag, 'diagnostics are surfaced inside the failing row');
+    check(diag.textContent.includes('Buybox 区块 0 个'), 'buybox block count is shown');
+    check(diag.textContent.includes('价格节点 3 个'), 'price node count is shown');
+    check(diag.textContent.includes('HTTP 200'), 'http status is shown');
+  });
+  await scenario({ ...known, status: 'error', error_code: 'page_structure_changed' }, tr => {
+    check(tr.textContent.includes('页面结构变了'), 'structural failure is named instead of "no buybox price"');
+    check(!tr.textContent.includes('页面打开了但没有 Buybox 价'), 'structural failure is not lumped into the ambiguous copy');
+    const copy = [...host.querySelectorAll('.collection-bar-actions button')].find(b => b.textContent === '复制诊断');
+    check(!!copy, 'a failing fleet offers a one-click diagnostics export');
   });
   await scenario({ ...known, status: 'success', source: 'local_collector', holding_buybox: true }, tr => {
     check(tr.textContent.includes('报价来源：本机采集器'), 'native quote source preserved');
@@ -123,7 +138,7 @@ async function scenario(monitor, inspect, overrides = {}) {
   await scenario({status:'success'}, tr => {
     check(tr.querySelector('.product-link').textContent==='中文名待核对', 'English never fills the Chinese display');
     check(tr.textContent.includes('中文字段为非中文，请修正'), 'invalid Chinese field is actionable');
-    check(tr.textContent.includes('英文名：Test product'), 'original English name is preserved');
+    check(tr.querySelector('.product-link').title==='Test product', 'original English name is preserved on the link');
   }, {chinese_name:null,name_status:'invalid'});
   await scenario({status:'success'}, tr => {
     check(tr.textContent.includes('SKU与中文名对应不明确'), 'ambiguous variant mapping is visible');
