@@ -91,6 +91,24 @@ def test_allowed_image_is_fetched_with_referer_and_passthrough_type():
     assert calls == [ALLOWED]
 
 
+def test_seller_legacy_bucket_image_passes_display_proxy():
+    url = 'https://takealot.s3.amazonaws.com/covers_images/actual/s.file'
+    service, calls = make_service(lambda request: image_bytes(b'product-image'))
+    assert asyncio.run(service.fetch(url)) == (b'product-image', 'image/jpeg')
+    assert calls == [url]
+
+
+@pytest.mark.parametrize('url', [
+    'https://other.s3.amazonaws.com/covers_images/test.jpg',
+    'https://takealot.s3.amazonaws.com/private/test.jpg',
+    'https://takealot.s3.amazonaws.com.evil.test/covers_images/test.jpg',
+    'https://takealot.s3.amazonaws.com/covers_images/../private/test.jpg',
+])
+def test_legacy_bucket_scope_is_not_expanded(url):
+    with pytest.raises(HTTPException):
+        image_proxy._validate_image_url(url)
+
+
 def test_successful_response_is_micro_cached_for_repeat_calls():
     service, calls = make_service(lambda request: image_bytes())
     assert asyncio.run(service.fetch(ALLOWED))[0] == b"imgbytes"
