@@ -58,3 +58,16 @@ def test_collector_stops_on_challenge_before_selectors_or_variant_attempts():
         # Any selector/variant operation would fail: challenge is an early return.
     result=asyncio.run(scrape_product(Page(),{'url':'https://www.takealot.com/p/PLID1','name':'Product - Variant'}))
     assert result['error']=='site_challenge' and result['buyboxPrice'] is None
+
+
+def test_safe_url_removes_credentials_and_rejects_malformed():
+    assert safe_url('https://user:fixture-private@www.takealot.com/p/PLID1?token=x#x')=='https://www.takealot.com/p/PLID1'
+    assert safe_url('https://[broken')==''
+
+
+def test_safe_diagnostics_keeps_new_measurements_not_free_text():
+    from services.collection_diagnostics import safe_diagnostics
+    value=safe_diagnostics({'price_nodes':4,'diag_version':3,'buybox_card_struck':1,
+        'cookie':'fixture-private','failure_message':'fixture-private',
+        'http_status':True,'buybox_cards':float('nan'),'debug':['fixture-private']})
+    assert value=={'price_nodes':4,'diag_version':3,'buybox_card_struck':1}
