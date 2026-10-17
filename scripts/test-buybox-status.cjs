@@ -77,6 +77,20 @@ async function scenario(monitor, inspect) {
     check(tr.textContent.includes('报价来源：未记录'), 'legacy source remains unknown');
     check(tr.textContent.includes('卖家：未读取'), 'legacy seller remains unknown');
   });
+  await scenario({ ...known, status: 'queued', enabled:true, next_due:Date.now()/1000+300 }, tr => {
+    check(tr.textContent.includes('等待下轮'), 'future scheduled work is not shown as waiting for a worker');
+    check(tr.textContent.includes('尚未到计划时间'), 'scheduled waiting has a reason');
+    check(tr.textContent.includes('上次有效报价 · 非本轮结果'), 'retained quote is not a new collection result');
+    check([...tr.querySelectorAll('button')].find(b=>b.textContent==='立即采集').disabled, 'queued work cannot be repeatedly submitted');
+  });
+  await scenario({ ...known, status:'queued', next_due:0 }, tr => {
+    check(tr.textContent.includes('等待采集器领取'), 'due queue explains what it is waiting for');
+    check(tr.textContent.includes('尚未收到本轮完成结果'), 'queue never implies success');
+    check(!tr.textContent.includes('离线'), 'queue alone does not prove an offline collector');
+  });
+  await scenario({ ...known, status:'paused', enabled:false }, tr => {
+    check(tr.querySelector('.collection-status-cell').textContent.includes('已停采'), 'paused work is not labelled manual collection');
+  });
   check(writes === 0, 'rendering never triggers a mutation');
   console.log(`PASS ${checks} Buybox page assertions (jsdom, isolated API)`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => dom.window.close());
