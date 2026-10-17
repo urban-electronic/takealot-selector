@@ -346,8 +346,37 @@ async def page_variant_controls(page):
         return None
     return count
 
+# 卡片文本里的 ZAR 金额。R 后面可能紧跟数字，也可能是 "R1 299" 这种空格千分位。
+_AMOUNT = re.compile(r'R\s?(\d[\d\s,\u00a0]*(?:\.\d{2})?)', re.I)
+
+def _to_amount(raw: str) -> float | None:
+    s = (raw or '').replace('\u00a0', ' ').replace(' ', '').replace(',', '')
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+def distinct_prices(text: str) -> list[float]:
+    """一段文本里出现的所有不同金额（升序去重）。只用来判断"能不能唯一确定一个价"。"""
+    if not text:
+        return []
+    out: list[float] = []
+    for m in _AMOUNT.finditer(text):
+        v = _to_amount(m.group(1))
+        if v is not None and v not in out:
+            out.append(v)
+    return sorted(out)
+
 async def price_of(page, card) -> float | None:
-    """从卡片内提取价格，多候选选择器兜底。"""
+    """从卡片内提取价格。
+
+    先按选择器取价格节点（正常路径）。四个候选全落空时，退回读**卡片自身**的文本：
+    卡片本身就是 Buybox 区块（[data-ref="buybox-offer"]），所以卡内唯一的金额
+    就是这张卡的价格。只有当卡里**恰好只有一个不同金额**时才采信——
+    出现划线价、满减、运费等第二个金额就放弃。宁可采不到，也不采错：
+    这条价直接喂自动调价，读错就是真亏钱。
+    """
     for i, sel in enumerate(SELECTORS["price"]):
         try:
             pr = await card.query_selector(sel)
@@ -358,6 +387,14 @@ async def price_of(page, card) -> float | None:
                     return p
         except Exception:
             continue
+    try:
+        amounts = distinct_prices(await card.inner_text())
+    except Exception:
+        return None
+    if len(amounts) == 1:
+        # idx 超出候选范围：表示这次是靠文本兜底拿到的，selector_health 会记成降级。
+        _record_selector("price", True, len(SELECTORS["price"]))
+        return amounts[0]
     return None
 
 CHALLENGE_TITLES = ('just a moment...', 'just a moment', 'attention required! | cloudflare')

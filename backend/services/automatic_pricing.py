@@ -120,6 +120,16 @@ async def collect(product, offer):
             # 两者都是 0 = 落地页根本不是商品页（验证页/跳转页）。
             diagnostics['buybox_cards']=await _count('[data-ref="buybox-offer"]')
             diagnostics['price_nodes']=await _count('[data-ref="price"]')
+            # 只记长度和金额个数，不存卡片正文。用来区分三种「卡片在、价没有」：
+            # 长度接近 0 = 骨架屏还没渲染；有文本但金额 0 个 = 卡片里确实没报价；
+            # 金额 1 个 = 价在卡里，只是选择器没命中（新的文本兜底能救）。
+            try:
+                from services.pricepilot_collector import distinct_prices
+                card=page.locator('[data-ref="buybox-offer"]').first
+                txt=await card.inner_text(timeout=1500)
+                diagnostics['buybox_card_text_len']=len(txt)
+                diagnostics['buybox_card_amounts']=len(distinct_prices(txt))
+            except Exception: pass
             if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
             diagnostics['raw_error']=re.sub(r'https?://[^\s]+',lambda m:safe_url(m.group()),str(snapshot.get('error') or ''))[:200]
             snapshot['diagnostics']=diagnostics
