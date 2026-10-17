@@ -1,3 +1,5 @@
+import { toNumber } from './utils/number';
+
 export interface Product {
   id: string;
   product_no: number | null;
@@ -267,13 +269,15 @@ export const SELECTION_STATUS_MAP: Record<string, { label: string; color: string
   '不建议选品': { label: '不建议选品', color: '#ff4d4f' },
 };
 
-export function formatPrice(val: number | null | undefined, currency: 'CNY' | 'ZAR' = 'ZAR'): string {
-  if (val == null) return '-';
+export function formatPrice(val: number | string | null | undefined, currency: 'CNY' | 'ZAR' = 'ZAR'): string {
+  const amount = toNumber(val);
+  if (amount == null) return '-';
   const symbol = currency === 'CNY' ? '¥' : 'R';
-  return `${symbol} ${val.toFixed(2)}`;
+  return `${symbol} ${amount.toFixed(2)}`;
 }
 
-export function formatPercent(val: number | null | undefined): string {
-  if (val == null) return '-';
-  return `${(val * 100).toFixed(2)}%`;
+export function formatPercent(val: number | string | null | undefined): string {
+  const ratio = toNumber(val);
+  if (ratio == null) return '-';
+  return `${(ratio * 100).toFixed(2)}%`;
 }

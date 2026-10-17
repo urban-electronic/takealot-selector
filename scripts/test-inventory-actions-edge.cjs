@@ -26,11 +26,25 @@ const file = path.resolve(__dirname, '../src/pages/Inventory.tsx');
 const compiled = new Module(file, module);
 compiled.filename = file;
 compiled.paths = Module._nodeModulePaths(path.dirname(file));
+// 未显式 mock 的相对导入按真实 .ts/.tsx 编译，避免新增一个模块就让整组测试失败。
+const localModule = name => {
+  if (typeof name !== 'string' || !name.startsWith('.')) return null;
+  for (const ext of ['.ts', '.tsx']) {
+    const target = path.resolve(path.dirname(file), name + ext);
+    if (!fs.existsSync(target)) continue;
+    const m = new Module(target, module);
+    m.filename = target;
+    m.paths = Module._nodeModulePaths(path.dirname(target));
+    m._compile(ts.transpileModule(fs.readFileSync(target, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
+    return m.exports;
+  }
+  return null;
+};
 const original = compiled.require.bind(compiled);
 compiled.require = name => name === '../operations/ShipmentReconciliation' ? { default: () => null } : name === '../remoteApi' ? api
   : name === 'react-router-dom' ? { useNavigate: () => () => {}, useSearchParams: () => [new URLSearchParams()] }
   : name === '../utils/imageFallback' ? { ProductImage: () => null }
-  : original(name);
+  : (localModule(name) || original(name));
 compiled._compile(ts.transpileModule(fs.readFileSync(process.env.INVENTORY_SOURCE || file, 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, file);
 const root = createRoot(document.getElementById('root'));

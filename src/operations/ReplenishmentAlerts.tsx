@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getOperationsAlerts } from '../remoteApi';
+import { useVisibleInterval } from '../utils/useVisibleInterval';
 export default function ReplenishmentAlerts() {
   const [rows, setRows] = useState<any[]>([]); const [error, setError] = useState('');
-  useEffect(() => {
-    let active = true;
-    const refresh = () => getOperationsAlerts().then(r => { if (active) { setRows(r); setError(''); } }).catch(e => active && setError(e.message));
-    refresh(); const t = setInterval(refresh, 60000);
-    return () => { active = false; clearInterval(t); };
+  const active = useRef(true);
+  const refresh = useCallback(() => {
+    getOperationsAlerts()
+      .then(r => { if (active.current) { setRows(r); setError(''); } })
+      .catch(e => { if (active.current) setError(e.message); });
   }, []);
+  useEffect(() => { active.current = true; refresh(); return () => { active.current = false; }; }, [refresh]);
+  useVisibleInterval(refresh, 60000);
   if (!rows.length && !error) return null;
   const products = new Set(rows.map(r => r.product_id)).size;
   const air = rows.filter(r => r.mode === 'air').reduce((n,r) => n + r.quantity, 0);

@@ -99,8 +99,12 @@ export const deleteProcurementRecord = (id: string): Promise<string> =>
   invoke('delete_procurement_record', { id }) as Promise<string>;
 
 export const searchProductsByNo = async (keyword: string): Promise<Product[]> => {
-  const result = await invoke('search_products_by_no', { productNo: parseInt(keyword, 10) });
-  return [result as Product];
+  const no = parseInt(keyword, 10);
+  // 与 remoteApi 版保持一致：非法输入与"查无此商品"都返回空数组，
+  // 避免把 null 包成 [null] 后让调用方渲染 p.product_no 时白屏。
+  if (!Number.isFinite(no) || no <= 0) return [];
+  const result = await invoke('search_products_by_no', { productNo: no });
+  return result ? [result as Product] : [];
 };
 
 /** 本地模式：Tauri WebView 请求特征被 Takealot CDN 放行，直接返回原图地址 */

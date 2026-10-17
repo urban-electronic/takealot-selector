@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { openCloudBrowser, cloudBrowserAction, cloudBrowserFrame, collectBuyboxNow } from '../remoteApi';
+import { isPageHidden } from '../utils/useVisibleInterval';
 
 type Row = {product_id:string;offer_id:string;sku:string;name:string};
 export default function CloudBrowser({rows,onCollected}:{rows:Row[];onCollected:()=>void}) {
@@ -24,8 +25,13 @@ export default function CloudBrowser({rows,onCollected}:{rows:Row[];onCollected:
     let active=true;
     let pending=false;
     const tick=async()=>{if(pending)return;pending=true;try{await frame(session);}catch(e){if(active){setError((e as Error).message);if((e as Error & {status?:number}).status===410)clearSession();}}finally{pending=false;}};
-    void tick();const timer=window.setInterval(()=>{void tick();},2500);
-    return()=>{active=false;clearInterval(timer);};
+    void tick();
+    // 画面轮询最贵（每 2.5 秒一张截图）：标签页隐藏时停掉，回到前台立刻补一帧，
+    // 避免用户看着旧画面点击导致坐标落在错误位置。
+    const timer=window.setInterval(()=>{if(isPageHidden())return;void tick();},2500);
+    const onVisible=()=>{if(!isPageHidden())void tick();};
+    document.addEventListener('visibilitychange',onVisible);
+    return()=>{active=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[session]);
   const open=async()=>{
     const row=rows.find(r=>`${r.product_id}:${r.offer_id}`===(choice||`${rows[0]?.product_id}:${rows[0]?.offer_id}`));

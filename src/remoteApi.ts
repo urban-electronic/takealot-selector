@@ -351,6 +351,18 @@ export const voidShipment = (id: string, reason: string): Promise<{ ok: boolean 
     method: 'POST', body: JSON.stringify({ reason }),
   });
 
+/**
+ * 把本地表数据导入远端库。
+ *
+ * 走统一 `request()` 而不是裸 fetch：其余写操作都带 `X-API-Key` / `X-Store-ID`，
+ * 这里原来只有 `Content-Type`，鉴权开启后会直接 401，而错误信息只显示 "HTTP 401"。
+ */
+export const migrateToRemote = (tables: Array<{ table: string; rows: unknown[] }>) =>
+  request<{ imported?: Record<string, number> }>('/api/migrate', {
+    method: 'POST',
+    body: JSON.stringify(tables),
+  });
+
 export const exportInboundTemplate = async (shipmentIds: string[]): Promise<Blob> => {
   const res = await fetch(`${getBaseUrl()}/api/inventory/shipments/inbound-template`, {
     method: 'POST',

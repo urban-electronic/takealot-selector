@@ -1,4 +1,5 @@
 import type { ScrapeResult } from './types';
+import { parseZarPrice } from './utils/price';
 
 export function importSavedTakealotPage(doc: Document, enteredUrl: string): ScrapeResult {
   const canonical = doc.querySelector('link[rel="canonical"]')?.getAttribute('href') || doc.querySelector('meta[property="og:url"]')?.getAttribute('content') || '';
@@ -12,7 +13,7 @@ export function importSavedTakealotPage(doc: Document, enteredUrl: string): Scra
   const title = doc.querySelector('main h1')?.textContent?.trim() || doc.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim() || '';
   if (!title || /just a moment|access denied|verify you are human|security verification/i.test(title)) throw new Error('文件没有商品标题，请等官网正常显示商品后重新保存网页。');
   let captured;
-  try { captured = captureTakealotPage(doc, pageUrl); } catch { captured = { version: 1, url: pageUrl, title, image: '', price: null, category: '', outOfStock: false }; }
+  try { captured = captureTakealotPage(doc, pageUrl, parseZarPrice); } catch { captured = { version: 1, url: pageUrl, title, image: '', price: null, category: '', outOfStock: false }; }
   const metaImage = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || '';
   // Browsers rewrite visible image URLs to local files when saving a complete page.
   if (!captured.image && metaImage.startsWith('https://media.takealot.com/covers_images/')) captured.image = metaImage;
@@ -21,7 +22,13 @@ export function importSavedTakealotPage(doc: Document, enteredUrl: string): Scra
   return result;
 }
 
-export function captureTakealotPage(doc: Document, pageUrl: string) {
+/**
+ * 抓取当前页面的商品信息。
+ *
+ * `parsePrice` 作为参数传入而不是直接引用模块函数：本函数会被 `toString()`
+ * 序列化进书签脚本，而打包压缩后模块作用域里的函数名会变，直接引用会失效。
+ */
+export function captureTakealotPage(doc: Document, pageUrl: string, parsePrice: (text: string | null | undefined) => number | null) {
   const url = new URL(pageUrl);
   if (!['takealot.com', 'www.takealot.com'].includes(url.hostname) || !/^https?:$/.test(url.protocol) || url.username || url.password || !/PLID\d+/i.test(url.pathname)) throw new Error('请在正常打开的 Takealot 商品详情页点击此书签。');
   const main = doc.querySelector('main');
@@ -29,14 +36,14 @@ export function captureTakealotPage(doc: Document, pageUrl: string) {
   if (!main || !title || /verify|just a moment|access denied/i.test(title)) throw new Error('商品尚未显示，请等待商品标题和图片加载完成。');
   const image = Array.from(main.querySelectorAll('img')).find(img => img.getAttribute('alt') === title && (img.getAttribute('src') || '').includes('media.takealot.com/covers_images/'));
   const priceText = main.querySelector('[data-ref="price"] .currency, [class*="price-buybox"] .currency')?.textContent || '';
-  const price = priceText.match(/R\s*([\d,]+(?:\.\d+)?)/);
+  const price = parsePrice(priceText);
   const categories = Array.from(main.querySelectorAll('table tr')).find(row => row.querySelector('td')?.textContent?.trim() === 'Categories');
   const category = categories ? Array.from(categories.querySelectorAll('td:nth-child(2) a')).map(a => a.textContent?.trim()).filter(Boolean).join(' > ') : '';
-  return { version: 1, url: `${url.origin}${url.pathname}`, title, image: image?.getAttribute('src') || '', price: price ? Number(price[1].replace(/,/g, '')) : null, category, outOfStock: /supplier out of stock|out of stock/i.test(main.textContent || '') };
+  return { version: 1, url: `${url.origin}${url.pathname}`, title, image: image?.getAttribute('src') || '', price, category, outOfStock: /supplier out of stock|out of stock/i.test(main.textContent || '') };
 }
 
 export function makeTakealotBookmarklet(destination: string) {
-  const script = `(()=>{try{const capture=${captureTakealotPage.toString()};const data=capture(document,location.href);window.open(${JSON.stringify(destination)}+'#takealot-import='+encodeURIComponent(JSON.stringify(data)),'_blank','noopener');}catch(e){alert(e.message||'读取失败，请确认商品已显示。');}})()`;
+  const script = `(()=>{try{const parsePrice=${parseZarPrice.toString()};const capture=${captureTakealotPage.toString()};const data=capture(document,location.href,parsePrice);window.open(${JSON.stringify(destination)}+'#takealot-import='+encodeURIComponent(JSON.stringify(data)),'_blank','noopener');}catch(e){alert(e.message||'读取失败，请确认商品已显示。');}})()`;
   return 'javascript:' + encodeURIComponent(script);
 }
 
