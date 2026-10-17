@@ -232,7 +232,9 @@ export default function AutoPricing() {
     : nextIn > 60 ? `约 ${Math.round(nextIn / 60)} 分钟后`
     : nextIn >= 0 ? `${nextIn} 秒后`
     : nextIn > -120 ? '马上开始'
-    : `已延迟 ${Math.round(-nextIn / 60)} 分钟`;
+    // 超过一小时就不报精确分钟了：那说明排期本身有问题，精确到分钟是假精确。
+    : nextIn > -3600 ? `已延迟 ${Math.round(-nextIn / 60)} 分钟`
+    : '已延迟超过 1 小时';
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" disabled={refreshing} aria-busy={refreshing} onClick={()=>{void refresh();}}>刷新列表</button></div>
 

@@ -118,6 +118,14 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(strip.textContent.includes('已延迟 7 分钟'), 'an overdue cycle is reported instead of masked as starting soon');
     check(!strip.textContent.includes('马上开始'), 'overdue is never described as "starting right away"');
   });
+  // 荒谬的延迟不许原样印出来。线上出现过「已延迟 2987107 分钟」——
+  // 那是后端把 next_due=0 当时间戳算出来的，精确到分钟是假精确。
+  loopFixture = { ...loopFixture, next_due_in: -1792265800 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('已延迟超过 1 小时'), 'an absurd delay is capped instead of printed verbatim');
+    check(!/\d{5,}/.test(strip.textContent), 'no five-digit minute count ever reaches the strip');
+  });
   loopFixture = { ...loopFixture, next_due_in: 130 };
   await scenario({ ...known, status: 'error', error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
     check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');

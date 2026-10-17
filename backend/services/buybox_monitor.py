@@ -102,7 +102,8 @@ def process(row_id):
             finished = isinstance(error, ValueError)
             code = result.get('error_code') if finished else 'collector_unavailable'
             if not finished:
-                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__}
+                result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__,
+                                         'failure_message': str(error)[:200]}
             result.update(status='error', error_stage=stage, error_code=code or ('seller_read_failed' if stage=='seller_api' else type(error).__name__),
                           error=str(error) if finished else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:
@@ -204,7 +205,10 @@ def loop_status(db, store=DEFAULT_STORE_ID):
         try: monitors.append(json.loads(r.value))
         except Exception: pass
     enabled=[m for m in monitors if m.get('enabled') or m.get('request_once')]
-    dues=[m.get('next_due') for m in enabled if isinstance(m.get('next_due'),(int,float))]
+    # next_due=0 是「已到期 / 没排期」的哨兵值，不是 1970 年的时间戳。
+    # 把它当成真实时间参与 min()，算出来的延迟会是「已延迟 1792265800 秒」——
+    # 界面上就是「已延迟 2987107 分钟」，比不显示更糟。
+    dues=[m.get('next_due') for m in enabled if isinstance(m.get('next_due'),(int,float)) and m['next_due'] > 0]
     intervals=[m.get('interval_minutes') for m in enabled if isinstance(m.get('interval_minutes'),int)]
     return {
         'worker_alive': bool(alive_at and now-alive_at < 60),
