@@ -19,7 +19,7 @@ def test_partial_seller_image(existing, page, expected, calls):
                   variants=[{'sku': 'correct'}], warnings=[], data_source='seller_api')
     with patch.object(routes, 'configured_key', return_value='fixture'), \
          patch.object(routes, 'seller_product', return_value=seller), \
-         patch.object(routes, '_scrape_with_curl_cffi', return_value=(page, '')) as http, \
+         patch.object(routes, '_scrape_with_curl_cffi', return_value=(page, ''), create=True) as http, \
          patch.object(routes, 'scrape_product', new_callable=AsyncMock) as browser, \
          patch.object(routes, 'match_fee_category', return_value={'fee_category': None, 'confidence': 'low'}):
         result = asyncio.run(routes.scrape_takealot(routes.ScrapeRequest(url=URL),
