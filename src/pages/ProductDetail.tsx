@@ -7,6 +7,7 @@ import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LIN
 import { ProductImage } from '../utils/imageFallback';
 import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
+import { notifyCatalogChanged } from '../utils/catalogEvents';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -105,6 +106,8 @@ export default function ProductDetail() {
       });
       setProduct(updated);
       setEditMode(false);
+      // 名称/SKU 变了要让装箱单重新同步，不然那边还是旧名字。
+      notifyCatalogChanged(['sku', 'product_name', 'chinese_product_name']);
       if (searchParams.get('from')) navigate(-1);
     } catch (e: any) {
       setError(typeof e === 'string' ? e : e.message || '保存失败');

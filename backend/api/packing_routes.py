@@ -270,23 +270,31 @@ def _sync_from_products(db: Session, store_id: str):
             continue
         name_zh = (prod.chinese_product_name or '').strip()
         name_en = (prod.product_name or '').strip()
-        zh_variants = [x for x in re.split(r'\s{1,}', name_zh) if x]
+        zh_variants = [x for x in re.split(r'[\s,，;；/]+', name_zh) if x]
+        # 中文名与 SKU 数量对不上时，不能把整串名字塞给每条分支——那会让 5 个变体
+        # 全显示成同一句长名字。这种情况保留装箱单里原有的分支名，等人去产品列表补。
+        labels_align = len(zh_variants) == len(sku_variants)
         electric_hint = '是' if '带电' in (prod.shipping_method or '') else ''
         electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
         legacy = _find(db, raw_sku) if len(sku_variants) > 1 else None
         for idx, sku in enumerate(sku_variants):
-            variant_name = zh_variants[idx] if len(zh_variants) == len(sku_variants) else name_zh
+            current = _find(db, sku) if sku in seen else None
+            if labels_align:
+                variant_name = zh_variants[idx]
+            elif len(sku_variants) == 1:
+                variant_name = name_zh
+            else:
+                variant_name = (current.variant_label or current.name_zh or '') if current else ''
             if sku in seen:
-                current = _find(db, sku)
                 if current:
                     # 每次同步都刷新产品库名称与分支关系；保留装箱单人工维护的物流属性和上传图片。
-                    current.name_zh = variant_name
+                    current.name_zh = variant_name or current.name_zh
                     current.name_en = name_en
-                    current.name = ' / '.join(x for x in (variant_name, name_en) if x)
+                    current.name = ' / '.join(x for x in (current.name_zh, name_en) if x)
                     if prod.actual_weight_kg:
                         current.weight = str(prod.actual_weight_kg)
                     current.variant_group = prod.id if len(sku_variants) > 1 else ''
-                    current.variant_label = variant_name if len(sku_variants) > 1 else ''
+                    current.variant_label = (variant_name or current.variant_label) if len(sku_variants) > 1 else ''
                     current.is_primary_variant = idx == 0
                 continue
             p = PackingProduct(

@@ -100,7 +100,8 @@ export default function Stores({ onStoresChanged }: Props) {
 
     <section className="store-table-card">
       <div className="store-table-title"><h2>多店库存总览</h2><span>店铺之间库存完全隔离</span></div>
-      <div className="inventory-table-wrap"><table className="inventory-table store-overview-table">
+      {/* 店铺一般就一两个，用库存表那套 360px 最小高度会留一大片空白，这里收成贴合内容。 */}
+      <div className="inventory-table-wrap inventory-table-wrap--compact"><table className="inventory-table store-overview-table">
         <thead><tr><th>店铺</th><th>状态</th><th>同步方式</th><th>SKU</th><th>采购入库</th><th>人工调整</th><th>已发货</th><th>可用库存</th><th>异常</th><th>操作</th></tr></thead>
         <tbody>{stores.map(store => {
           const row = overview.find(item => item.store_id === store.id);

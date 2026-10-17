@@ -234,6 +234,13 @@ button {
   margin: 0 !important;
 }
 
+.packing-library-head {
+  display: flex; align-items: center; justify-content: space-between;
+  /* 窄屏时按钮换行到标题下面，别压在说明文字上（375px 会重叠）。 */
+  flex-wrap: wrap; gap: 8px 12px; margin-bottom: 12px;
+}
+.packing-library-head > div { min-width: 0; }
+
 .packing-section-note {
   margin-top: 3px;
   font-size: 12px;
@@ -268,14 +275,149 @@ button {
 }
 
 .packing-table-scroll .product-table {
-  min-width: 760px;
+  /* 五列固定宽度 + 一列自适应：原来 6 列 760px 挤在 656px 的卡片里，
+     只能横向滚动才能看到「操作」，等于把按钮藏起来了。 */
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
 }
 
 .packing-table-scroll .product-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
+  padding: 8px 10px;
   background: #faf8f5;
+  border-bottom: 2px solid var(--color-border);
+  text-align: left;
+  font-size: var(--fs-label);
+  color: var(--text-muted);
+}
+
+.packing-table-scroll .product-table tbody tr {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.packing-table-scroll .product-table tbody td {
+  padding: 8px 10px;
+  vertical-align: middle;
+}
+
+.packing-col-pick { text-align: center; }
+.packing-col-pick input { width: auto; accent-color: var(--color-primary, #1677ff); }
+
+.packing-thumb {
+  width: 46px; height: 46px; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; border: 1px solid var(--color-border); border-radius: 4px; background: #fff;
+}
+.packing-thumb .packing-img { width: 100%; height: 100%; object-fit: contain; }
+.packing-thumb .packing-noimg { width: 100%; padding: 0 2px; overflow-wrap: anywhere; }
+
+.packing-col-sku { min-width: 0; }
+.packing-sku {
+  display: block; margin-top: 2px; overflow-wrap: anywhere;
+  color: var(--text-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: var(--fs-label); font-weight: 600;
+}
+
+.packing-col-name { min-width: 0; }
+.packing-name-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.packing-name-flag {
+  flex: none; padding: 1px 6px; border: 1px solid var(--warning-strong); border-radius: 999px;
+  color: var(--warning-strong); font-size: var(--fs-caption); white-space: nowrap;
+}
+.packing-expand-link {
+  flex: none; padding: 0; border: 0; background: transparent;
+  color: var(--link-strong); font-size: var(--fs-caption); cursor: pointer;
+}
+.packing-expand-link:hover, .packing-expand-link:focus-visible { text-decoration: underline; }
+
+.packing-attr-line { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 4px; color: var(--text-subtle); font-size: var(--fs-caption); }
+.packing-attr-line .is-flag { color: var(--warning-strong); }
+
+/* 三个按钮（编辑/换图/删图）在 132px 里会折成两行，给到 148 正好一行。 */
+.packing-col-actions { white-space: normal; }
+.packing-col-actions .btn { margin: 0 4px 0 0; padding: 2px 7px; font-size: var(--fs-caption); min-height: var(--control-h-min); }
+
+@media (max-width: 1100px) {
+  /* 表格窄到一定程度就退回横向滚动，而不是把名称挤成一列竖字。 */
+  .packing-table-scroll .product-table { min-width: 620px; }
+  /* 横向滚动时把「操作」钉在右边：手机上滚到一半也能直接点编辑/换图。 */
+  .packing-table-scroll .product-table th:last-child,
+  .packing-table-scroll .product-table td:last-child {
+    position: sticky; right: 0; background: var(--color-card);
+    box-shadow: -6px 0 8px -6px rgba(43, 36, 30, 0.16);
+  }
+}
+
+/* 手机上表格放不下五列：改成一行一张卡片，名称在上、SKU 在下、操作在右侧竖排。
+   横向滚动的表格在窄屏里会把商品名挤出屏幕，等于看不到在装什么。 */
+@media (max-width: 700px) {
+  .packing-table-scroll .product-table { min-width: 0; display: block; }
+  .packing-table-scroll .product-table thead { display: none; }
+  .packing-table-scroll .product-table tbody { display: block; }
+  .packing-table-scroll .product-table tr {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "pick name actions"
+      "image sku actions";
+    align-items: start;
+    gap: 6px 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .packing-table-scroll .product-table td { display: block; padding: 0; border: 0; }
+  .packing-col-pick { grid-area: pick; }
+  .packing-col-image { grid-area: image; }
+  .packing-col-sku { grid-area: sku; display: flex; align-items: center; gap: 6px; }
+  .packing-col-sku .packing-sku { margin-top: 0; }
+  .packing-col-name { grid-area: name; }
+  .packing-col-actions { grid-area: actions; position: static !important; box-shadow: none !important; }
+  .packing-thumb { width: 34px; height: 34px; }
+  .packing-col-actions .btn { display: block; width: 100%; margin: 0 0 4px; }
+  .packing-name-row { gap: 4px 6px; }
+}
+
+/* 窄屏下库存/补货表只能横向滚动，滚到右边就不知道在看哪一行了。
+   把「商品」这一列钉在左边，横滚时始终能看到自己在看什么。
+   钉住的列必须限宽：商品列在桌面是 240~360px，直接钉住会把 375px 屏幕占满。 */
+@media (max-width: 700px) {
+  .inventory-table-wrap .inventory-table th:first-child,
+  .inventory-table-wrap .inventory-table td:first-child,
+  .operations-table-scroll .data-table:not(.pricing-table) th:first-child,
+  .operations-table-scroll .data-table:not(.pricing-table) td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    width: 172px;
+    min-width: 172px;
+    max-width: 172px;
+    background: #fff;
+    box-shadow: 6px 0 8px -6px rgba(43, 36, 30, 0.16);
+  }
+  .inventory-table-wrap .inventory-table thead th:first-child,
+  .operations-table-scroll .data-table:not(.pricing-table) thead th:first-child {
+    z-index: 4;
+    background: var(--table-head-bg);
+  }
+  /* 悬停底色要跟着走，否则钉住的那一格永远白着，像没选中。 */
+  .operations-table-scroll .data-table:not(.pricing-table) tbody tr:hover td:first-child { background: #f8fbff; }
+  /* 列变窄后，里面的文字要自己截断，不能溢出到右边几列上。 */
+  .inventory-table-wrap .inventory-product { min-width: 0; gap: 8px; }
+  .inventory-table-wrap .inventory-product > div { min-width: 0; }
+  .inventory-table-wrap .inventory-product strong,
+  .inventory-table-wrap .inventory-product small {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .inventory-table-wrap .inventory-product img,
+  .inventory-table-wrap .inventory-no-image { width: 32px; height: 32px; flex: none; }
+  .operations-table-scroll .data-table .operations-product { width: auto; max-width: 100%; }
+  .operations-table-scroll .data-table .product-link { width: auto; max-width: 100%; }
 }
 
 .packing-table-scroll .product-table tbody tr:hover {
@@ -406,6 +548,12 @@ button {
   overflow: auto;
   background: #fff;
   border: 1px solid var(--color-border);
+}
+
+/* 店铺总览只有一两行，撑 360px 会留一大块死白；这里让容器贴着内容。 */
+.inventory-table-wrap--compact {
+  min-height: 0;
+  max-height: none;
 }
 
 .inventory-table {
@@ -569,6 +717,9 @@ button {
 .dashboard-task span, .dashboard-task small { display: block; }
 .dashboard-task span { margin: 3px 0 5px; font-size: 13px; font-weight: 600; }
 .dashboard-task small { color: var(--color-text-secondary); font-size: 11px; line-height: 1.4; }
+/* 说明只有 11px，一行放不下时会在行尾留一个字（"…测算利 / 润"）。
+   balance 让两行长度接近，不再出现这种孤字；不支持时按原样断行。 */
+.dashboard-task small { text-wrap: balance; }
 .dashboard-task b { display: block; margin-top: 5px; color: var(--color-primary); font-size: 11px; }
 .dashboard-task.orange { border-color: #fa8c16; }
 .dashboard-task.blue { border-color: #1677ff; }
@@ -1527,6 +1678,12 @@ table tbody tr:hover {
 .product-list-table-wrapper .pagination-bar {
   overflow-x: auto;
   flex-wrap: wrap;
+}
+
+/* 手机上「到第 N 页 + 跳转」挤到换行，还常常被右边缘切掉；
+   首页/上一页/下一页/尾页已经够用，窄屏就不显示跳页了。 */
+@media (max-width: 700px) {
+  .pagination-jump { display: none !important; }
 }
 
 @media (max-width: 1280px) {

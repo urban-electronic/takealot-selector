@@ -430,7 +430,9 @@ export default function Procurement() {
           <tbody>
             {filteredRecords.map(r => (
               <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                <td style={{ padding: '8px 12px' }}>{r.recorded_at}</td>
+                {/* recorded_at 正常是 date 输入给的 YYYY-MM-DD；老数据里可能带完整 ISO 时间，
+                    直接渲染会在列表里露出一串 T09:00:00Z。只取日期部分。 */}
+                <td style={{ padding: '8px 12px' }}>{(r.recorded_at || '').slice(0, 10)}</td>
                 <td style={{ padding: '8px 12px' }}>{r.product_no}</td>
                 <td style={{ padding: '8px 12px', maxWidth: 360 }} title={r.product_name || ''}>
                   {(() => { const label = productLabels(r.product_name, productNames[r.product_id || '']); return <div className="procurement-product-label"><strong>{label.chinese}{label.features && <span> · {label.features}</span>}</strong><small>{label.english}</small></div>; })()}

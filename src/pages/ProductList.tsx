@@ -9,6 +9,7 @@ import { ProductImage } from '../utils/imageFallback';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
+import { notifyCatalogChanged } from '../utils/catalogEvents';
 
 // --- 列定义 ---
 interface ColumnDef {
@@ -20,7 +21,7 @@ interface ColumnDef {
 const allColumns: ColumnDef[] = [
   { key: 'select', label: '勾选', defaultWidth: 40 },
   { key: 'product_no', label: '#', defaultWidth: 50 },
-  { key: 'link_status', label: '链接状态', defaultWidth: 80 },
+  { key: 'link_status', label: '链接状态', defaultWidth: 104 },
   { key: 'image', label: '图片', defaultWidth: 80 },
   { key: 'product_name', label: '标题', defaultWidth: 200 },
   { key: 'chinese_product_name', label: '中文品名', defaultWidth: 120 },
@@ -359,6 +360,9 @@ export default function ProductList() {
     colKey === 'actual_sale_price_zar' ? Math.max(132, colWidths[colKey] || defaultWidth)
       // SKU 列再窄也留得下 13 位数字 + 复制按钮，否则数字会断成两行。
       : colKey === 'sku' ? Math.max(150, colWidths[colKey] || defaultWidth)
+      // 链接状态下拉要放下「已购买」三个字 + 箭头，80px 时只剩 48px 文本区，
+      // 浏览器会把值裁成「已」，看起来像数据坏了。
+      : colKey === 'link_status' ? Math.max(104, colWidths[colKey] || defaultWidth)
       : colWidths[colKey] || defaultWidth;
 
   // --- 列可见性 ---
@@ -457,13 +461,14 @@ export default function ProductList() {
           if (statusFilter) return p.selection_status === statusFilter;
           return true;
         }));
+      // 中文品名/SKU 变了，装箱单那边得跟着刷新，否则用户以为改动没生效。
+      notifyCatalogChanged([field]);
       return updated;
     } catch (e: any) {
       reportError(e.message);
       return null;
     }
   };
-
   const handleRefreshPrice = async (id: string, source: 'official' | 'seller' = getActiveStoreId() === 'default-store' ? 'seller' : 'official') => {
     window.clearTimeout(refreshTimers.current[id]);
     setRefreshMessages(prev => ({ ...prev, [id]: '' }));
@@ -565,6 +570,8 @@ export default function ProductList() {
       setProducts(prev => prev.map(item => item.id === product.id ? updated : item));
       setSelectedSkus(prev => { const next = new Set(prev); if (next.delete(oldSku)) next.add(nextSku); return next; });
       setVariantEditor(null);
+      // 分支名就是装箱单里那一行的中文名，改完必须让装箱单重新同步。
+      notifyCatalogChanged(['sku', 'chinese_product_name']);
     } catch (e: any) { alert(e.message || '分支保存失败'); }
     finally { variantSavingRef.current = false; setSavingVariant(false); }
   };
@@ -1203,7 +1210,7 @@ export default function ProductList() {
               >
                 上一页
               </button>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+              <span className="pagination-jump" style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
                 到第
                 <input
                   type="text"

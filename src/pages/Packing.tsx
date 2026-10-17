@@ -20,6 +20,7 @@ import {
 } from '../remoteApi';
 import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
 import { safeSetItem } from '../utils/storage';
+import { CATALOG_CHANGED } from '../utils/catalogEvents';
 
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
@@ -72,13 +73,14 @@ function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallba
   }, [api, fallbackUrl, filename]);
 
   if (state === 'loading') {
-    return <span className="packing-noimg">加载中...</span>;
+    return <span className="packing-noimg">加载中</span>;
   }
   if (state === 'empty') {
     return <span className="packing-noimg">待补图</span>;
   }
   if (state === 'failed' || !src) {
-    return <span className="packing-noimg">图加载失败</span>;
+    // 46px 的缩略图里放不下「图加载失败」，换成短文案，完整原因放 title。
+    return <span className="packing-noimg" title="图片加载失败">无图</span>;
   }
   return <img className="packing-img" src={src} alt={alt || filename} loading="lazy" onError={() => setState('failed')} />;
 }
@@ -88,20 +90,26 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-function packingSpec(product: PackingProduct, rows: PackingProduct[]): string {
-  const label = product.variant_label || product.name_zh || '';
-  const direct = label.match(/\b(?:\d+\s*(?:GB|TB)|XXXS|XXS|XS|S|M|L|XL|XXL|XXXL|\d+(?:\.\d+)?\s*(?:cm|mm|inch|英寸|码))\b/i);
-  if (direct) return direct[0].replace(/\s+/g, '').toUpperCase();
-  const color = label.match(/(藏蓝|军绿|卡其|墨绿|深蓝|浅蓝|天蓝|玫红|粉红|黑色|白色|红色|蓝色|绿色|黄色|紫色|粉色|灰色|棕色|咖色|黑|白|红|蓝|绿|黄|紫|粉|灰|棕)$/);
-  if (color) return color[1];
-  const group = rows.filter(row => row.variant_group && row.variant_group === product.variant_group).map(row => row.variant_label || row.name_zh || '');
-  if (group.length > 1) {
-    let prefix = group[0];
-    while (prefix && !group.every(item => item.startsWith(prefix))) prefix = prefix.slice(0, -1);
-    const distinct = label.slice(prefix.length).replace(/^[\s\-_/]+|[\s\-_/]+$/g, '');
-    if (distinct) return distinct.slice(0, 12);
-  }
-  return product.is_primary_variant ? '主款' : '待确认';
+const hasChinese = (text: string) => /[\u3400-\u9fff]/.test(text);
+
+/** 纯尺码/容量（M、2XL、7.0 cm、128GB）本来就不该有中文，不该被标成「待改」。 */
+const SIZE_TOKEN = /^(?:x{0,3}[slm]|[2-6]xl|\d+(?:\.\d+)?\s*(?:cm|mm|m|kg|g|ml|l|gb|tb|inch|pcs|pack|个|只|件|片)|\d+(?:\.\d+)?\s*[x×*]\s*\d+(?:\.\d+)?\s*(?:['\"”″]|cm|mm|inch)?)$/i;
+
+/**
+ * 变体中文名。线上存量里混着「7.0·cm」「Color·daisy」这类历史写法：
+ * 中间点是早期把「值 + 单位」拼在一起留下的，读起来像乱码。
+ * 这里只做显示归一化（中间点变空格、压缩空白），不改库里的值。
+ */
+function variantLabel(product: PackingProduct): string {
+  const raw = (product.variant_label || product.name_zh || '').trim();
+  return raw.replace(/[·・]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** 该不该提示「中文名待改」：没有中文、又确实是文字（不是尺码），才提示。 */
+function needsChineseReview(label: string): boolean {
+  if (!label || hasChinese(label)) return false;
+  if (SIZE_TOKEN.test(label.replace(/\s+/g, ''))) return false;
+  return /[a-z]/i.test(label);
 }
 
 const PACKING_DRAFT_KEY = 'packingDraftV1';
@@ -217,6 +225,25 @@ export default function Packing() {
 
   useEffect(() => {
     loadProducts();
+  }, [loadProducts]);
+
+  // 产品列表里改了中文名/SKU 之后，装箱单不能等整页刷新才变。
+  // catalog:changed 是本标签页内的即时通知；窗口重新获得焦点时兜住其它标签页的改动
+  // （sync 会遍历整个产品库，加 60 秒节流，避免来回切窗口就同步一次）。
+  useEffect(() => {
+    const reload = () => { void loadProducts(); };
+    let lastSync = Date.now();
+    const onFocus = () => {
+      if (Date.now() - lastSync < 60000) return;
+      lastSync = Date.now();
+      reload();
+    };
+    window.addEventListener(CATALOG_CHANGED, reload);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener(CATALOG_CHANGED, reload);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [loadProducts]);
 
   useEffect(() => {
@@ -636,7 +663,7 @@ export default function Packing() {
           <span className="packing-subtitle">
             选择产品、调整数量，生成带图片的装箱单。
             <small>
-            装箱单库 {products.length} 条{catalogStats ? ` / 产品库 ${catalogStats.total} 条` : ''} · 本次已选 {selectedRows.length} 条
+            装箱单库 {products.length} 条{catalogStats ? ` / 产品库 ${catalogStats.total ?? '—'} 条` : ''} · 本次已选 {selectedRows.length} 条
             {selectedRows.length > 0 && <>（共 {totalCartons} 箱 / {totalCount} 件）</>}
             </small>
           </span>
@@ -686,7 +713,7 @@ export default function Packing() {
       <div className="packing-library-column">
       {/* 装箱单库 */}
       <div className="card packing-library-card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div className="packing-library-head">
           <div>
             <h3 style={{ margin: 0 }}>产品资料</h3>
             <div className="packing-section-note">中文、英文与 SKU 独立展示，支持搜索与多选。</div>
@@ -731,65 +758,81 @@ export default function Packing() {
           </div>
         ) : (
           <div className="packing-table-scroll">
-            <table className="product-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table className="product-table packing-table">
+              <colgroup>
+                <col style={{ width: 36 }} />
+                <col style={{ width: 58 }} />
+                <col style={{ width: 150 }} />
+                <col />
+                <col style={{ width: 148 }} />
+              </colgroup>
               <thead>
-                <tr style={{ borderBottom: '2px solid var(--color-border)', textAlign: 'left' }}>
-                  <th style={{ padding: '8px 10px', width: 40 }}></th>
-                  <th style={{ padding: '6px 8px', width: 60 }}>图片</th>
-                  <th style={{ padding: '8px 10px' }}>SKU</th>
-                  <th style={{ padding: '8px 10px' }}>产品名称</th>
-                  <th style={{ padding: '8px 10px', width: 230 }}>产品属性</th>
-                  <th style={{ padding: '6px 8px', width: 142 }}>操作</th>
+                <tr>
+                  <th aria-label="选择" />
+                  <th>图片</th>
+                  <th>SKU</th>
+                  <th>产品名称</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleProducts.map(p => {
                   const groupCount = p.variant_group ? products.filter(row => row.variant_group === p.variant_group).length : 0;
+                  const isVariant = Boolean(p.variant_group);
+                  // 多规格行的中文名只是定语（棕色 / 2XL），整串商品名在英文那行；
+                  // 单规格行的中文名就是全名。两者不要互相顶替。
+                  const zh = isVariant ? variantLabel(p) : (p.name_zh || p.name_en || '-');
+                  const zhNeedsReview = isVariant && needsChineseReview(zh);
+                  const attrs = [
+                    p.unit || '个',
+                    p.weight ? `${p.weight} kg` : '',
+                    p.material,
+                    p.electric === '是' ? '带电' : '',
+                    p.magnetic === '是' ? '含磁' : '',
+                  ].filter(Boolean);
                   return (
-                  <tr key={p.sku} onContextMenu={e => { e.preventDefault(); setContextMenu({ sku: p.sku, x: e.clientX, y: e.clientY }); }} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                    <td style={{ padding: '8px 10px', textAlign: 'center' }}>
+                  <tr key={p.sku} onContextMenu={e => { e.preventDefault(); setContextMenu({ sku: p.sku, x: e.clientX, y: e.clientY }); }} className={isVariant ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : undefined}>
+                    <td className="packing-col-pick">
                       <input
                         type="checkbox"
+                        aria-label={`选择 ${p.sku}`}
                         checked={selected.has(p.sku)}
                         onChange={() => toggleSelect(p.sku)}
-                        style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)' }}
                       />
                     </td>
-                    <td style={{ padding: '8px 10px' }}>
-                      <div style={{ width: 46, height: 46, border: '1px solid var(--color-border)', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <td className="packing-col-image">
+                      <div className="packing-thumb">
                         <PackingImage filename={p.image_file} fallbackUrl={p.source_image_url} alt={p.sku} />
                       </div>
                     </td>
-                    <td style={{ padding: '8px 10px', fontWeight: 600 }}>
-                      {p.variant_group && <span className={p.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{p.is_primary_variant ? '主' : '分支'}</span>}
-                      {p.sku}
-                      {p.variant_group && <span className="packing-spec-box">{packingSpec(p, products)}</span>}
+                    <td className="packing-col-sku">
+                      {isVariant && <span className={p.is_primary_variant ? 'variant-role primary' : 'variant-role'}>{p.is_primary_variant ? '主' : '分支'}</span>}
+                      <span className="packing-sku" translate="no">{p.sku}</span>
                     </td>
-                    <td style={{ padding: '8px 10px' }}>
-                      <strong className="packing-product-name">{p.name_zh || p.name_en || '-'}</strong>
-                      {p.name_en && p.name_en !== p.name_zh && <small className="packing-product-en">{p.name_en}</small>}
-                    </td>
-                    <td style={{ padding: '8px 10px' }}>
-                      <div className="packing-attribute-list">
-                        <span>{p.unit || '个'}</span>
-                        {p.weight && <span>{p.weight} kg</span>}
-                        {p.material && <span>{p.material}</span>}
-                        {p.electric && <span>带电 {p.electric}</span>}
-                        {p.magnetic && <span>含磁 {p.magnetic}</span>}
+                    <td className="packing-col-name">
+                      <div className="packing-name-row">
+                        <strong className="packing-product-name" title={zh}>{zh}</strong>
+                        {zhNeedsReview && <span className="packing-name-flag" title="中文字段不是中文，请回产品列表修正">中文名待改</span>}
+                        {isVariant && p.is_primary_variant && groupCount > 1 && (
+                          <button
+                            type="button" className="packing-expand-link"
+                            aria-expanded={expandedGroups.has(p.variant_group!)}
+                            onClick={() => { const groupId = p.variant_group!; setExpandedGroups(prev => { const next = new Set(prev); if (next.has(groupId)) next.delete(groupId); else next.add(groupId); return next; }); }}
+                          >{expandedGroups.has(p.variant_group!) ? '收起规格' : `展开 ${groupCount} 个规格`}</button>
+                        )}
+                      </div>
+                      {p.name_en && p.name_en !== zh && <small className="packing-product-en" title={p.name_en}>{p.name_en}</small>}
+                      <div className="packing-attr-line">
+                        {attrs.map((a, i) => <span key={i} className={a === '带电' || a === '含磁' ? 'is-flag' : ''}>{a}</span>)}
                       </div>
                     </td>
-                    <td className="packing-row-actions" style={{ padding: '8px 10px' }}>
-                      {p.variant_group && p.is_primary_variant && groupCount > 1 && <button className="btn btn-sm packing-expand-btn" onClick={() => { const groupId = p.variant_group!; setExpandedGroups(prev => { const next = new Set(prev); if (next.has(groupId)) next.delete(groupId); else next.add(groupId); return next; }); }}>{expandedGroups.has(p.variant_group) ? '收起' : `展开 ${groupCount} 个规格`}</button>}
-                      <button className="btn btn-sm" onClick={() => openEdit(p)} style={{ marginRight: 4 }}>编辑</button>
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => fileInputRefs.current[p.sku]?.click()}
-                        style={{ marginRight: 4 }}
-                      >
+                    <td className="packing-col-actions">
+                      <button className="btn btn-sm" onClick={() => openEdit(p)}>编辑</button>
+                      <button className="btn btn-sm" onClick={() => fileInputRefs.current[p.sku]?.click()}>
                         {p.image_file || p.source_image_url ? '换图' : '传图'}
                       </button>
                       {p.image_file && (
-                        <button className="btn btn-sm" onClick={() => clearImage(p.sku)} style={{ marginRight: 4 }}>删图</button>
+                        <button className="btn btn-sm" onClick={() => clearImage(p.sku)}>删图</button>
                       )}
                       <input
                         ref={el => { fileInputRefs.current[p.sku] = el; }}
@@ -836,7 +879,10 @@ export default function Packing() {
                   return (
                     <div className="packing-selected-item" key={p.sku}>
                       <div className="packing-selected-item-head">
-                        <div><strong>{p.name_zh || p.name_en || '-'}</strong><small>{p.sku}</small>
+                        <div>
+                          <strong title={p.name_en}>{p.variant_group ? variantLabel(p) : (p.name_zh || p.name_en || '-')}</strong>
+                          {p.name_en && <small className="packing-selected-en" title={p.name_en}>{p.name_en}</small>}
+                          <small>{p.sku}</small>
                           <small>{inventoryState === 'loading' ? '库存读取中…' : inventoryState === 'failed' ? '库存读取失败' : inventoryBySku[p.sku] ? `本地可用 ${inventoryBySku[p.sku].available} 件 · 在途 ${inventoryBySku[p.sku].in_transit} 件` : '该 SKU 未建库存'}</small>
                         </div>
                         <button className="packing-remove-btn" onClick={() => toggleSelect(p.sku)} title="从本次装箱单移除">×</button>
