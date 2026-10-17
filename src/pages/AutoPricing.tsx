@@ -228,13 +228,30 @@ export default function AutoPricing() {
     : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
   const nextIn = loop?.next_due_in;
   // 一轮实测耗时 vs 设定间隔。这两个数一比就能回答「为什么一直在延迟」：
-  // 28 个 SKU 串行采、每个十几秒，实际一轮远超 5 分钟——那延迟不是故障，
-  // 是排期本身排不下。不说清楚，用户只会以为程序卡住了。
+  // 28 个 SKU 串行采、每个十几秒，实际一轮可能把 5 分钟的间隔占满——那延迟
+  // 不是故障，是排期本身就紧。不说清楚，用户只会以为程序卡住了。
   const roundMinutes = loop?.round_seconds ? Math.round(loop.round_seconds / 6) / 10 : null;
-  const overCapacity = roundMinutes != null && loop?.interval_minutes != null && roundMinutes > loop.interval_minutes;
+  // 上一轮可能只轮到 4 个 SKU，拿这 4 个的耗时当整轮会得出「排得下」的假结论。
+  // 按每个 SKU 的均摊时间乘上在采数量外推，才是整轮的真实长度。
+  const perSku = loop?.seconds_per_sku
+    ?? (loop?.round_seconds && loop?.round_jobs ? Math.round(loop.round_seconds / loop.round_jobs * 10) / 10 : null);
+  const fullMinutes = perSku && loop?.enabled ? Math.round(perSku * loop.enabled / 6) / 10 : null;
+  const roundEstimate = Math.max(roundMinutes ?? 0, fullMinutes ?? 0) || null;
+  const overCapacity = roundEstimate != null && loop?.interval_minutes != null && roundEstimate > loop.interval_minutes;
+  const tight = !overCapacity && roundEstimate != null && loop?.interval_minutes != null
+    && roundEstimate > loop.interval_minutes * 0.8;
+  const measuredText = roundMinutes == null
+    ? (fullMinutes != null ? `按 ${loop?.enabled} 个在采算，整轮约 ${fullMinutes} 分钟` : '')
+    // 上一轮只轮到 4 个 SKU 时，说「一轮 0.5 分钟」是假话：那是 4 个的耗时，不是整轮。
+    : loop?.round_jobs && loop?.enabled && fullMinutes != null && loop.round_jobs < loop.enabled
+      ? `上一轮只采了 ${loop.round_jobs}/${loop.enabled} 个，花了 ${roundMinutes} 分钟（每个 ${perSku} 秒），整轮约 ${fullMinutes} 分钟`
+      : `一轮实测 ${roundMinutes} 分钟（${loop?.round_jobs ?? '?'} 个 SKU${perSku ? `，每个 ${perSku} 秒` : ''}）`;
+  const roundText = measuredText;
   const capacityNote = overCapacity
-    ? `一轮实测 ${roundMinutes} 分钟（${loop.round_jobs ?? '?'} 个 SKU），比设定间隔 ${loop.interval_minutes} 分钟长，循环排得比跑得完的更快`
-    : roundMinutes != null ? `一轮实测 ${roundMinutes} 分钟，间隔 ${loop?.interval_minutes ?? '?'} 分钟，排得下` : '';
+    ? `${roundText}，比设定间隔 ${loop.interval_minutes} 分钟长，循环排得比跑得完的更快`
+    : tight
+      ? `${roundText}，几乎占满 ${loop.interval_minutes} 分钟间隔——任何一个 SKU 变慢，下一轮立刻逾期`
+      : roundText ? `${roundText}，间隔 ${loop?.interval_minutes ?? '?'} 分钟，排得下` : '';
   // 逾期要说逾期，还要说清逾期到哪一步了：是「还没轮到」还是「已经在补跑」。
   const nextText = nextIn == null ? '—'
     : nextIn > 60 ? `约 ${Math.round(nextIn / 60)} 分钟后`
@@ -281,12 +298,12 @@ export default function AutoPricing() {
         <span className="is-live"><b>{loop?.running ?? 0}</b> 进行中</span>
         <span className="loop-next" title={nextHint}>下一轮 {nextText}</span>
       </div>
-      {(failing.length>0||overCapacity)&&<div className="loop-notes">
+      {(failing.length>0||overCapacity||tight)&&<div className="loop-notes">
         {failing.length>0&&<div className="loop-failing">
           <span>需处理 {failing.length} 个：</span>
           {failing.map(r=><button type="button" key={key(r)} onClick={()=>focusSku(r.sku)} title={errorCopy(r.monitor?.error_code, r.monitor?.error).title}>{r.sku}</button>)}
         </div>}
-        {overCapacity&&<p className="loop-capacity">{capacityNote}。把间隔调到 {Math.ceil((roundMinutes??0)/5)*5} 分钟以上，循环才追得上。</p>}
+        {(overCapacity||tight)&&<p className={`loop-capacity${overCapacity?'':' is-tight'}`}>{capacityNote}{overCapacity?`。把间隔调到 ${Math.ceil((roundEstimate??0)/5)*5} 分钟以上，循环才追得上。`:''}</p>}
       </div>}
     </section>}
 

@@ -10,6 +10,8 @@ const dom = new JSDOM('<div id="root"></div>', { url: 'https://example.invalid' 
 for (const name of ['window','document','navigator','HTMLElement','Node','Event'])
   Object.defineProperty(globalThis, name, { value: dom.window[name], configurable: true });
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+// jsdom 不实现滚动。点 SKU 会滚到表格那一行，这里补个空实现，免得异常噪声盖住断言。
+dom.window.Element.prototype.scrollIntoView = function () {};
 const React = require('react');
 const { act } = React;
 const { createRoot } = require('react-dom/client');
@@ -131,7 +133,19 @@ async function scenario(monitor, inspect, overrides = {}) {
   await scenario({ ...known, status: 'success' }, () => {
     check(!host.querySelector('.loop-capacity'), 'a round that fits the interval produces no capacity warning');
   });
-  loopFixture = { ...loopFixture, round_seconds: null, round_jobs: null };
+  // 上一轮可能只轮到 4 个 SKU。拿这 4 个的耗时当整轮会得出「排得下」的假结论，
+  // 而线上真实的 28 个在采、每个 10.4 秒，整轮已经快占满 5 分钟间隔了。
+  loopFixture = { ...loopFixture, next_due_in: -38, due_now: 4, interval_minutes: 5,
+    round_seconds: 41.7, round_jobs: 4, seconds_per_sku: 10.4, enabled: 28 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('整轮约 4.9 分钟'), 'a partial round is extrapolated to the whole fleet');
+    check(strip.textContent.includes('几乎占满'), 'a round that barely fits explains the chronic lateness');
+    check(!!strip.querySelector('.loop-capacity.is-tight'), 'the tight-fit note is shown, not the over-capacity one');
+    check(!strip.textContent.includes('排得比跑得完的更快'), 'a round that fits is not described as over capacity');
+  });
+  loopFixture = { ...loopFixture, enabled: 1, next_due_in: 130 };
+  loopFixture = { ...loopFixture, round_seconds: null, round_jobs: null, seconds_per_sku: null };
   // 荒谬的延迟不许原样印出来。线上出现过「已延迟 2987107 分钟」——
   // 那是后端把 next_due=0 当时间戳算出来的，精确到分钟是假精确。
   loopFixture = { ...loopFixture, next_due_in: -1792265800 };
@@ -144,13 +158,16 @@ async function scenario(monitor, inspect, overrides = {}) {
   // 轨道只给颜色，用户没法知道红的是哪个 SKU。这里必须点名，并且能一键筛出来。
   // enabled:true 是线上真实行必带的字段；缺了它这条就退化成「已关闭的 SKU」，
   // 而「已关闭的 SKU 上残留的旧错误」本来就不该算进需处理——那是另一条规则。
-  await scenario({ ...known, status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
+  await scenario({ ...known, status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, async tr => {
     const strip = host.querySelector('.loop-strip');
     const named = strip.querySelector('.loop-failing button');
     check(!!named && named.textContent === 'test-sku', 'the failing cell is named by SKU, not just coloured red');
     check(strip.querySelectorAll('.loop-cell.is-bad').length === 1, 'the failing SKU is the red cell');
     check(!!strip.querySelector('.loop-cell.is-bad .loop-cell-hit'), 'the red cell itself is clickable');
     check(!strip.querySelector('.loop-cell.is-ok .loop-cell-hit'), 'healthy cells are not extra tab stops');
+    // 点名要能直接跳到那一行，否则还是得自己去 279 行里找。
+    await act(async () => named.click());
+    check(host.querySelector('input[aria-label="搜索调价商品"]').value === 'test-sku', 'clicking the name filters the table to that SKU');
   });
   // 已经停采的 SKU 身上留着上次的报错，不算「需处理」。否则上面那个数字会永久虚高，
   // 而且点进去发现是个自己关掉的 SKU，等于把人支使了一趟。

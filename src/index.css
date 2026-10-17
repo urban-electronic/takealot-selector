@@ -2132,6 +2132,8 @@ table tbody tr:hover { background: #f8fafc; }
 }
 .loop-failing button:hover, .loop-failing button:focus-visible { background: rgba(176, 48, 63, 0.14); }
 .loop-capacity { flex: 1 1 100%; margin: 0; font-size: var(--fs-label); line-height: 1.6; color: var(--warning-strong); }
+/* 「排得下但快占满」不是故障，别用警告色喊；它只是解释为什么下一轮老是晚几分钟。 */
+.loop-capacity.is-tight { color: var(--text-muted); }
 
 @keyframes loop-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
