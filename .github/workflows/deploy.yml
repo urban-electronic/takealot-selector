@@ -27,6 +27,10 @@ jobs:
         run: npm run test:buybox
       - name: Check product interactions and dialog keyboard safety
         run: npm run test:products
+      - name: Check inventory actions
+        run: npm run test:inventory
+      - name: Check product image fallback
+        run: npm run test:images
       - name: Build
         run: npm run build
         env:
