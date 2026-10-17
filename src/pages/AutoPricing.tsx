@@ -227,14 +227,33 @@ export default function AutoPricing() {
     : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
     : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
   const nextIn = loop?.next_due_in;
-  // 逾期要说逾期。一直显示"马上开始"会掩盖循环跟不上——那正是需要人介入的时候。
+  // 一轮实测耗时 vs 设定间隔。这两个数一比就能回答「为什么一直在延迟」：
+  // 28 个 SKU 串行采、每个十几秒，实际一轮远超 5 分钟——那延迟不是故障，
+  // 是排期本身排不下。不说清楚，用户只会以为程序卡住了。
+  const roundMinutes = loop?.round_seconds ? Math.round(loop.round_seconds / 6) / 10 : null;
+  const overCapacity = roundMinutes != null && loop?.interval_minutes != null && roundMinutes > loop.interval_minutes;
+  const capacityNote = overCapacity
+    ? `一轮实测 ${roundMinutes} 分钟（${loop.round_jobs ?? '?'} 个 SKU），比设定间隔 ${loop.interval_minutes} 分钟长，循环排得比跑得完的更快`
+    : roundMinutes != null ? `一轮实测 ${roundMinutes} 分钟，间隔 ${loop?.interval_minutes ?? '?'} 分钟，排得下` : '';
+  // 逾期要说逾期，还要说清逾期到哪一步了：是「还没轮到」还是「已经在补跑」。
   const nextText = nextIn == null ? '—'
     : nextIn > 60 ? `约 ${Math.round(nextIn / 60)} 分钟后`
     : nextIn >= 0 ? `${nextIn} 秒后`
     : nextIn > -120 ? '马上开始'
     // 超过一小时就不报精确分钟了：那说明排期本身有问题，精确到分钟是假精确。
-    : nextIn > -3600 ? `已延迟 ${Math.round(-nextIn / 60)} 分钟`
-    : '已延迟超过 1 小时';
+    : nextIn > -3600 ? `已到期 ${Math.round(-nextIn / 60)} 分钟` + (loop?.due_now > 0 ? ` · ${loop.due_now} 个在排队` : '')
+    : '排期已过期 1 小时以上';
+  const nextHint = nextIn != null && nextIn < -120
+    ? `最早该开始的那一轮比计划晚了 ${Math.abs(Math.round(nextIn / 60))} 分钟。` + capacityNote
+    : capacityNote;
+  // 红的是哪个：循环轨道只给颜色，这里把失败的 SKU 直接点名，点一下就筛出那一行。
+  // 只算「在采的」那些：关掉的 SKU 身上留着的旧错误不该被算成当前要处理的事，
+  // 否则上面的数字和下面点名的列表会对不上。
+  const failing = rows.filter(r => r.monitor?.status === 'error' && (r.monitor?.enabled || r.monitor?.request_once));
+  const focusSku = (sku: string) => {
+    setSearch(sku); setPage(1);
+    document.querySelector('.operations-table-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" disabled={refreshing} aria-busy={refreshing} onClick={()=>{void refresh();}}>刷新列表</button></div>
 
@@ -248,14 +267,27 @@ export default function AutoPricing() {
         </div>
       </div>
       <ol className="loop-track" aria-hidden="true">
-        {rows.map(r=><li key={key(r)} className={`loop-cell is-${cellState(r)}`} title={`${r.sku} · ${cellLabel(r)}`} />)}
+        {rows.map(r=>{
+          const state=cellState(r); const label=`${r.sku} · ${cellLabel(r)}`;
+          // 只有失败/未开启的格子可点：正常的不需要点，28 个 tab 停靠点反而碍事。
+          return (state==='bad'||state==='off')
+            ? <li key={key(r)} className={`loop-cell is-${state}`}><button type="button" className="loop-cell-hit" aria-label={label} title={label} onClick={()=>focusSku(r.sku)} /></li>
+            : <li key={key(r)} className={`loop-cell is-${state}`} title={label} />;
+        })}
       </ol>
       <div className="loop-facts">
         <span className="is-ok"><b>{loop?.success ?? 0}</b> 已采到</span>
-        <span className={loop?.error ? 'is-bad' : ''}><b>{loop?.error ?? 0}</b> 需处理</span>
+        <span className={failing.length ? 'is-bad' : ''}><b>{failing.length}</b> 需处理</span>
         <span className="is-live"><b>{loop?.running ?? 0}</b> 进行中</span>
-        <span className="loop-next">下一轮 {nextText}</span>
+        <span className="loop-next" title={nextHint}>下一轮 {nextText}</span>
       </div>
+      {(failing.length>0||overCapacity)&&<div className="loop-notes">
+        {failing.length>0&&<div className="loop-failing">
+          <span>需处理 {failing.length} 个：</span>
+          {failing.map(r=><button type="button" key={key(r)} onClick={()=>focusSku(r.sku)} title={errorCopy(r.monitor?.error_code, r.monitor?.error).title}>{r.sku}</button>)}
+        </div>}
+        {overCapacity&&<p className="loop-capacity">{capacityNote}。把间隔调到 {Math.ceil((roundMinutes??0)/5)*5} 分钟以上，循环才追得上。</p>}
+      </div>}
     </section>}
 
     {loaded&&<div className={`collection-bar tone-${fleet.tone}`}>

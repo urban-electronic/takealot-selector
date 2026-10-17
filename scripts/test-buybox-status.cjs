@@ -112,22 +112,54 @@ async function scenario(monitor, inspect, overrides = {}) {
   loopFixture = { ...loopFixture, paused_by: null };
   // 逾期必须说逾期。一直显示"马上开始"会把"循环跟不上"藏起来，
   // 而这恰恰是最需要人介入的时刻。
-  loopFixture = { ...loopFixture, next_due_in: -400 };
+  loopFixture = { ...loopFixture, next_due_in: -400, due_now: 3 };
   await scenario({ ...known, status: 'success' }, () => {
     const strip = host.querySelector('.loop-strip');
-    check(strip.textContent.includes('已延迟 7 分钟'), 'an overdue cycle is reported instead of masked as starting soon');
+    check(strip.textContent.includes('已到期 7 分钟'), 'an overdue cycle is reported instead of masked as starting soon');
+    check(strip.textContent.includes('3 个在排队'), 'overdue says how many are actually waiting');
     check(!strip.textContent.includes('马上开始'), 'overdue is never described as "starting right away"');
   });
+  // 延迟的真正原因要能看出来：一轮实测耗时比设定间隔长时，必须明说排期排不下。
+  loopFixture = { ...loopFixture, next_due_in: -400, due_now: 3, interval_minutes: 5, round_seconds: 492, round_jobs: 28 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('一轮实测 8.2 分钟'), 'the measured round duration is stated');
+    check(strip.textContent.includes('排得比跑得完的更快'), 'the cause of the backlog is named, not just the symptom');
+    check(strip.textContent.includes('调到 10 分钟以上'), 'the fix is an actionable interval suggestion');
+  });
+  loopFixture = { ...loopFixture, round_seconds: 60, round_jobs: 4 };
+  await scenario({ ...known, status: 'success' }, () => {
+    check(!host.querySelector('.loop-capacity'), 'a round that fits the interval produces no capacity warning');
+  });
+  loopFixture = { ...loopFixture, round_seconds: null, round_jobs: null };
   // 荒谬的延迟不许原样印出来。线上出现过「已延迟 2987107 分钟」——
   // 那是后端把 next_due=0 当时间戳算出来的，精确到分钟是假精确。
   loopFixture = { ...loopFixture, next_due_in: -1792265800 };
   await scenario({ ...known, status: 'success' }, () => {
     const strip = host.querySelector('.loop-strip');
-    check(strip.textContent.includes('已延迟超过 1 小时'), 'an absurd delay is capped instead of printed verbatim');
+    check(strip.textContent.includes('排期已过期 1 小时以上'), 'an absurd delay is capped instead of printed verbatim');
     check(!/\d{5,}/.test(strip.textContent), 'no five-digit minute count ever reaches the strip');
   });
   loopFixture = { ...loopFixture, next_due_in: 130 };
-  await scenario({ ...known, status: 'error', error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
+  // 轨道只给颜色，用户没法知道红的是哪个 SKU。这里必须点名，并且能一键筛出来。
+  // enabled:true 是线上真实行必带的字段；缺了它这条就退化成「已关闭的 SKU」，
+  // 而「已关闭的 SKU 上残留的旧错误」本来就不该算进需处理——那是另一条规则。
+  await scenario({ ...known, status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
+    const strip = host.querySelector('.loop-strip');
+    const named = strip.querySelector('.loop-failing button');
+    check(!!named && named.textContent === 'test-sku', 'the failing cell is named by SKU, not just coloured red');
+    check(strip.querySelectorAll('.loop-cell.is-bad').length === 1, 'the failing SKU is the red cell');
+    check(!!strip.querySelector('.loop-cell.is-bad .loop-cell-hit'), 'the red cell itself is clickable');
+    check(!strip.querySelector('.loop-cell.is-ok .loop-cell-hit'), 'healthy cells are not extra tab stops');
+  });
+  // 已经停采的 SKU 身上留着上次的报错，不算「需处理」。否则上面那个数字会永久虚高，
+  // 而且点进去发现是个自己关掉的 SKU，等于把人支使了一趟。
+  await scenario({ ...known, status: 'error', enabled: false, error: '网站验证阻挡', error_code: 'site_challenge' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(!strip.querySelector('.loop-failing'), 'a stopped SKU keeps its red cell but is not counted as work to do');
+    check(!!strip.querySelector('.loop-cell.is-off'), 'a stopped SKU is drawn as not collecting');
+  });
+  await scenario({ ...known, status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
     check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');
     check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
   });

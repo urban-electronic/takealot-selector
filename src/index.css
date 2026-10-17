@@ -2112,6 +2112,27 @@ table tbody tr:hover { background: #f8fafc; }
 .loop-facts .is-live b { color: var(--link-strong); }
 .loop-next { color: var(--text-muted); }
 
+/* 红色格子必须能回答「红的是哪一个」。轨道只给颜色，这里点名到 SKU：
+ * 点一下就把表格筛到那一行——不用在 28 个格子里挨个悬停找。 */
+.loop-cell { position: relative; }
+.loop-cell-hit {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer;
+}
+.loop-cell-hit:focus-visible { outline: 2px solid var(--link-strong); outline-offset: 1px; }
+.loop-cell:has(.loop-cell-hit):hover { box-shadow: 0 0 0 2px rgba(176, 48, 63, 0.28); }
+
+.loop-notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px;
+  margin-top: -4px; padding-top: 8px; border-top: 1px dashed var(--surface-border); }
+.loop-failing { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: var(--fs-label); color: var(--text-muted); }
+.loop-failing button {
+  padding: 1px 7px; border: 1px solid rgba(176, 48, 63, 0.28); border-radius: 999px;
+  background: rgba(176, 48, 63, 0.06); color: var(--danger-strong);
+  font: inherit; font-size: var(--fs-label); font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.loop-failing button:hover, .loop-failing button:focus-visible { background: rgba(176, 48, 63, 0.14); }
+.loop-capacity { flex: 1 1 100%; margin: 0; font-size: var(--fs-label); line-height: 1.6; color: var(--warning-strong); }
+
 @keyframes loop-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 @media (max-width: 980px) {

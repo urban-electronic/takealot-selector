@@ -143,6 +143,10 @@ def start_worker():
                         value=json.loads(row.value)
                         if not (value.get('web_requested') and not value.get('enabled')) and (value.get('enabled') or value.get('request_once')) and value.get('next_due',0)<=time.time(): jobs.append((value.get('next_due',0),row.key))
                     _record_cycle(db, len(jobs), None)
+                # 一轮到底要跑多久，必须记下来。28 个 SKU 串行采、每个十几秒，
+                # 实际一轮可能远超用户设的 5 分钟间隔——那时「下一轮已延迟」
+                # 不是故障，是排期本身排不下。不测这个数就只能猜。
+                round_started=time.time()
                 # Two bounded jobs; never open an unbounded browser fleet.
                 with ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read') as pool:
                     pending=set()
@@ -155,6 +159,9 @@ def start_worker():
                         pending.add(pool.submit(process,key))
                         if _stop.wait(2): break
                     for future in pending: future.result()
+                if jobs:
+                    with SessionLocal() as db:
+                        _record_round_seconds(db, time.time()-round_started, len(jobs))
             except Exception:
                 print('Buybox collection worker unavailable; retry scheduled',flush=True)
             _stop.wait(10)
@@ -183,6 +190,19 @@ def _record_cycle(db, jobs, paused_by):
         value.update(alive_at=time.time(), cycles=int(value.get('cycles',0))+1,
                      last_cycle_at=datetime.now(timezone.utc).isoformat(),
                      last_jobs=jobs, paused_by=paused_by)
+        if row: row.value=json.dumps(value,ensure_ascii=False)
+        else: db.add(SystemSettings(key=WORKER_STATE,value=json.dumps(value,ensure_ascii=False)))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _record_round_seconds(db, seconds, jobs):
+    """记下「采 N 个 SKU 实际花了多久」。只保留最近一次，够用来判断排期是否排得下。"""
+    try:
+        row=db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
+        value=json.loads(row.value) if row else {}
+        value.update(round_seconds=round(seconds,1), round_jobs=jobs, round_at=datetime.now(timezone.utc).isoformat())
         if row: row.value=json.dumps(value,ensure_ascii=False)
         else: db.add(SystemSettings(key=WORKER_STATE,value=json.dumps(value,ensure_ascii=False)))
         db.commit()
@@ -225,6 +245,12 @@ def loop_status(db, store=DEFAULT_STORE_ID):
         'error': len([m for m in enabled if m.get('status')=='error']),
         'interval_minutes': max(set(intervals),key=intervals.count) if intervals else None,
         'next_due_in': int(min(dues)-now) if dues else None,
+        # 上一轮实测耗时 + 设定间隔：两者一比就知道「延迟」是故障还是排期排不下。
+        'round_seconds': state.get('round_seconds'),
+        'round_jobs': state.get('round_jobs'),
+        # 每个 SKU 平均多少秒。界面用它解释「为什么一轮跑不完」。
+        'seconds_per_sku': round(state['round_seconds']/state['round_jobs'],1)
+            if state.get('round_seconds') and state.get('round_jobs') else None,
         'last_attempt_at': max([m.get('last_attempt_at') or '' for m in enabled],default='') or None,
     }
 
