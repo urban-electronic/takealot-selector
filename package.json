@@ -11,9 +11,11 @@
     "test:inventory": "node scripts/test-inventory-actions.cjs && node scripts/test-inventory-actions-edge.cjs",
     "test:products": "node scripts/test-product-pagination.cjs",
     "test:buybox": "node scripts/test-buybox-status.cjs",
+    "test:images": "node scripts/test-product-image.cjs",
     "test:audit-safety": "python scripts/test-ui-audit-safety.py",
     "check:visual": "node scripts/check-visual-consistency.cjs",
-    "check": "npm run check:visual"
+    "check:types": "tsc --noEmit",
+    "check": "npm run check:types && npm run check:visual && npm run test:audit-safety && npm run test:buybox && npm run test:products && npm run test:inventory && npm run test:images"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
