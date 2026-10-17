@@ -29,11 +29,11 @@ const Page = compiled.exports.default;
 const host = document.getElementById('root');
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
-const row = monitor => ({ product_id: 'p', offer_id: 'o', sku: 'test-sku', name: 'Test product', price: 269,
+const row = monitor => ({ product_id: 'p', offer_id: 'o', sku: 'test-sku', name: 'Test product', chinese_name:'测试商品', name_status:'ok', price: 269,
   stock: 11, group: '未分类', url: 'https://example.invalid/product', suggested_min: 170,
   rule: { enabled: false, use_system_min: true }, monitor });
-async function scenario(monitor, inspect) {
-  fixture = [row(monitor)];
+async function scenario(monitor, inspect, overrides = {}) {
+  fixture = [{...row(monitor), ...overrides}];
   const root = createRoot(host);
   try {
     await act(async () => root.render(React.createElement(Page)));
@@ -45,6 +45,8 @@ async function scenario(monitor, inspect) {
     last_success_at: '2026-10-15T01:58:09Z', source: 'cloud_browser',
     snapshot: { buyboxSeller: 'Urban Electronics' } };
   await scenario({ ...known, status: 'queued' }, tr => {
+    check(tr.textContent.includes('测试商品'), 'Chinese name is displayed separately');
+    check(tr.textContent.includes('英文名：Test product'), 'English title remains labelled');
     check(tr.textContent.includes('R 269'), 'queued job retains last valid quote');
     check(tr.textContent.includes('卖家：Urban Electronics'), 'actual quoted seller is visible');
     check(tr.textContent.includes('历史同价 · 推定持有'), 'historical comparison is inferred rather than freshly verified');
@@ -91,6 +93,14 @@ async function scenario(monitor, inspect) {
   await scenario({ ...known, status:'paused', enabled:false }, tr => {
     check(tr.querySelector('.collection-status-cell').textContent.includes('已停采'), 'paused work is not labelled manual collection');
   });
+  await scenario({status:'success'}, tr => {
+    check(tr.querySelector('.product-link').textContent==='中文名待核对', 'English never fills the Chinese display');
+    check(tr.textContent.includes('中文字段为非中文，请修正'), 'invalid Chinese field is actionable');
+    check(tr.textContent.includes('英文名：Test product'), 'original English name is preserved');
+  }, {chinese_name:null,name_status:'invalid'});
+  await scenario({status:'success'}, tr => {
+    check(tr.textContent.includes('SKU与中文名对应不明确'), 'ambiguous variant mapping is visible');
+  }, {chinese_name:null,name_status:'ambiguous'});
   check(writes === 0, 'rendering never triggers a mutation');
   console.log(`PASS ${checks} Buybox page assertions (jsdom, isolated API)`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => dom.window.close());

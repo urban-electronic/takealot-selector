@@ -82,6 +82,7 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     groups = {r.key: json.loads(r.value).get('group', '') for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
     from services.collection_diagnostics import displayed_monitor
     monitors = {r.key: displayed_monitor(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
+    from services.product_names import chinese_name
     rows = []
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         setting = db.query(SystemSettings).filter(SystemSettings.key == f'operations_profile:{store}:{p.id}').first()
@@ -97,8 +98,9 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
             price, stock = _own_metrics(profile, offer, rule)
             if rule.get('holding_buybox') is True and not rule.get('holding_verified'):
                 rule = {**rule, 'holding_buybox':None, 'price_matches_buybox':True}
+            cn, name_status = chinese_name(p, offer['sku'])
             rows.append(dict(product_id=p.id, product_no=p.product_no, offer_id=offer['id'], sku=offer['sku'],
-                name=offer.get('title') or p.product_name, url=p.takealot_url, price=price,
+                name=offer.get('title') or p.product_name, chinese_name=cn, name_status=name_status, url=p.takealot_url, price=price,
                 stock=stock, suggested_min=suggested_min,
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
