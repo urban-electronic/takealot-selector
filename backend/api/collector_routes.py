@@ -163,7 +163,18 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         relayed_at=relay_observation_time(item,now) if relayed else None
         from services.collection_diagnostics import classify,safe_url
         raw=item.get('diagnostics') or {}
-        diagnostics={k:raw[k] for k in ('http_status','buybox_cards','variant_controls') if k in raw} if isinstance(raw,dict) else {}
+        # 不再用固定白名单。原来的三元白名单会把采集端新加的诊断字段静默丢掉：
+        # 诊断代码上线了、线上却永远看不到，排查时只能靠猜（2026-10-17 踩过一次）。
+        # 改为只放行标量（数字/布尔/短字符串/标量数组），字符串里的 URL 过 safe_url 去参数，
+        # 其余一律截断。结构上仍然是"可控的小字典"，不会把整页内容存进库。
+        diagnostics={}
+        if isinstance(raw,dict):
+            for k,v in raw.items():
+                if not isinstance(k,str) or not k or len(k)>40: continue
+                if isinstance(v,bool) or isinstance(v,(int,float)): diagnostics[k]=v
+                elif isinstance(v,str): diagnostics[k]=v[:200]
+                elif isinstance(v,list) and len(v)<=25 and all(isinstance(x,(str,int,float,bool)) for x in v):
+                    diagnostics[k]=[x[:60] if isinstance(x,str) else x for x in v]
         if isinstance(raw,dict):
             for k in ('requested_url','final_url'):
                 if isinstance(raw.get(k),str): diagnostics[k]=safe_url(raw[k])

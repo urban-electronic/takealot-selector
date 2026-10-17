@@ -368,14 +368,47 @@ def distinct_prices(text: str) -> list[float]:
             out.append(v)
     return sorted(out)
 
+# 卡片里"当前价"通常紧挨着一个划线原价，页面文本形如 `r 269r 899`（两个相邻元素，
+# innerText 之间没有空白）。直接数金额会得到 2 个，"卡内唯一金额"这个判据就失效了——
+# 这正是 2026-10-17 那批全量 price_not_found 的成因。先把划线/原价节点摘掉再数：
+# 判据本身（摘掉后只剩一个金额才采信）不变，只是不再被划线价干扰。
+STRUCK_SELECTORS = ','.join([
+    's', 'del', 'strike',
+    '[style*="line-through"]', '[class*="line-through"]', '[class*="lineThrough"]',
+    '[class*="strike"]', '[class*="was-price"]', '[class*="old-price"]',
+    '[class*="list-price"]', '[class*="rrp"]',
+    '[data-ref*="was"]', '[data-ref*="list-price"]', '[data-ref*="rrp"]',
+])
+
+# 在克隆节点上摘掉划线价再取文本：不动真实页面，避免影响后续变体/库存读取。
+_CARD_TEXT_JS = """
+(el, struck) => {
+  const clone = el.cloneNode(true);
+  try { clone.querySelectorAll(struck).forEach(n => n.remove()); } catch (e) {}
+  return clone.textContent || '';
+}
+"""
+
+async def card_text_without_struck(card) -> str:
+    """卡片文本，去掉划线原价节点。取不到就返回空串，让调用方放弃而不是猜。"""
+    try:
+        return await card.evaluate(_CARD_TEXT_JS, STRUCK_SELECTORS)
+    except Exception:
+        return ''
+
 async def price_of(page, card) -> float | None:
     """从卡片内提取价格。
 
-    先按选择器取价格节点（正常路径）。四个候选全落空时，退回读**卡片自身**的文本：
-    卡片本身就是 Buybox 区块（[data-ref="buybox-offer"]），所以卡内唯一的金额
-    就是这张卡的价格。只有当卡里**恰好只有一个不同金额**时才采信——
-    出现划线价、满减、运费等第二个金额就放弃。宁可采不到，也不采错：
-    这条价直接喂自动调价，读错就是真亏钱。
+    三条路，按可信度从高到低：
+    1) 按选择器取价格节点（正常路径，最可信）；
+    2) 摘掉划线原价节点后读卡片文本，卡内只剩一个金额才采信；
+    3) 原始卡片文本本来就只有唯一金额时同样采信。
+
+    为什么需要 2/3：Takealot 卡片把"当前价"和"划线原价"并排渲染，文本是
+    `r 269r 899` 这种——两个金额都在卡里，直接数就永远"不唯一"。但当前价是
+    唯一真实成交价，划线价只是营销锚点。摘掉划线节点后仍不唯一（出现运费、
+    满减、第二个真实报价）就放弃。宁可采不到，也不采错：这条价直接喂自动调价，
+    读错就是真亏钱。
     """
     for i, sel in enumerate(SELECTORS["price"]):
         try:
@@ -387,12 +420,17 @@ async def price_of(page, card) -> float | None:
                     return p
         except Exception:
             continue
+    # 降级：idx 传候选数量，表示这次不是靠选择器命中的，selector_health 会记成降级。
+    amounts = distinct_prices(await card_text_without_struck(card))
+    if len(amounts) == 1:
+        _record_selector("price", True, len(SELECTORS["price"]))
+        return amounts[0]
+    # 摘不干净（划线价不是独立节点）时，原始文本本来就只有唯一金额也可信。
     try:
         amounts = distinct_prices(await card.inner_text())
     except Exception:
         return None
     if len(amounts) == 1:
-        # idx 超出候选范围：表示这次是靠文本兜底拿到的，selector_health 会记成降级。
         _record_selector("price", True, len(SELECTORS["price"]))
         return amounts[0]
     return None

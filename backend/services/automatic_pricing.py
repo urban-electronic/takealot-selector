@@ -102,7 +102,7 @@ async def collect(product, offer):
             snapshot=await scrape_product(page, {'url': url, 'productId': product.id, 'sku': offer['sku'],
                 'name': offer.get('title') or product.product_name, 'myPrice': offer['selling_price'],
                 'myStock': offer.get('stock_at_takealot_total'), 'shopId': DEFAULT_STORE_ID})
-            diagnostics={'http_status':responses[-1] if responses else None,'requested_url':safe_url(url),'final_url':safe_url(page.url)}
+            diagnostics={'diag_version':3,'http_status':responses[-1] if responses else None,'requested_url':safe_url(url),'final_url':safe_url(page.url)}
             # 每一项诊断各自兜底。原来整段共用一个 try：只要 body.inner_text 超时一次，
             # 后面的元素计数就全丢——恰恰是页面最慢、最需要诊断的时候什么都没留下。
             async def _count(selector):
@@ -124,11 +124,22 @@ async def collect(product, offer):
             # 长度接近 0 = 骨架屏还没渲染；有文本但金额 0 个 = 卡片里确实没报价；
             # 金额 1 个 = 价在卡里，只是选择器没命中（新的文本兜底能救）。
             try:
-                from services.pricepilot_collector import distinct_prices
+                from services.pricepilot_collector import distinct_prices, STRUCK_SELECTORS
                 card=page.locator('[data-ref="buybox-offer"]').first
                 txt=await card.inner_text(timeout=1500)
                 diagnostics['buybox_card_text_len']=len(txt)
                 diagnostics['buybox_card_amounts']=len(distinct_prices(txt))
+                # 摘掉划线价后还剩几个金额：1 = 文本兜底能救；2+ = 卡里真有两处
+                # 独立报价（运费/满减），不采信才对。
+                try: diagnostics['buybox_card_struck']=await card.locator(STRUCK_SELECTORS).count()
+                except Exception: pass
+                # 卡片内部有哪些 data-ref —— 只记属性名，不记正文也不记金额。
+                # 页面改版时，这就是「价格锚点改成什么了」的直接答案。
+                try:
+                    refs=await card.evaluate(
+                        "el=>[...new Set([...el.querySelectorAll('[data-ref]')].map(n=>n.getAttribute('data-ref')))].slice(0,20)")
+                    diagnostics['buybox_card_refs']=refs if isinstance(refs,list) else []
+                except Exception: pass
             except Exception: pass
             if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
             diagnostics['raw_error']=re.sub(r'https?://[^\s]+',lambda m:safe_url(m.group()),str(snapshot.get('error') or ''))[:200]
