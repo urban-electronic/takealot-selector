@@ -45,6 +45,8 @@ async function scenario(monitor, inspect, overrides = {}) {
     last_success_at: '2026-10-15T01:58:09Z', source: 'cloud_browser',
     snapshot: { buyboxSeller: 'Urban Electronics' } };
   await scenario({ ...known, status: 'queued' }, tr => {
+    check([...tr.querySelectorAll('.row-details')].every(d=>!d.open), 'verbose explanations are collapsed by default');
+    check(tr.querySelector('.product-english-name').title==='Test product', 'full English name remains available on hover');
     check(tr.textContent.includes('测试商品'), 'Chinese name is displayed separately');
     check(tr.textContent.includes('英文名：Test product'), 'English title remains labelled');
     check(tr.textContent.includes('R 269'), 'queued job retains last valid quote');
