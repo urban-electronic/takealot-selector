@@ -47,7 +47,7 @@ export const ProductImage: FC<ProductImageProps> = ({
         style={{
           width: failedSize.w,
           height: failedSize.h,
-          background: '#f0f0f0',
+          background: 'var(--surface-muted)',
           borderRadius: 4,
           display: 'flex',
           alignItems: 'center',

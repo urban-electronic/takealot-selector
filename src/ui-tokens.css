@@ -50,6 +50,14 @@
   --table-head-pad-y: 10px;
   --table-head-pad-x: 12px;
 
+  /* ---- 语义表面 ----
+     组件里还有一批内联 style 直接写裸色值（#fffbe6 / #f0f0f0 / #f5f5f5 / #fafafa）。
+     它们绕过令牌层，换主题时要翻 6 个页面逐个改，而且同一类底色在不同页面深浅不一。
+     收敛成这三个之后，"卡片 / 提示 / 占位 / 只读"四种表面只有一个来源。 */
+  --surface-warning: #fffbe6;   /* 警示提示条底；配 --warning-strong 文字 */
+  --surface-muted: #f4f5f7;     /* 只读输入、图片占位、汇总行 */
+  --surface-hover: #eef1f5;     /* 下拉项悬停 */
+
   /* ---- 布局 ---- */
   --app-header-h: 68px;
 }
@@ -109,4 +117,19 @@
   display: inline-flex;
   align-items: center;
   min-height: var(--control-h-min);
+}
+
+/* 动效降级兜底。
+   页面里有 transition / animation 的地方不少，但此前只有 .btn 和头部导航各自写了
+   一条 prefers-reduced-motion。统一在令牌层兜一次：新增动效自动继承，不用逐条补，
+   也不会出现"某处忘了降级、对前庭敏感的用户被动画闪到"的情况。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -657,7 +657,7 @@ export default function Packing() {
       {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
       {msg && <div className="alert alert-success" style={{ marginBottom: 12 }}>{msg}</div>}
       {catalogStats && (catalogStats.noSku > 0 || catalogStats.duplicates > 0) && (
-        <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid #faad14', background: '#fffbe6' }}>
+        <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid var(--color-warning)', background: 'var(--surface-warning)' }}>
           已同步全部可用 SKU；另有 {catalogStats.noSku} 条产品缺少 SKU
           {catalogStats.duplicates > 0 ? `，${catalogStats.duplicates} 条 SKU 重复` : ''}，无法作为独立装箱产品。
         </div>
@@ -665,7 +665,7 @@ export default function Packing() {
 
       {/* URL import 缺失提示 */}
       {importMissing.length > 0 && (
-        <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid #faad14', background: '#fffbe6' }}>
+        <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid var(--color-warning)', background: 'var(--surface-warning)' }}>
           <strong>检测到 {importMissing.length} 个来自选品库的 SKU 尚未导入装箱单：</strong>{' '}
           {importMissing.join(', ')}
           <button
@@ -733,7 +733,7 @@ export default function Packing() {
           <div className="packing-table-scroll">
             <table className="product-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
-                <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
+                <tr style={{ borderBottom: '2px solid var(--color-border)', textAlign: 'left' }}>
                   <th style={{ padding: '8px 10px', width: 40 }}></th>
                   <th style={{ padding: '6px 8px', width: 60 }}>图片</th>
                   <th style={{ padding: '8px 10px' }}>SKU</th>
@@ -746,7 +746,7 @@ export default function Packing() {
                 {visibleProducts.map(p => {
                   const groupCount = p.variant_group ? products.filter(row => row.variant_group === p.variant_group).length : 0;
                   return (
-                  <tr key={p.sku} onContextMenu={e => { e.preventDefault(); setContextMenu({ sku: p.sku, x: e.clientX, y: e.clientY }); }} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid #eee' }}>
+                  <tr key={p.sku} onContextMenu={e => { e.preventDefault(); setContextMenu({ sku: p.sku, x: e.clientX, y: e.clientY }); }} className={p.variant_group ? (p.is_primary_variant ? 'packing-variant-primary' : 'packing-variant-branch') : ''} style={{ borderBottom: '1px solid var(--color-border)' }}>
                     <td style={{ padding: '8px 10px', textAlign: 'center' }}>
                       <input
                         type="checkbox"
@@ -756,7 +756,7 @@ export default function Packing() {
                       />
                     </td>
                     <td style={{ padding: '8px 10px' }}>
-                      <div style={{ width: 46, height: 46, border: '1px solid #eee', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div style={{ width: 46, height: 46, border: '1px solid var(--color-border)', borderRadius: 4, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <PackingImage filename={p.image_file} fallbackUrl={p.source_image_url} alt={p.sku} />
                       </div>
                     </td>
@@ -890,7 +890,7 @@ export default function Packing() {
           </div>
         </div>
         <label style={{ display: 'block', marginTop: 12 }}><input type="checkbox" checked={exportForm.record_shipment === true} onChange={e => setExportForm(prev => ({ ...prev, record_shipment: e.target.checked }))} /> 登记发货并扣库存</label>
-        <small style={{ display: 'block', marginTop: 6, color: '#667085' }}>{exportForm.record_shipment ? '按每个 SKU 的发货数量检查并核减本地库存。' : '仅生成文件并留档，可重复使用导出功能，库存未建档也可导出。'}</small>
+        <small style={{ display: 'block', marginTop: 6, color: 'var(--text-muted)' }}>{exportForm.record_shipment ? '按每个 SKU 的发货数量检查并核减本地库存。' : '仅生成文件并留档，可重复使用导出功能，库存未建档也可导出。'}</small>
         <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
@@ -969,7 +969,7 @@ export default function Packing() {
         <div className="packing-modal-mask">
           <div className="packing-modal" role="dialog" aria-modal="true" aria-label="确认删除装箱产品" style={{ maxWidth: 420 }}>
             <h3 className="dialog-title">确认删除</h3>
-            <p style={{ margin: '0 0 20px', color: '#555' }}>确定从装箱单库删除「{deleteSku}」吗？此操作不可恢复。</p>
+            <p style={{ margin: '0 0 20px', color: 'var(--text-muted)' }}>确定从装箱单库删除「{deleteSku}」吗？此操作不可恢复。</p>
             <div className="dialog-actions">
               <button className="btn" onClick={() => setDeleteSku(null)}>取消</button>
               <button className="btn btn-danger" onClick={confirmDelete}>确认删除</button>
@@ -992,7 +992,7 @@ export default function Packing() {
                 placeholder="搜索 SKU / 中文品名 / 英文品名 / TSIN / 类目"
                 value={importSearch}
                 onChange={e => setImportSearch(e.target.value)}
-                style={{ padding: '6px 12px', borderRadius: 4, border: '1px solid #ccc', width: '100%', boxSizing: 'border-box' }}
+                style={{ padding: '6px 12px', borderRadius: 4, border: '1px solid var(--color-border)', width: '100%', boxSizing: 'border-box' }}
                 autoFocus
               />
               <select value={importCategory} onChange={e => setImportCategory(e.target.value)}>
@@ -1010,10 +1010,10 @@ export default function Packing() {
             {!importSearching && filteredImportResults.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 20 }}>未找到匹配的选品产品</div>
             ) : (
-              <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #eee', borderRadius: 4 }}>
+              <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: 4 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr style={{ borderBottom: '1px solid #ddd', textAlign: 'left' }}>
+                    <tr style={{ borderBottom: '1px solid var(--color-border)', textAlign: 'left' }}>
                       <th style={{ padding: '6px 10px', width: 40 }}></th>
                       <th style={{ padding: '6px 10px' }}>SKU</th>
                       <th style={{ padding: '6px 10px' }}>产品名称</th>
@@ -1027,7 +1027,7 @@ export default function Packing() {
                       const checked = importSelected.has(pid);
                       const disabled = !p.sku || existingPackingSkus.has(p.sku);
                       return (
-                        <tr key={pid} style={{ borderBottom: '1px solid #eee' }}>
+                        <tr key={pid} style={{ borderBottom: '1px solid var(--color-border)' }}>
                           <td style={{ padding: '6px 10px', textAlign: 'center' }}>
                             <input
                               type="checkbox"
@@ -1070,32 +1070,32 @@ export default function Packing() {
         <div className="packing-modal-mask">
           <div className="packing-modal" style={{ maxWidth: 720 }}>
             <h3 style={{ margin: '0 0 8px' }}>导出 ERP 入仓模板</h3>
-            <p style={{ margin: '0 0 14px', fontSize: 13, color: '#667085', lineHeight: 1.6 }}>
+            <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
               选择已留档的装箱单，海运、空运分别生成。每张单对应 1 箱；标识号为 1、2…，自定义箱号为 01、02…（ERP 要求至少 2 个字符）。生成模板不扣库存。
             </p>
             {templateError && <div className="alert alert-error" style={{ marginBottom: 10 }}>{templateError}</div>}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: '#667085' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: 'var(--text-muted)' }}>
               <span>{templateLoading ? '正在读取装箱单…' : `可选 ${templateShipments.length} 张 · 已选 ${selectedShipmentIds.length} 张`}</span>
               <button className="btn btn-outline" style={{ marginLeft: 'auto', padding: '3px 9px' }} disabled={templateLoading || templateShipments.length === 0}
                 onClick={() => setSelectedShipmentIds(templateShipments.map(row => row.id))}>全选</button>
               <button className="btn btn-outline" style={{ padding: '3px 9px' }} disabled={selectedShipmentIds.length === 0}
                 onClick={() => setSelectedShipmentIds([])}>清空</button>
             </div>
-            <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+            <div style={{ maxHeight: 380, overflow: 'auto', border: '1px solid var(--color-border)', borderRadius: 8 }}>
               {templateLoading ? (
-                <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>正在读取装箱单…</div>
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>正在读取装箱单…</div>
               ) : templateShipments.length === 0 ? (
-                <div style={{ padding: 24, textAlign: 'center', color: '#667085' }}>暂无可用装箱单</div>
+                <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>暂无可用装箱单</div>
               ) : templateShipments.map(row => (
-                <label key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderBottom: '1px solid #f0f1f3', cursor: 'pointer' }}>
+                <label key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderBottom: '1px solid var(--color-border)', cursor: 'pointer' }}>
                   <input type="checkbox" checked={selectedShipmentIds.includes(row.id)}
                     onChange={() => setSelectedShipmentIds(prev => prev.includes(row.id) ? prev.filter(id => id !== row.id) : [...prev, row.id])}
                     style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)' }} />
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    <strong style={{ display: 'block', color: '#243042' }}>{row.shipment_no}</strong>
-                    <small style={{ color: '#667085' }}>{row.shipment_date} · {row.shipping || '未填运输方式'} · {row.total_skus} 个 SKU{row.status === 'clearance' ? ' · 老库存清理' : row.status === 'exported' ? ' · 仅导出·未扣库存' : ''}</small>
+                    <strong style={{ display: 'block', color: 'var(--text-strong)' }}>{row.shipment_no}</strong>
+                    <small style={{ color: 'var(--text-muted)' }}>{row.shipment_date} · {row.shipping || '未填运输方式'} · {row.total_skus} 个 SKU{row.status === 'clearance' ? ' · 老库存清理' : row.status === 'exported' ? ' · 仅导出·未扣库存' : ''}</small>
                   </span>
-                  <span style={{ color: '#344054', fontSize: 13, whiteSpace: 'nowrap' }}>{row.total_quantity} 件</span>
+                  <span style={{ color: 'var(--text-body)', fontSize: 13, whiteSpace: 'nowrap' }}>{row.total_quantity} 件</span>
                 </label>
               ))}
             </div>

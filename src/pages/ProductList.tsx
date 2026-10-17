@@ -710,7 +710,7 @@ export default function ProductList() {
             style={{ width: 68, height: 68, objectFit: 'cover', borderRadius: 4 }}
           />
         ) : (
-          <div style={{ width: 68, height: 68, background: '#f0f0f0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-subtle)', fontSize: 11 }}>无图</div>
+          <div style={{ width: 68, height: 68, background: 'var(--surface-muted)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-subtle)', fontSize: 11 }}>无图</div>
         );
       case 'product_name':
         return (
@@ -858,13 +858,13 @@ export default function ProductList() {
             onChange={(e) => handleFieldUpdate(p.id, 'link_status', e.target.value)}
             className="cell-control cell-control--tinted"
             style={{
-              background: LINK_STATUS_MAP[p.link_status || '未购买']?.color || '#f1f3f5',
-              color: LINK_STATUS_MAP[p.link_status || '未购买']?.text || '#5a6472',
+              background: LINK_STATUS_MAP[p.link_status || '未购买']?.color || 'var(--surface-muted)',
+              color: LINK_STATUS_MAP[p.link_status || '未购买']?.text || 'var(--text-neutral-strong)',
               border: 'none', borderRadius: 8,
             }}
           >
             {LINK_STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s} style={{ background: '#fff', color: '#333' }}>{LINK_STATUS_MAP[s].label}</option>
+              <option key={s} value={s} style={{ background: 'var(--color-card)', color: 'var(--text-body)' }}>{LINK_STATUS_MAP[s].label}</option>
             ))}
           </select>
         );
@@ -1125,7 +1125,9 @@ export default function ProductList() {
             </thead>
             <tbody>
               {pagedProducts.map((p) => {
-                const linkBgColor = p.link_status === '已上架' ? '#e3f2fd' : p.link_status === '已购买' ? '#e8f5e9' : p.link_status === '已发货' ? '#fff3e0' : undefined;
+                // 行底色和下拉框底色必须来自同一张表。原来这里另写了一套 #e3f2fd/#e8f5e9/#fff3e0，
+                // 与 types.ts 里按对比度调过的 LINK_STATUS_MAP 不一致：同一个状态两种深浅。
+                const linkBgColor = p.link_status && p.link_status !== '未购买' ? LINK_STATUS_MAP[p.link_status]?.color : undefined;
                 const branches = skuVariants(p.sku);
                 const labels = variantLabels(p);
                 return (

@@ -249,7 +249,7 @@ export default function Procurement() {
         <div className="procurement-heading-copy">
           <h1 style={{ margin: 0 }}>采购记录</h1>
           {records.length > 0 && (
-            <span style={{ fontSize: 16, fontWeight: 600, color: '#e74c3c' }}>
+            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-danger)' }}>
               {filterProductNo.trim() ? (
                 <>#{filterProductNo.trim()} 累计采购金额 {formatPrice(filteredTotal)}（{filteredRecords.length} 条记录）</>
               ) : (
@@ -302,14 +302,14 @@ export default function Procurement() {
                   style={{ width: '100%', boxSizing: 'border-box' }} />
                 {searchResults.length > 0 && (
                   <div style={{
-                    position: 'absolute', zIndex: 10, background: '#fff', border: '1px solid #ddd',
+                    position: 'absolute', zIndex: 10, background: 'var(--color-card)', border: '1px solid var(--color-border)',
                     borderRadius: 4, maxHeight: 200, overflow: 'auto', width: '100%', boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
                   }}>
                     {searchResults.map(p => (
                       <div key={p.id} onClick={() => selectProduct(p)}
-                        style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #eee' }}
-                        onMouseEnter={e => (e.currentTarget.style.background = '#f0f0f0')}
-                        onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>
+                        style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--color-border)' }}
+                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-hover)')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'var(--color-card)')}>
                         <strong>#{p.product_no}</strong> {p.product_name}
                       </div>
                     ))}
@@ -317,7 +317,7 @@ export default function Procurement() {
                 )}
                 {searching && <small style={{ color: 'var(--text-subtle)' }}>搜索中...</small>}
                 {identityMismatch && (
-                  <small role="alert" style={{ color: 'var(--warning, #a15c00)', display: 'block', marginTop: 4 }}>
+                  <small role="alert" style={{ color: 'var(--warning-strong)', display: 'block', marginTop: 4 }}>
                     序列号已改为 {form.product_no.trim() || '（空）'}，当前仍关联原产品 #{linkedProductNo}。
                     先解决关联才能保存，否则这条记录会挂到错的产品上。
                     <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }}
@@ -356,7 +356,7 @@ export default function Procurement() {
               <div>
                 <label>单价（自动计算）</label>
                 <input type="text" value={unitPrice ? `¥${unitPrice}` : ''} readOnly
-                  style={{ width: '100%', boxSizing: 'border-box', background: '#f5f5f5' }} />
+                  style={{ width: '100%', boxSizing: 'border-box', background: 'var(--surface-muted)' }} />
               </div>
 
               {/* notes */}
@@ -390,7 +390,7 @@ export default function Procurement() {
         <div className="app-modal-backdrop">
           <div className="app-modal" role="dialog" aria-modal="true" aria-label="确认删除采购记录">
             <h3 className="dialog-title">确认删除</h3>
-            <p style={{ margin: '0 0 20px', color: '#555' }}>
+            <p style={{ margin: '0 0 20px', color: 'var(--text-muted)' }}>
               确定删除「{deleteTarget.product_name || deleteTarget.product_no}」的采购记录？
             </p>
             <div className="dialog-actions">
@@ -405,7 +405,7 @@ export default function Procurement() {
       <div className="procurement-filterbar">
         <input type="text" placeholder="输入产品序号筛选采购记录..." value={filterProductNo}
           onChange={e => setFilterProductNo(e.target.value)}
-          style={{ padding: '6px 12px', borderRadius: 10, border: '1px solid #d6e3f3', width: 240 }} />
+          style={{ padding: '6px 12px', borderRadius: 10, border: '1px solid var(--color-border)', width: 240 }} />
         {filterProductNo.trim() && (
           <button className="btn btn-sm" onClick={() => setFilterProductNo('')}>清除筛选</button>
         )}
@@ -415,7 +415,7 @@ export default function Procurement() {
       ) : (
         <div className="table-wrapper procurement-table-scroll"><table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
-            <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
+            <tr style={{ borderBottom: '2px solid var(--color-border)', textAlign: 'left' }}>
               <th style={{ padding: '8px 12px' }}>日期</th>
               <th style={{ padding: '8px 12px' }}>序列号</th>
               <th style={{ padding: '8px 12px' }}>产品名称</th>
@@ -429,7 +429,7 @@ export default function Procurement() {
           </thead>
           <tbody>
             {filteredRecords.map(r => (
-              <tr key={r.id} style={{ borderBottom: '1px solid #eee' }}>
+              <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
                 <td style={{ padding: '8px 12px' }}>{r.recorded_at}</td>
                 <td style={{ padding: '8px 12px' }}>{r.product_no}</td>
                 <td style={{ padding: '8px 12px', maxWidth: 360 }} title={r.product_name || ''}>

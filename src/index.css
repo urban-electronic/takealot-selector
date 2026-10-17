@@ -1137,7 +1137,7 @@ table tbody tr:hover {
 
 .status-qualified { background: #f6ffed; color: var(--color-success); border: 1px solid #b7eb8f; }
 .status-not-recommended { background: #fff2f0; color: var(--color-danger); border: 1px solid #ffccc7; }
-.status-pending { background: #fffbe6; color: var(--warning-strong); border: 1px solid #ffe58f; }
+.status-pending { background: var(--surface-warning); color: var(--warning-strong); border: 1px solid #ffe58f; }
 .status-incomplete { background: #e6f7ff; color: var(--link-strong); border: 1px solid #91d5ff; }
 
 /* Alerts */

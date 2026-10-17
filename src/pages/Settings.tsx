@@ -199,7 +199,7 @@ export default function Settings() {
               </label>
             </>
           ) : (
-            <span style={{ fontSize: 14, color: 'var(--color-text-secondary, #888)' }}>
+            <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>
               网页版仅支持远程共享库（数据保存在云端）
             </span>
           )}

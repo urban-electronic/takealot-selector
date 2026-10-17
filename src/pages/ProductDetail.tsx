@@ -258,7 +258,7 @@ export default function ProductDetail() {
             <div className="form-row">
               <div className="form-group">
                 <label>采购成本 (CNY, 自动计算)</label>
-                <input type="number" step="0.01" value={editData.purchase_cost_cny ?? ''} readOnly style={{ background: '#f5f5f5', cursor: 'not-allowed' }} />
+                <input type="number" step="0.01" value={editData.purchase_cost_cny ?? ''} readOnly style={{ background: 'var(--surface-muted)', cursor: 'not-allowed' }} />
               </div>
               <div className="form-group">
                 <label>采购数量</label>
@@ -305,7 +305,7 @@ export default function ProductDetail() {
               <tr><td style={{ fontWeight: 600 }}>采购数量</td><td>{product.purchase_quantity}</td></tr>
               <tr><td style={{ fontWeight: 600 }}>包装费/个</td><td>{formatPrice(product.packaging_cost_per_unit_cny, 'CNY')}</td></tr>
               <tr><td style={{ fontWeight: 600 }}>链接状态</td>
-                <td><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, color: LINK_STATUS_MAP[product.link_status || '未购买']?.text || '#5a6472', background: LINK_STATUS_MAP[product.link_status || '未购买']?.color || '#f1f3f5' }}>
+                <td><span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600, color: LINK_STATUS_MAP[product.link_status || '未购买']?.text || 'var(--text-neutral-strong)', background: LINK_STATUS_MAP[product.link_status || '未购买']?.color || 'var(--surface-muted)' }}>
                   {LINK_STATUS_MAP[product.link_status || '未购买']?.label || '未购买'}
                 </span></td></tr>
             </tbody>
@@ -359,7 +359,7 @@ export default function ProductDetail() {
               <table>
                 <tbody>
                   <tr><td style={{ fontWeight: 600, width: 180 }}>体积重 (kg)</td><td>{product.volumetric_weight_kg != null ? `${product.volumetric_weight_kg.toFixed(3)} kg` : '-'}</td></tr>
-                  <tr style={{ background: product.volumetric_weight_kg != null && product.actual_weight_kg != null && product.volumetric_weight_kg > product.actual_weight_kg ? '#fffbe6' : undefined }}>
+                  <tr style={{ background: product.volumetric_weight_kg != null && product.actual_weight_kg != null && product.volumetric_weight_kg > product.actual_weight_kg ? 'var(--surface-warning)' : undefined }}>
                     <td style={{ fontWeight: 700 }}>实际计费重量 (kg)</td>
                     <td style={{ fontWeight: 700 }}>
                       {product.chargeable_weight_kg != null ? `${product.chargeable_weight_kg.toFixed(3)} kg` : '-'}
@@ -412,7 +412,7 @@ export default function ProductDetail() {
                     )}
                   </td>
                 </tr>
-                <tr style={{ background: '#fafafa' }}><td style={{ fontWeight: 700 }}>综合单个成本 (AD)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.unit_product_cost_cny, 'CNY')}</td></tr>
+                <tr style={{ background: 'var(--surface-muted)' }}><td style={{ fontWeight: 700 }}>综合单个成本 (AD)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.unit_product_cost_cny, 'CNY')}</td></tr>
               </tbody>
             </table>
           </div>
@@ -442,8 +442,8 @@ export default function ProductDetail() {
                     )}
                   </td>
                 </tr>
-                <tr style={{ background: '#fafafa' }}><td style={{ fontWeight: 700 }}>到南非仓总成本 (CNY)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.cost_to_sa_warehouse_cny, 'CNY')}</td></tr>
-                <tr style={{ background: '#fafafa' }}><td style={{ fontWeight: 700 }}>到南非仓总成本 (ZAR)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.cost_to_sa_warehouse_zar, 'ZAR')}</td></tr>
+                <tr style={{ background: 'var(--surface-muted)' }}><td style={{ fontWeight: 700 }}>到南非仓总成本 (CNY)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.cost_to_sa_warehouse_cny, 'CNY')}</td></tr>
+                <tr style={{ background: 'var(--surface-muted)' }}><td style={{ fontWeight: 700 }}>到南非仓总成本 (ZAR)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.cost_to_sa_warehouse_zar, 'ZAR')}</td></tr>
                 <tr><td colSpan={2} style={{ paddingTop: 8 }}></td></tr>
                 <tr><td style={{ fontWeight: 600 }}>入库上架费 (CNY)</td>
                   <td>
@@ -473,7 +473,7 @@ export default function ProductDetail() {
                     ) : formatPrice(product.other_fee_cny, 'CNY')}
                   </td>
                 </tr>
-                <tr style={{ background: '#fafafa' }}><td style={{ fontWeight: 700 }}>海外仓操作总成本 (CNY)</td>
+                <tr style={{ background: 'var(--surface-muted)' }}><td style={{ fontWeight: 700 }}>海外仓操作总成本 (CNY)</td>
                   <td style={{ fontWeight: 700 }}>
                     {formatPrice(product.overseas_warehouse_operation_cost_cny, 'CNY')}
                     {editMode && (
@@ -493,7 +493,7 @@ export default function ProductDetail() {
                     )}
                   </td>
                 </tr>
-                <tr style={{ background: '#fafafa' }}><td style={{ fontWeight: 700 }}>海外仓操作总成本 (ZAR)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.overseas_warehouse_operation_cost_zar, 'ZAR')}</td></tr>
+                <tr style={{ background: 'var(--surface-muted)' }}><td style={{ fontWeight: 700 }}>海外仓操作总成本 (ZAR)</td><td style={{ fontWeight: 700 }}>{formatPrice(product.overseas_warehouse_operation_cost_zar, 'ZAR')}</td></tr>
               </tbody>
             </table>
           </div>
@@ -547,7 +547,7 @@ export default function ProductDetail() {
               </td>
             </tr>
             <tr><td style={{ fontWeight: 600 }}>官方总成本 (ZAR)</td><td>{formatPrice(product.official_total_cost_zar, 'ZAR')}</td></tr>
-            <tr style={{ background: '#fafafa' }}>
+            <tr style={{ background: 'var(--surface-muted)' }}>
               <td style={{ fontWeight: 700 }}>总成本 (ZAR)</td>
               <td style={{ fontWeight: 700 }}>
                 {formatPrice(product.total_cost_zar, 'ZAR')}
