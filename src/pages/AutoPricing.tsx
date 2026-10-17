@@ -13,6 +13,9 @@ export default function AutoPricing() {
   const [loaded, setLoaded] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [collectorSource, setCollectorSource] = useState('cloud_browser');
+  // 采集循环自己的心跳（worker_alive / 轮次 / 下一轮倒计时）。没有它，
+  // 界面分不清「循环停了」和「这一条刚好没到期」，用户只能反复点立即采集。
+  const [loop, setLoop] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
   const refreshState = useRef<{ active: boolean; sequence: number; pending: Promise<void> | null }>({ active: false, sequence: 0, pending: null });
   const [segment, setSegment] = useState('all'); const [segmentName, setSegmentName] = useState('');
@@ -36,6 +39,7 @@ export default function AutoPricing() {
       if (list) {
         setRows(list.filter((r: any) => typeof r.stock === 'number' && r.stock > 0));
         setConfigured(!!d?.configured); setCollectorSource(d?.collector_source || 'cloud_browser');
+        setLoop(d?.loop && typeof d.loop === 'object' ? d.loop : null);
         setError('');
       } else {
         setError('接口返回格式异常：缺少 rows 数组。已保留上一次成功加载的列表，请稍后重试。');
@@ -175,10 +179,60 @@ export default function AutoPricing() {
   // 取更近的一份行情：采集成功晚于上次调价评估时用采集结果，否则用调价评估时留下的。
   const market = (r: any) => r.monitor?.last_success_at && (!r.rule.last_evaluated_at || r.monitor.last_success_at > r.rule.last_evaluated_at) ? r.monitor : r.rule;
   const collection = (r:any) => describeCollection(r.monitor, ctx);
+  // 循环轨道：一个格子 = 一个 SKU。比堆一排大数字更贴合这件事——
+  // 运营真正想知道的不是"总共多少条"，而是"哪几个没在采"。
+  const cellState = (r:any) => {
+    const m = r.monitor || {};
+    // 只有明确关掉才算「未开启」；字段缺失时按状态判断，别把在采的 SKU 画成灰的。
+    if (m.enabled === false && !m.request_once) return 'off';
+    if (m.status === 'success') return 'ok';
+    if (m.status === 'error') return 'bad';
+    if (m.status === 'running' || m.status === 'queued') return 'live';
+    return 'idle';
+  };
+  const cellLabel = (r:any) => {
+    const m = r.monitor || {};
+    if (m.enabled === false && !m.request_once) return '未开启采集';
+    if (m.status === 'success') return '本轮已采到';
+    if (m.status === 'error') return m.error_code ? `采集失败：${errorCopy(m.error_code, m.error).title}` : '采集失败';
+    if (m.status === 'running' || m.status === 'queued') return '正在采这一轮';
+    return '等待下轮';
+  };
+  const loopInterval = loop?.interval_minutes ?? intervalMinutes;
+  const loopTone = !loop ? 'neutral' : !loop.worker_alive ? 'danger' : loop.paused_by === 'local_collector' ? 'warning' : 'success';
+  const loopTitle = !loop ? '采集循环状态未知'
+    : !loop.worker_alive ? '采集循环已停止'
+    : loop.paused_by === 'local_collector' ? '本机采集器接管中'
+    : '采集循环运行中';
+  const loopNote = !loop ? '还没拿到后台心跳'
+    : !loop.worker_alive ? '后台线程没在跑，SKU 不会自动重采，请检查服务状态'
+    : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
+    : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
+  const nextIn = loop?.next_due_in;
+  const nextText = nextIn == null ? '—' : nextIn <= 0 ? '马上开始' : nextIn < 60 ? `${nextIn} 秒后` : `约 ${Math.round(nextIn / 60)} 分钟后`;
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" disabled={refreshing} aria-busy={refreshing} onClick={()=>{void refresh();}}>刷新列表</button></div>
 
     {/* 页头只留一行：什么情况、为什么、该怎么办。原来这里是六行列表，没人看。 */}
+    {loaded&&<section className={`loop-strip tone-${loopTone}`} aria-label="采集循环状态">
+      <div className="loop-lead">
+        <span className="loop-dot" aria-hidden="true" />
+        <div className="loop-lead-text">
+          <strong>{loopTitle}</strong>
+          <small>{loopNote}</small>
+        </div>
+      </div>
+      <ol className="loop-track" aria-hidden="true">
+        {rows.map(r=><li key={key(r)} className={`loop-cell is-${cellState(r)}`} title={`${r.sku} · ${cellLabel(r)}`} />)}
+      </ol>
+      <div className="loop-facts">
+        <span className="is-ok"><b>{loop?.success ?? 0}</b> 已采到</span>
+        <span className={loop?.error ? 'is-bad' : ''}><b>{loop?.error ?? 0}</b> 需处理</span>
+        <span className="is-live"><b>{loop?.running ?? 0}</b> 进行中</span>
+        <span className="loop-next">下一轮 {nextText}</span>
+      </div>
+    </section>}
+
     {loaded&&<div className={`collection-bar tone-${fleet.tone}`}>
       <span className={`status-pill tone-${fleet.tone}`}>{fleet.summary}</span>
       {fleet.action&&<small>{fleet.action}</small>}

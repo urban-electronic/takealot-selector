@@ -2068,6 +2068,60 @@ table tbody tr:hover { background: #f8fafc; }
 .operations-workspace .replenishment-metrics .card:nth-child(3) strong { color:var(--success-strong); }
 .operations-workspace .replenishment-metrics .card:nth-child(4) strong { color:#bd364b; }
 .pricing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:12px; margin-bottom:16px; }
+/* 采集循环轨道 —— 这页的主角。
+ *
+ * 设计意图：运营真正要回答的问题不是"总共多少条"，而是"自动化还在转吗、
+ * 哪几个没在采"。所以这里不做一排大数字卡片，而是把每个 SKU 画成一个格子：
+ * 28 个格子就是 28 个 SKU，颜色即状态，扫一眼就知道有没有缺口。
+ * 其余部分（表头、按钮、说明）一律压低，把注意力留给这条轨道。 */
+.loop-strip {
+  display: grid;
+  grid-template-columns: minmax(180px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 12px;
+  padding: 12px 18px;
+  border: 1px solid var(--surface-border);
+  border-radius: 14px;
+  background: var(--color-card);
+}
+.loop-lead { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.loop-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--text-muted); box-shadow: 0 0 0 3px rgba(90, 107, 130, 0.14); }
+.loop-strip.tone-success .loop-dot { background: var(--color-success); box-shadow: 0 0 0 3px rgba(35, 132, 92, 0.16); animation: loop-pulse 2.4s ease-in-out infinite; }
+.loop-strip.tone-warning .loop-dot { background: var(--warning-strong); box-shadow: 0 0 0 3px rgba(138, 89, 0, 0.16); }
+.loop-strip.tone-danger .loop-dot { background: var(--danger-strong); box-shadow: 0 0 0 3px rgba(176, 48, 63, 0.16); }
+.loop-lead-text { display: flex; flex-direction: column; min-width: 0; }
+.loop-lead-text strong { font-size: var(--fs-body-lg); font-weight: 600; color: var(--text-strong); line-height: 1.3; }
+.loop-lead-text small { font-size: var(--fs-label); color: var(--text-muted); line-height: 1.4; }
+.loop-strip.tone-danger .loop-lead-text strong { color: var(--danger-strong); }
+
+.loop-track { display: flex; align-items: stretch; gap: 3px; list-style: none; height: 22px; min-width: 0; }
+.loop-cell { flex: 1 1 0; min-width: 3px; border-radius: 3px; background: #e2e8f0; transition: background-color 0.25s ease; }
+.loop-cell.is-ok { background: var(--color-success); }
+.loop-cell.is-bad { background: var(--color-danger); }
+.loop-cell.is-live { background: var(--color-primary); animation: loop-pulse 1.4s ease-in-out infinite; }
+.loop-cell.is-idle { background: #cbd5e1; }
+.loop-cell.is-off { background: #eef1f5; box-shadow: inset 0 0 0 1px #dfe5ee; }
+
+.loop-facts { display: flex; align-items: baseline; gap: 16px; font-size: var(--fs-label); color: var(--text-muted); white-space: nowrap; }
+.loop-facts b { margin-right: 4px; font-size: var(--fs-title); font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text-strong); }
+.loop-facts .is-ok b { color: var(--success-strong); }
+.loop-facts .is-bad b { color: var(--danger-strong); }
+.loop-facts .is-live b { color: var(--link-strong); }
+.loop-next { color: var(--text-muted); }
+
+@keyframes loop-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+@media (max-width: 980px) {
+  .loop-strip { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .loop-track { order: 2; height: 18px; }
+  .loop-facts { order: 3; flex-wrap: wrap; gap: 10px 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loop-strip .loop-dot, .loop-cell.is-live { animation: none; }
+  .loop-cell { transition: none; }
+}
+
 /* 采集状态条：一行讲完「什么情况 / 为什么 / 该怎么办」，不再铺成列表。 */
 .collection-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px; padding:10px 16px; border:1px solid var(--surface-border); border-left:4px solid var(--text-muted); border-radius:16px; background:var(--surface-soft); }
 .collection-bar.tone-success { border-left-color:#21825c; }
@@ -2133,3 +2187,34 @@ table tbody tr:hover { background: #f8fafc; }
 .pricing-table .row-details .diag-line { color: var(--text-muted); font-variant-numeric: tabular-nums; overflow:hidden; text-overflow:ellipsis; }
 .collection-bar-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
 .collection-bar-actions .btn { margin-left:0; }
+
+/* ---- 采集页的视觉收敛 ----
+ * 原则：信息密度优先，装饰一律让路。
+ * 1) 页面标题从 30px 收到 24px：这是数据台，不是宣传页，标题不该比数据响。
+ * 2) 行内次要按钮改成"幽灵按钮"：28 行 × 4 个描边按钮，整页像一张按钮墙。
+ *    默认无边框、悬停才显形，主要动作（启动调价）保持实心。
+ * 3) 金额一律等宽数字，纵向能对齐，扫列时不跳。 */
+.pricing-workspace .dashboard-heading h1 { font-size: 24px; letter-spacing: -0.01em; }
+.pricing-workspace .dashboard-heading p { font-size: var(--fs-label); color: var(--text-muted); }
+
+.pricing-table .row-buttons .btn-outline {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.pricing-table .row-buttons .btn-outline:hover:not(:disabled),
+.pricing-table .row-buttons .btn-outline:focus-visible {
+  border-color: var(--surface-border);
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+.pricing-table .row-buttons .btn-outline:disabled { background: transparent; }
+
+.pricing-table .quote-price,
+.pricing-table .own-price,
+.pricing-table .price-range input { font-variant-numeric: tabular-nums; }
+.pricing-table .quote-price { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+
+/* 表头压低：它是坐标轴，不是内容。 */
+.pricing-table thead th { font-weight: 600; letter-spacing: 0.01em; }

@@ -19,7 +19,9 @@ compiled.filename = file;
 compiled.paths = Module._nodeModulePaths(path.dirname(file));
 let fixture = [];
 let writes = 0;
-let readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+let loopFixture = { worker_alive: true, cycles: 42, enabled: 1, success: 1, error: 0,
+  running: 0, interval_minutes: 5, next_due_in: 130, paused_by: null };
+let readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser', loop: loopFixture });
 let pauseFixture;
 const bulkCalls = [];
 // 未显式 mock 的相对导入按真实 .ts/.tsx 编译，避免新增一个模块就让整组测试失败。
@@ -78,6 +80,34 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(tr.querySelectorAll('td')[4].textContent.includes('调价：关闭'), 'pricing state has its own label');
     check(tr.querySelector('.collection-status-cell').textContent.includes('最近成功'), 'timestamp meaning is explicit');
   });
+  // 采集循环轨道：一个格子一个 SKU，颜色即状态。运营要回答的是"自动化还在转吗、
+  // 哪几个没在采"，不是"总共多少条"，所以这里断言的是格子数与状态词，不是数字。
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(!!strip, 'collection loop strip is rendered above the table');
+    check(strip.textContent.includes('采集循环运行中'), 'loop health is stated in words, not just a colour');
+    check(strip.textContent.includes('每 5 分钟一轮'), 'cycle interval is stated');
+    check(strip.querySelectorAll('.loop-cell').length === 1, 'one track cell per SKU');
+    check(!!strip.querySelector('.loop-cell.is-ok'), 'a collected SKU shows as done');
+    check(strip.textContent.includes('下一轮'), 'next cycle is announced');
+    check(strip.textContent.includes('约 2 分钟后'), 'countdown is human readable');
+  });
+  // worker 死掉时必须直说，否则用户会以为"只是还没到时间"而一直等。
+  loopFixture = { ...loopFixture, worker_alive: false };
+  await scenario({ ...known, status: 'error', error_code: 'collector_unavailable',
+    error: '采集器不可用（浏览器或接口未就绪）；未改价' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('采集循环已停止'), 'a dead worker is reported instead of hidden');
+    check(strip.classList.contains('tone-danger'), 'a dead worker uses the danger tone');
+    check(!!strip.querySelector('.loop-cell.is-bad'), 'the failing SKU is marked on the track');
+  });
+  loopFixture = { ...loopFixture, worker_alive: true, paused_by: 'local_collector' };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('本机采集器接管中'), 'handover to a local collector is not reported as a fault');
+    check(!strip.classList.contains('tone-danger'), 'handover is not styled as an error');
+  });
+  loopFixture = { ...loopFixture, paused_by: null };
   await scenario({ ...known, status: 'error', error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
     check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');
     check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
