@@ -134,6 +134,7 @@ def catalog(db, store):
     import re
     profiles={r.key:json.loads(r.value)for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('operations_profile:'+store+':')).all()}
     monitors={r.key:json.loads(r.value)for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+store+':')).all()}
+    from services.product_names import chinese_name
     rows=[]
     for p in db.query(Product).filter(Product.store_id==store,Product.is_archived==False).all():
         profile=profiles.get('operations_profile:'+store+':'+p.id,{})
@@ -144,7 +145,8 @@ def catalog(db, store):
         for offer in offers:
             from services.collection_diagnostics import displayed_monitor
             monitor=displayed_monitor(monitors.get(PREFIX+store+':'+p.id+':'+str(offer['id']),{}))
-            rows.append(dict(product_id=p.id,offer_id=str(offer['id']),sku=offer['sku'],name=offer.get('title')or p.product_name,
+            cn, name_status = chinese_name(p, offer['sku'])
+            rows.append(dict(product_id=p.id,offer_id=str(offer['id']),sku=offer['sku'],name=offer.get('title')or p.product_name, chinese_name=cn, name_status=name_status,
                 url=p.takealot_url,price=offer.get('price'),stock=offer.get('stock'),group=profile.get('group')or'未分类',
                 monitor=monitor,rule={}))
     return rows
