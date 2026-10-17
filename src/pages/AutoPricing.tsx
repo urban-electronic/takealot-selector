@@ -209,7 +209,12 @@ export default function AutoPricing() {
     : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
     : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
   const nextIn = loop?.next_due_in;
-  const nextText = nextIn == null ? '—' : nextIn <= 0 ? '马上开始' : nextIn < 60 ? `${nextIn} 秒后` : `约 ${Math.round(nextIn / 60)} 分钟后`;
+  // 逾期要说逾期。一直显示"马上开始"会掩盖循环跟不上——那正是需要人介入的时候。
+  const nextText = nextIn == null ? '—'
+    : nextIn > 60 ? `约 ${Math.round(nextIn / 60)} 分钟后`
+    : nextIn >= 0 ? `${nextIn} 秒后`
+    : nextIn > -120 ? '马上开始'
+    : `已延迟 ${Math.round(-nextIn / 60)} 分钟`;
   return <div className="operations-workspace pricing-workspace">
     <div className="dashboard-heading"><div><h1>Buybox与自动调价</h1><p>采集和调价分别调度、分别开关</p></div><button className="btn btn-outline" disabled={refreshing} aria-busy={refreshing} onClick={()=>{void refresh();}}>刷新列表</button></div>
 

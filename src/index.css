@@ -2095,11 +2095,13 @@ table tbody tr:hover { background: #f8fafc; }
 .loop-lead-text small { font-size: var(--fs-label); color: var(--text-muted); line-height: 1.4; }
 .loop-strip.tone-danger .loop-lead-text strong { color: var(--danger-strong); }
 
-.loop-track { display: flex; align-items: stretch; gap: 3px; list-style: none; height: 22px; min-width: 0; }
-.loop-cell { flex: 1 1 0; min-width: 3px; border-radius: 3px; background: #e2e8f0; transition: background-color 0.25s ease; }
+.loop-track { display: flex; align-items: stretch; gap: 3px; list-style: none; height: 24px; min-width: 0; }
+.loop-cell { flex: 1 1 0; min-width: 3px; border-radius: 2px; background: #e2e8f0; transition: background-color 0.25s ease; }
 .loop-cell.is-ok { background: var(--color-success); }
 .loop-cell.is-bad { background: var(--color-danger); }
-.loop-cell.is-live { background: var(--color-primary); animation: loop-pulse 1.4s ease-in-out infinite; }
+/* 进行中不参与脉冲：格子会闪成半透明，反而更像"未采集"。
+   让整条轨道保持静止可读，脉动只留给左侧那个心跳点。 */
+.loop-cell.is-live { background: var(--color-primary); }
 .loop-cell.is-idle { background: #cbd5e1; }
 .loop-cell.is-off { background: #eef1f5; box-shadow: inset 0 0 0 1px #dfe5ee; }
 
@@ -2218,3 +2220,18 @@ table tbody tr:hover { background: #f8fafc; }
 
 /* 表头压低：它是坐标轴，不是内容。 */
 .pricing-table thead th { font-weight: 600; letter-spacing: 0.01em; }
+
+/* 行内「启动调价」原来是实心绿：10 行就是 10 颗同样重的绿按钮，把整页压成一片绿。
+ * 这页的主线是"采集在不在跑"，调价是第二步动作，所以改成浅底深字的软主按钮，
+ * 悬停/聚焦才转实心——仍然一眼可点，但不再和循环轨道抢注意力。 */
+.pricing-table .row-buttons .btn-success {
+  border: 1px solid rgba(23, 105, 74, 0.28);
+  background: rgba(35, 132, 92, 0.1);
+  color: var(--success-strong);
+}
+.pricing-table .row-buttons .btn-success:hover:not(:disabled),
+.pricing-table .row-buttons .btn-success:focus-visible {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: var(--text-inverse);
+}

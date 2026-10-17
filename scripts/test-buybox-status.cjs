@@ -108,6 +108,15 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(!strip.classList.contains('tone-danger'), 'handover is not styled as an error');
   });
   loopFixture = { ...loopFixture, paused_by: null };
+  // 逾期必须说逾期。一直显示"马上开始"会把"循环跟不上"藏起来，
+  // 而这恰恰是最需要人介入的时刻。
+  loopFixture = { ...loopFixture, next_due_in: -400 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('已延迟 7 分钟'), 'an overdue cycle is reported instead of masked as starting soon');
+    check(!strip.textContent.includes('马上开始'), 'overdue is never described as "starting right away"');
+  });
+  loopFixture = { ...loopFixture, next_due_in: 130 };
   await scenario({ ...known, status: 'error', error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
     check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');
     check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
