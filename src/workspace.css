@@ -8,6 +8,10 @@
   --color-text-secondary: var(--text-subtle); /* 唯一来源见 ui-tokens.css，避免两处定义不一致 */
 }
 body { font-size: 14px; }
+.product-cell-edit { display: inline-block; max-width: 100%; min-height: 28px; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; vertical-align: middle; }
+.product-cell-edit:hover { color: var(--color-primary); background: var(--surface-soft); }
+.price-refresh-cell, .pricing-table .quote-price, .stock-count { font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .app-header nav a { transition: none; } }
 button, input, select, textarea { font-family: inherit; }
 input, select, textarea { min-width: 0; max-width: 100%; }
 input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']), select, textarea {

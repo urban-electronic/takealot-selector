@@ -115,7 +115,7 @@ button {
   color: #cbd8ea;
   font-size: 14px;
   font-weight: 500;
-  transition: all 0.2s;
+  transition: background-color 0.2s, color 0.2s;
   text-decoration: none;
 }
 
@@ -1062,7 +1062,7 @@ button {
   border-radius: var(--radius);
   font-weight: 500;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
   gap: 6px;
 }
 

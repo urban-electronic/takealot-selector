@@ -4,6 +4,20 @@ These are project-specific working rules, synthesized from the sources below.
 They are not an installation of Claude skills or OpenSkills. Do not add a loader,
 new UI framework or runtime dependency to apply them.
 
+The user subsequently requested Vercel's `web-design-guidelines`, installed locally
+with `npx skills add https://github.com/vercel-labs/agent-skills --skill web-design-guidelines --agent codex --yes`.
+The unchanged skill lives in `.agents/skills/web-design-guidelines/SKILL.md` and its
+installer hash in `skills-lock.json`. Read it for UI reviews and fetch its live
+rules before reviewing; user requirements and this application's context prevail.
+For this Chinese operator UI, do not mechanically apply English title case,
+decorative animation, new loaders or dependencies. Native buttons already provide
+Enter/Space behavior; do not duplicate those key handlers.
+
+This review used [agent-skills 063bee9](https://github.com/vercel-labs/agent-skills/tree/063bee94c3f4df8453406c830b0a7df0f2860278/skills/web-design-guidelines)
+and [interface rules 434b7f9](https://github.com/vercel-labs/web-interface-guidelines/blob/434b7f91364665f2f733b310ec54809bf8f37937/command.md),
+retrieved on 2026-10-17. The skill repository declares MIT in its README; the copied
+skill retains its original author metadata and text. No upstream scripts copied.
+
 ## Define the operator's task
 
 Before a change, specify the user action, correct outcome, current evidence and
@@ -20,6 +34,12 @@ PRs and evidence. Fix the highest-priority executable problem before cosmetic wo
   per-page token forks, new decorative cards, font downloads and forced animation.
 - Give each action one consistent name. Busy actions expose `aria-busy` and prevent
   repeated submission. Preserve usable keyboard focus and accessible labels.
+- Use real buttons for inline editing and real links for navigation, preserving
+  modified clicks/new tabs. Modal editors have a programmatic name, linked labels,
+  initial focus, Tab containment, Escape cancellation and return focus. During a
+  save, lock its fields/actions and block duplicate requests synchronously.
+- Name transitioned CSS properties explicitly; honor reduced-motion preferences.
+  Align comparable quantities with tabular numerals without adding visual clutter.
 - Keep status and next action visible; put diagnostics in expandable details.
   Long names must fit their column at the same window width, with full text
   available on demand. Do not solve overlap by shrinking text beyond readability.
