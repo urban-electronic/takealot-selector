@@ -468,7 +468,12 @@ async def debug_scraper():
 
 @app.get("/")
 def root():
-    return {"message": "Takealot 选品与利润测算系统 API", "version": "1.0.0"}
+    # build 字段用于确认「线上到底跑的是哪个提交」。Railway 部署时会注入
+    # RAILWAY_GIT_COMMIT_SHA；之前判断后端有没有重新部署只能靠新增的 OpenAPI 字段，
+    # 或者让用户去控制台看，容易各说各话。这里直接把自己的提交号报出来。
+    import os
+    sha = (os.environ.get('RAILWAY_GIT_COMMIT_SHA') or os.environ.get('GIT_COMMIT_SHA') or '').strip()
+    return {"message": "Takealot 选品与利润测算系统 API", "version": "1.0.0", "build": sha[:12] or "unknown"}
 
 
 @app.on_event('startup')
