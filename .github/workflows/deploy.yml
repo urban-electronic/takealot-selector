@@ -21,6 +21,8 @@ jobs:
         run: npm install
       - name: Check audit isolation and failure handling
         run: npm run test:audit-safety
+      - name: Check visual consistency
+        run: npm run check:visual
       - name: Build
         run: npm run build
         env:
