@@ -21,11 +21,25 @@ let fixture = [];
 let writes = 0;
 let readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
 let pauseFixture;
+// 未显式 mock 的相对导入按真实 .ts/.tsx 编译，避免新增一个模块就让整组测试失败。
+const localModule = name => {
+  if (typeof name !== 'string' || !name.startsWith('.')) return null;
+  for (const ext of ['.ts', '.tsx']) {
+    const target = path.resolve(path.dirname(file), name + ext);
+    if (!fs.existsSync(target)) continue;
+    const m = new Module(target, module);
+    m.filename = target;
+    m.paths = Module._nodeModulePaths(path.dirname(target));
+    m._compile(ts.transpileModule(fs.readFileSync(target, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
+    return m.exports;
+  }
+  return null;
+};
 const originalRequire = compiled.require.bind(compiled);
 compiled.require = name => name === '../remoteApi' ? new Proxy({
   getAutomaticPricing: () => readPricing(),
   pauseAutomaticPricing: (...args) => pauseFixture ? pauseFixture(...args) : Promise.reject(Error('Unexpected pause')),
-}, { get: (target, key) => target[key] || (() => { writes++; throw Error('Unexpected mutation'); }) }) : originalRequire(name);
+}, { get: (target, key) => target[key] || (() => { writes++; throw Error('Unexpected mutation'); }) }) : (localModule(name) || originalRequire(name));
 compiled._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 },
 }).outputText, file);
