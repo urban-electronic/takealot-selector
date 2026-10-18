@@ -344,7 +344,16 @@ def shared_snapshot(db, product_id, offer_id, sku, max_age=600):
     snapshot = monitor.get('snapshot')
     if not isinstance(snapshot, dict) or snapshot.get('error'):
         return {'error': '等待Buybox完整行情采集', 'offers': []}
-    return snapshot
+    # Recheck identity at consumption, including snapshots produced by older
+    # collectors using an automatically inferred name or a since-edited name.
+    from services.seller_identity import name_of, holds_buybox, normalize
+    confirmed_name = name_of(db, DEFAULT_STORE_ID)
+    value = dict(snapshot)
+    value['holdingBuyboxVerified'] = holds_buybox(snapshot, confirmed_name)
+    value['offers'] = [dict(offer, isMine=bool(confirmed_name and
+                      normalize(offer.get('seller')) == normalize(confirmed_name)))
+                       for offer in snapshot.get('offers', []) if isinstance(offer, dict)]
+    return value
 
 def process(row_id):
     from database import SessionLocal

@@ -14,10 +14,9 @@ SKU 9902388556722 的 Buybox 卖家是 `ValuezyVAT Registered`，价格和本店
 缺的只是「本店叫什么」。这个模块负责把「本店叫什么」确定下来：
 
 1. **手填优先**：用户在设置里填的名字是权威，任何自动推断都不覆盖它。
-2. **自动学习**：把每次采集中「Buybox 价 == 本店价」时出现的卖家名按
-   **不同 SKU 数**投票。一个对手要在 3 个以上不同 SKU 上都恰好和我们同价
-   并把 Buybox 赢走，不可能持续发生；而本店自己的名字会在几乎所有 SKU 上出现。
-   所以「出现在 ≥3 个不同 SKU 上、且占观察到的 SKU 数 ≥60%」才算学到。
+2. **候选统计**：按不同 SKU 数统计同价卖家，仅供核对。
+   同一个竞争卖家可以在多个 SKU 上同价持位，票数不能证明它是本店。
+   历史 source=auto 也只作为候选；name_of 仅返回已手工确认的名字。
 
 学到了名字之后，`buyboxSeller` 与它相同 → 本店持位（可以守位提价）；
 不同 → 是对手持位（可以去抢位让利）。两条路都是真的调价。
@@ -29,7 +28,7 @@ from datetime import datetime, timezone
 from models import SystemSettings
 
 PREFIX = '_seller_identity:'
-# 同一个名字至少要在这么多个**不同 SKU** 上出现过，才认作本店。
+# 候选提示的最少不同 SKU 数，不构成身份认证。
 MIN_SKUS = 3
 # 还要占观察到的 SKU 数的这个比例，避免两个名字都常见时误判。
 MIN_SHARE = 0.6
@@ -81,9 +80,14 @@ def save(db, store, value):
 
 
 def name_of(db, store):
-    """本店卖家名：手填优先，其次自动学到的。都没有返回空串。"""
+    """Only an explicitly confirmed name is evidence of our seller identity.
+
+    Repeated same-price winners can be the same competitor on many SKUs. Votes
+    remain useful suggestions, including legacy source=auto rows, but no number
+    of price matches verifies ownership.
+    """
     value = load(db, store)
-    return (value.get('name') or '').strip()
+    return (value.get('name') or '').strip() if value.get('source') == 'manual' else ''
 
 
 def set_manual(db, store, name):
