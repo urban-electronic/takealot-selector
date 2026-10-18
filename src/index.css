@@ -311,7 +311,10 @@ button {
   overflow: hidden; border: 1px solid var(--color-border); border-radius: 4px; background: #fff;
 }
 .packing-thumb .packing-img { width: 100%; height: 100%; object-fit: contain; }
-.packing-thumb .packing-noimg { width: 100%; padding: 0 2px; overflow-wrap: anywhere; }
+/* 窄屏缩略图只有 34px，而「待补图」三个字在 11px 下要 33px 宽。表格单元格继承了
+   white-space:nowrap，会把 overflow-wrap:anywhere 直接废掉，文字只能被 overflow
+   裁掉（宽 35 > 盒 32）。这里显式允许换行，让它在两行内排开。 */
+.packing-thumb .packing-noimg { width: 100%; padding: 0 2px; overflow-wrap: anywhere; white-space: normal; }
 
 .packing-col-sku { min-width: 0; }
 .packing-sku {
@@ -358,7 +361,10 @@ button {
   .packing-table-scroll .product-table tbody { display: block; }
   .packing-table-scroll .product-table tr {
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr) auto;
+    /* 首列放缩略图：34px 时「待补图」三个字（11px 下 33px）塞不进 32px 内容区，
+       只能折成两行，而卡片明明还有几百像素空着。放到 46px 让占位文字一行排开，
+       缩略图在手机上也能看清是什么货。 */
+    grid-template-columns: 46px minmax(0, 1fr) auto;
     grid-template-areas:
       "pick name actions"
       "image sku actions";
@@ -367,14 +373,17 @@ button {
     padding: 10px 12px;
     border-bottom: 1px solid var(--color-border);
   }
-  .packing-table-scroll .product-table td { display: block; padding: 0; border: 0; }
+  /* 必须带上 tbody：不带的话选择器权重 (0,2,1) 压不过上面
+     `.packing-table-scroll .product-table tbody td { padding: 8px 10px }` 的 (0,2,2)，
+     padding 清不掉——36px 的 image 格子只剩 16px 内容宽度，34px 缩略图会溢出。 */
+  .packing-table-scroll .product-table tbody td { display: block; padding: 0; border: 0; }
   .packing-col-pick { grid-area: pick; }
   .packing-col-image { grid-area: image; }
   .packing-col-sku { grid-area: sku; display: flex; align-items: center; gap: 6px; }
   .packing-col-sku .packing-sku { margin-top: 0; }
   .packing-col-name { grid-area: name; }
   .packing-col-actions { grid-area: actions; position: static !important; box-shadow: none !important; }
-  .packing-thumb { width: 34px; height: 34px; }
+  .packing-thumb { width: 44px; height: 44px; }
   .packing-col-actions .btn { display: block; width: 100%; margin: 0 0 4px; }
   .packing-name-row { gap: 4px 6px; }
 }
