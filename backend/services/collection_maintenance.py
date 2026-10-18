@@ -91,16 +91,8 @@ def repair_monitor(monitor, now=None):
                 value['next_due'] = attempted + interval_seconds
                 actions.append(f'next_due {int(due)} 拉回 {int(value["next_due"])}')
 
-    # ③ 修复性重采：停采却留着错误、且冷却期已过的，安排一次只读采集。
-    #    采到了错误自然清掉；采不到就维持停采（下一步会归一成 paused，不再报红）。
-    #    用现成的 request_once 机制，不新造一条采集路径。
-    if was_error and not value.get('enabled') and not value.get('request_once'):
-        last_repair = value.get('repair_attempted_at')
-        if not isinstance(last_repair, (int, float)) or now - last_repair >= REPAIR_COOLDOWN_SECONDS:
-            value['request_once'] = True
-            value['next_due'] = now
-            value['repair_attempted_at'] = now
-            actions.append('安排一次修复性重采')
+    # Disabled collection is an operator decision. Repair may classify history,
+    # but cannot grant itself request_once; explicit existing requests survive.
 
     # ④ 已停采却留着 error：它不是故障，是用户把这个 SKU 关掉了。
     #    归一成 paused，真实原因留在 last_error_* 里，信息不丢，也不再报红。

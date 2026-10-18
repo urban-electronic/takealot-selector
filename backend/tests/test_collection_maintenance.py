@@ -43,20 +43,28 @@ def challenge_record():
 
 
 def test_challenge_page_is_not_reported_as_price_not_found():
-    fixed, actions = repair_monitor(challenge_record(), now=1791912000)
+    record = challenge_record()
+    record['enabled'] = True
+    fixed, actions = repair_monitor(record, now=1791912000)
     assert fixed['error_code'] == 'site_challenge'
     assert '验证' in fixed['error'] or '网站' in fixed['error']
     assert any('price_not_found' in a and 'site_challenge' in a for a in actions)
 
 
-def test_paused_row_gets_one_repair_collection_before_being_normalised():
+def test_paused_row_never_schedules_collection_during_repair():
     now = 1791912000.0
     fixed, actions = repair_monitor(challenge_record(), now=now)
+    assert fixed['request_once'] is False
+    assert 'repair_attempted_at' not in fixed
+    assert fixed['status'] == 'paused'
+    assert not any('修复性重采' in a for a in actions)
+
+
+def test_repair_preserves_explicit_one_shot_request():
+    record = challenge_record()
+    record['request_once'] = True
+    fixed, _ = repair_monitor(record, now=1791912000)
     assert fixed['request_once'] is True
-    assert fixed['next_due'] == now
-    assert fixed['repair_attempted_at'] == now
-    assert any('修复性重采' in a for a in actions)
-    # 这一轮还要去采，所以先别改成 paused——否则采集结果无处可写。
     assert fixed['status'] == 'error'
 
 
@@ -97,6 +105,7 @@ def test_decisive_code_is_never_rewritten_by_diagnostics():
     """已经定位到根因的结论不能被 diagnostics 覆盖（2026-10-17 的教训）。"""
     record = challenge_record()
     record['error_code'] = 'variant_unmatched'
+    record['enabled'] = True
     record['error'] = '未确认SKU对应变体，不使用默认变体报价'
     fixed, actions = repair_monitor(record, now=1791912000)
     assert fixed['error_code'] == 'variant_unmatched'
@@ -129,6 +138,7 @@ def test_row_without_diagnostics_is_not_touched():
     """没有 diagnostics 就没有重判依据，不许瞎猜。"""
     record = challenge_record()
     record.pop('diagnostics')
+    record['enabled'] = True
     fixed, actions = repair_monitor(record, now=1791912000)
     assert fixed['error_code'] == 'price_not_found'
     assert not any('错误码' in a for a in actions)
@@ -210,10 +220,23 @@ def test_site_challenge_is_not_retried(monkeypatch):
 
     monkeypatch.setattr(monitor, 'collect', challenged)
     monitor._collect_with_retry(object(), {}, {})
-    # buybox_cards/price_nodes 都是 0 → 判为「页面没渲染」，允许重试一次。
-    # 这是刻意的：403 挑战页在真实站点上常常第二次就正常返回商品页，
-    # 而真正的持续拦截会由 classify 判成 site_challenge 并在下一轮退避 30 分钟。
-    assert len(calls) == 2
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('payload', [
+    {'error': 'site_challenge'},
+    {'diagnostics': {'page_title': 'Just a moment...'}},
+    {'diagnostics': {'http_status': 403}},
+    {'diagnostics': {'http_status': 429}},
+    {'variantSwitchFailed': True},
+    {'error': 'variant_unmatched'},
+])
+def test_block_and_identity_signals_override_empty_page_retry(payload):
+    from services.buybox_monitor import _should_retry_collect
+    snapshot = {'error': 'price_not_found', **payload}
+    snapshot['diagnostics'] = {'buybox_cards': 0, 'price_nodes': 0,
+                               **payload.get('diagnostics', {})}
+    assert _should_retry_collect(snapshot) is False
 
 
 def test_exception_is_raised_after_the_last_attempt(monkeypatch):

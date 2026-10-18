@@ -46,6 +46,16 @@ def _should_retry_collect(snapshot):
     """这一轮的结果值不值得再试一次。"""
     if not isinstance(snapshot, dict):
         return True
+    from services.collection_diagnostics import classify
+    code, _ = classify(snapshot)
+    # Explicit site/identity failures outrank empty DOM counters: a challenge
+    # page also has zero cards. Never revisit it as a skeleton-page retry.
+    if code in ('site_challenge', 'http_forbidden', 'rate_limited',
+                'variant_unmatched', 'product_not_found', 'invalid_url',
+                'product_redirect', 'unstable_price', 'tls_error'):
+        return False
+    if snapshot.get('error') in ('variant_unmatched', 'http_forbidden', 'rate_limited'):
+        return False
     diagnostics = snapshot.get('diagnostics') or {}
     # 一个元素都没认出来 = 落地页还没渲染成商品页，再等一会儿往往就有了。
     if diagnostics.get('buybox_cards') == 0 and diagnostics.get('price_nodes') == 0:
