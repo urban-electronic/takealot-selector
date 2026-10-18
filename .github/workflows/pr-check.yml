@@ -23,17 +23,17 @@ jobs:
         with:
           node-version: 20
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Install dependencies
         run: npm install
 
       # 清单只维护一份：package.json 的 check 脚本。这条命令之前在这里和
       # deploy.yml 各抄了一遍，两边都漏了用例（这里漏 price / bookmarklet / values）。
+      #
+      # --quick：这个 job 只管前端。后端 pytest 在下面的 backend job 里跑，那边
+      # 才装了 Python 依赖。这里原本也挂了 setup-python 却没装包，check 一旦包含
+      # 后端 pytest 就必然失败。
       - name: Run the full check suite
-        run: npm run check
+        run: npm run check -- --quick
 
       - name: Build
         run: npm run build
@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -55,7 +59,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -q -r backend/requirements.txt pytest
 
+      # 走 selfcheck 而不是直接 pytest：scripts/test-*.py 那几个审计套件也要跑，
+      # 手抄清单会漂。--require-python 让「依赖没装上」变成红灯而不是跳过。
       - name: Run backend tests
-        working-directory: backend
-        run: python -m pytest -q
+        run: node scripts/selfcheck.cjs --python-only --require-python
 

@@ -7,10 +7,16 @@
  * 这里改成扫 scripts/test-*.cjs|mjs，新套件放进目录就自动纳入，不会再漂。
  *
  * 用法：
- *   node scripts/selfcheck.cjs            # 全部
- *   node scripts/selfcheck.cjs --quick    # 跳过后端 pytest
- *   node scripts/selfcheck.cjs --list     # 只列出会跑哪些步骤
+ *   node scripts/selfcheck.cjs                 # 全部
+ *   node scripts/selfcheck.cjs --quick         # 跳过后端 pytest（前端门禁用）
+ *   node scripts/selfcheck.cjs --python-only   # 只跑 Python 侧（审计 + 后端 pytest）
+ *   node scripts/selfcheck.cjs --require-python # 没有可用 Python 就判失败，不许静默跳过
+ *   node scripts/selfcheck.cjs --list          # 只列出会跑哪些步骤
  * 退出码 0 = 全绿；1 = 有失败（失败步骤的末尾输出会打出来）。
+ *
+ * 关于 Python 依赖：本机没装 fastapi/pytest 时，Python 侧默认「跳过并显式标注」，
+ * 不判失败——否则只想改个前端的人会被卡住。但跳过会丢掉后端覆盖，所以 CI 里
+ * 必须用 --require-python 或 --python-only，让「没装依赖」变成失败而不是悄悄变绿。
  */
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -22,9 +28,15 @@ const BACKEND = path.join(ROOT, 'backend');
 const args = new Set(process.argv.slice(2));
 const QUICK = args.has('--quick');
 const LIST = args.has('--list');
+const PY_ONLY = args.has('--python-only');
+// 两件事必须分开：--python-only 只决定「跑哪些步骤」，--require-python 才决定
+// 「缺依赖算不算失败」。混在一起的话，只想跑后端的人会莫名其妙被前端拖慢，
+// 而跳过分支也没法单独验证。CI 里一律显式写 --require-python。
+const REQUIRE_PYTHON = args.has('--require-python') || process.env.SELFCHECK_REQUIRE_PYTHON === '1';
 
 const steps = [];
-const add = (name, cmd, cmdArgs, cwd, timeoutMs = 300000) => steps.push({ name, cmd, cmdArgs, cwd, timeoutMs });
+const add = (name, cmd, cmdArgs, cwd, timeoutMs = 300000, skipReason = null) =>
+  steps.push({ name, cmd, cmdArgs, cwd, timeoutMs, skipReason });
 
 // 1) 类型检查：直接调本地 typescript，不经过 npx（离线也能跑，不会卡在下载上）。
 let tsc = 'npx';
@@ -33,16 +45,16 @@ try {
   tsc = process.execPath;
   tscArgs = [require.resolve('typescript/bin/tsc'), '--noEmit'];
 } catch { /* 没有本地 typescript 时退回 npx */ }
-add('类型检查 tsc', tsc, tscArgs, ROOT, 240000);
+if (!PY_ONLY) add('类型检查 tsc', tsc, tscArgs, ROOT, 240000);
 
 // 2) 视觉一致性（15 组约束：字号下限、对比度、控件尺寸、白字禁令……）
-add('视觉一致性', process.execPath, [path.join('scripts', 'check-visual-consistency.cjs')], ROOT, 180000);
+if (!PY_ONLY) add('视觉一致性', process.execPath, [path.join('scripts', 'check-visual-consistency.cjs')], ROOT, 180000);
 
 // 3) 全部前端套件：扫目录，不写死清单。
 const suites = fs.readdirSync(path.join(ROOT, 'scripts'))
   .filter(f => /^test-.*\.(cjs|mjs)$/.test(f))
   .sort();
-for (const f of suites) add(`前端 ${f}`, process.execPath, [path.join('scripts', f)], ROOT, 180000);
+if (!PY_ONLY) for (const f of suites) add(`前端 ${f}`, process.execPath, [path.join('scripts', f)], ROOT, 180000);
 
 // 4) Python 侧的审计/安全测试（test-*.py 才是断言，其余是生成报告的审计脚本）。
 const pySuites = fs.readdirSync(path.join(ROOT, 'scripts'))
@@ -52,6 +64,9 @@ const pySuites = fs.readdirSync(path.join(ROOT, 'scripts'))
 // 5) 后端 pytest：需要一个装了 fastapi/pytest 的解释器。
 function pythonCandidates() {
   const list = [];
+  // SELFCHECK_PYTHON=none 显式表示「没有 Python」，用来验证跳过分支，也让
+  // 只想跑前端的人有个不用改 PATH 的开关。
+  if (process.env.SELFCHECK_PYTHON === 'none') return [];
   if (process.env.SELFCHECK_PYTHON) list.push(process.env.SELFCHECK_PYTHON);
   const home = os.homedir();
   const venv = path.join(home, '.workbuddy-ai', 'binaries', 'python', 'envs', 'default');
@@ -68,12 +83,16 @@ function usablePython() {
 }
 
 const py = usablePython();
+// 没装依赖时：默认「跳过但标注」，CI 里用 --require-python 让它变成失败。
+const pySkip = py ? null
+  : (REQUIRE_PYTHON ? null
+    : '本机没有装了 fastapi/pytest 的 Python：设 SELFCHECK_PYTHON 指向它；要强制要求请加 --require-python');
 for (const f of pySuites) {
-  if (py) add(`审计 ${f}`, py, [path.join('scripts', f)], ROOT, 180000);
+  add(`审计 ${f}`, py || '', py ? [path.join('scripts', f)] : [], ROOT, 180000, pySkip);
 }
 if (!QUICK) {
-  if (py) add('后端 pytest', py, ['-m', 'pytest', 'tests', '-q', '-p', 'no:cacheprovider'], BACKEND, 420000);
-  else add('后端 pytest', '', [], BACKEND, 0);
+  add('后端 pytest', py || '', py ? ['-m', 'pytest', 'tests', '-q', '-p', 'no:cacheprovider'] : [],
+      BACKEND, 420000, pySkip);
 }
 
 if (LIST) {
@@ -81,12 +100,17 @@ if (LIST) {
   process.exit(0);
 }
 
-const RED = '\u001b[31m', GREEN = '\u001b[32m', DIM = '\u001b[2m', RESET = '\u001b[0m';
+const RED = '\u001b[31m', GREEN = '\u001b[32m', DIM = '\u001b[2m', YELLOW = '\u001b[33m', RESET = '\u001b[0m';
 const results = [];
 const startedAll = Date.now();
 
 for (const step of steps) {
   const started = Date.now();
+  if (step.skipReason) {
+    results.push({ ...step, ok: true, skipped: true, ms: 0, tail: step.skipReason });
+    process.stdout.write(`${YELLOW}−${RESET} ${step.name} ${DIM}已跳过${RESET}\n`);
+    continue;
+  }
   if (!step.cmd) {
     results.push({ ...step, ok: false, ms: 0, tail: '找不到装了 fastapi/pytest 的 Python：设 SELFCHECK_PYTHON 指向它，或跳过（--quick）。' });
     process.stdout.write(`${RED}✗${RESET} ${step.name}\n`);
@@ -101,6 +125,7 @@ for (const step of steps) {
 }
 
 const failed = results.filter(r => !r.ok);
+const skipped = results.filter(r => r.skipped);
 console.log('');
 for (const r of failed) {
   console.log(`${RED}── ${r.name} 失败（${(r.ms / 1000).toFixed(1)}s）${RESET}`);
@@ -108,7 +133,14 @@ for (const r of failed) {
   console.log('');
 }
 const total = ((Date.now() - startedAll) / 1000).toFixed(1);
-console.log(failed.length
-  ? `${RED}${failed.length}/${results.length} 步失败${RESET}，用时 ${total}s：${failed.map(f => f.name).join('、')}`
-  : `${GREEN}全部 ${results.length} 步通过${RESET}，用时 ${total}s`);
+const passedCount = results.length - failed.length - skipped.length;
+if (failed.length) {
+  console.log(`${RED}${failed.length}/${results.length} 步失败${RESET}，用时 ${total}s：${failed.map(f => f.name).join('、')}`);
+} else if (skipped.length) {
+  // 跳过不等于通过：必须在结论里点名，否则「绿」会骗人。
+  console.log(`${GREEN}${passedCount} 步通过${RESET}，${YELLOW}${skipped.length} 步跳过${RESET}（${skipped.map(s => s.name).join('、')}），用时 ${total}s`);
+  console.log(`${DIM}跳过的原因是本机缺少 Python 依赖；CI 会用 --require-python 强制要求。${RESET}`);
+} else {
+  console.log(`${GREEN}全部 ${results.length} 步通过${RESET}，用时 ${total}s`);
+}
 process.exit(failed.length ? 1 : 0);

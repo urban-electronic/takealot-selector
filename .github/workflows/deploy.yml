@@ -23,8 +23,12 @@ jobs:
       # price / bookmarklet / values / operations / procurement 五套用例，
       # 于是「PR 上跑过的」和「上线前跑过的」变成两份清单，迟早会漂移。
       # 现在只认 npm run check，新增用例只要进 check 就自动挡住上线。
+      #
+      # --quick：这个 job 只负责前端。后端 pytest 放在下面的 backend job 里跑，
+      # 那边才装了 Python 依赖；这里若跑全套会因为缺依赖而整条流水线失败
+      # （2026-10-18 就这么挂过一次，Pages 一直没发出去）。
       - name: Run the full check suite
-        run: npm run check
+        run: npm run check -- --quick
       - name: Build
         run: npm run build
         env:
@@ -34,6 +38,27 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+
+  backend:
+    # 后端由 Railway 单独部署，和 Pages 互不影响，所以故意不让 deploy 依赖它：
+    # 它挂了要能一眼看见，但不该连带把前端卡住。--require-python 保证「装依赖失败」
+    # 表现为红灯，而不是悄悄跳过、看着像通过。
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -q -r backend/requirements.txt pytest
+      - name: Run backend tests
+        run: node scripts/selfcheck.cjs --python-only --require-python
 
   deploy:
     needs: build

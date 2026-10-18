@@ -27,7 +27,8 @@
     "check:types": "tsc --noEmit",
     "check": "node scripts/selfcheck.cjs",
     "check:all": "node scripts/selfcheck.cjs",
-    "check:quick": "node scripts/selfcheck.cjs --quick"
+    "check:quick": "node scripts/selfcheck.cjs --quick",
+    "check:py": "node scripts/selfcheck.cjs --python-only --require-python"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
