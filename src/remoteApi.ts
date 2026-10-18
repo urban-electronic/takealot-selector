@@ -24,11 +24,22 @@ const syncToLocal = async (cmd: string, args: Record<string, unknown>): Promise<
 };
 
 const getBaseUrl = (): string => {
+  // 用户在设置页填过地址就用它，这条永远优先。
   try {
-    return localStorage.getItem('api_base_url') || 'https://takealot-selector-production.up.railway.app';
+    const saved = localStorage.getItem('api_base_url');
+    if (saved) return saved;
   } catch {
-    return 'https://takealot-selector-production.up.railway.app';
+    // localStorage 不可用（隐私模式等）时按未设置处理
   }
+  // 网页版由后端同源提供（见 backend/main.py 末尾的静态托管）：用相对路径，
+  // 请求自动打到当前域名。硬编码域名在这里是隐患——换域名、或者域名在某些
+  // 网络下不通（GitHub Pages 就是这样）时，页面能打开但所有接口都连不上。
+  //
+  // 只认构建期开关，不靠 location 判断：Tauri 生产环境的 origin 是
+  // http(s)://tauri.localhost，dev 时是 localhost:1420，用 hostname 猜容易误判，
+  // 一旦判错桌面版就会去请求它自己那份资源，接口全 404。
+  if (import.meta.env.VITE_API_SAME_ORIGIN === '1') return '';
+  return 'https://takealot-selector-production.up.railway.app';
 };
 
 const getApiKey = (): string => {

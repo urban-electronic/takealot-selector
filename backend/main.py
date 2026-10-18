@@ -468,11 +468,22 @@ async def debug_scraper():
 
 
 @app.get("/")
-def root():
+def root(request: Request):
     # build 字段用于确认「线上到底跑的是哪个提交」。Railway 部署时会注入
     # RAILWAY_GIT_COMMIT_SHA；之前判断后端有没有重新部署只能靠新增的 OpenAPI 字段，
     # 或者让用户去控制台看，容易各说各话。这里直接把自己的提交号报出来。
     import os
+    from pathlib import Path
+
+    # 网页版也挂在这个域名下，和健康检查共用根路径：
+    # 浏览器（Accept 带 text/html）拿页面，curl / 监控脚本继续拿 JSON。
+    # 把健康检查挪到别的路径会打挂现有监控，所以按 Accept 分流。
+    index = Path(os.environ.get('FRONTEND_DIST')
+                 or (Path(__file__).resolve().parent / 'dist')) / 'index.html'
+    if index.is_file() and 'text/html' in request.headers.get('accept', ''):
+        from fastapi.responses import FileResponse
+        return FileResponse(index, headers={'Cache-Control': 'no-cache, must-revalidate'})
+
     sha = (os.environ.get('RAILWAY_GIT_COMMIT_SHA') or os.environ.get('GIT_COMMIT_SHA') or '').strip()
     return {"message": "Takealot 选品与利润测算系统 API", "version": "1.0.0", "build": sha[:12] or "unknown"}
 
@@ -501,3 +512,38 @@ def stop_operations_sync():
 async def close_image_proxy_client():
     from api import image_proxy
     await image_proxy.aclose_service()
+
+
+# ---- 网页版：同源托管前端构建产物 ----
+# 为什么放在后端：GitHub Pages 在部分网络下不可达（系统代理对 *.github.io 直接
+# 断链），而 Railway 这个域名本来就在用。把构建产物一起打进镜像，网页版与 API
+# 同源，既不用再依赖第三方静态托管，也顺带省掉跨域和 API 地址配置。
+# dist 不存在时（只跑后端 / 本地开发）整段跳过，行为与之前完全一致。
+from pathlib import Path as _Path
+
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_DIST = _Path(os.environ.get('FRONTEND_DIST') or (_Path(__file__).resolve().parent / 'dist')).resolve()
+
+if (_DIST / 'index.html').is_file():
+    if (_DIST / 'assets').is_dir():
+        app.mount('/assets', StaticFiles(directory=str(_DIST / 'assets')), name='assets')
+
+    @app.get('/{full_path:path}', include_in_schema=False)
+    async def serve_spa(full_path: str):
+        # /api 走上面的路由；能落到这里说明这个接口根本不存在，必须 404。
+        # 若在这里回 index.html，前端会把 HTML 当 JSON 解析，
+        # 报出来的错跟真正的原因完全对不上。
+        if full_path == 'api' or full_path.startswith('api/'):
+            raise HTTPException(status_code=404, detail='Not Found')
+        if full_path:
+            candidate = (_DIST / full_path).resolve()
+            # 防目录穿越：必须仍在 dist 内，否则 ../ 能读到服务器上的任意文件
+            if _DIST in candidate.parents and candidate.is_file():
+                return FileResponse(candidate)
+        # index.html 引用的是带 hash 的资源名，所以它自己不能被缓存住，
+        # 否则发版后浏览器还在用旧 index 去拉已经删掉的旧 JS。
+        return FileResponse(_DIST / 'index.html',
+                            headers={'Cache-Control': 'no-cache, must-revalidate'})
