@@ -122,3 +122,20 @@ def test_preview_exception_does_not_expose_profile_or_token(monkeypatch):
     assert result['price_changed'] is False and result['enabled'] is False
     assert 'fixture-private' not in json.dumps(result)
     assert '/private/profile' not in json.dumps(result)
+
+
+def test_listing_exposes_product_image_for_row_thumbnail(monkeypatch):
+    """调价列表每行要带图片地址。
+
+    这条以前没有任何断言，于是「listing 里补 image 字段」这个改动在合并时被
+    静默丢掉过一次——列表照样能用，只是每行都显示「无图」，没人报错。
+    """
+    monkeypatch.setattr(routes, 'configured_key', lambda db: 'test')
+    with database() as db:
+        db.query(Product).filter_by(id='one').update(
+            {'product_image_url': 'https://media.takealot.com/covers_images/one.jpg'})
+        db.commit()
+        rows = {r['sku']: r for r in routes.listing(db, DEFAULT_STORE_ID)['rows']}
+        assert rows['one']['image'] == 'https://media.takealot.com/covers_images/one.jpg'
+        # 没有图片时给空串而不是 None：前端拿空串判断「无图」，None 会走到 img src=undefined。
+        assert rows['two']['image'] == ''
