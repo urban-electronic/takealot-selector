@@ -79,13 +79,15 @@ export default function Settings() {
     if (dataSource === 'remote') void loadIdentity();
   }, [dataSource]);
 
-  const handleSaveIdentity = async () => {
+  // 确认本店身份应该是一步操作。候选已经在库里了，让人照着抄一遍名字
+  // 是把「严谨」变成了「麻烦」——麻烦的结果就是不填，调价就一直停着。
+  const saveIdentity = async (name: string) => {
     setIdentityBusy(true); setIdentityMsg('');
     try {
-      const value = await setSellerIdentity(identityDraft.trim());
+      const value = await setSellerIdentity(name);
       setIdentity((prev) => ({ ...prev, name: value.name, source: value.source }));
       setIdentityDraft(value.name);
-      setIdentityMsg(value.name ? '已保存，按此卖家名核实持位。' : '已清除，持位身份待确认。');
+      setIdentityMsg(value.name ? `已确认「${value.name}」，按此核实持位。` : '已清除，持位身份待确认。');
       void loadIdentity();
     } catch (e) {
       setIdentityMsg(`保存失败：${(e as Error).message}`);
@@ -93,6 +95,7 @@ export default function Settings() {
       setIdentityBusy(false);
     }
   };
+  const handleSaveIdentity = () => saveIdentity(identityDraft.trim());
 
   const handleSaveExchange = async () => {
     try {
@@ -292,12 +295,23 @@ export default function Settings() {
             调价要靠它分辨 Buybox 是<b>本店在持位</b>还是对手同价压着——只看价格会把两者搞混，
             方向一反就是赔钱。
           </p>
-          <p>下方卖家名统计供核对；确认本店名称并保存后，才用于持位判断。</p>
+          <p>下方是采集统计到的卖家名，点一下即确认，确认后才用于持位判断。</p>
           {identity.candidates.length > 0 && (
-            <p style={{ fontSize: 12 }}>
-              采集里出现最多的卖家名：
-              {identity.candidates.map((c) => `${c.name}（${c.skus} 个 SKU）`).join('、')}
-            </p>
+            <div className="identity-candidates">
+              <span>点一下即确认：</span>
+              {identity.candidates.map((c) => (
+                <button
+                  key={c.name}
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  disabled={identityBusy || dataSource !== 'remote' || identity.name === c.name}
+                  title={`把「${c.name}」确认为本店卖家名`}
+                  onClick={() => saveIdentity(c.name)}
+                >
+                  {c.name} · {c.skus} 个 SKU
+                </button>
+              ))}
+            </div>
           )}
           {identityMsg && <p role="status" style={{ fontSize: 12, color: 'var(--text-body)' }}>{identityMsg}</p>}
         </div>

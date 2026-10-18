@@ -17,6 +17,68 @@ PREFIX = '_pricing_rule:'
 _stop = threading.Event()
 _thread = None
 
+# 降价必须和涨价一样有闸。涨价这边有三重限制（单次 3%、累计 20%、间隔 12h），
+# 降价原来只有利润底价兜着——一次读到离谱报价就能把价格砍到地板，而底价是
+# 「20% 毛利」，对一件 R 1999 的货就是砍到 R 800 也叫合规。
+DEFAULT_MAX_DROP_PCT = 15
+# 可售天数比空运周期（约 21 天）还短就算库存紧张。此时降价是纯亏：库存是固定的，
+# 便宜卖只会让同样的货少赚钱，还会把断货提前。这是算术，不是保守。
+DEFAULT_TIGHT_COVER_DAYS = 21
+# 可售天数超过半年算滞销。这时压着资金才是最大成本，让利回笼现金比每单多赚重要。
+DEFAULT_GLUT_COVER_DAYS = 180
+# 真实报价不会离参考价差 4 倍。差这么多的只有两种：我们读错了（划线价、运费、
+# 分期价），或者页面结构变了。两种都不该拿去调价。
+OUTLIER_RATIO = 4.0
+
+
+def _pressure(rule, stock):
+    """库存压力，决定「该不该降价」和「该涨多快」。
+
+    返回 (pressure, cover_days)。没有销量观测就返回 unknown —— 不知道能卖
+    几天的时候，不该假装知道，行为保持原样。
+    """
+    velocity = rule.get('velocity')
+    if isinstance(velocity, bool) or not isinstance(velocity, (int, float)) or velocity <= 0:
+        return 'unknown', None
+    if isinstance(stock, bool) or not isinstance(stock, (int, float)) or stock <= 0:
+        return 'unknown', None
+    cover = stock / velocity
+    if cover <= rule.get('tight_cover_days', DEFAULT_TIGHT_COVER_DAYS):
+        return 'tight', cover
+    if cover >= rule.get('glut_cover_days', DEFAULT_GLUT_COVER_DAYS):
+        return 'glut', cover
+    return 'normal', cover
+
+
+def _sane(price, reference):
+    """这个报价能不能信。
+
+    拿一个明显读错的数字去调价，一次就能把价格砍到地板上；而这一轮不跟，
+    最坏只是少赚一次抢位。两边的代价差得太远，所以宁可不跟。
+    """
+    if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+        return False
+    if isinstance(reference, bool) or not isinstance(reference, (int, float)) or reference <= 0:
+        return True
+    return reference / OUTLIER_RATIO <= price <= reference * OUTLIER_RATIO
+
+
+def _raise_pct(rule, pressure):
+    """单次涨幅百分比。库存紧张时走更快的档位。"""
+    pct = rule.get('raise_step_pct', 3)
+    if pressure == 'tight':
+        pct = max(pct, rule.get('tight_step_pct', 5))
+    return pct
+
+
+def _raise_step(current, rule, pressure):
+    """单次涨价幅度（元）。
+
+    快卖完的时候，断货的成本（少卖的那些天）远高于让掉的几个点毛利，
+    所以同样的守位场景应该一次多要一点，而不是照着 3% 慢慢挪。
+    """
+    return max(1, math.floor(current * _raise_pct(rule, pressure) / 100.0))
+
 def decide(current, stock, rule, snapshot):
     """保留 (target, reason) 的旧契约，内部走 plan()。
 
@@ -75,16 +137,25 @@ def plan(current, stock, rule, snapshot):
     floor = rule.get('min_price')
     p = dict(regime='hold', target=None, reason='', confidence='low', risk='low',
              current=current, floor=floor, ceiling=rule.get('max_price'),
-             cheapest=None, gap_pct=None, live_count=0, dark_count=0, sole_seller=False)
+             cheapest=None, gap_pct=None, live_count=0, dark_count=0, sole_seller=False,
+             pressure='unknown', cover_days=None, outliers=0)
     if stock <= 0:
         p.update(regime='off', reason='无库存，跳过')
         return p
+    pressure, cover = _pressure(rule, stock)
+    p.update(pressure=pressure, cover_days=round(cover, 1) if cover is not None else None)
     if snapshot.get('error'):
         p.update(regime='blind', reason='公开页采集失败，保持现价')
         return p
     raw_offers = snapshot.get('offers') or []
     typed = any(o.get('offerType') in ('fastest', 'best_price') for o in raw_offers)
     foreign, live, dark = _pools(raw_offers, typed)
+    # 离谱报价先剔掉再决策：它不参与最低价计算，也不该把整条 SKU 拖进抢位。
+    # 剔除数量如实透出，让人看得见「这轮少看了几个报价」，而不是悄悄当没有。
+    reference = rule.get('reference_price') or current
+    outliers = [o for o in live if not _sane(o['price'], reference)]
+    live = [o for o in live if _sane(o['price'], reference)]
+    p['outliers'] = len(outliers)
     buybox = snapshot.get('buyboxPrice')
     price_matches = (not isinstance(buybox, bool) and isinstance(buybox, (int, float))
                      and math.isfinite(buybox) and abs(current - buybox) < .01)
@@ -138,8 +209,7 @@ def plan(current, stock, rule, snapshot):
             # 「刚好还是最低」的位置。这不是猜测——对手的报价就是证据。
             target = min(math.floor(low - rule.get('lead_amount', 1)), ceiling)
             if rule.get('smart_raise'):
-                step = max(1, math.floor(current * rule.get('raise_step_pct', 3) / 100.0))
-                target = min(target, current + step)
+                target = min(target, current + _raise_step(current, rule, pressure))
             if target <= current:
                 p.update(regime='climb', reason='已到守位上限，保持现价')
                 return p
@@ -150,6 +220,12 @@ def plan(current, stock, rule, snapshot):
             # 一条报价都没采到，和「我是独家」是两件完全不同的事。
             # 前者是证据缺失，后者是最大的定价权，判错方向就会乱涨价。
             p.update(regime='hold', reason='页面没有采到任何报价，无法判断竞争格局，保持现价')
+            return p
+        if outliers and not live:
+            # 报价都在、但一个都不可信：这是证据出了问题，不是「没人竞争」。
+            # 顺着这条往下走就会判成独家去涨价，方向正好反了。
+            p.update(regime='hold',
+                     reason=f'{len(outliers)} 个竞品报价偏离参考价 {OUTLIER_RATIO:g} 倍以上，已剔除；本轮证据不足，保持现价')
             return p
         # 走到这里说明有报价、但都不是现货：竞品全缺货，或只有本店在售。
         # 两种都是「此刻没人能抢走 Buybox」，提价有依据，但必须可回滚。
@@ -162,20 +238,31 @@ def plan(current, stock, rule, snapshot):
                 p.update(regime='scarcity', target=back, trial='rollback',
                          reason='试涨48小时未见新成交，回退试涨前价格并暂停试涨24小时')
                 return p
-        interval = rule.get('raise_interval_hours', 12) * 3600
+        interval_hours = rule.get('raise_interval_hours', 12)
+        if pressure == 'tight':
+            # 快没货了，观察期也砍一半：慢慢涨等于把剩下的库存留给别人。
+            interval_hours = max(1, interval_hours / 2)
+        interval = interval_hours * 3600
         if now < rule.get('scarcity_pause_until', 0) or now - rule.get('last_scarcity_raise', 0) < interval:
             p.update(regime='scarcity', reason='缺货试涨观察中，暂不重复涨价')
             return p
-        step = max(1, math.floor(current * rule.get('raise_step_pct', 3) / 100.0))
+        step = _raise_step(current, rule, pressure)
         target = min(ceiling, max(current + 1, current + step))
         if target <= current or target < rule['min_price']:
             p.update(regime='scarcity', reason='已达智能试涨上限，保持现价')
             return p
         p.update(regime='scarcity', target=target, trial='raise',
                  reason=('本店是唯一在售，' if p['sole_seller'] else '确认竞品非现货，')
-                        + f'智能试涨到 R {int(target)}（每次约3%，累计不超过参考价20%）')
+                        + f'智能试涨到 R {int(target)}（每次约{_raise_pct(rule, pressure):g}%，累计不超过参考价20%）')
         return p
     # 抢位：只降不升。降价就是让利，所以下限必须由利润底价来守。
+    if pressure == 'tight':
+        # 可售天数比空运周期还短：现在降价是纯亏。库存是固定的，便宜卖只会
+        # 让同样的货少赚钱，还会把断货提前——降价的好处一天都兑现不了，
+        # 代价却立刻发生。这条不是保守，是算术。
+        p.update(regime='hold',
+                 reason=f'可售约 {int(cover)} 天，库存紧张，不跟降（同样的货少卖钱，还会提前断货）')
+        return p
     if rule['strategy'] == 'follow_lowest':
         able = _winnable(live, rule)
         if not able:
@@ -217,11 +304,25 @@ def plan(current, stock, rule, snapshot):
     if target >= current:
         p.update(regime='compete', reason='未持有时不跟涨')
         return p
+    # 降价也要有闸。涨价这边有单次步长和累计上限，降价原来只有利润底价兜着，
+    # 而底价是「20% 毛利」——对一件 R 1999 的货，砍到 R 800 也算合规。
+    # 滞销时放宽：压着资金才是最大成本，回笼现金比每单多赚重要。
+    drop_cap = max(0, min(100, rule.get('max_drop_pct', DEFAULT_MAX_DROP_PCT)))
+    if pressure == 'glut':
+        drop_cap = max(drop_cap, rule.get('glut_drop_pct', 30))
+    boundary = math.ceil(current * (1 - drop_cap / 100.0))
+    if floor:
+        boundary = max(boundary, math.ceil(floor))
+    capped = target < boundary
+    if capped:
+        target = boundary
     if abs(target - current) < rule.get('min_change', 1):
         p.update(regime='compete', reason='变化小于调整阈值')
         return p
     p.update(regime='compete', target=target,
-             reason=f'未持有 Buybox，降到 R {int(target)} 抢位（让利 {int(current - target)}，底价 R {int(floor)}）')
+             reason=(f'未持有 Buybox，降到 R {int(target)} 抢位'
+                     + (f'（一次最多降 {drop_cap:g}%，本轮只走这一步）' if capped else '')
+                     + f'（让利 {int(current - target)}，底价 R {int(floor)}）'))
     return p
 
 async def collect(product, offer, seller_name=None):
@@ -390,9 +491,19 @@ def process(row_id):
                 rule['sku_last_sale_epoch'] = metrics.get('last_sale_epoch')
                 try: rule['sales_recent'] = time.time() - datetime.fromisoformat(profile['synced_at']).timestamp() < 7200
                 except (KeyError, ValueError): rule['sales_recent'] = False
+                # 日销与可售天数：调价判断「该不该降、该涨多快」全靠它。
+                # 口径直接复用补货那边的 velocity_of()，不在这里另写一份——
+                # 两边算出不同的日销，就会出现「补货说还有 40 天、调价说只剩 5 天」。
+                from services.operations_planner import velocity_of
+                rule['velocity'] = round(velocity_of(profile), 3)
+                rule['cover_days'] = (round(offer['stock_at_takealot_total'] / rule['velocity'], 1)
+                                      if rule['velocity'] > 0 else None)
                 if offer['stock_at_takealot_total'] <= 0:
+                    # 走同一个 plan()：库存为零在它第一行就返回 off。
+                    # 这里手工拼一个 dict 的话，决策卡片会缺字段（pressure/
+                    # cover_days/outliers），前端就得对两种情况分别兜底。
                     snapshot = {'offers': []}
-                    decision = dict(regime='off', target=None, reason='无库存，跳过')
+                    decision = plan(offer['selling_price'], offer['stock_at_takealot_total'], rule, snapshot)
                 else:
                     snapshot = shared_snapshot(db, product.id, rule['offer_id'], rule['sku'])
                     decision = plan(offer['selling_price'], offer['stock_at_takealot_total'], rule, snapshot)
@@ -402,8 +513,12 @@ def process(row_id):
                 result['plan'] = {k: v for k, v in decision.items()
                                   if k in ('regime', 'target', 'reason', 'confidence', 'risk',
                                            'floor', 'ceiling', 'cheapest', 'gap_pct',
-                                           'live_count', 'dark_count', 'sole_seller', 'current')}
+                                           'live_count', 'dark_count', 'sole_seller', 'current',
+                                           'pressure', 'cover_days', 'outliers')}
                 result.update(current_price=offer['selling_price'], stock=offer['stock_at_takealot_total'],
+                    # 日销与可售天数一起落库：界面据此解释「为什么不跟降」，
+                    # 也是下一轮判断的输入。
+                    velocity=rule['velocity'], cover_days=rule['cover_days'],
                     buybox_price=snapshot.get('buyboxPrice'),
                     # 三态如实透传：True 本店持位 / False 对手持位 / None 待核实
                     holding_buybox=snapshot.get('holdingBuyboxVerified'),

@@ -1915,6 +1915,10 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 /* 同一张卡里允许写两段（一句结论 + 一句怎么用），但段落之间要留一口气，
    否则两段会连成一坨，看起来像一句话没写完。 */
 .integration-status-copy p + p { margin-top: 4px; }
+/* 候选卖家名做成可点的按钮：确认本店身份是一步操作，不该让人照着抄一遍名字。 */
+.identity-candidates { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px;
+  font-size: 12px; color: var(--text-subtle); }
+.identity-candidates .btn { font-size: 12px; }
 .integration-status-badge { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 999px; background: #f0f3f7; color: #5a6b82; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .integration-status-badge i { width: 7px; height: 7px; border-radius: 50%; background: #9aa7b7; }
 .integration-status-badge.configured { background: #eaf7ef; color: #26734c; }
