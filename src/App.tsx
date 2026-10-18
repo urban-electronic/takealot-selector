@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { DataSourceProvider } from './DataSourceContext';
+import ApiKeyGate from './ApiKeyGate';
 import { collectOnAppOpen, getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
 import type { Store } from './types';
 
@@ -97,6 +98,7 @@ export default function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <DataSourceProvider>
+        <ApiKeyGate />
         <header className="app-header">
         <div className="app-brand">
           <img src={`${import.meta.env.BASE_URL}yellow-mascot.png`} alt="黄色噜噜" />

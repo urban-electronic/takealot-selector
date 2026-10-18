@@ -95,6 +95,11 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
     if (e instanceof DOMException && e.name === 'TimeoutError') throw new Error('请求等待超时，请稍后刷新列表确认结果，避免重复提交。');
     throw e;
   });
+  if (res.status === 401) {
+    // 网页版首次访问时后端要求 API Key，但界面上只会显示「加载失败」，
+    // 用户根本不知道要去设置页填。这里发个全局信号，由 App 里的横幅接管引导。
+    try { window.dispatchEvent(new Event('api-unauthorized')); } catch { /* 非浏览器环境 */ }
+  }
   if (!res.ok) {
     // 优先透传后端 detail，避免丢失真实错误原因
     let detail = `HTTP ${res.status}: ${res.statusText}`;
