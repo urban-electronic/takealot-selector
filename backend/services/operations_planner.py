@@ -20,6 +20,43 @@ def _observation_ready(profile):
     return _known_stock(profile) is not None
 
 
+def velocity_of(profile, today=None):
+    """日销速度（件/天）：基线、近 7 天、近 3 天取最大，再按基线 3 倍封顶。
+
+    补货和调价必须用同一套口径。两边各算一份，就会出现「补货说还有 40 天、
+    调价说只剩 5 天」这种自相矛盾的判断——而这两个数字都在决定钱。
+    所以这里单独抽出来，plan() 和调价都调它，不允许再写第二份。
+    """
+    today = today or datetime.now(ZoneInfo('Asia/Shanghai')).date()
+    sales = profile.get('sales') or []
+    try:
+        observed = date.fromisoformat(profile['observed_from'])
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    days = min(30, max(1, (today - observed).days + 1))
+
+    def units(n):
+        start = today.toordinal() - n + 1
+        total = 0
+        for sale in sales:
+            try:
+                day = date.fromisoformat(sale['date']).toordinal()
+                quantity = sale['quantity']
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start <= day <= today.toordinal() and isinstance(quantity, (int, float)):
+                total += quantity
+        return total
+
+    baseline = units(days) / days
+    recent = units(min(3, days)) / min(3, days)
+    week = units(min(7, days)) / min(7, days)
+    velocity = max(baseline, week, recent)
+    if days >= 14 and baseline > 0:
+        velocity = min(velocity, baseline * 3)
+    return velocity
+
+
 def plan(profile, purchases, today=None, economics=None):
     today = today or datetime.now(ZoneInfo('Asia/Shanghai')).date()
     if not _observation_ready(profile):
@@ -45,10 +82,9 @@ def plan(profile, purchases, today=None, economics=None):
         return sum(s['quantity'] for s in sales if start <= date.fromisoformat(s['date']).toordinal() <= today.toordinal())
     baseline = units(days) / days
     recent = units(min(3, days)) / min(3, days)
-    week = units(min(7, days)) / min(7, days)
-    velocity = max(baseline, week, recent)
-    if days >= 14 and baseline > 0:
-        velocity = min(velocity, baseline * 3)
+    # 日销口径统一走 velocity_of()：调价判断「还有几天可卖」读的就是这个数，
+    # 这里再算一份迟早会漂。baseline/recent 留给下面的趋势判断用。
+    velocity = velocity_of(profile, today)
     # Snapshot represents end-of-day stock; subtract subsequent real sales only.
     consumed = sum(s['quantity'] for s in sales if snapshot < date.fromisoformat(s['date']) <= today)
     stock = max(0, profile['stock'] - consumed)

@@ -126,13 +126,18 @@ def test_global_emergency_stop_invalidates_pending_patch(monkeypatch):
 
 
 def test_unwinnable_cheapest_does_not_pin_the_whole_sku():
-    """一个抢不起的低价，不能把旁边打得过的竞品也一起废掉。"""
-    rule = {**RULE, 'min_price': 100, 'max_price': 500}
-    snapshot = {'buyboxPrice': 50, 'offers': [offer(50), offer(200)]}
-    target, reason = pricing.decide(300, 5, rule, snapshot)
-    assert target == 199, reason            # 打 200 那个，不是对着 50 认输
+    """一个抢不起的低价，不能把旁边打得过的竞品也一起废掉。
+
+    300 → 199 是一次降 34%，现在被单次跌幅护栏拦成分步走——但方向必须
+    朝着 200 那个打得过的竞品，而不是对着 80 认输。
+    """
+    rule = {**RULE, 'min_price': 100, 'max_price': 500, 'reference_price': 300}
+    snapshot = {'buyboxPrice': 80, 'offers': [offer(80), offer(200)]}
+    assert pricing.decide(300, 5, rule, snapshot)[0] == 255      # 一次降 15%
+    assert pricing.decide(255, 5, rule, snapshot)[0] == 217      # 继续
+    assert pricing.decide(217, 5, rule, snapshot)[0] == 199      # 到位
     plan = pricing.plan(300, 5, rule, snapshot)
-    assert plan['risk'] == 'high' and plan['cheapest'] == 50   # 但如实标记风险
+    assert plan['risk'] == 'high' and plan['cheapest'] == 80   # 但如实标记风险
 
 
 def test_hold_regime_raises_toward_next_competitor_not_past_ceiling():

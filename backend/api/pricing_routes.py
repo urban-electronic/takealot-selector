@@ -42,6 +42,9 @@ class Rule(BaseModel):
     lead_amount: int = Field(default=1, ge=1, le=100)
     cooldown_minutes: int = Field(default=10, ge=1, le=1440)
     max_daily_changes: int = Field(default=10, ge=1, le=100)
+    # 单次降价上限。涨价这边有步长和累计两道闸，降价原来只有利润底价兜着，
+    # 一次读到离谱报价就能把价格砍到地板。默认 15% 只拦事故，不挡正常跟价。
+    max_drop_pct: int = Field(default=15, ge=1, le=100)
     enabled: bool = False
 
 class Item(BaseModel):

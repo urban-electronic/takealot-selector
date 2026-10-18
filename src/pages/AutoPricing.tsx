@@ -201,6 +201,9 @@ export default function AutoPricing() {
   const REGIME: Record<string,string> = { compete:'抢位让利', climb:'守位提价', scarcity:'独家提价', hold:'保持现价', blind:'待核实卖家名', off:'无库存' };
   const CONFIDENCE: Record<string,string> = { high:'高', medium:'中', low:'低' };
   const RISK: Record<string,string> = { low:'低', medium:'中', high:'高', urgent:'紧急' };
+  // 库存压力不是装饰：它直接决定「该不该降价、该涨多快」。
+  // 库存紧张时不跟降（同样的货少卖钱），滞销时允许一次降更多（回笼现金）。
+  const PRESSURE: Record<string,string> = { tight:'紧张', normal:'正常', glut:'滞销' };
   const planOf = (r:any) => r.rule?.plan && typeof r.rule.plan === 'object' ? r.rule.plan : null;
   // 状态翻译集中在 utils/buyboxStatus，渲染层只负责摆放，不再各自拼文案。
   // 这里显式取一次时钟，保证同一屏内所有相对时间用的是同一个基准。
@@ -382,6 +385,8 @@ export default function AutoPricing() {
                 <span>底价 <b>R {plan.floor??'—'}</b></span>
                 <span>上限 <b>{plan.ceiling==null?'不限':`R ${plan.ceiling}`}</b></span>
                 <span>对手最低 <b>{plan.cheapest==null?'无现货':`R ${plan.cheapest}`}</b></span>
+                {plan.pressure&&plan.pressure!=='unknown'&&<span>库存 <b>{PRESSURE[plan.pressure]||plan.pressure}{plan.cover_days!=null?` · 约 ${Math.round(plan.cover_days)} 天`:''}</b></span>}
+                {plan.outliers>0&&<span>剔除异常报价 <b>{plan.outliers} 个</b></span>}
                 <p>{plan.reason}</p>
               </div>}
               <small role="status">{own.explain}</small>

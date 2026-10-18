@@ -1,0 +1,118 @@
+# 库存接入调价 + 给降价装上对称的闸（2026-10-18）
+
+## 为什么动这一刀
+
+上一轮解掉「证据不足」之后，调价能跑了。但盘下来还有两个结构性缺陷：
+
+**一、库存和调价是两套系统。** `plan(current, stock, rule, snapshot)` 里 `stock`
+只出现一次：
+
+```python
+if stock <= 0:
+    p.update(regime='off', reason='无库存，跳过')
+```
+
+库存 1 件和库存 100 件走的是同一套策略、同一个 3% 涨幅、同一个 20% 毛利底价。
+而 `operations_planner` 早就算出了 `velocity`、`cover_days`、`shortage_windows`、
+`daily_loss_zar`、`trend`——这些恰恰是定价最该用的信号，一直躺在隔壁没接线。
+
+**二、降价没有对称限制。** 涨价方向有三重闸：`raise_step_pct=3%`（单次）、
+`raise_ceiling_pct=20%`（累计）、`raise_interval_hours=12`（间隔）。
+降价方向只有 `min_price` 兜着，而底价是「20% 毛利」——对一件 R 1999 的货，
+砍到 R 800 也算合规。中间的 `compete` 分支是这么算的：
+
+```python
+raw = math.floor(min(o['price'] for o in able) - lead_amount)
+target = min(math.floor(raw), max_price)     # 没有任何幅度限制
+```
+
+一次采集错误（把 R 1999 读成 R 199，或读到划线价）就能一步砍到地板。
+
+这两件事必须一起做：让降价更频繁（滞销档）却没有护栏，风险反而更大。
+
+## 改动
+
+### 1. 日销口径只定义一次（`services/operations_planner.py`）
+
+抽出 `velocity_of(profile, today)`，`plan()` 内部改用它。补货和调价必须用同一个
+数，否则会出现「补货说还有 40 天、调价说只剩 5 天」——两个数字都在决定钱。
+
+单日爆单不能把日销算成 10 倍（否则「可售天数」假性变短、误触发涨价），
+所以保留原来的「基线 3 倍封顶」。
+
+### 2. 库存压力进决策（`services/automatic_pricing.py`）
+
+`_pressure(rule, stock)` 返回 `tight` / `normal` / `glut` / `unknown`：
+
+| 压力 | 判定 | 行为 |
+| --- | --- | --- |
+| `tight` | 可售 ≤ 21 天（短于空运周期） | **不跟降**；守位/试涨走 5% 档；试涨间隔减半 |
+| `normal` | 21 ~ 180 天 | 原行为 |
+| `glut` | ≥ 180 天 | 允许一次降 30%（回笼现金优先） |
+| `unknown` | 没有销量观测 | 完全保持原行为 |
+
+`tight` 时禁止降价的理由很硬：**库存是固定的**。手里就 5 件，降价只会让这 5 件
+少卖钱，还会把断货提前——降价的好处一天都兑现不了，代价却立刻发生。
+
+`unknown` 这一档是刻意保留的：没有销量数据时不假装知道，行为一字不改。
+线上大部分 SKU 目前就落在这里。
+
+### 3. 降价护栏 `max_drop_pct`（默认 15%）
+
+```python
+drop_cap = rule.get('max_drop_pct', DEFAULT_MAX_DROP_PCT)
+if pressure == 'glut':
+    drop_cap = max(drop_cap, rule.get('glut_drop_pct', 30))
+boundary = max(math.ceil(current * (1 - drop_cap / 100.0)), math.ceil(floor or 0))
+```
+
+护栏价和利润底价取更严的那个，两个都得守。被拦住时不是"这轮不动"，而是
+**朝着正确方向走一步**，reason 里写明「一次最多降 15%，本轮只走这一步」——
+用户看得到发生了什么，不会以为卡住了。
+
+代价是大幅跟价要分几轮。R 300 跟到 R 199 现在是 255 → 217 → 199 三步，
+每步之间隔一个 cooldown（10 分钟）。这是有意的：宁可分几次、每次都重新验证
+一次行情，也不要照着一次采集结果砍 34%。
+
+### 4. 报价离群校验（`_sane`）
+
+偏离参考价 4 倍以上的报价直接剔除，不参与最低价、不参与决策，数量记在
+`plan.outliers` 里如实透出。
+
+**关键的一处补漏**：报价被剔干净之后，剩下的证据看起来像「没人竞争」，
+顺着原来的分支走就会去涨价——方向正好反了。所以 `holding` 分支里加了一道：
+
+```python
+if outliers and not live:
+    p.update(regime='hold', reason=f'{len(outliers)} 个竞品报价偏离参考价 4 倍以上，已剔除；本轮证据不足，保持现价')
+```
+
+### 5. 界面
+
+决策卡片加两项：「库存 紧张 · 约 7 天」和「剔除异常报价 1 个」。
+库存压力不是装饰——它直接解释了「为什么有更便宜的竞品却不跟」。
+
+### 6. 顺手统一了 `process()` 的一个分叉
+
+原来 `stock <= 0` 时手工拼一个 `dict(regime='off', ...)`，不经过 `plan()`，
+导致决策卡片缺 `pressure` / `cover_days` / `outliers` 三个字段，前端得对两种
+情况分别兜底。改成也走 `plan()`（它第一行就处理 `stock <= 0`），单一入口。
+
+## 验证
+
+- `pytest`：354 passed / 1 skipped。新增 `test_pricing_guardrails.py` 14 例：
+  库存紧张不跟降、正常库存照常抢位、紧张档涨 5%、滞销档降 30%、无观测不变、
+  单次跌幅护栏、护栏可配置、护栏不破底价、离群剔除、离群不触发独家涨价、
+  日销口径与封顶。
+- `selfcheck.cjs`：25 步全绿。
+- 版式审计 99 个面、文字重叠审计 96 个面，0 问题。
+
+有一个既有测试的语义变了：`test_unwinnable_cheapest_does_not_pin_the_whole_sku`
+原来断言「300 一步降到 199」，现在是「255 → 217 → 199 三步」。测试的**原意**
+（不能对着抢不起的低价认输，要去打打得过的那个）没变，改成三步断言，并把
+`risk='high'` 和 `cheapest=80` 的如实标记也一起固定住。
+
+## 边界
+
+还是只读商品页上公开的报价与卖家名，不碰账号凭据，不做反风控绕过。
+库存、销量都来自卖家自己的 API 和本地补货台账，没有外部推测。
