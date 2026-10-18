@@ -306,10 +306,8 @@ def plan(current, stock, rule, snapshot):
         return p
     # 降价也要有闸。涨价这边有单次步长和累计上限，降价原来只有利润底价兜着，
     # 而底价是「20% 毛利」——对一件 R 1999 的货，砍到 R 800 也算合规。
-    # 滞销时放宽：压着资金才是最大成本，回笼现金比每单多赚重要。
+    # 库存压力不能覆盖配置的单次降幅上限。
     drop_cap = max(0, min(100, rule.get('max_drop_pct', DEFAULT_MAX_DROP_PCT)))
-    if pressure == 'glut':
-        drop_cap = max(drop_cap, rule.get('glut_drop_pct', 30))
     boundary = math.ceil(current * (1 - drop_cap / 100.0))
     if floor:
         boundary = max(boundary, math.ceil(floor))

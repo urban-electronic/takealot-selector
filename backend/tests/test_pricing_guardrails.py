@@ -49,15 +49,15 @@ def test_tight_stock_raises_faster_while_holding():
     assert plan(200, 3, snap, velocity=1.0)['target'] == 210       # 紧张档 5%
 
 
-def test_glut_allows_deeper_discount():
-    """滞销时压着资金才是最大成本，允许一次降得更深。"""
+def test_glut_keeps_default_discount_limit():
+    """滞销判断不能放宽默认单次降价上限。"""
     snap = {'offers': [offer(150)]}
     normal = plan(200, 50, snap, velocity=0.5)     # 可售 100 天
     glut = plan(200, 300, snap, velocity=1.0)      # 可售 300 天
     assert normal['pressure'] == 'normal'
     assert normal['target'] == 170                 # 被 15% 护栏挡住
     assert glut['pressure'] == 'glut'
-    assert glut['target'] == 149                   # 30% 档，一步到位
+    assert glut['target'] == 170                   # 仍受默认 15% 上限约束
 
 
 def test_unknown_velocity_keeps_old_behaviour():
@@ -85,6 +85,13 @@ def test_drop_cap_is_configurable():
     common = dict(velocity=0.5, min_price=800, max_price=5000, reference_price=2000)
     assert plan(2000, 50, snap, **common)['target'] == 1700
     assert plan(2000, 50, snap, max_drop_pct=50, **common)['target'] == 1199
+
+
+@pytest.mark.parametrize('cap,expected', [(5, 190), (15, 170), (50, 149)])
+def test_glut_respects_configured_drop_limit(cap, expected):
+    p = plan(200, 300, {'offers': [offer(150)]}, velocity=1.0, max_drop_pct=cap)
+    assert p['pressure'] == 'glut'
+    assert p['target'] == expected
 
 
 def test_drop_cap_never_goes_below_the_floor():
