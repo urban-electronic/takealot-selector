@@ -11,10 +11,11 @@
 """
 
 import asyncio
+import hmac
 import ipaddress
 import os
 import time
-from urllib.parse import urlsplit, urlunsplit, unquote
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Query, Header, HTTPException
 from fastapi.responses import Response
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api", tags=["image-proxy"])
 _API_KEY = os.environ.get("API_KEY", "").strip()
 
 # 已确认的图片 CDN 主机白名单（HTTPS、443 标准端口）
-ALLOWED_IMAGE_HOSTS = frozenset({"media.takealot.com", "takealot.s3.amazonaws.com"})
+ALLOWED_IMAGE_HOSTS = frozenset({"media.takealot.com"})
 MAX_REDIRECTS = 3
 NEGATIVE_TTL_SECONDS = 300.0   # 上游 403/404 负缓存时长
 POSITIVE_TTL_SECONDS = 30.0    # 正向微缓存时长（承接同屏/滚动重复请求）
@@ -72,14 +73,6 @@ def _validate_image_url(url: str) -> str:
         is_ip_literal = False
     if is_ip_literal or host not in ALLOWED_IMAGE_HOSTS:
         raise HTTPException(status_code=400, detail="图片主机不在允许列表")
-    # Seller API also returns the legacy Takealot image bucket. Allow only
-    # its product-image directory, never arbitrary S3 buckets or object paths.
-    if host == "takealot.s3.amazonaws.com":
-        decoded_path = unquote(parts.path)
-        if (not decoded_path.startswith('/covers_images/') or
-                any(p in ('.', '..') for p in decoded_path.split('/')) or
-                '\\' in decoded_path):
-            raise HTTPException(status_code=400, detail="图片路径不在允许列表")
     try:
         port = parts.port
     except ValueError:
@@ -274,8 +267,13 @@ async def image_proxy(
     X-API-Key 头；此处改用 query token（前端 getImageUrl 自动拼接）校验，
     同时兼容 X-API-Key 头（fetch 场景），避免鉴权被绕过。
     """
-    if _API_KEY and token != _API_KEY and x_api_key != _API_KEY:
-        raise HTTPException(status_code=401, detail="无效或缺失 API Key")
+    # 用常量时间比较：`!=` 会在第一个不同的字节就返回，逐位试错可以反推出 key。
+    # 这里两个来源都要比，任一对上即放行。
+    if _API_KEY:
+        expected = _API_KEY.encode("utf-8", "ignore")
+        if not any(hmac.compare_digest(candidate.encode("utf-8", "ignore"), expected)
+                   for candidate in (token, x_api_key) if candidate):
+            raise HTTPException(status_code=401, detail="无效或缺失 API Key")
     safe_url = _validate_image_url(url)
     content, content_type = await _service.fetch(safe_url)
     return Response(

@@ -176,6 +176,9 @@ export default function ProductList() {
   // 列宽拖拽
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const resizeState = useRef<{ colKey: string; startX: number; startWidth: number } | null>(null);
+  // 正在进行的拖拽的收尾函数；组件卸载时补调一次，别把监听器和光标留在页面上。
+  const dragStop = useRef<(() => void) | null>(null);
+  useEffect(() => () => { dragStop.current?.(); }, []);
 
   // 列设置面板
   const [colPanelOpen, setColPanelOpen] = useState(false);
@@ -344,15 +347,20 @@ export default function ProductList() {
       setColWidths(prev => ({ ...prev, [colKey]: newWidth }));
     };
 
-    const handleMouseUp = () => {
+    // 拖到一半换页面（或点链接跳走）时 mouseup 永远不会来：
+    // 监听器会留在 document 上，body 的光标也会一直是 col-resize。
+    // 所以把「收尾」存进 ref，卸载时补一次。
+    const stop = () => {
       resizeState.current = null;
       document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('mouseup', stop);
       document.body.style.cursor = '';
+      dragStop.current = null;
     };
+    dragStop.current = stop;
 
     document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('mouseup', stop);
     document.body.style.cursor = 'col-resize';
   };
 

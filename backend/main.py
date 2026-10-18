@@ -2,6 +2,7 @@
 Takealot 选品系统 - 主入口
 """
 
+import hmac
 import os
 import sys
 
@@ -84,7 +85,7 @@ async def api_key_check(request: Request, call_next):
         key = request.headers.get("X-API-Key", "")
         if request.url.path.startswith("/api/collector/"):
             key = key or request.headers.get("X-Collector-Key", "")
-        if key != _API_KEY:
+        if not hmac.compare_digest(key.encode('utf-8', 'ignore'), _API_KEY.encode('utf-8', 'ignore')):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "无效或缺失 API Key，请在设置页填写"},

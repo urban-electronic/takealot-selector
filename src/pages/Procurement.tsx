@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { productLabels } from '../utils/productLabels';
 import { toAmount, toNumber } from '../utils/number';
 import { useApi, useDataSource } from '../DataSourceContext';
@@ -8,7 +7,6 @@ import { todayLocal } from '../utils/datetime';
 import type { ProcurementRecord, Product } from '../types';
 
 export default function Procurement() {
-  const navigate = useNavigate();
   const api = useApi();
   const { dataSource } = useDataSource();
   const [productNames, setProductNames] = useState<Record<string, string>>({});

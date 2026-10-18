@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
 import type { Product, FeeCategory } from '../types';
