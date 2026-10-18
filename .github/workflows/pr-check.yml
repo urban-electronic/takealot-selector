@@ -41,7 +41,10 @@ jobs:
   backend:
     # 前端门禁之前完全没有覆盖 backend/：采集退避、调价、补货这些"算错了会亏钱"
     # 的逻辑只有本地 pytest 在跑，改坏了没人拦。这里补上。
-    name: Backend tests
+    #
+    # 顺带跑 scripts/test-responsive-layout.py：它要 node_modules（起 Vite）+ 真实
+    # Chromium，所以这个 job 得装 npm 依赖和浏览器，不能只装 pip 包。
+    name: Backend + layout tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +60,12 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
-        run: python -m pip install -q -r backend/requirements.txt pytest
+        run: |
+          python -m pip install -q -r backend/requirements.txt pytest
+          npm install
+
+      - name: Install Chromium for the layout audit
+        run: python -m playwright install --with-deps chromium
 
       # 走 selfcheck 而不是直接 pytest：scripts/test-*.py 那几个审计套件也要跑，
       # 手抄清单会漂。--require-python 让「依赖没装上」变成红灯而不是跳过。

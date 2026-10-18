@@ -43,7 +43,11 @@ jobs:
     # 后端由 Railway 单独部署，和 Pages 互不影响，所以故意不让 deploy 依赖它：
     # 它挂了要能一眼看见，但不该连带把前端卡住。--require-python 保证「装依赖失败」
     # 表现为红灯，而不是悄悄跳过、看着像通过。
-    name: Backend tests
+    #
+    # 这个 job 还负责 scripts/test-responsive-layout.py：那是拿真实 Chromium 量
+    # 版式的审计，需要 node_modules（起 Vite）+ playwright + 浏览器，三样缺一不可。
+    # 放在这里是因为 requirements.txt 本来就带 playwright，只差补 node_modules 和浏览器。
+    name: Backend + layout tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +60,11 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
-        run: python -m pip install -q -r backend/requirements.txt pytest
+        run: |
+          python -m pip install -q -r backend/requirements.txt pytest
+          npm install
+      - name: Install Chromium for the layout audit
+        run: python -m playwright install --with-deps chromium
       - name: Run backend tests
         run: node scripts/selfcheck.cjs --python-only --require-python
 
