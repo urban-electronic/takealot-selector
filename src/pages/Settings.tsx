@@ -85,7 +85,7 @@ export default function Settings() {
       const value = await setSellerIdentity(identityDraft.trim());
       setIdentity((prev) => ({ ...prev, name: value.name, source: value.source }));
       setIdentityDraft(value.name);
-      setIdentityMsg(value.name ? '已保存，下一轮调价即按这个卖家名判断持位。' : '已清除，之后由采集自动学习。');
+      setIdentityMsg(value.name ? '已保存，按此卖家名核实持位。' : '已清除，持位身份待确认。');
       void loadIdentity();
     } catch (e) {
       setIdentityMsg(`保存失败：${(e as Error).message}`);
@@ -286,13 +286,13 @@ export default function Settings() {
           <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             本店卖家名
             {identity.source === 'manual' && <span className="integration-status-badge configured"><i aria-hidden="true" />手动指定</span>}
-            {identity.source === 'auto' && <span className="integration-status-badge configured"><i aria-hidden="true" />自动学到</span>}
+            {identity.source === 'candidate' && <span className="integration-status-badge"><i aria-hidden="true" />候选待确认</span>}
           </div>
           <p>
             调价要靠它分辨 Buybox 是<b>本店在持位</b>还是对手同价压着——只看价格会把两者搞混，
             方向一反就是赔钱。
           </p>
-          <p>留空也能用：采集会按不同 SKU 自动学出来。</p>
+          <p>下方卖家名统计供核对；确认本店名称并保存后，才用于持位判断。</p>
           {identity.candidates.length > 0 && (
             <p style={{ fontSize: 12 }}>
               采集里出现最多的卖家名：

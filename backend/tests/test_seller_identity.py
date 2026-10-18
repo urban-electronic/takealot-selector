@@ -54,14 +54,15 @@ def test_normalize_tolerates_page_noise():
 
 # ---------------------------------------------------------------- 自动学习
 
-def test_name_is_learned_from_three_distinct_skus():
+def test_same_price_votes_are_candidates_not_verified_identity():
     db = session()
     for sku in ('s1', 's2'):
         seller_identity.observe(db, DEFAULT_STORE_ID, snapshot('Urban Electronics', 197, 197), sku, 197, 5)
     # 两个 SKU 还不够：一个对手在两个 SKU 上恰好同价是有可能的
     assert seller_identity.name_of(db, DEFAULT_STORE_ID) == ''
     seller_identity.observe(db, DEFAULT_STORE_ID, snapshot('Urban Electronics', 197, 197), 's3', 197, 5)
-    assert seller_identity.name_of(db, DEFAULT_STORE_ID) == 'Urban Electronics'
+    assert seller_identity.load(db, DEFAULT_STORE_ID)['name'] == 'Urban Electronics'
+    assert seller_identity.name_of(db, DEFAULT_STORE_ID) == ''
 
 
 def test_price_mismatch_observations_are_not_counted():
@@ -94,7 +95,48 @@ def test_minority_name_does_not_win_the_vote():
         seller_identity.observe(db, DEFAULT_STORE_ID, snapshot('Urban Electronics', 197, 197), sku, 197, 5)
     for sku in ('b1', 'b2'):
         seller_identity.observe(db, DEFAULT_STORE_ID, snapshot('ValuezyVAT Registered', 106, 106), sku, 106, 5)
-    assert seller_identity.name_of(db, DEFAULT_STORE_ID) == 'Urban Electronics'
+    assert seller_identity.load(db, DEFAULT_STORE_ID)['name'] == 'Urban Electronics'
+    assert seller_identity.name_of(db, DEFAULT_STORE_ID) == ''
+
+
+def test_competitor_on_three_same_price_skus_is_not_our_identity():
+    with session() as db:
+        for sku in ('one', 'two', 'three'):
+            seller_identity.observe(db, DEFAULT_STORE_ID,
+                                    snapshot('Fixture competitor', 100, 100), sku, 100, 5)
+        assert seller_identity.name_of(db, DEFAULT_STORE_ID) == ''
+
+
+def test_identity_settings_exposes_votes_as_candidates_until_confirmed():
+    from api.settings_routes import seller_identity_status
+    with session() as db:
+        for sku in ('one', 'two', 'three'):
+            seller_identity.observe(db, DEFAULT_STORE_ID,
+                                    snapshot('Fixture competitor', 100, 100), sku, 100, 5)
+        result = seller_identity_status(db)
+        assert result['name'] == '' and result['source'] == 'candidate'
+        assert result['candidates'][0]['name'] == 'Fixture competitor'
+        seller_identity.set_manual(db, DEFAULT_STORE_ID, 'Confirmed shop')
+        result = seller_identity_status(db)
+        assert result['name'] == 'Confirmed shop' and result['source'] == 'manual'
+
+
+def test_old_automatically_verified_snapshot_cannot_unlock_a_price_raise():
+    from datetime import datetime, timezone
+    with session() as db:
+        seller_identity.save(db, DEFAULT_STORE_ID,
+                             {'name': 'Fixture competitor', 'source': 'auto'})
+        old = {'buyboxPrice': 197, 'buyboxSeller': 'Fixture competitor',
+               'holdingBuyboxVerified': True, 'offers': [offer(197, isMine=True)]}
+        db.add(SystemSettings(key=f'_pricing_monitor:{DEFAULT_STORE_ID}:p:1', value=json.dumps({
+            'sku': 'a', 'status': 'success', 'snapshot': old,
+            'last_success_at': datetime.now(timezone.utc).isoformat()})))
+        db.commit()
+        current = pricing.shared_snapshot(db, 'p', '1', 'a')
+        assert current['holdingBuyboxVerified'] is None
+        assert current['offers'][0]['isMine'] is False
+        assert pricing.plan(197, 2, RULE, current)['regime'] == 'blind'
+        assert old['holdingBuyboxVerified'] is True
 
 
 # ---------------------------------------------------------------- 三态判定

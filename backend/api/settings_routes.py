@@ -48,8 +48,8 @@ def seller_identity_status(db: Session = Depends(get_db)):
     value = seller_identity.load(db, DEFAULT_STORE_ID)
     observed = value.get('observations') if isinstance(value.get('observations'), dict) else {}
     return {
-        'name': value.get('name') or '',
-        'source': value.get('source') or '',
+        'name': seller_identity.name_of(db, DEFAULT_STORE_ID),
+        'source': 'manual' if value.get('source') == 'manual' else 'candidate' if value.get('name') else '',
         # 每个候选名在多少个不同 SKU 上出现过——自动学习的依据，让用户能判断准不准
         'candidates': sorted(
             ({'name': (entry or {}).get('name') or key,
