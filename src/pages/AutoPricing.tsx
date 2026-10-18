@@ -1,8 +1,23 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
-import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor } from '../remoteApi';
+import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, getImageUrl } from '../remoteApi';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName } from '../utils/buyboxStatus';
+
+/**
+ * 44px 商品缩略图。加载失败就留一个方块占位：
+ * ProductImage 的兜底文案是「图暂不可用」，五个字塞进 44px 会把方块撑破，
+ * 这里要的只是「有没有图」这个信息，不是一句解释。
+ */
+function Thumb({ src }: { src: string }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => { setBroken(false); }, [src]);
+  if (!src || broken) {
+    return <span className="product-thumb is-empty" title={src ? '图片加载失败' : '暂无图片'} aria-hidden="true">无图</span>;
+  }
+  return <span className="product-thumb"><img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} /></span>;
+}
+
 export default function AutoPricing() {
   const [rows, setRows] = useState<any[]>([]); const [drafts, setDrafts] = useState<Record<string, any>>({});
   const [error, setError] = useState(''); const [busy, setBusy] = useState(''); const [search, setSearch] = useState('');
@@ -334,10 +349,12 @@ export default function AutoPricing() {
         const title=r.variant?.base||r.chinese_name||'中文名待核对';
         const openVariant=openVariantOf===r.product_id;
         return <tr key={key(r)} className={openVariant?'is-expanded':''}><td><input type="checkbox" aria-label={`选择SKU ${r.sku}`} checked={selected.includes(key(r))} onChange={e=>setSelected(e.target.checked?[...selected,key(r)]:selected.filter(k=>k!==key(r)))} /></td>
-          <td className="operations-product"><a className="product-link" title={r.name} href={r.url} target="_blank" rel="noreferrer">{title}</a>{!r.variant?.base&&!r.chinese_name&&<small className="text-warning">{r.name_status==='invalid'?'中文字段为非中文，请修正':r.name_status==='ambiguous'?'SKU与中文名对应不明确':'中文名待补充'}</small>}
+          <td className="operations-product"><div className="product-cell"><Thumb src={r.image ? getImageUrl(r.image) : ''} /><div className="product-body"><a className="product-link" title={r.name} href={r.url} target="_blank" rel="noreferrer">{title}</a>{!r.variant?.base&&!r.chinese_name&&<small className="text-warning">{r.name_status==='invalid'?'中文字段为非中文，请修正':r.name_status==='ambiguous'?'SKU与中文名对应不明确':'中文名待补充'}</small>}
+            {/* 中文名对上号用，英文名才是平台上的标题：宽屏有富余就摆出来，窄屏藏掉。 */}
+            {r.name&&r.name!==title&&<small className="product-en" title={r.name}>{r.name}</small>}
             <div className="product-meta"><span>{r.sku}</span><span>库存 {r.stock??'—'}</span>
               {variantCount>1&&<button type="button" className={`variant-toggle${openVariant?' is-open':''}`} aria-expanded={openVariant} onClick={()=>setOpenVariantOf(openVariant?'':r.product_id)}>变体 {variantCount}</button>}
-            </div>
+            </div></div></div>
             {openVariant&&<ul className="variant-list" aria-label={`${title} 的全部变体`}>{r.variant.siblings.map((v:any)=><li key={v.sku} className={v.sku===r.sku?'is-current':''}><b>{v.label||'未命名'}</b><span>R {v.price??'—'}</span><span>库存 {v.stock??'—'}</span></li>)}</ul>}
           </td>
           <td className="quote-cell"><div className="quote-line"><strong className="own-price">R {r.price??'—'}</strong><span title={own.explain} className={`status-pill tone-${own.tone}`}>{own.label}</span></div>

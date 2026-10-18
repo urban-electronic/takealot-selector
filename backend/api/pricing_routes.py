@@ -73,10 +73,11 @@ def preview(product_id: str, offer_id: str, db: Session = Depends(get_db), store
                 'offer_count': len(snapshot.get('offers', [])), 'error': '公开页暂不可采集；保持原价，不会改价' if snapshot.get('error') or not snapshot.get('offers') else '',
                 'diagnostics':snapshot.get('diagnostics',{}), 'error_code':snapshot.get('error',''), 'error_message':snapshot.get('error_message',''), 'enabled': False, 'price_changed': False}
     except Exception as error:
-        # Keep actionable exception types, never profile paths or credentials
-        # embedded in exception messages (DIAG-SAFE-01).
-        return {'collector_ready': False, 'error': '读取或浏览器暂不可用，未改价',
-                'error_type': type(error).__name__, 'price_changed': False, 'enabled': False}
+        # 之前这里只回一句「读取或浏览器暂不可用」，把异常类型吞掉了：线上排查时
+        # 完全不知道是浏览器起不来、卖家接口超时，还是商品记录缺失。带上类型和
+        # 截断后的消息——这是已鉴权的运维接口，运维需要这个信息。
+        return {'collector_ready': False, 'error': str(error) if isinstance(error, ValueError) else '读取或浏览器暂不可用，未改价',
+                'error_type': type(error).__name__, 'error_detail': str(error)[:300], 'price_changed': False, 'enabled': False}
 
 @router.get('')
 def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
@@ -110,6 +111,8 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
             rows.append(dict(product_id=p.id, product_no=p.product_no, offer_id=offer['id'], sku=offer['sku'],
                 name=offer.get('title') or p.product_name, chinese_name=cn, name_status=name_status, url=p.takealot_url, price=price,
                 stock=stock, suggested_min=suggested_min,
+                # 列表里只给缩略图用的地址：这一行光靠名字分不清是哪个货（尤其英文长标题）。
+                image=p.product_image_url or '',
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 variant=variants,
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))

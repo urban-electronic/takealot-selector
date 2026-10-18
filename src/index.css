@@ -2347,7 +2347,19 @@ table tbody tr:hover { background: #f8fafc; }
 .pricing-actions > div > span { color:var(--text-muted); font-size:12px; }
 .pricing-actions input { width:125px; }
 .pricing-table td select { display:inline-block; margin:0; max-width:150px; }
-.pricing-table .operations-product { max-width:210px; } .pricing-table .product-link { width:205px; }
+/* 商品格：缩略图 + 名字/规格两栏。这一列在宽屏上会吃掉多余宽度，
+ * 长英文名终于能一行放下；窄屏则退回名字单栏（图仍在，只是更小）。 */
+.pricing-table .product-cell { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+.pricing-table .product-thumb { flex: none; width: 44px; height: 44px; border-radius: 6px; overflow: hidden;
+  background: var(--surface-muted); border: 1px solid var(--surface-border);
+  display: flex; align-items: center; justify-content: center; }
+.pricing-table .product-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pricing-table .product-thumb.is-empty { font-size: 11px; color: var(--text-subtle); }
+.pricing-table .product-body { flex: 1 1 auto; min-width: 0; }
+/* 选择器要压过 .operations-workspace .data-table small 的 display:block，
+ * 否则窄屏那条 display:none 会被它以更高优先级顶回去。 */
+.pricing-table .operations-product .product-en { display: block; margin-top: 2px; font-size: 11px; color: var(--text-subtle);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .own-price { display:block; margin-top:6px; font-size:14px; color:#253247; }
 .quote-price { display:block; font-size:16px; margin-bottom:6px; color:#253247; }
 .row-buttons { display:flex; gap:5px; margin-top:8px; align-items:center; flex-wrap:wrap; } .row-buttons .btn { white-space:nowrap; padding:5px 7px; }
@@ -2359,8 +2371,8 @@ table tbody tr:hover { background: #f8fafc; }
 
 .replenishment-summary { margin-bottom: 16px; padding: 16px 20px; }
 .replenishment-summary .dashboard-panel-title { margin-bottom: 0; gap: 12px; flex-wrap: wrap; }
-.pricing-table .collection-status-cell { min-width: 170px; max-width: 230px; white-space: normal; overflow-wrap: anywhere; }
-.pricing-table .collection-status-cell small { max-width: 230px; white-space: normal; line-height: 1.5; }
+.pricing-table .collection-status-cell { min-width: 170px; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
+.pricing-table .collection-status-cell small { max-width: 240px; white-space: normal; line-height: 1.5; }
 .browser-collector-panel { padding: 16px 20px; margin-bottom: 16px; }
 .browser-collector-panel .dashboard-panel-title { gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .browser-collector-panel small { display: block; color: #657477; line-height: 1.6; }
@@ -2369,15 +2381,18 @@ table tbody tr:hover { background: #f8fafc; }
 .browser-collector-panel li { margin: 8px 0; line-height: 1.6; }
 
 /* Keep bilingual titles inside their own column, including long unbroken text. */
-.pricing-table .operations-product { width: 230px; min-width: 230px; max-width: 230px; white-space: normal; }
+.pricing-table .operations-product { white-space: normal; }
 .pricing-table .operations-product .product-link,
-.pricing-table .operations-product small { width: 206px; max-width: 206px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pricing-table .operations-product small { width: 100%; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* SKU / 库存 / 本店价 合并成一行：三者在原布局里各占一行，把行高撑到 120px。 */
 .pricing-table .product-meta { display:flex; align-items:baseline; gap:8px; margin-top:3px; font-size:var(--fs-caption); color:var(--text-subtle); white-space:nowrap; overflow:hidden; }
 .pricing-table .product-meta > span:first-child { font-variant-numeric: tabular-nums; color:var(--text-muted); }
 .pricing-table .product-meta .own-price { display:inline; margin:0; font-size:13px; font-weight:600; color:var(--text-strong); }
-/* Buybox 价与归属胶囊并排，不再上下叠。 */
-.pricing-table .quote-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* 本店价与归属胶囊：默认并排，放不下就换行。
+ * 原来是 nowrap：像「同价 · 卖家未核实」这种长标签会整条溢出到「采集」列，
+ * 和那边的状态胶囊压在一起——这就是界面上看到的文字重叠。 */
+.pricing-table .quote-line { display:flex; align-items:center; gap:10px; row-gap:4px; flex-wrap:wrap; }
+.pricing-table .quote-line .status-pill { flex: 0 0 auto; }
 .pricing-table .quote-line .quote-price { margin:0; }
 .pricing-table .row-details { margin-top: 3px; max-width: 230px; white-space: normal; overflow-wrap: anywhere; }
 .pricing-table .row-details summary { cursor: pointer; color: var(--text-muted); font-size: 11px; }
@@ -2440,19 +2455,22 @@ table tbody tr:hover { background: #f8fafc; }
  * 证据（依据/诊断/决策卡片）全部收进同一个 details。 */
 .pricing-table { table-layout: fixed; }
 /* 窄屏必须整体横向滚动，而不是把最后一列压成零宽再让内容竖着折。
- * 固定布局下总宽不足时，最后一列会被算成负宽度。 */
-.pricing-table { min-width: 980px; }
+ * 固定布局下总宽不足时，最后一列会被算成负宽度。
+ * （表格下限沿用 .operations-workspace .data-table 的 1080px。） */
 .pricing-table td { padding-top: 6px; padding-bottom: 6px; vertical-align: top; }
 /* 列宽必须钉死：auto 布局会把「采集」这一列撑到 340px 的空白，
- * 再把「调价」挤成三行，行高反而比改动前更高。 */
+ * 再把「调价」挤成三行，行高反而比改动前更高。
+ * 商品列不写宽度 = 吃掉剩余空间：只有它装的是长短不一的英文名，
+ * 多出来的宽度给它才有用。原来这空间全给了「调价」列，
+ * 结果是一个 650px 宽、只写着「Buybox / 智能试涨」的空下拉。 */
 .pricing-table thead th:nth-child(1) { width: 40px; }
-.pricing-table thead th:nth-child(2) { width: 318px; }
-.pricing-table thead th:nth-child(3) { width: 158px; }
-.pricing-table thead th:nth-child(4) { width: 228px; }
+.pricing-table thead th:nth-child(3) { width: 172px; }
+.pricing-table thead th:nth-child(4) { width: 240px; }
+.pricing-table thead th:nth-child(5) { width: 430px; }
 /* 区间行不许折行：两个输入框固定 86px，策略下拉吃掉剩下的宽度。
  * 允许折行的话，150px 的下拉差几像素就会掉到第二行，整行立刻高 40px。 */
 .pricing-table .price-range { flex-wrap: nowrap; }
-.pricing-table .price-range select { flex: 1 1 120px; min-width: 0; max-width: none;
+.pricing-table .price-range select { flex: 1 1 160px; min-width: 0; max-width: 200px;
   /* 定高后必须自己管内边距，否则全局的 8px 上下内边距会把文字顶出可视区，只露出半行。 */
   padding: 0 22px 0 7px; line-height: 1; }
 /* 商品名占满自己的列宽：原来链接固定 205px，在 268px 的列里留了一条死白。 */
@@ -2465,14 +2483,21 @@ table tbody tr:hover { background: #f8fafc; }
 .pricing-table .row-buttons { margin-top: 4px; gap: 4px; }
 .pricing-table .row-buttons .btn { box-sizing: border-box; height: 26px; min-height: 24px; padding: 0 8px; line-height: 1; }
 
-.pricing-table .quote-cell { width: 158px; min-width: 150px; }
-.pricing-table .quote-cell .quote-line { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; }
-.pricing-table .quote-cell .own-price { margin:0; font-size:15px; font-weight:650; letter-spacing:-0.01em; color:var(--text-strong); }
-.pricing-table .quote-sub { display:block; margin-top:3px; max-width:158px; font-size:11px; color:var(--text-subtle);
+.pricing-table .quote-cell { width: 172px; min-width: 168px; }
+.pricing-table .quote-cell .quote-line { display:flex; align-items:center; gap:10px; row-gap:4px; flex-wrap:wrap; }
+/* 价格留固定起点宽度：R 269 和 R 1999 下面的胶囊才能对齐成一列，不再长短错位。 */
+.pricing-table .quote-cell .own-price { margin:0; min-width:58px; font-size:15px; font-weight:650; letter-spacing:-0.01em; color:var(--text-strong); }
+.pricing-table .quote-sub { display:block; margin-top:3px; max-width:172px; font-size:11px; color:var(--text-subtle);
   font-variant-numeric: tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .pricing-table .collection-stamp { display:block; margin-top:2px; font-size:11px; color:var(--text-subtle);
   font-variant-numeric: tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.pricing-table .collection-status-cell .collection-headline { max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pricing-table .collection-status-cell .collection-headline { max-width: 170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 窄屏把缩略图收小，把宽度让给商品名——这一列本来就最先被挤。
+ * 英文标题在窄屏只会截成半句，没有信息量，直接藏掉。 */
+@media (max-width: 1280px) {
+  .pricing-table .product-thumb { width: 36px; height: 36px; }
+  .pricing-table .operations-product .product-en { display: none; }
+}
 
 /* 变体：折叠时只给数量，不给定语——「粉色·L」是定语，不是商品名。
  * 展开后才把黑白/XL/MS 这些定语摊开，并高亮当前这一条。 */
