@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
-import { getSellerApiStatus } from '../remoteApi';
+import { getSellerApiStatus, getSellerIdentity, setSellerIdentity } from '../remoteApi';
 
 export default function Settings() {
   const api = useApi();
@@ -23,6 +23,12 @@ export default function Settings() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [sellerApiStatus, setSellerApiStatus] = useState<'checking' | 'configured' | 'missing' | 'unavailable' | 'local'>('checking');
+  // 本店卖家名：调价靠它区分「Buybox 是本店在持位」还是「对手同价压着」。
+  // 后端会从已采集的页面自动投票学出来，这里只是给人一个手动纠正的入口。
+  const [identity, setIdentity] = useState<{ name: string; source: string; candidates: { name: string; skus: number }[] }>({ name: '', source: '', candidates: [] });
+  const [identityDraft, setIdentityDraft] = useState('');
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityMsg, setIdentityMsg] = useState('');
 
   // Fee mapping rule form
   const [rulePattern, setRulePattern] = useState('');
@@ -58,6 +64,35 @@ export default function Settings() {
     }
     void refreshSellerApiStatus();
   }, [dataSource]);
+
+  const loadIdentity = async () => {
+    try {
+      const value = await getSellerIdentity();
+      setIdentity(value);
+      setIdentityDraft(value.name || '');
+    } catch {
+      // 身份读不到不影响其它设置；调价那边会显示「待核实卖家名」。
+    }
+  };
+
+  useEffect(() => {
+    if (dataSource === 'remote') void loadIdentity();
+  }, [dataSource]);
+
+  const handleSaveIdentity = async () => {
+    setIdentityBusy(true); setIdentityMsg('');
+    try {
+      const value = await setSellerIdentity(identityDraft.trim());
+      setIdentity((prev) => ({ ...prev, name: value.name, source: value.source }));
+      setIdentityDraft(value.name);
+      setIdentityMsg(value.name ? '已保存，下一轮调价即按这个卖家名判断持位。' : '已清除，之后由采集自动学习。');
+      void loadIdentity();
+    } catch (e) {
+      setIdentityMsg(`保存失败：${(e as Error).message}`);
+    } finally {
+      setIdentityBusy(false);
+    }
+  };
 
   const handleSaveExchange = async () => {
     try {
@@ -244,6 +279,40 @@ export default function Settings() {
           {{checking: '检查中', configured: '密钥已配置', missing: '未配置', unavailable: '暂时无法检查', local: '本地模式'}[sellerApiStatus]}
         </span>
         <button className="btn btn-outline btn-sm" disabled={dataSource !== 'remote' || sellerApiStatus === 'checking'} onClick={refreshSellerApiStatus}>重新检查</button>
+      </section>
+
+      <section className="card integration-status-card" aria-live="polite">
+        <div className="integration-status-copy">
+          <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            本店卖家名
+            {identity.source === 'manual' && <span className="integration-status-badge configured"><i aria-hidden="true" />手动指定</span>}
+            {identity.source === 'learned' && <span className="integration-status-badge configured"><i aria-hidden="true" />自动学到</span>}
+          </div>
+          <p>
+            调价要靠它分辨 Buybox 是<b>本店在持位</b>还是对手同价压着——只看价格会把两者搞混，
+            方向一反就是赔钱。
+          </p>
+          <p>留空也能用：采集会按不同 SKU 自动学出来。</p>
+          {identity.candidates.length > 0 && (
+            <p style={{ fontSize: 12 }}>
+              采集里出现最多的卖家名：
+              {identity.candidates.map((c) => `${c.name}（${c.skus} 个 SKU）`).join('、')}
+            </p>
+          )}
+          {identityMsg && <p role="status" style={{ fontSize: 12, color: 'var(--text-body)' }}>{identityMsg}</p>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <input
+            aria-label="本店卖家名"
+            value={identityDraft}
+            onChange={(e) => setIdentityDraft(e.target.value)}
+            placeholder={identity.name || '例如 Urban Electronics'}
+            style={{ flex: 1, minWidth: 200, maxWidth: 320 }}
+          />
+          <button className="btn btn-primary btn-sm" disabled={identityBusy || dataSource !== 'remote'} onClick={handleSaveIdentity}>
+            {identityBusy ? '保存中…' : '保存'}
+          </button>
+        </div>
       </section>
 
       {/* Exchange Rate */}

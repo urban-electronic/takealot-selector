@@ -31,7 +31,7 @@ def run(monkeypatch, error=False, pause=False, enabled=True, once=False, initial
     client=MagicMock();client.__enter__.return_value=client
     monkeypatch.setattr(monitor.httpx,'Client',lambda **kwargs:client)
     client.get.return_value=MagicMock(status_code=200,json=lambda:{'offer_id':1,'sku':'a','selling_price':100,'stock_at_takealot_total':5})
-    async def collect(product,offer):
+    async def collect(product,offer,seller_name=None):
         if pause:
             with factory()as db:
                 row=db.query(SystemSettings).filter_by(key=key).first()
@@ -61,7 +61,7 @@ def test_cloud_mismatch_rechecks_api_and_confirms_loss_in_two_rounds(monkeypatch
     import database
     client,first=run(monkeypatch)
     assert first['price_ownership']['state']=='matched'
-    async def lower_quote(product,offer):
+    async def lower_quote(product,offer,seller_name=None):
         return {'buyboxPrice':99,'offers':[]}
     monkeypatch.setattr(monitor,'collect',lower_quote)
     key=monitor.PREFIX+DEFAULT_STORE_ID+':p:1'

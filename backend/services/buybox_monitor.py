@@ -57,7 +57,7 @@ def _should_retry_collect(snapshot):
     return str(snapshot.get('error') or '') in _RETRYABLE_ERRORS
 
 
-def _collect_with_retry(product, own, result):
+def _collect_with_retry(product, own, result, seller_name=None):
     """采一次；遇到可自愈的失败就在同一轮里再试，最多 COLLECT_ATTEMPTS 次。
 
     只对「页面没渲染完 / 浏览器抖了一下」重试。配置错误、商品下架、变体确认
@@ -66,7 +66,7 @@ def _collect_with_retry(product, own, result):
     last = None
     for attempt in range(1, COLLECT_ATTEMPTS + 1):
         try:
-            snapshot = asyncio.run(collect(product, own))
+            snapshot = asyncio.run(collect(product, own, seller_name))
         except Exception:
             if attempt >= COLLECT_ATTEMPTS:
                 raise
@@ -124,7 +124,11 @@ def process(row_id):
                 result['own_price_source']='official_live';result['own_price_asof']=datetime.now(timezone.utc).isoformat()
             if own.get('sku') != config['sku']: raise ValueError('卖家SKU已变更，需重新绑定')
             stage='public_page'
-            snapshot = _collect_with_retry(product, own, result)
+            # 本店卖家名：采集器拿它把页面上的 "Sold by X" 判成是不是本店。
+            # 还不知道时传空串，采集器退回价格推断并标"未核实"。
+            from services import seller_identity
+            our_seller = seller_identity.name_of(db, DEFAULT_STORE_ID)
+            snapshot = _collect_with_retry(product, own, result, our_seller)
             from services.collection_diagnostics import classify
             result['diagnostics']=snapshot.get('diagnostics', {})
             code,message=classify(snapshot)
@@ -133,10 +137,22 @@ def process(row_id):
             if snapshot.get('error') or isinstance(bb,bool) or not isinstance(bb,(int,float)) or not math.isfinite(bb) or bb<=0:
                 raise ValueError(snapshot.get('error_message') or message or '未读取到有效Buybox报价')
             competitors=[o['price'] for o in snapshot.get('offers',[]) if o.get('status')=='in_stock' and not o.get('isMine') and not isinstance(o.get('price'),bool) and isinstance(o.get('price'),(int,float)) and math.isfinite(o['price']) and o['price']>0]
-            # A price match alone is not proof of seller identity; use collector evidence.
+            # 学习本店卖家名：只在「Buybox 价 == 本店价、本店有货」的观察里投票，
+            # 按不同 SKU 数取众数。学到之后，同一轮的下一行就能按卖家名判持位，
+            # 不用再靠价格猜。手工填过的名字不会被覆盖。
+            try:
+                seller_identity.observe(db, DEFAULT_STORE_ID, snapshot, config['sku'],
+                                        own['selling_price'], own['stock_at_takealot_total'])
+            except Exception:
+                db.rollback()
             result['snapshot'] = snapshot
+            # 持位状态如实落库：verified 是 True/False/None 三态，
+            # None 表示还不知道本店卖家名，界面要显示"待核实"而不是"已核实"。
             result.update(status='success', buybox_price=bb, competitor_price=min(competitors, default=None),
-                          holding_buybox=False if abs(bb-own['selling_price'])>=.01 else None, price_matches_buybox=abs(bb-own['selling_price'])<.01, current_price=own['selling_price'],
+                          holding_buybox=snapshot.get('holdingBuyboxVerified'),
+                          holding_verified=snapshot.get('holdingBuyboxVerified') is True,
+                          seller_name=our_seller,
+                          price_matches_buybox=abs(bb-own['selling_price'])<.01, current_price=own['selling_price'],
                           stock=own['stock_at_takealot_total'], last_success_at=datetime.now(timezone.utc).isoformat(),
                           source='cloud_browser', quote_time_source='cloud_completion', error='', error_code='', error_stage='', failures=0)
             from services.price_ownership import estimate,pending
@@ -148,7 +164,8 @@ def process(row_id):
                         check_own=official_offer(client,key,config['offer_id'])
                     if check_own.get('sku')!=config['sku']: raise ValueError('SKU changed')
                     check_source='official_live';check_asof=datetime.now(timezone.utc).isoformat()
-                result['price_ownership']=estimate(config.get('price_ownership'),bb,check_own['selling_price'],check_source,check_asof)
+                result['price_ownership']=estimate(config.get('price_ownership'),bb,check_own['selling_price'],check_source,check_asof,
+                                                   verified=snapshot.get('holdingBuyboxVerified'))
             except Exception:
                 result['price_ownership']=pending(config.get('price_ownership'),failed=True)
         except Exception as error:
@@ -198,6 +215,14 @@ def _maybe_repair(db):
             print(f"Collection records repaired: {outcome['changed']}", flush=True)
     except Exception:
         # 自愈失败不能拖垮采集循环：下一轮还会再试。
+        db.rollback()
+    try:
+        # 本店卖家名：启动时先从已有快照里补学一次。学到了之后，
+        # 同一轮的采集就能按卖家名判持位，不用再等下一轮。
+        from services import seller_identity
+        if seller_identity.seed_from_monitors(db, DEFAULT_STORE_ID):
+            print('Seller identity learned from existing snapshots', flush=True)
+    except Exception:
         db.rollback()
 
 

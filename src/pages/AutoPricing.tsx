@@ -196,7 +196,9 @@ export default function AutoPricing() {
   const relative = (v: string) => v ? new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
   // 调价决策由后端 plan() 落库，界面只负责翻译。
   // 这些词直接对应两种真实动作：抢位是让利，守位是要价，判错方向就是钱。
-  const REGIME: Record<string,string> = { compete:'抢位让利', climb:'守位提价', scarcity:'独家提价', hold:'保持现价', blind:'证据不足', off:'无库存' };
+  // blind 不是「没证据」，而是「价对上了但不知道 Buybox 是不是自己」——差的是一个卖家名。
+  // 写成可执行的待办，而不是让人以为这条 SKU 废了。
+  const REGIME: Record<string,string> = { compete:'抢位让利', climb:'守位提价', scarcity:'独家提价', hold:'保持现价', blind:'待核实卖家名', off:'无库存' };
   const CONFIDENCE: Record<string,string> = { high:'高', medium:'中', low:'低' };
   const RISK: Record<string,string> = { low:'低', medium:'中', high:'高', urgent:'紧急' };
   const planOf = (r:any) => r.rule?.plan && typeof r.rule.plan === 'object' ? r.rule.plan : null;

@@ -142,7 +142,7 @@ def test_transient_failure_is_retried_within_the_same_round(monkeypatch):
     monkeypatch.setattr(monitor.time, 'sleep', lambda seconds: None)
     calls = []
 
-    async def flaky(product, own):
+    async def flaky(product, own, seller_name=None):
         calls.append(1)
         if len(calls) == 1:
             raise RuntimeError('Target closed')
@@ -163,7 +163,7 @@ def test_skeleton_page_is_retried(monkeypatch):
     monkeypatch.setattr(monitor.time, 'sleep', lambda seconds: None)
     calls = []
 
-    async def slow_render(product, own):
+    async def slow_render(product, own, seller_name=None):
         calls.append(1)
         if len(calls) == 1:
             return {'buyboxPrice': None, 'error': 'price_not_found',
@@ -184,7 +184,7 @@ def test_variant_failure_is_not_retried(monkeypatch):
     monkeypatch.setattr(monitor.time, 'sleep', lambda seconds: None)
     calls = []
 
-    async def unmatched(product, own):
+    async def unmatched(product, own, seller_name=None):
         calls.append(1)
         return {'buyboxPrice': None, 'error': 'variant_unmatched',
                 'diagnostics': {'buybox_cards': 1, 'price_nodes': 55, 'variant_controls': 30}}
@@ -202,7 +202,7 @@ def test_site_challenge_is_not_retried(monkeypatch):
     monkeypatch.setattr(monitor.time, 'sleep', lambda seconds: None)
     calls = []
 
-    async def challenged(product, own):
+    async def challenged(product, own, seller_name=None):
         calls.append(1)
         return {'buyboxPrice': None, 'error': 'site_challenge',
                 'diagnostics': {'http_status': 403, 'buybox_cards': 0, 'price_nodes': 0,
@@ -222,7 +222,7 @@ def test_exception_is_raised_after_the_last_attempt(monkeypatch):
     monkeypatch.setattr(monitor.time, 'sleep', lambda seconds: None)
     calls = []
 
-    async def broken(product, own):
+    async def broken(product, own, seller_name=None):
         calls.append(1)
         raise RuntimeError('browser gone')
 

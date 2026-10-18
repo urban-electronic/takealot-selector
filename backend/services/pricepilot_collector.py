@@ -871,14 +871,32 @@ async def scrape_product(page, item: dict) -> dict:
 
         # 主 offer（buybox）卖家名
         buybox_seller = await extract_seller_name(page)
-        # 判定是否持有 Buybox：仅依据"Buybox 展示价 == 我方当前价"（my_price 来自后端 DB）。
-        # 注意：不能再用"页面无 Other sellers 区块/单卡 → 唯一卖家即我方"推断——
-        # Takealot 改版后前台不再暴露卖家名，且 Buybox 只渲染赢家卡：对手赢得 Buybox 时
-        # 页面同样只有一张卡（active），把单卡误认成"我方唯一"会把对手价当持有。
-        # 采集器只做保守判定，最终持有结论由后端用 Seller API 权威价仲裁（权威价==Buybox 价才真持有）。
+        # Buybox 归属判定，两种证据：
+        #   ① 本店卖家名已知 → 直接比页面上的 "Sold by X"。这是真证据：页面自己
+        #      说了谁在持位，不需要再猜。
+        #   ② 不知道本店叫什么 → 退回「Buybox 展示价 == 我方当前价」推断，并把
+        #      结论标成"未核实"（None），让后端继续保守处理。
+        # 只用价格推断会出错：库里 SKU 9902388556722 的 Buybox 卖家是
+        # ValuezyVAT Registered，价格和本店一样是 106 —— 同价不等于持位。
+        # 也不能再用"页面无 Other sellers 区块/单卡 → 唯一卖家即我方"推断——
+        # Takealot 改版后 Buybox 只渲染赢家卡，对手赢时同样只有一张卡。
+        my_seller_name = (item.get("mySellerName") or "").strip()
         has_other_sellers = len(await page.query_selector_all("text=/other (sellers|offers)/i")) > 0
-        is_mine = buybox_price is not None and (my_price is not None and abs(buybox_price - my_price) < 0.01)
+        price_matches = buybox_price is not None and (my_price is not None and abs(buybox_price - my_price) < 0.01)
+        if my_seller_name and buybox_seller:
+            seller_match = _norm_label(buybox_seller) == _norm_label(my_seller_name)
+            if seller_match:
+                # 名字一致但价格不一致：页面在说两件矛盾的事，不下结论。
+                holding_verified = True if price_matches else None
+                is_mine = True
+            else:
+                holding_verified = False
+                is_mine = False
+        else:
+            holding_verified = None
+            is_mine = price_matches
         result["holdingBuybox"] = is_mine
+        result["holdingBuyboxVerified"] = holding_verified
         result["hasOtherSellers"] = has_other_sellers
         result["buyboxSeller"] = buybox_seller
         result["buyboxType"] = "buybox"

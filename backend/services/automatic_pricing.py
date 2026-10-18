@@ -88,7 +88,14 @@ def plan(current, stock, rule, snapshot):
     buybox = snapshot.get('buyboxPrice')
     price_matches = (not isinstance(buybox, bool) and isinstance(buybox, (int, float))
                      and math.isfinite(buybox) and abs(current - buybox) < .01)
-    holding = price_matches and snapshot.get('holdingBuyboxVerified') is True
+    # 持位证据三态（采集器按本店卖家名比对页面上的 "Sold by X" 得出）：
+    #   True  → 页面说 Buybox 是本店的
+    #   False → 页面说 Buybox 是别人的（哪怕价格和我们一样）
+    #   None  → 还不知道本店卖家名，判断不了
+    # 原来只有"价格相同"这一个信号，于是同价时既不敢涨价也不敢降价，
+    # 永远停在「证据不足」。现在按卖家名判：同价 + 对手持位 = 应该去抢。
+    verified = snapshot.get('holdingBuyboxVerified')
+    holding = price_matches and verified is True
     cheapest = min((o['price'] for o in live), default=None)
     p.update(live_count=len(live), dark_count=len(dark), cheapest=cheapest,
              sole_seller=bool(raw_offers) and not foreign)
@@ -105,9 +112,13 @@ def plan(current, stock, rule, snapshot):
     elif p['gap_pct'] is not None:
         gap = p['gap_pct']
         p['risk'] = 'urgent' if gap >= 15 else 'high' if gap >= 8 else 'medium' if gap >= 3 else 'low'
-    if price_matches and not holding:
-        p.update(regime='blind', reason='与Buybox同价但卖家身份未核实，保持现价')
+    if price_matches and verified is None:
+        # 只有「判断不了」才保持现价。这一条是最后的安全网：不知道本店叫什么，
+        # 就无法区分「自己持位」和「对手同价持位」，两个方向都不能动。
+        p.update(regime='blind', reason='与Buybox同价，但还无法确认本店卖家名（到设置里填一次即可自动核实）')
         return p
+    # 走到这里：要么已确认本店持位（holding），要么已确认对手持位
+    # （price_matches 但 verified 是 False）——后者要走下面的抢位分支。
     if holding and time.time() - rule.get('last_changed_epoch', 0) < rule.get('cooldown_minutes', 10) * 60:
         p.update(regime='climb' if live else 'scarcity', reason='持有 Buybox，处于冷却期')
         return p
@@ -213,7 +224,7 @@ def plan(current, stock, rule, snapshot):
              reason=f'未持有 Buybox，降到 R {int(target)} 抢位（让利 {int(current - target)}，底价 R {int(floor)}）')
     return p
 
-async def collect(product, offer):
+async def collect(product, offer, seller_name=None):
     from services.quote_browser import quote_context
     from services.pricepilot_collector import scrape_product
     url = product.takealot_url or ''
@@ -231,7 +242,10 @@ async def collect(product, offer):
             page.on('response', on_response)
             snapshot=await scrape_product(page, {'url': url, 'productId': product.id, 'sku': offer['sku'],
                 'name': offer.get('title') or product.product_name, 'myPrice': offer['selling_price'],
-                'myStock': offer.get('stock_at_takealot_total'), 'shopId': DEFAULT_STORE_ID})
+                'myStock': offer.get('stock_at_takealot_total'), 'shopId': DEFAULT_STORE_ID,
+                # 本店在 Takealot 的卖家名：采集器用它把页面上的 "Sold by X" 判成
+                # 是不是本店，而不是靠价格猜。空串表示还不知道，退回价格推断。
+                'mySellerName': seller_name or ''})
             diagnostics={'diag_version':3,'http_status':responses[-1] if responses else None,'requested_url':safe_url(url),'final_url':safe_url(page.url)}
             # 每一项诊断各自兜底。原来整段共用一个 try：只要 body.inner_text 超时一次，
             # 后面的元素计数就全丢——恰恰是页面最慢、最需要诊断的时候什么都没留下。
@@ -381,7 +395,9 @@ def process(row_id):
                                            'floor', 'ceiling', 'cheapest', 'gap_pct',
                                            'live_count', 'dark_count', 'sole_seller', 'current')}
                 result.update(current_price=offer['selling_price'], stock=offer['stock_at_takealot_total'],
-                    buybox_price=snapshot.get('buyboxPrice'), holding_buybox=True if snapshot.get('holdingBuyboxVerified') is True else None,
+                    buybox_price=snapshot.get('buyboxPrice'),
+                    # 三态如实透传：True 本店持位 / False 对手持位 / None 待核实
+                    holding_buybox=snapshot.get('holdingBuyboxVerified'),
                     holding_verified=snapshot.get('holdingBuyboxVerified') is True,
                     price_matches_buybox=snapshot.get('buyboxPrice')==offer['selling_price'],
                     competitor_price=min((o['price'] for o in snapshot.get('offers', []) if o.get('status') == 'in_stock' and not o.get('isMine') and isinstance(o.get('price'), (int, float))), default=None))

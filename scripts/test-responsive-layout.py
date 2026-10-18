@@ -23,6 +23,8 @@ DATA = {
     '/api/inventory/shipments':[], '/api/inventory/adjustments':[], '/api/activity':[],
     '/api/procurement':[PROCUREMENT], '/api/fee-categories':[], '/api/fee-mapping-rules':[],
     '/api/settings':{'cny_per_zar':'0.41'}, '/api/integrations/takealot-seller/status':{'configured':False},
+    # 设置页会读本店卖家名（调价判断 Buybox 持位的依据），漏声明就会 404 后静默降级。
+    '/api/integrations/takealot-seller/identity':{'name':'','source':'','candidates':[]},
     '/api/packing/products':[PACK], '/api/packing/sync-from-products':{'ok':True,'total_products':1,'skipped_no_sku':0,'duplicate_sku':0},
     '/api/operations/alerts':[], '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
     '/api/automatic-pricing':{'configured':False,'rows':[PRICING]},

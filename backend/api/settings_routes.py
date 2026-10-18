@@ -32,6 +32,42 @@ def seller_api_status(db: Session = Depends(get_db)):
     return {'configured': bool(configured_key(db)), 'mode': 'product_read_only'}
 
 
+class SellerIdentity(BaseModel):
+    name: str
+
+
+@router.get('/integrations/takealot-seller/identity')
+def seller_identity_status(db: Session = Depends(get_db)):
+    """本店在 Takealot 的卖家名。
+
+    调价要靠它判断 Buybox 是不是本店在持位——只比价格会把「对手同价持位」
+    误判成本店持位。没填也能用：采集会按不同 SKU 数自动投票学出来。
+    """
+    from services import seller_identity
+    from models import DEFAULT_STORE_ID
+    value = seller_identity.load(db, DEFAULT_STORE_ID)
+    observed = value.get('observations') if isinstance(value.get('observations'), dict) else {}
+    return {
+        'name': value.get('name') or '',
+        'source': value.get('source') or '',
+        # 每个候选名在多少个不同 SKU 上出现过——自动学习的依据，让用户能判断准不准
+        'candidates': sorted(
+            ({'name': (entry or {}).get('name') or key,
+              'skus': len((entry or {}).get('skus') or [])}
+             for key, entry in observed.items() if isinstance(entry, dict)),
+            key=lambda item: -item['skus'])[:5],
+    }
+
+
+@router.put('/integrations/takealot-seller/identity')
+def set_seller_identity(data: SellerIdentity, db: Session = Depends(get_db)):
+    """手填本店卖家名（权威，自动学习不会覆盖它）。传空串表示清除。"""
+    from services import seller_identity
+    from models import DEFAULT_STORE_ID
+    value = seller_identity.set_manual(db, DEFAULT_STORE_ID, data.name)
+    return {'name': value.get('name') or '', 'source': value.get('source') or ''}
+
+
 class SettingsUpdate(BaseModel):
     value: str
 
@@ -39,7 +75,7 @@ class SettingsUpdate(BaseModel):
 @router.get("/settings", response_model=dict)
 def get_settings(db: Session = Depends(get_db)):
     settings = db.query(SystemSettings).all()
-    return {s.key: s.value for s in settings if s.key != SECRET_SETTING and not s.key.startswith(('operations_profile:', '_operations_', '_pricing_'))}
+    return {s.key: s.value for s in settings if s.key != SECRET_SETTING and not s.key.startswith(('operations_profile:', '_operations_', '_pricing_', '_seller_identity:'))}
 
 
 class SellerApiSetup(BaseModel):

@@ -109,8 +109,10 @@ def test_scarcity_trial_observes_feedback_and_rolls_back_without_sales():
 
 
 def test_price_match_does_not_prove_buybox_ownership():
+    # holdingBuybox 是价格推断出来的旧字段，不能当作持位证据；
+    # 只有 holdingBuyboxVerified（按卖家名核实）才算。
     target,reason=pricing.decide(100,5,{**RULE,'smart_raise':True},{'buyboxPrice':100,'holdingBuybox':True,'offers':[offer(120)]})
-    assert target is None and '身份未核实' in reason
+    assert target is None and '卖家名' in reason
 
 def test_pause_after_persisting_intent_prevents_patch(monkeypatch):
     client,rule=run_cycle(monkeypatch,pause_before_patch=True)
@@ -164,5 +166,7 @@ def test_plan_carries_the_numbers_the_ui_shows():
 
 
 def test_blind_regime_when_ownership_unproven():
+    # 同价但还不知道本店卖家名：两个方向都不能动，但要给出可操作的说法
+    # （去设置里填一次卖家名，之后就能自动核实）。
     plan = pricing.plan(100, 5, {**RULE, 'smart_raise': True}, {'buyboxPrice': 100, 'offers': [offer(120)]})
-    assert plan['regime'] == 'blind' and plan['target'] is None and '身份未核实' in plan['reason']
+    assert plan['regime'] == 'blind' and plan['target'] is None and '卖家名' in plan['reason']

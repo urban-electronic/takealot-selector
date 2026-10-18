@@ -132,6 +132,21 @@ export interface SellerApiStatus { configured: boolean; mode: 'product_read_only
 export const getSellerApiStatus = (): Promise<SellerApiStatus> =>
   request<SellerApiStatus>('/api/integrations/takealot-seller/status');
 
+// 本店在 Takealot 的卖家名：调价判断「Buybox 是不是自己在持位」的唯一依据。
+// 只比价格会把对手同价持位误判成本店持位，方向一反就是赔钱。
+export interface SellerIdentity {
+  name: string;
+  source: string;
+  candidates: { name: string; skus: number }[];
+}
+export const getSellerIdentity = (): Promise<SellerIdentity> =>
+  request<SellerIdentity>('/api/integrations/takealot-seller/identity');
+export const setSellerIdentity = (name: string): Promise<{ name: string; source: string }> =>
+  request<{ name: string; source: string }>('/api/integrations/takealot-seller/identity', {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  });
+
 export const getStores = (): Promise<Store[]> => request<Store[]>('/api/stores');
 export const createStore = (data: Partial<Store> & { name: string }): Promise<Store> =>
   request<Store>('/api/stores', { method: 'POST', body: JSON.stringify(data) });

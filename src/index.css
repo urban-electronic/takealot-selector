@@ -1912,6 +1912,9 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .integration-status-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .integration-status-copy .card-title { margin-bottom: 4px; }
 .integration-status-copy p { margin: 0; color: var(--text-subtle); font-size: 13px; line-height: 1.5; }
+/* 同一张卡里允许写两段（一句结论 + 一句怎么用），但段落之间要留一口气，
+   否则两段会连成一坨，看起来像一句话没写完。 */
+.integration-status-copy p + p { margin-top: 4px; }
 .integration-status-badge { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 999px; background: #f0f3f7; color: #5a6b82; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .integration-status-badge i { width: 7px; height: 7px; border-radius: 50%; background: #9aa7b7; }
 .integration-status-badge.configured { background: #eaf7ef; color: #26734c; }
