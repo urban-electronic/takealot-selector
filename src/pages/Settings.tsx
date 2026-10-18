@@ -286,7 +286,7 @@ export default function Settings() {
           <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             本店卖家名
             {identity.source === 'manual' && <span className="integration-status-badge configured"><i aria-hidden="true" />手动指定</span>}
-            {identity.source === 'learned' && <span className="integration-status-badge configured"><i aria-hidden="true" />自动学到</span>}
+            {identity.source === 'auto' && <span className="integration-status-badge configured"><i aria-hidden="true" />自动学到</span>}
           </div>
           <p>
             调价要靠它分辨 Buybox 是<b>本店在持位</b>还是对手同价压着——只看价格会把两者搞混，
