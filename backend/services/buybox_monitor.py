@@ -25,6 +25,64 @@ _stop = threading.Event()
 _thread = None
 _supervisor = None
 _stopped = False
+# 上次自愈的时间。0 表示还没修过，所以进程启动后的第一轮就会修一次。
+_last_repair_at = 0.0
+
+# 同一轮里最多试几次。原来一次没跑成就直接判失败、等下一轮：浏览器偶发
+# RuntimeError（2026-10-18 SKU 9902391031247）、首屏骨架还没渲染完就读价，
+# 都会被当成故障写进记录，用户看到的就是一条红杠。同轮重试一次的成本远低于
+# 让用户等 30 分钟再看一条红色。
+COLLECT_ATTEMPTS = 2
+# 两次尝试之间的等待。给页面留出把报价渲染出来的时间。
+COLLECT_RETRY_DELAY = 5.0
+
+# 这些是「这一轮压根没跑起来」或「页面还没渲染完」的信号，同轮重试有意义。
+# 网站验证（site_challenge）不在里面：验证不会因为隔 5 秒再开一次就解除，
+# 重试只是白白多打一次请求，对站点也不礼貌。
+_RETRYABLE_ERRORS = ('collector_unavailable', 'price_not_found')
+
+
+def _should_retry_collect(snapshot):
+    """这一轮的结果值不值得再试一次。"""
+    if not isinstance(snapshot, dict):
+        return True
+    diagnostics = snapshot.get('diagnostics') or {}
+    # 一个元素都没认出来 = 落地页还没渲染成商品页，再等一会儿往往就有了。
+    if diagnostics.get('buybox_cards') == 0 and diagnostics.get('price_nodes') == 0:
+        return True
+    # Buybox 卡在，但卡里几乎没有文本（实测 5 个字符）= 骨架屏，等它填内容。
+    text_len = diagnostics.get('buybox_card_text_len')
+    if isinstance(text_len, int) and text_len <= 10 and snapshot.get('error'):
+        return True
+    return str(snapshot.get('error') or '') in _RETRYABLE_ERRORS
+
+
+def _collect_with_retry(product, own, result):
+    """采一次；遇到可自愈的失败就在同一轮里再试，最多 COLLECT_ATTEMPTS 次。
+
+    只对「页面没渲染完 / 浏览器抖了一下」重试。配置错误、商品下架、变体确认
+    不了这些重试也不会变好，立刻抛出，由调用方按原逻辑记录。
+    """
+    last = None
+    for attempt in range(1, COLLECT_ATTEMPTS + 1):
+        try:
+            snapshot = asyncio.run(collect(product, own))
+        except Exception:
+            if attempt >= COLLECT_ATTEMPTS:
+                raise
+            last = None
+            time.sleep(COLLECT_RETRY_DELAY)
+            continue
+        if not _should_retry_collect(snapshot):
+            if attempt > 1:
+                result['collect_attempts'] = attempt
+            return snapshot
+        last = snapshot
+        if attempt < COLLECT_ATTEMPTS:
+            result['collect_attempts'] = attempt + 1
+            time.sleep(COLLECT_RETRY_DELAY)
+    return last
+
 
 def process(row_id):
     from database import SessionLocal
@@ -66,7 +124,7 @@ def process(row_id):
                 result['own_price_source']='official_live';result['own_price_asof']=datetime.now(timezone.utc).isoformat()
             if own.get('sku') != config['sku']: raise ValueError('卖家SKU已变更，需重新绑定')
             stage='public_page'
-            snapshot = asyncio.run(collect(product, own))
+            snapshot = _collect_with_retry(product, own, result)
             from services.collection_diagnostics import classify
             result['diagnostics']=snapshot.get('diagnostics', {})
             code,message=classify(snapshot)
@@ -122,6 +180,27 @@ def process(row_id):
             db.query(SystemSettings).filter(SystemSettings.key==row_id,SystemSettings.value==claim).update({'value':json.dumps(result,ensure_ascii=False)})
             db.commit()
 
+def _maybe_repair(db):
+    """每 5 分钟修一次记录，其余循环直接跳过。
+
+    循环本身 10 秒一转，每条记录都全表扫一遍没必要；5 分钟已经远快于任何
+    用户能感知的恢复时间，也和最短采集间隔一致。
+    """
+    global _last_repair_at
+    now = time.time()
+    if now - _last_repair_at < 300:
+        return
+    _last_repair_at = now
+    try:
+        from services.collection_maintenance import repair
+        outcome = repair(db, now=now)
+        if outcome.get('changed'):
+            print(f"Collection records repaired: {outcome['changed']}", flush=True)
+    except Exception:
+        # 自愈失败不能拖垮采集循环：下一轮还会再试。
+        db.rollback()
+
+
 def start_worker():
     global _thread, _supervisor, _stopped
     if _thread and _thread.is_alive(): return
@@ -133,6 +212,10 @@ def start_worker():
             try:
                 with SessionLocal() as db:
                     from api.collector_routes import connected
+                    # 自愈要先于排期，而且**与本机采集器是否在线无关**：本机采集器
+                    # 也会写出 error 记录，同样需要修。放在 connected 判断之前，
+                    # 否则「有本机采集器」就等于「记录永远不自愈」。
+                    _maybe_repair(db)
                     if connected(db):
                         _record_cycle(db, 0, 'local_collector')
                         _stop.wait(10)

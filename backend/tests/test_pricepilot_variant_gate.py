@@ -145,12 +145,16 @@ class FakePage:
         if 'variant' in selector or 'swatch' in selector:
             # The selector list cannot tell main-area controls from teasers;
             # it returns both, and main_variant_elements() filters by DOM scope.
-            out = []
-            if self.card_variants:
-                out.append(VariantButton(self.card_label, False, self, in_card=True))
-            if self.variants:
-                out.append(VariantButton(self.variant_label, False, self))
-            return out
+            # Instances are cached: real DOM nodes keep their selected state across
+            # queries, and the collector re-queries after every click to verify.
+            if not hasattr(self, '_variant_nodes'):
+                nodes = []
+                if self.card_variants:
+                    nodes.append(VariantButton(self.card_label, False, self, in_card=True))
+                if self.variants:
+                    nodes.append(VariantButton(self.variant_label, False, self))
+                self._variant_nodes = nodes
+            return list(self._variant_nodes)
         return []  # "other sellers" markers and everything else
 
     async def query_selector(self, selector):
@@ -207,7 +211,11 @@ def test_variant_controls_present_and_matched_switches_before_reading_price():
     assert result['variantControls'] == 1
     assert result['buyboxPrice'] == 900.0
     assert not result.get('variantSwitchFailed') and not result.get('error')
-    assert 'colour_variant=Black' in page.url
+    # 切换靠点击页面自己的变体控件完成，不再改写 URL：多维度变体下 URL 参数
+    # 一次只能表达一个维度，点控件才能把每个维度都设上并逐个验证选中态。
+    assert result['variantApplied'] == ['Black']
+    assert result['variantMethods'] == ['Black:click']
+    assert 'variant=' not in page.url
 
 
 def test_probe_counts_controls_even_when_selector_list_misses_them(monkeypatch):

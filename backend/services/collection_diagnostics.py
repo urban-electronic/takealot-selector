@@ -46,7 +46,13 @@ def classify(snapshot):
     if status==404 or error=='404': return 'product_not_found','商品公开页不存在（404）'
     if error=='invalid_url': return 'invalid_url','商品链接不是有效的Takealot PLID地址'
     if snapshot.get('variantSwitchFailed'):
-        controls=(snapshot.get('diagnostics') or {}).get('variant_controls')
+        d=snapshot.get('diagnostics') or {}
+        controls=d.get('variant_controls')
+        missing=[item for item in (d.get('variant_unmatched') or []) if isinstance(item,str) and item]
+        # 点名缺哪个维度。只说"有 30 个变体控件"没法行动：多维度商品（颜色+尺码）
+        # 少切一个就没有报价，用户要知道是哪一个没切上。
+        if missing:
+            return 'variant_unmatched',f'未能切到变体 {" / ".join(missing)}，不使用默认变体报价'
         suffix=f'（页面检测到 {controls} 个变体控件，需人工确认SKU对应变体）' if isinstance(controls,int) and controls>0 else ''
         return 'variant_unmatched',f'未确认SKU对应变体，不使用默认变体报价{suffix}'
     if 'CERT' in error.upper(): return 'tls_error','浏览器证书校验失败，未取得报价页面'

@@ -2279,6 +2279,9 @@ table tbody tr:hover { background: #f8fafc; }
 .loop-cell { flex: 1 1 0; min-width: 3px; border-radius: 2px; background: #e2e8f0; transition: background-color 0.25s ease; }
 .loop-cell.is-ok { background: var(--color-success); }
 .loop-cell.is-bad { background: var(--color-danger); }
+/* 待刷新：这一轮没采到，但手上的报价还能用。用黄色而不是红色——
+   红色代表"没有行情"，那才需要人处理。 */
+.loop-cell.is-warn { background: var(--color-warning); }
 /* 进行中不参与脉冲：格子会闪成半透明，反而更像"未采集"。
    让整条轨道保持静止可读，脉动只留给左侧那个心跳点。 */
 .loop-cell.is-live { background: var(--color-primary); }

@@ -97,8 +97,10 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(strip.textContent.includes('约 2 分钟后'), 'countdown is human readable');
   });
   // worker 死掉时必须直说，否则用户会以为"只是还没到时间"而一直等。
+  // 这一条故意不带任何报价：从没采到过才算真的失败（红色）。
   loopFixture = { ...loopFixture, worker_alive: false };
-  await scenario({ ...known, status: 'error', error_code: 'collector_unavailable',
+  await scenario({ ...known, buybox_price: undefined, last_success_at: undefined,
+    status: 'error', error_code: 'collector_unavailable',
     error: '采集器不可用（浏览器或接口未就绪）；未改价' }, () => {
     const strip = host.querySelector('.loop-strip');
     check(strip.textContent.includes('采集循环已停止'), 'a dead worker is reported instead of hidden');
@@ -158,16 +160,35 @@ async function scenario(monitor, inspect, overrides = {}) {
   // 轨道只给颜色，用户没法知道红的是哪个 SKU。这里必须点名，并且能一键筛出来。
   // enabled:true 是线上真实行必带的字段；缺了它这条就退化成「已关闭的 SKU」，
   // 而「已关闭的 SKU 上残留的旧错误」本来就不该算进需处理——那是另一条规则。
-  await scenario({ ...known, status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, async tr => {
+  // 同时不带报价：只有「从没采到过价」才该被点名并画红。
+  await scenario({ ...known, buybox_price: undefined, last_success_at: undefined,
+    status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, async tr => {
     const strip = host.querySelector('.loop-strip');
     const named = strip.querySelector('.loop-failing button');
     check(!!named && named.textContent === 'test-sku', 'the failing cell is named by SKU, not just coloured red');
-    check(strip.querySelectorAll('.loop-cell.is-bad').length === 1, 'the failing SKU is the red cell');
+    check(strip.querySelectorAll('.loop-cell.is-bad').length === 1, 'a SKU with no quote at all is the red cell');
     check(!!strip.querySelector('.loop-cell.is-bad .loop-cell-hit'), 'the red cell itself is clickable');
     check(!strip.querySelector('.loop-cell.is-ok .loop-cell-hit'), 'healthy cells are not extra tab stops');
     // 点名要能直接跳到那一行，否则还是得自己去 279 行里找。
     await act(async () => named.click());
     check(host.querySelector('input[aria-label="搜索调价商品"]').value === 'test-sku', 'clicking the name filters the table to that SKU');
+  });
+  // 2026-10-18 线上现场：浏览器抖了一下（RuntimeError），但库里还有 5 分钟前的有效价。
+  // 这种情况不是「没有行情」，是「这一轮没刷新」——画黄色、不进需处理，
+  // 否则用户看到一片红会以为采集全废了。
+  await scenario({ ...known, status: 'error', enabled: true,
+    error: '采集器不可用（浏览器或接口未就绪）；未改价', error_code: 'collector_unavailable' }, tr => {
+    const strip = host.querySelector('.loop-strip');
+    check(!!strip.querySelector('.loop-cell.is-warn'), 'a stale-but-usable quote is marked yellow, not red');
+    check(!strip.querySelector('.loop-cell.is-bad'), 'a stale-but-usable quote is never drawn as a hard failure');
+    check(!strip.querySelector('.loop-failing'), 'a stale-but-usable quote is not listed as work to do');
+    const bar = host.querySelector('.collection-bar');
+    check(bar.textContent.includes('待刷新'), 'the fleet summary says "待刷新" instead of "采集失败"');
+    check(!bar.classList.contains('tone-danger'), 'a stale-but-usable quote does not paint the header red');
+    check(tr.querySelector('.collection-status-cell').textContent.includes('待刷新'), 'the row says the quote is pending refresh');
+    // 不报红不等于瞒着：原因仍然写在行里。
+    check(tr.textContent.includes('采集器没起来'), 'the real reason is still stated in the row');
+    check(tr.textContent.includes('的报价'), 'the row still shows which quote is being kept');
   });
   // 已经停采的 SKU 身上留着上次的报错，不算「需处理」。否则上面那个数字会永久虚高，
   // 而且点进去发现是个自己关掉的 SKU，等于把人支使了一趟。
@@ -177,8 +198,8 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(!!strip.querySelector('.loop-cell.is-off'), 'a stopped SKU is drawn as not collecting');
   });
   await scenario({ ...known, status: 'error', enabled: true, error: '网站验证阻挡', error_code: 'site_challenge' }, tr => {
-    check(tr.querySelector('.collection-status-cell').textContent.includes('采集失败'), 'failure not hidden by pricing state');
-    check(tr.textContent.includes('旧报价'), 'failure retains stale quote warning');
+    check(tr.querySelector('.collection-status-cell').textContent.includes('待刷新'), 'a failed round with a usable quote is reported as pending refresh');
+    check(tr.textContent.includes('网站要求人工验证'), 'the reason is still named');
   });
   // 采集失败的原因有一半藏在页面里。诊断数字必须能在行内看到，否则用户只能反复点采集。
   await scenario({ ...known, status: 'error', error: '页面已读取，但未找到有效Buybox价格', error_code: 'price_not_found',

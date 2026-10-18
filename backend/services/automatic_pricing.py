@@ -272,6 +272,13 @@ async def collect(product, offer):
                 except Exception: pass
             except Exception: pass
             if isinstance(snapshot.get('variantControls'),int): diagnostics['variant_controls']=snapshot['variantControls']
+            # 这一轮把哪些变体维度切成功了、哪个没切成功。多维度变体（颜色+尺码）
+            # 少切一个就读不到报价，只记"变体控件有几个"看不出是缺哪个维度，
+            # 所以把标签本身也记下来（是商品规格名，不是页面正文）。
+            for key,dest in (('variantApplied','variant_applied'),('variantUnmatched','variant_unmatched')):
+                value=snapshot.get(key)
+                if isinstance(value,list):
+                    diagnostics[dest]=[str(item)[:40] for item in value[:6] if isinstance(item,str)]
             # 变体控件的可读标签。只读、不点击：用来判断"确认不了是哪个变体"到底是
             # 页面上没有这个规格，还是控件本身没有文本（单选/下拉），后者属于我们
             # 匹配逻辑的缺口，不是商品的问题。

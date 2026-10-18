@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, getImageUrl } from '../remoteApi';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
-import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName } from '../utils/buyboxStatus';
+import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote } from '../utils/buyboxStatus';
 
 /**
  * 44px 商品缩略图。加载失败就留一个方块占位：
@@ -219,7 +219,10 @@ export default function AutoPricing() {
     // 只有明确关掉才算「未开启」；字段缺失时按状态判断，别把在采的 SKU 画成灰的。
     if (m.enabled === false && !m.request_once) return 'off';
     if (m.status === 'success') return 'ok';
-    if (m.status === 'error') return 'bad';
+    // 失败要分成两件事：手上还有有效报价 = 只是这一轮没刷新（黄），
+    // 从没采到过报价 = 真的没有行情（红）。原来一律画红，用户看到
+    // 一片红以为采集全废了，其实多数行旧价还能用。
+    if (m.status === 'error') return hasUsableQuote(m) ? 'warn' : 'bad';
     if (m.status === 'running' || m.status === 'queued') return 'live';
     return 'idle';
   };
@@ -227,7 +230,10 @@ export default function AutoPricing() {
     const m = r.monitor || {};
     if (m.enabled === false && !m.request_once) return '未开启采集';
     if (m.status === 'success') return '本轮已采到';
-    if (m.status === 'error') return m.error_code ? `采集失败：${errorCopy(m.error_code, m.error).title}` : '采集失败';
+    if (m.status === 'error') {
+      if (hasUsableQuote(m)) return `这一轮没刷新，仍用上次报价${m.error_code ? `：${errorCopy(m.error_code, m.error).title}` : ''}`;
+      return m.error_code ? `采集失败：${errorCopy(m.error_code, m.error).title}` : '采集失败';
+    }
     if (m.status === 'running' || m.status === 'queued') return '正在采这一轮';
     return '等待下轮';
   };
@@ -281,7 +287,9 @@ export default function AutoPricing() {
   // 红的是哪个：循环轨道只给颜色，这里把失败的 SKU 直接点名，点一下就筛出那一行。
   // 只算「在采的」那些：关掉的 SKU 身上留着的旧错误不该被算成当前要处理的事，
   // 否则上面的数字和下面点名的列表会对不上。
-  const failing = rows.filter(r => r.monitor?.status === 'error' && (r.monitor?.enabled || r.monitor?.request_once));
+  // 「需处理」只算真的没有报价的行。这一轮没刷新但旧价还在的不算——
+  // 它不需要用户动手，列进"需处理"只会让人白忙。
+  const failing = rows.filter(r => r.monitor?.status === 'error' && (r.monitor?.enabled || r.monitor?.request_once) && !hasUsableQuote(r.monitor));
   const focusSku = (sku: string) => {
     setSearch(sku); setPage(1);
     document.querySelector('.operations-table-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -301,8 +309,8 @@ export default function AutoPricing() {
       <ol className="loop-track" aria-hidden="true">
         {rows.map(r=>{
           const state=cellState(r); const label=`${r.sku} · ${cellLabel(r)}`;
-          // 只有失败/未开启的格子可点：正常的不需要点，28 个 tab 停靠点反而碍事。
-          return (state==='bad'||state==='off')
+          // 只有失败/未开启/待刷新的格子可点：正常的不需要点，28 个 tab 停靠点反而碍事。
+          return (state==='bad'||state==='off'||state==='warn')
             ? <li key={key(r)} className={`loop-cell is-${state}`}><button type="button" className="loop-cell-hit" aria-label={label} title={label} onClick={()=>focusSku(r.sku)} /></li>
             : <li key={key(r)} className={`loop-cell is-${state}`} title={label} />;
         })}

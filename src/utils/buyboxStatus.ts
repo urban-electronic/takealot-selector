@@ -96,6 +96,23 @@ interface ErrorCopy {
 }
 
 /**
+ * 这一行手上有没有一份「还能用」的报价。
+ *
+ * 有报价和没报价是两件完全不同的事，界面必须分开说：
+ *   - 有报价、只是这一轮没刷新 → 数据偏旧，还能看，别报红；
+ *   - 从没采到过报价 → 真的没有行情，得让人知道。
+ * 原来两种情况都落进 `status === 'error'` 的红色分支，于是浏览器抖一下
+ * （2026-10-18 SKU 9902391031247，库里还有 5 分钟前的 450）就被显示成
+ * 故障，用户以为报价丢了。
+ */
+export function hasUsableQuote(monitor: any): boolean {
+  const m = monitor || {};
+  const price = m.buybox_price;
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return false;
+  return Number.isFinite(Date.parse(m.last_success_at || ''));
+}
+
+/**
  * 错误码 → 人话。标题要能让用户一眼看出「是谁的问题」：
  * 网站挡的、我们程序错的、配置缺的，处理方式完全不同。
  */
@@ -294,6 +311,20 @@ export function describeCollection(monitor: any, ctx: CollectionContext): Collec
 
   if (m.status === 'error') {
     const copy = errorCopy(m.error_code, m.error);
+    // 手上还有一份有效报价时，这一轮失败只是「没刷新」，不是「没有行情」。
+    // 说成故障会让用户以为价格丢了，而实际上旧价还能继续用。
+    if (hasUsableQuote(m)) {
+      return {
+        ...freshness,
+        tone: 'warning',
+        label: '待刷新',
+        // 原因照样要说清楚：不报红不等于瞒着。只是从"故障"改成"这一轮没刷新"，
+        // 因为旧价还在，用户没有必须马上做的事。
+        headline: `这一轮没刷新 · ${copy.title}`,
+        detail: `${copy.why}${dueSoon ? `系统会在${humanUntil(dueMs - now)}自动重试。` : ''}下面仍用 ${freshness.ageText}的报价。`,
+        action: '',
+      };
+    }
     return {
       ...freshness,
       tone: 'danger',
@@ -459,6 +490,8 @@ export interface FleetView {
   blocked: number;
   /** 被限流/被验证阻挡时建议调大的间隔，null 表示不建议改。 */
   suggestedInterval: number | null;
+  /** 这一轮没刷新、但手上报价仍可用的行数。是提示，不是故障。 */
+  refreshing: number;
 }
 
 /** 被这些原因挡住时，加长间隔是唯一能在前端做的减损动作。 */
@@ -479,17 +512,25 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const auto = monitors.filter(m => m.enabled).length;
   const running = monitors.filter(m => m.status === 'running').length;
   const queued = monitors.filter(m => m.status === 'queued').length;
-  const errored = monitors.filter(m => m.status === 'error');
+  // 失败只算「启用中、而且手上没有可用报价」的行。
+  // 停采的行不该因为一条旧错误把整页刷红（用户已经把它关了）；
+  // 有报价只是这一轮没刷新的行也不算失败（旧价还能用）。
+  const failedRows = list.filter(
+    r => r?.monitor?.status === 'error' && (r?.monitor?.enabled || r?.monitor?.request_once)
+  );
+  const errored = failedRows.filter(r => !hasUsableQuote(r?.monitor)).map(r => r?.monitor || {});
   const failing = errored.length;
-  const failedRows = list.filter(r => r?.monitor?.status === 'error' && r?.monitor?.enabled);
-  const blocked = failedRows.filter(r => THROTTLED.has(r?.monitor?.error_code || '')).length;
-  const retryable = failedRows.length - blocked;
+  const refreshing = failedRows.length - failing;
+  const blocked = failedRows.filter(
+    r => !hasUsableQuote(r?.monitor) && THROTTLED.has(r?.monitor?.error_code || '')
+  ).length;
+  const retryable = failing - blocked;
   const newest = monitors.reduce((max, m) => {
     const at = Date.parse(m.last_success_at || '');
     return Number.isFinite(at) && at > max ? at : max;
   }, 0);
 
-  const base = { retryable, blocked, suggestedInterval: null as number | null };
+  const base = { retryable, blocked, suggestedInterval: null as number | null, refreshing };
   const none = (tone: Tone, summary: string, action = ''): FleetView => ({ ...base, tone, summary, action });
 
   if (ctx.configured === false) return none('danger', '卖家接口没配置，采集无法开始', '到「设置」完成卖家接口配置');
@@ -529,6 +570,11 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   if (queued) return none('info', `${queued} 个 SKU 排队中，马上执行`, '');
   if (auto) {
     const when = newest ? ` · 最近 ${humanAge(ctx.now - newest)}更新` : '';
+    // 有行这一轮没刷新、但报价还在：说清"报价还能用，会自动重试"，
+    // 不要用失败的红字——用户没有需要动手的事。
+    if (refreshing) {
+      return none('warning', `${auto} 个 SKU 自动采集中${when} · ${refreshing} 个待刷新`, '报价仍可继续使用，下一轮会自动重试');
+    }
     return none('success', `${auto} 个 SKU 自动采集中${when}`, '');
   }
   return none('neutral', '自动采集未开启', '选中 SKU 后点「开启选中采集」');

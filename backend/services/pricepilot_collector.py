@@ -449,6 +449,178 @@ async def wait_initial_document(page):
         return None
     return True if (await page.title() or '').strip().lower() not in CHALLENGE_TITLES else None
 
+def variant_labels_from_name(name):
+    """商品名里所有尾随的变体段：'... Shapewear - Nude - L' → ['Nude', 'L']。
+
+    原来只取最后一段（`rsplit(' - ', 1)`），于是 'Nude - L' 只得到 'L'：
+    拿尺码去当颜色参数、再去找标签等于 'L' 的按钮，两处都必然落空——
+    2026-10-18 SKU 9902415247821 连续 3 轮 variant_unmatched 就是这么来的。
+    变体是**多维**的：颜色和尺码都得选，少选一个页面就停在 'Select an option'
+    占位状态，Buybox 卡里根本没有报价（实测 card_text_len=5）。
+
+    这里只做「切分」，不做「是不是变体」的判断——那要靠页面：页面没有变体
+    控件时 PLID 已唯一确定报价，调用方会把整组标签清空。
+    """
+    text = (name or "").strip()
+    if " - " not in text:
+        return []
+    parts = [p.strip() for p in text.split(" - ")]
+    return [p for p in parts[1:] if p]
+
+
+# 下拉型变体的触发器文案。Takealot 的尺码是「Select an option」按钮，
+# 选项要点开才在 DOM 里出现，所以不能只靠「找标签相同的控件」。
+_DROPDOWN_TRIGGER_RE = re.compile(
+    r'^(select an option|select a colour|select a color|select colour|select color|'
+    r'select a size|select size|choose|please select|select)$', re.I)
+
+# 弹出列表里可能的选项节点。分两轮：先只找语义明确的选项，找不到再放宽到
+# li/button/a。一上来就用宽选择器会在整页几百个 li 上逐个判可见性，慢且容易误点。
+_OPTION_SELECTORS = (
+    ('[role="option"]', '[role="menuitem"]', '[role="radio"]',
+     '[data-ref*="option"]', '[class*="option-item"]', '[class*="optionItem"]'),
+    ('ul li', 'ol li', 'button', 'a'),
+)
+
+
+async def _selected_for_label(page, label):
+    """某个变体值当前是否处于「已选中」状态。读不到一律返回 False（保守）。"""
+    target = _norm_label(label)
+    if not target:
+        return False
+    # ① 原生 select：选中项文本等于目标
+    try:
+        selects = await page.query_selector_all('select')
+    except Exception:
+        selects = []
+    for node in selects:
+        try:
+            chosen = await node.evaluate(
+                "el => { const o = el.options[el.selectedIndex]; return o ? (o.text || '').trim() : ''; }")
+        except Exception:
+            continue
+        if chosen and _norm_label(chosen) == target:
+            return True
+    # ② 主商品区里带选中态的控件
+    els, _complete = await main_variant_elements(page)
+    for el in els:
+        try:
+            state = await el.evaluate(_VARIANT_STATE_JS)
+        except Exception:
+            continue
+        if state and state.get("selected") and _norm_label(state.get("label")) == target:
+            return True
+    return False
+
+
+async def _pick_open_option(page, target):
+    """在下拉弹出列表里找文本等于 target 的可见选项。找不到返回 None。"""
+    for selectors in _OPTION_SELECTORS:
+        try:
+            candidates = await page.query_selector_all(','.join(selectors))
+        except Exception:
+            continue
+        for node in candidates:
+            try:
+                if await node.evaluate(_CARD_SCOPE_JS):
+                    continue
+                if not await node.is_visible():
+                    continue
+                if _norm_label(await node.inner_text()) == target:
+                    return node
+            except Exception:
+                continue
+    return None
+
+
+async def apply_variant_label(page, label):
+    """把某一个变体维度切到 label。返回 (是否确认选中, 方式)。
+
+    三种控件都试：原生 select → 标签相同的可点控件 → 下拉触发器点开再选。
+    每条路径都以「选中态」收尾验证，不用价格变化当证据——本页在选全之前
+    压根没有价格，价格判据在这里永远等不到。
+    """
+    target = _norm_label(label)
+    if not target:
+        return False, ""
+    if await _selected_for_label(page, label):
+        return True, "already"
+
+    # A) 原生 select
+    try:
+        selects = await page.query_selector_all('select')
+    except Exception:
+        selects = []
+    for node in selects:
+        try:
+            options = await node.evaluate(
+                "el => [...el.options].map(o => (o.text || '').trim())")
+        except Exception:
+            continue
+        for option_text in options or []:
+            if _norm_label(option_text) != target:
+                continue
+            try:
+                await node.select_option(label=option_text)
+            except Exception:
+                break
+            await page.wait_for_timeout(600)
+            if await _selected_for_label(page, label):
+                return True, "select"
+            break
+
+    els, _complete = await main_variant_elements(page)
+
+    # B) 标签精确相同的控件，直接点
+    for el in els:
+        try:
+            if _norm_label(await el.inner_text()) != target:
+                continue
+            await el.click()
+        except Exception:
+            continue
+        await page.wait_for_timeout(700)
+        if await _selected_for_label(page, label):
+            return True, "click"
+
+    # C) 下拉触发器：点开，再从弹出列表里选
+    for el in els:
+        try:
+            trigger_text = _norm_label(await el.inner_text())
+        except Exception:
+            continue
+        if not _DROPDOWN_TRIGGER_RE.match(trigger_text or ""):
+            continue
+        try:
+            await el.click()
+        except Exception:
+            continue
+        await page.wait_for_timeout(700)
+        option = await _pick_open_option(page, target)
+        if option is not None:
+            try:
+                await option.click()
+                await page.wait_for_timeout(700)
+            except Exception:
+                pass
+            if await _selected_for_label(page, label):
+                return True, "dropdown"
+            # 下拉选完后会把选中的值写回触发器自身文本（"Select an option" → "L"）。
+            # 部分实现不给选项加 aria-selected，这条是最直接的证据；只认**这个
+            # 触发器自己**的文本变化，不会把别处的同名文案当成已选中。
+            try:
+                if _norm_label(await el.inner_text()) == target:
+                    return True, "dropdown(触发器回显)"
+            except Exception:
+                pass
+        # 没选中就把下拉收起来，避免遮挡后面的点击
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+    return False, ""
+
+
 async def scrape_product(page, item: dict) -> dict:
     """抓单个商品详情页，返回上报 item。任何异常返回兜底 item（buyboxPrice=None）。"""
     url = item.get("url") or ""
@@ -493,164 +665,47 @@ async def scrape_product(page, item: dict) -> dict:
             pass
         await page.wait_for_timeout(random.randint(500, 900))
 
-        # ---- 变体切换：页面有变体选择器且商品名含变体后缀时，切到对应变体再抓 buybox ----
-        # 背景：Takealot 变体商品（颜色/尺寸）共用同一产品页 URL，默认展示主变体价格；
-        # 我方 SKU 是其中一个变体，必须切到对应变体才能读到正确的 buybox 价与持有状态。
-        variant_suffix = None
-        nm = (item.get("name") or "").strip()
-        if " - " in nm:
-            variant_suffix = nm.rsplit(" - ", 1)[1].strip()
-        # 变体切换前置门控：仅当页面**主商品区真实存在变体控件**时才尝试切换。
-        # 名称含 " - " 不等于存在变体（如 "... - professional package for motor,
-        # biking, skydiving" 只是标题分隔符）；无控件时 PLID 唯一确定商品与报价，
-        # 不存在默认/目标变体歧义，直接读取唯一报价，不再误报 variant_unmatched。
+        # ---- 变体选择：多维（颜色 + 尺码）逐个切到目标值，再抓 buybox ----
+        # 背景：Takealot 变体商品共用同一产品页 URL，默认展示主变体；我方 SKU 是
+        # 其中一个变体**组合**，每个维度都得切到目标值，页面才会给出报价。
+        # 只切一个维度不够：2026-10-18 PLID91715202（名 '... - Nude - L'）页面停在
+        # 'Select an option'，Buybox 卡文本只有 5 个字符，压根没有报价。
+        variant_labels = variant_labels_from_name(item.get("name"))
+        # 前置门控：仅当页面**主商品区真实存在变体控件**时才尝试选择。名称含 " - "
+        # 不等于存在变体（"... - professional package for motor, biking, skydiving"
+        # 只是标题分隔符）；无控件时 PLID 唯一确定商品与报价，不存在默认/目标变体
+        # 歧义，直接读取唯一报价，不再误报 variant_unmatched。
         variant_controls = await page_variant_controls(page)
-        if variant_suffix and (variant_controls is None or variant_controls == 0):
-            # 两种可能：① 无法判断（探测失败/元素作用域不可判定）——保守保留
-            # 后缀，继续切换校验，无法确认则上报 variantSwitchFailed，绝不按
-            # "无变体"放行默认报价（Codex 复核 P1，2026-10-15）；
+        if variant_labels and (variant_controls is None or variant_controls == 0):
+            # ① 无法判断（探测失败/元素作用域不可判定）——保守保留标签，继续尝试，
+            #    确认不了则上报 variantSwitchFailed，绝不按"无变体"放行默认报价；
             # ② 确定 0，但变体区可能比 buybox 卡稍晚渲染——短等待后复核一次。
             await page.wait_for_timeout(600)
             variant_controls = await page_variant_controls(page)
-        if variant_suffix and variant_controls == 0:
-            # 仅"确定 0"才清空后缀：单报价商品 PLID 唯一确定报价，直接读取
-            variant_suffix = None
+        if variant_labels and variant_controls == 0:
+            variant_labels = []
         result["variantControls"] = variant_controls
-        if variant_suffix:
-            from urllib.parse import quote_plus
-
-            async def _read_cards():
-                cards = []
-                bcs, _ = await query_all_fallback(page, "buybox_card")
-                for bc in bcs:
-                    try:
-                        price = await price_of(page, bc)
-                        txt = ((await bc.inner_text()) or "").lower()
-                        cards.append({
-                            "price": price,
-                            "txt": txt,
-                            "isToday": "get it today" in txt,
-                            "isFastest": "fastest delivery" in txt,
-                        })
-                    except Exception:
-                        continue
-                return cards
-
-            def _calc_buybox(cards):
-                # Buybox 归属（2026-10-08 修正，与主路径 _read_buybox_cards 一致）：
-                # 默认购买展示位 = 现货卡中最低价（map_card_stock 判定现货），
-                # 而非 Fastest Delivery 卡优先。反例 PLID91643007：Fastest 209 实为
-                # 我方 Other Offers 高价卡，Buybox 主卡是最低价现货 208（Valuezy）。
-                in_stock = [c["price"] for c in cards if c.get("price") and map_card_stock(c.get("txt", "")) == "in_stock"]
-                if in_stock:
-                    return min(in_stock)
-                today = [c["price"] for c in cards if c.get("isToday") and c.get("price")]
-                allp = [c["price"] for c in cards if c.get("price")]
-                if today:
-                    return min(today)
-                if allp:
-                    return min(allp)
-                return None
-
-            async def _wait_change(before, timeout_s=8.0):
-                """轮询等待 buybox 价格与切换前不同，用于验证变体切换真正生效（点击与 URL 直达共用）"""
-                waited = 0.0
-                while waited < timeout_s:
-                    await page.wait_for_timeout(500)
-                    waited += 0.5
-                    cards = await _read_cards()
-                    cur = _calc_buybox(cards)
-                    if cur is not None and (before is None or abs(cur - before) > 0.001):
-                        return cur
-                return None
-
-            async def _selected_target():
-                """目标变体是否已被选中（选中态确认）。
-
-                价格未变化时用它补判，修复两类"假失败"：
-                  ① 目标变体价 == 默认变体价（切换成功但价格不变，如 Earrings 120/120）；
-                  ② 本页无 buybox 卡（before_price=None，价格判据永远等不到变化）。
-                严格性：必须"被标记为选中的元素"其规范化文本 == 目标后缀才算命中，
-                容器类元素（class 含 variant 但非选中项）不会误命中，故不会把真失败判成成功。
-                读不到选中态返回 False，自动退回"价格变化"判据。"""
-                target = _norm_label(variant_suffix)
-                if not target:
-                    return False
-                # 只认主商品区变体控件：推荐商品卡内的 teaser 不可作为选中态依据
-                # （作用域不可判定的元素被排除，无法构成"已选中"证据，方向保守）
-                vbcs, _complete = await main_variant_elements(page)
-                for b in vbcs:
-                    try:
-                        st = await b.evaluate(_VARIANT_STATE_JS)
-                    except Exception:
-                        continue
-                    if st and st.get("selected") and _norm_label(st.get("label")) == target:
-                        return True
-                return False
-
-            # 1) 先读切换前（默认变体）buybox，作为切换是否生效的基准
-            before_cards = await _read_cards()
-            before_price = _calc_buybox(before_cards)
-            if before_price is None:
-                await page.wait_for_timeout(1500)
-                before_cards = await _read_cards()
-                before_price = _calc_buybox(before_cards)
-            sep = "&" if "?" in url else "?"
-            switched_price = None
-            switch_method = ""
-            switch_verified = False
-            # 2) URL 参数直达优先（colour_variant 实测对颜色变体有效；size_variant 兜底尺寸变体）
-            for param in ("colour_variant", "size_variant"):
-                try:
-                    await page.goto(f"{url}{sep}{param}={quote_plus(variant_suffix)}",
-                                    wait_until="domcontentloaded", timeout=45000)
-                except Exception:
-                    continue
-                switched_price = await _wait_change(before_price)
-                if switched_price is not None:
-                    switch_method = f"URL {param}"
-                    switch_verified = True
-                    break
-                # 价格未变化 ≠ 切换失败：用选中态补判（见 _selected_target 说明）
-                if await _selected_target():
-                    switch_method = f"URL {param}(选中态确认)"
-                    switch_verified = True
-                    break
-            # 3) URL 直达未能确认 → 回到原页点击精确变体按钮，轮询验证
-            if not switch_verified:
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    await page.wait_for_timeout(1500)
-                except Exception:
-                    pass
-                # 只点主商品区变体控件：推荐卡内 swatch 文案可能恰好等于目标后缀，
-                # 点击会跳到推荐商品（采错价），必须排除（2026-10-15 PLID97512496 实测教训）。
-                # 作用域不可判定的元素不点击——点不了则切换无法确认，保守上报。
-                vbcs, _complete = await main_variant_elements(page)
-                target_norm = _norm_label(variant_suffix)
-                for b in vbcs:
-                    try:
-                        bt = _norm_label(await b.inner_text())
-                    except Exception:
-                        continue
-                    if bt and bt == target_norm:
-                        try:
-                            await b.click()
-                        except Exception:
-                            pass
-                        switched_price = await _wait_change(before_price)
-                        if switched_price is not None:
-                            switch_method = "点击"
-                            switch_verified = True
-                        elif await _selected_target():
-                            switch_method = "点击(选中态确认)"
-                            switch_verified = True
-                        break
-            log(f"  变体切换: 后缀='{variant_suffix}' before={before_price} after={switched_price} 方式={switch_method or '失败(仍为默认变体)'}")
-            # 切换失败：页面仍是默认变体，本轮读到的 buybox/竞品价并非我方 SKU 对应变体的价格。
-            # 上报并标记，由后端决定如何处理（默认：不据此触发调价，避免按错误变体价格改价）。
-            if not switch_verified:
+        if variant_labels:
+            confirmed, methods, unmatched = [], [], []
+            for label in variant_labels:
+                ok, method = await apply_variant_label(page, label)
+                methods.append(f"{label}:{method or 'fail'}")
+                if ok:
+                    confirmed.append(label)
+            # 严格口径：**每一个**变体段都必须确认选中。少确认一个，页面给的就是
+            # 默认变体的价，拿它去调价等于采错价。所以这里不做"页面上没这个值就
+            # 忽略"的宽松处理——名称尾段到底是副标题还是缺失的变体，程序分不清，
+            # 分不清就按不安全的那一侧处理：不采信，并在 diagnostics 里点名是哪段。
+            unmatched = [lab for lab in variant_labels if lab not in confirmed]
+            result["variantApplied"] = confirmed
+            result["variantMethods"] = methods
+            if unmatched:
+                result["variantUnmatched"] = unmatched
                 result["variantSwitchFailed"] = True
+            log(f"  变体选择: 标签={variant_labels} 已确认={confirmed} 未匹配={unmatched} 方式={methods}")
+            # 选全之后 buybox 会重新渲染，等它出价再往下读
+            await page.wait_for_timeout(900)
+
 
         # 滚动触发懒加载
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
