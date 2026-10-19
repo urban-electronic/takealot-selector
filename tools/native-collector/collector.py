@@ -24,7 +24,6 @@ APP_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'TakealotColl
 try: APP_DIR.mkdir(parents=True, exist_ok=True)
 except Exception: pass
 STATUS_FILE = APP_DIR / 'collector_status.json'
-CHALLENGE_PATH = APP_DIR / 'challenge_state.json'
 _CURRENT = {'profile': '', 'round': 0}
 # 拦截暂停状态持久化：跨重启保存，需显式人工恢复（WB-103-R6）
 from challenge_state import (load_challenge_state, save_challenge_state, consume_recovery_flag, challenge_state_path, ChallengeStateError)  # noqa: E402

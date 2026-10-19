@@ -485,3 +485,19 @@ WorkBuddy；基线 046b70dd4071。`pricepilot_collector.py` 的 `_selector_calls
 改动：删掉这组计数、`selector_health()` 与同样零引用的 `query_one_fallback()`；注释改成指向真正生效的 classify 分支。`_record_selector()` 都是纯计数调用，删除不改任何控制流，`[选择器降级]` 日志保留。
 
 复测：`tests/test_pricepilot_variant_gate.py` + `test_buybox_monitor.py` + `test_collection_diagnostics.py` 44 passed；后端全量 377 passed / 1 skipped；selfcheck 25/25（211.6s）。未请求真实商品页。
+
+### IMG-VARIANT-01 分支变体的图片不再永远是主变体那张（2026-10-20）
+
+WorkBuddy；基线 971d646bed。`refresh-price`（`source=details`）旧逻辑是 `if result.get('product_image_url') and not p.product_image_url`：只在**完全没图**时写入页面主图，已有图一律不动。页面主图属于默认变体，所以「白色分支」第一次抓取拿到的就是黑色主图，之后再也不会变——`variants[].image_url` 里其实一直有本行 SKU 自己的图，但从未被读过。前端「补充缺图」按钮同样只筛 `!product_image_url`，这些行根本进不了待处理队列，按钮计数也不含它们。
+
+改动（只动图片，不碰价格/成本）：`_sku_variant_image()` 只在本行 `sku` 恰好一个 token 且能在 `variants` 里精确命中时返回该变体图，多 SKU 汇总行与未命中行返回空串（不猜）；`_is_scraped_image()` 只认 `media.takealot.com`，即只替换上次自动抓的图，人工填写的链接不覆盖。没有变体图时页面主图仍只补空位。前端 `imageRefetchPending()` 除缺图行外，额外纳入「非主变体且图片与同组主变体相同」的行，并把这类行从「未获取图片，请人工上传」的失败提示里分出来，单独说明「官网没有独立变体图，仍沿用主图」。
+
+复测：`tests/test_price_refresh.py` 新增 4 例（分支图替换旧主图 / 无变体图不回退成主图 / 人工链接不被覆盖 / 多 SKU 行不猜图）；后端全量 381 passed / 1 skipped；selfcheck 25/25 全绿（211.7s）。未改调价参数、未动数据模型、无生产写入、未请求真实商品页。
+
+### COLLECT-DEAD-02 采集器里那个算错的 challenge 状态路径（2026-10-20）
+
+WorkBuddy；基线 971d646bed。`tools/native-collector/collector.py` 顶部还留着 `CHALLENGE_PATH = APP_DIR / 'challenge_state.json'`，零引用；真正在用的是 `from challenge_state import challenge_state_path`——它按 profile 分目录（`base/<profile>/challenge_state.json`）。留着的那个常量指向全局路径，正好是 profile 化之前的旧写法，谁照着它改就会把多 profile 的状态写串。
+
+改动：删掉该常量。同文件 `challenge_state` 的导入与全部调用不动，行为零变化。
+
+复测：selfcheck 25/25（211.7s）——注意 selfcheck 只跑 `backend/tests`，不覆盖本目录；另单独跑 `tools/native-collector` 套件 72 passed / 1 failed，失败项是 `test_gui_refresh_state_shows_challenge_unreliable` 在 venv 里 `import tkinter` 失败（`ModuleNotFoundError: No module named 'tkinter'`），与本次删除无关。

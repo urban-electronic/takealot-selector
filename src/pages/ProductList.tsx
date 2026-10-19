@@ -11,6 +11,22 @@ import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
 
+// 需要重新抓图的行：缺图，或者分支变体的图片仍是主变体那张（同组同图）。
+const imageRefetchPending = (rows: Product[]) => {
+  const primaryImage = new Map<string, string>();
+  rows.forEach(row => {
+    if (row.variant_group && row.is_primary_variant !== false && row.product_image_url) {
+      primaryImage.set(row.variant_group, row.product_image_url);
+    }
+  });
+  return rows.filter(row => {
+    if (!row.takealot_url || row.product_image_path) return false;
+    if (!row.product_image_url) return true;
+    return !!(row.variant_group && row.is_primary_variant === false
+      && row.product_image_url === primaryImage.get(row.variant_group));
+  });
+};
+
 // --- 列定义 ---
 interface ColumnDef {
   key: string;
@@ -523,13 +539,16 @@ export default function ProductList() {
   };
 
   const handleRefetchMissingImages = async () => {
-    const pending = products.filter(product => !product.product_image_url && !product.product_image_path && product.takealot_url);
+    // 缺图行之外，还要包含「与主变体同图」的分支：它们当初就是被抓成主图的那张，
+    // 不重新抓一次永远换不成自己的变体图。
+    const pending = imageRefetchPending(products);
     if (pending.length === 0) {
-      alert('当前缺图产品没有可用的 Takealot 官网链接。');
+      alert('当前没有需要补充图片的产品：缺图行和沿用主图的分支变体都已处理。');
       return;
     }
     let success = 0; let processed = 0;
     const failures: string[] = [];
+    const shared: string[] = [];
     batchStop.current = false;
     for (let index = 0; index < pending.length; index += 1) {
       if (batchStop.current) break;
@@ -540,6 +559,7 @@ export default function ProductList() {
       try {
         const result: Record<string, any> = await api.refreshPrice(product.id, 'details');
         if (result.product_image_url) success += 1;
+        else if (product.variant_group && product.is_primary_variant === false) shared.push(`#${product.product_no}`);
         else failures.push(`#${product.product_no}：未获取图片，请人工上传`);
       } catch (e) {
         failures.push(`#${product.product_no}：${e instanceof Error ? e.message : '读取失败'}`);
@@ -550,7 +570,7 @@ export default function ProductList() {
     setImageBatchProgress('');
     await fetchProducts();
     // 结果摘要属于"完成通知"，不是错误：用 status 播报；只有真的失败才另起 error
-    setAssistNotice(`图片处理${batchStop.current ? '已停止' : '完成'}：成功 ${success} 个，已处理 ${processed}/${pending.length}，未获取图片 ${processed - success} 个。`);
+    setAssistNotice(`图片处理${batchStop.current ? '已停止' : '完成'}：成功 ${success} 个，已处理 ${processed}/${pending.length}，未获取图片 ${processed - success} 个。${shared.length ? `其中 ${shared.join('、')} 官网没有独立变体图，仍沿用主图。` : ''}`);
     setAssistError(failures.length ? `以下产品处理失败：${failures.join('；')}` : '');
   };
 
@@ -1024,7 +1044,7 @@ export default function ProductList() {
         <div className="image-recovery-bar">
           <div><strong>图片与资料补充</strong><span>优先读取本店卖家资料，未匹配时读取官网；不修改售价和采购成本。</span></div>
           <button className="btn btn-primary btn-sm" disabled={!!imageBatchProgress} onClick={handleRefetchMissingImages}>
-            {imageBatchProgress || `补充缺图 (${products.filter(p => !p.product_image_url && p.takealot_url).length})`}
+            {imageBatchProgress || `补充缺图 (${imageRefetchPending(products).length})`}
           </button>
           {imageBatchProgress && <button className="btn btn-outline btn-sm" onClick={() => { batchStop.current = true; setImageBatchProgress('正在结束当前产品，随后停止…'); }}>停止后续处理</button>}
         </div>

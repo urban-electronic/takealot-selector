@@ -61,3 +61,53 @@ def test_unmatched_and_ambiguous_seller_prices_fail_without_fallback(db, monkeyp
     with pytest.raises(HTTPException) as exc:
         asyncio.run(refresh_price('p', db, 'default-store', 'seller'))
     assert exc.value.status_code == 409 and p.actual_sale_price_zar == 500
+
+
+def details_setup(monkeypatch, payload):
+    import services.takealot_scraper as scraper
+    import services.takealot_seller_api as seller
+    monkeypatch.setattr(seller, 'configured_key', lambda db: None)
+    async def fake(url): return payload
+    monkeypatch.setattr(scraper, 'scrape_product', fake)
+
+
+def test_branch_variant_image_replaces_stale_primary_image(db, monkeypatch):
+    """分支 SKU 必须换成自己那张变体图，而不是继续沿用主变体的页面主图。"""
+    black = 'https://media.takealot.com/covers_images/black.jpg'
+    white = 'https://media.takealot.com/covers_images/white.jpg'
+    details_setup(monkeypatch, {'product_name': 'Wall Socket', 'product_image_url': black,
+                                'variants': [{'sku': 'sku1', 'label': 'White', 'image_url': white}]})
+    p = db.get(Product, 'p'); p.product_image_url = black; db.commit()
+    result = asyncio.run(refresh_price('p', db, 'default-store', 'details'))
+    assert result['product_image_url'] == white
+    assert db.get(Product, 'p').product_image_url == white
+
+
+def test_page_image_never_overwrites_an_existing_variant_image(db, monkeypatch):
+    """没有本行 SKU 的变体图时，页面主图只补空位，不把分支图换回主图。"""
+    black = 'https://media.takealot.com/covers_images/black.jpg'
+    white = 'https://media.takealot.com/covers_images/white.jpg'
+    details_setup(monkeypatch, {'product_name': 'Wall Socket', 'product_image_url': black,
+                                'variants': [{'sku': 'other', 'label': 'Black', 'image_url': black}]})
+    p = db.get(Product, 'p'); p.product_image_url = white; db.commit()
+    result = asyncio.run(refresh_price('p', db, 'default-store', 'details'))
+    assert 'product_image_url' not in result and db.get(Product, 'p').product_image_url == white
+
+
+def test_manual_image_url_is_not_overwritten_by_variant_image(db, monkeypatch):
+    """人工填写的图片链接优先于抓取结果，不被变体图覆盖。"""
+    details_setup(monkeypatch, {'product_name': 'Wall Socket', 'product_image_url': 'https://media.takealot.com/covers_images/black.jpg',
+                                'variants': [{'sku': 'sku1', 'label': 'White', 'image_url': 'https://media.takealot.com/covers_images/white.jpg'}]})
+    p = db.get(Product, 'p'); p.product_image_url = 'https://shop.example.com/mine.jpg'; db.commit()
+    result = asyncio.run(refresh_price('p', db, 'default-store', 'details'))
+    assert 'product_image_url' not in result and db.get(Product, 'p').product_image_url == 'https://shop.example.com/mine.jpg'
+
+
+def test_multi_sku_row_keeps_page_image_without_guessing_a_variant(db, monkeypatch):
+    """多 SKU 汇总行无法确定用哪张变体图，只按页面主图补空位。"""
+    black = 'https://media.takealot.com/covers_images/black.jpg'
+    details_setup(monkeypatch, {'product_name': 'Wall Socket', 'product_image_url': black,
+                                'variants': [{'sku': 'sku1', 'label': 'White', 'image_url': 'https://media.takealot.com/covers_images/white.jpg'}]})
+    p = db.get(Product, 'p'); p.sku = 'sku1 sku2'; db.commit()
+    result = asyncio.run(refresh_price('p', db, 'default-store', 'details'))
+    assert result['product_image_url'] == black

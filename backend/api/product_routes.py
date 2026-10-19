@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict, Any
 import asyncio
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -564,6 +564,26 @@ class PriceRefreshOut(BaseModel):
     rating_value: Optional[float] = None
 
 
+def _sku_variant_image(result: Dict[str, Any], sku: Optional[str]) -> str:
+    """按本行 SKU 取变体图；多 SKU 汇总行与未匹配行返回空串。
+
+    页面主图属于默认变体，分支 SKU 直接用它会把白色分支显示成黑色主图，
+    所以只有精确命中本行唯一 SKU 的变体图才可用于覆盖已有图片。
+    """
+    tokens = [token.strip() for token in re.split(r"[\s,，;；]+", sku or "") if token.strip()]
+    if len(tokens) != 1:
+        return ""
+    for item in result.get("variants") or []:
+        if str(item.get("sku") or "").strip() == tokens[0]:
+            return str(item.get("image_url") or "").strip()
+    return ""
+
+
+def _is_scraped_image(url: str) -> bool:
+    """已自动抓取的官网图片可被新的变体图替换；人工填写的链接不覆盖。"""
+    return "media.takealot.com" in (url or "")
+
+
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)
 async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id), source: Literal['official', 'seller', 'details'] = 'official'):
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
@@ -659,9 +679,18 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id
     if source != "details" and result.get("in_stock_price") is not None:
         updated["in_stock_price"] = result["in_stock_price"]
 
-    if result.get("product_image_url") and not p.product_image_url:
-        p.product_image_url = result["product_image_url"]
-        updated["product_image_url"] = result["product_image_url"]
+    # 变体图优先：本行 SKU 在页面变体里有自己的图就用它，且允许替换上次自动抓的图
+    # （否则分支变体一旦被抓成主图，就永远是那张"老图片"）。
+    # 没有变体图时，页面主图只补空位，不覆盖已有图片——主图属于默认变体。
+    variant_image = _sku_variant_image(result, p.sku)
+    page_image = (result.get("product_image_url") or "").strip()
+    current_image = (p.product_image_url or "").strip()
+    if variant_image and variant_image != current_image and (not current_image or _is_scraped_image(current_image)):
+        p.product_image_url = variant_image
+        updated["product_image_url"] = variant_image
+    elif page_image and not current_image:
+        p.product_image_url = page_image
+        updated["product_image_url"] = page_image
 
     if result.get("tsin") and not p.tsin:
         p.tsin = result["tsin"]
