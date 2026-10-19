@@ -196,18 +196,27 @@ def _parse_migration_zip(content: bytes) -> tuple:
 
 # ---- 1. GET /api/packing/products ----
 
+def _catalog_images_by_sku(products):
+    """A group cover identifies its first SKU only; exact SKU records take priority."""
+    images = {}
+    for product in products:
+        skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
+        image_url = (product.product_image_url or '').strip()
+        if skus and image_url:
+            images.setdefault(skus[0], image_url)
+    for product in products:
+        skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
+        if len(skus) == 1 and product.product_image_url:
+            images[skus[0]] = product.product_image_url.strip()
+    return images
+
 @router.get('/products')
 def list_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     store_products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all()
     store_skus = {sku for product in store_products for sku in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if sku}
     rows = db.query(PackingProduct).filter(PackingProduct.sku.in_(store_skus)).order_by(PackingProduct.sku).all() if store_skus else []
     rows.sort(key=lambda p: (p.variant_group or p.sku, 0 if p.is_primary_variant else 1, p.sku))
-    source_images = {}
-    for raw_sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
-        if raw_sku and image_url:
-            for sku in re.split(r'[\s,，;；]+', raw_sku.strip()):
-                if sku:
-                    source_images[sku] = image_url
+    source_images = _catalog_images_by_sku(store_products)
     result = []
     for p in rows:
         item = public(p)
@@ -426,9 +435,10 @@ def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str)
         return
     if source.actual_weight_kg:
         product.weight = str(source.actual_weight_kg)
-    if not product.image_file and (source.product_image_url or '').strip():
+    image_url = _catalog_images_by_sku([source]).get(product.sku, '')
+    if not product.image_file and image_url:
         try:
-            product.image_file = _fetch_takealot_image(source.product_image_url.strip())
+            product.image_file = _fetch_takealot_image(image_url)
         except Exception:
             # 单张图片抓取失败时保留空图，避免阻断整份装箱单。
             pass
@@ -504,18 +514,11 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db),
     )
     if limit > 0:
         pending = pending[:limit]
+    source_images = _catalog_images_by_sku(db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all())
     updated = 0
     failed = []
     for p in pending:
-        prod = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku == p.sku).first()
-        if prod is None:
-            for candidate in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku.isnot(None)).all():
-                if p.sku in [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]:
-                    prod = candidate
-                    break
-        if prod is None:
-            continue
-        image_url = (prod.product_image_url or '').strip()
+        image_url = source_images.get(p.sku, '')
         if not image_url:
             continue
         try:
