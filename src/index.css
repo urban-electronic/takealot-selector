@@ -2217,6 +2217,12 @@ table tbody tr:hover { background: #f8fafc; }
 .operations-workspace .replenishment-toolbar > input { width:220px; }
 .operations-workspace input:not([type=checkbox]), .operations-workspace select { font-size:12px; padding:7px 9px; min-height:32px; border-radius:5px; }
 .operations-note { font-size:12px; color:var(--text-muted); padding:4px 16px 14px; line-height:1.6; }
+/* 可关闭的页头提示：文字保持内联流（换行正常），关闭按钮跟在后面，
+   不做 flex 布局——这条提示经常是长句子，变成 flex 行会把换行弄乱。 */
+.note-dismiss { margin-left:6px; padding:0 6px; border:0; border-radius:6px; background:transparent;
+  color:var(--text-muted); font-size:14px; line-height:1.4; cursor:pointer; }
+.note-dismiss:hover { background:rgba(15,23,42,.06); color:var(--text-strong); }
+.note-dismiss:focus-visible { outline:2px solid var(--link-strong); outline-offset:1px; }
 .operations-table-scroll { overflow-x:auto; }
 .operations-workspace .data-table { font-size:12px; min-width:1080px; }
 .operations-workspace .data-table th { background:var(--table-head-bg); color:var(--table-head-fg); font-size:var(--table-head-fs); font-weight:600; padding:var(--table-head-pad-y) var(--table-head-pad-x); white-space:nowrap; }

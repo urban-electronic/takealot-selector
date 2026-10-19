@@ -73,6 +73,14 @@ export default function App() {
     }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', allow_negative_inventory_shipments: true, last_synced_at: null }]));
   }, [activeStore]);
 
+  // 打开应用时提交的那一轮采集，结果提示原来会一直挂着——它每次打开都出现一次，
+  // 常驻就等于页头永远多一行字。成功的提示 6 秒后自己走；失败的要留着等人处理。
+  useEffect(() => {
+    if (!openCollection || openCollection.includes('未提交')) return;
+    const timer = setTimeout(() => setOpenCollection(''), 6000);
+    return () => clearTimeout(timer);
+  }, [openCollection]);
+
   useEffect(() => {
     if (!managementOpen) return;
     const closeOnOutside = (event: MouseEvent) => {
@@ -152,7 +160,7 @@ export default function App() {
       </header>
 
       <main className="container" key={activeStore}>
-        {activeStore==='default-store'&&openCollection&&<div className="operations-note" role="status">{openCollection} <NavLink to="/auto-pricing">查看采集</NavLink></div>}
+        {activeStore==='default-store'&&openCollection&&<div className="operations-note is-dismissible" role="status">{openCollection} <NavLink to="/auto-pricing">查看采集</NavLink><button type="button" className="note-dismiss" aria-label="关闭这条提示" onClick={()=>setOpenCollection('')}>×</button></div>}
         <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
