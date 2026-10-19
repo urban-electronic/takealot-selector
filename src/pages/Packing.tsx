@@ -325,24 +325,21 @@ export default function Packing() {
     [filteredImportResults, existingPackingSkus],
   );
 
-  const keywordMatches = useMemo(() => {
-    const kw = searchText.trim().toLowerCase();
-    return new Set(products.filter(p => !kw || `${p.sku} ${p.name_zh} ${p.name_en} ${p.material} ${p.brand}`.toLowerCase().includes(kw)).map(p => p.sku));
-  }, [products, searchText]);
-
   const filteredProducts = useMemo(() => {
-    // Keep group context so expanding a search result can reveal its siblings.
-    const matchingGroups = new Set(products.filter(p => keywordMatches.has(p.sku) && p.variant_group).map(p => p.variant_group));
+    const kw = searchText.trim().toLowerCase();
     return products.filter(p => {
-      if (!keywordMatches.has(p.sku) && !matchingGroups.has(p.variant_group)) return false;
+      if (kw) {
+        const hay = `${p.sku} ${p.name_zh} ${p.name_en} ${p.material} ${p.brand}`.toLowerCase();
+        if (!hay.includes(kw)) return false;
+      }
       if (fltElectric && p.electric !== fltElectric) return false;
       if (fltMagnetic && p.magnetic !== fltMagnetic) return false;
       if (fltMaterial && p.material !== fltMaterial) return false;
       return true;
     });
-  }, [products, keywordMatches, fltElectric, fltMagnetic, fltMaterial]);
+  }, [products, searchText, fltElectric, fltMagnetic, fltMaterial]);
 
-  const visibleProducts = useMemo(() => filteredProducts.filter(row => !row.variant_group || row.is_primary_variant || expandedGroups.has(row.variant_group) || (searchText.trim() && keywordMatches.has(row.sku))), [filteredProducts, expandedGroups, searchText, keywordMatches]);
+  const visibleProducts = useMemo(() => filteredProducts.filter(row => !row.variant_group || row.is_primary_variant || expandedGroups.has(row.variant_group)), [filteredProducts, expandedGroups]);
 
   const materials = useMemo(() => {
     const set = new Set<string>();
