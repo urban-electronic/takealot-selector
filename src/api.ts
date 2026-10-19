@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord } from './types';
-export const IMAGE_PROXY_BASE = '';
 
 /** 在系统默认浏览器中打开外部 URL，Tauri 中 target="_blank" 不生效 */
 export const openUrl = (url: string): void => {

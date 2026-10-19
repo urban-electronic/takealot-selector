@@ -48,12 +48,7 @@ for prefix, uri in [('', MAIN), ('xdr', DRAW), ('a', A), ('r', R), ('etc', ETC)]
     ET.register_namespace(prefix, uri)
 
 
-# ---- 文本推断工具（与本地 app.py 一致，用于前端未填写时的自动补全） ----
-
-def split_name(value):
-    parts = (value or '').split('/', 1)
-    return parts[0].strip(), parts[1].strip() if len(parts) > 1 else ''
-
+# ---- 文本推断工具（用于前端未填写时的自动补全） ----
 
 def infer_flags(name_zh, name_en, electric_hint=''):
     """保守的名称筛选；不确定项保持待确认，由人工复核。"""

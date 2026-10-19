@@ -511,7 +511,6 @@ export const configureBuyboxMonitor = (product:string, offer:string, settings:un
 export const collectBuyboxNow = (product:string, offer:string):Promise<any> => request(`/api/buybox/${product}/${offer}/collect-now`,{method:'POST'});
 export const bulkBuyboxMonitor = (payload:unknown):Promise<any> => request('/api/buybox/bulk',{method:'POST',body:JSON.stringify(payload)});
 
-export const getBuybox = ():Promise<any> => request('/api/buybox');
 export const collectOnAppOpen = () => request<{queued:number;skipped:number;price_changed:boolean}>('/api/buybox/page-open',{method:'POST'});
 
 // Browser frames and lease tokens never use query strings or localStorage.

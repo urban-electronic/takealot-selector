@@ -160,9 +160,9 @@ check(describeOwnership({}).label === '未采集', 'no quote means 未采集, ne
 const matched = describeOwnership({ buybox_price: 269, price_ownership: { state: 'matched' } });
 check(matched.label === '疑似在持位', 'equal price is only 疑似在持位');
 check(matched.explain.includes('不能证明是本店在占位'), 'equal price is explicitly not proof of identity');
-// Codex 复核：holding_buybox 是历史字段——后端现在只会写 False（价不同）或
-// None（价相同），从不写 True。旧记录里残留的 true 只说明"当时同价"，不构成
-// 卖家身份证据（buybox_monitor.py:65），所以不能给成功态。
+// Codex 复核：holding_buybox 单独一个 true 只说明"当时同价"，不构成卖家身份证据。
+// 真正算证据的是 `price_ownership.identity_verified`——采集器按卖家名比对过
+// （buybox_monitor.py 会把 True/False/None 三态落库），这里必须没有它就不给成功态。
 const legacyHolding = describeOwnership({ buybox_price: 269, holding_buybox: true });
 check(legacyHolding.label === '同价 · 卖家未核实', 'legacy holding flag is not presented as verified identity');
 check(legacyHolding.tone === 'warning', 'legacy holding flag never gets a success tone');
@@ -170,6 +170,13 @@ check(
   describeOwnership({ buybox_price: 269, holding_buybox: true }).label !== '已确认在持位',
   'no field in the current backend constitutes identity evidence',
 );
+// 反过来：卖家名核实过就必须说出来，不能继续降级成"疑似"。
+const verifiedHolding = describeOwnership({ buybox_price: 269, price_ownership: { state: 'matched', identity_verified: true } });
+check(verifiedHolding.label === '已核实持位', 'seller-name verified holding is stated as verified');
+check(verifiedHolding.tone === 'success', 'verified holding is the only path allowed to claim success');
+check(verifiedHolding.explain.includes('Sold by'), 'verified holding names the seller-name evidence');
+const verifiedMismatch = describeOwnership({ buybox_price: 269, price_ownership: { state: 'mismatch', identity_verified: true } });
+check(verifiedMismatch.label.includes('已核实'), 'verified mismatch says the seller name decided it');
 check(describeOwnership({ buybox_price: 269, price_matches_buybox: true }).label === '同价 · 卖家未核实', 'legacy equal price is not upgraded to holding');
 check(describeOwnership({ buybox_price: 0 }).label === '未采集', 'a zero quote is not a real quote');
 check(describeOwnership({ buybox_price: 269, price_ownership: { state: 'mismatch_pending' } }).label.includes('复核中'), 'one lost round is still pending');

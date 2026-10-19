@@ -86,6 +86,13 @@ else:
 
 - 调价页徽标 `blind`：「证据不足」→「待核实卖家名」。前者读起来像这条 SKU 废了，
   后者是一个可执行的动作。
+- 「本店价 / Buybox」列的持位徽标分两级证据（2026-10-20 补，`UI-OWNERSHIP-01`）：
+  `identity_verified === true` 时说「已核实持位」/「不在持位 · 已核实」，证据是页面
+  `Sold by` 的卖家名；只有价格推断（`identity_verified` 缺失）时才说「疑似在持位」
+  「同价 · 卖家未核实」。本节早先的注释写「后端 `identity_verified` 恒为 False」，
+  那是第 4 节上线前的口径——现在 `estimate()` 会在 `verified` 为 True/False 时写
+  `identity_verified=True`，界面再按旧的单级口径显示，就会和引擎「按持位提价」的
+  结论打架。
 - 设置页新增「本店卖家名」卡片：显示当前值、来源（手动指定 / 自动学到）、
   以及采集里出现最多的前 5 个卖家名和各自的 SKU 数——让人能判断学得准不准。
 - 接口：`GET/PUT /api/integrations/takealot-seller/identity`。

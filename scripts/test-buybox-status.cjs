@@ -244,6 +244,20 @@ async function scenario(monitor, inspect, overrides = {}) {
       if (state === 'matched') check(pill.title.includes('不能证明是本店在占位'), 'equal price is never verified identity');
     });
   }
+  // 反过来也要钉住：采集器按卖家名比对过（identity_verified=true）时，不能再写"疑似"。
+  // 后端 price_ownership.estimate() 在 verified 为 True/False 时都会写 identity_verified=True，
+  // 调价引擎也据此按持位在涨价；徽标若仍说"价格相同不能证明"，同一屏上两个结论互相打脸。
+  await scenario({ ...known, status: 'success', price_ownership: {state:'matched',own_price:269,own_price_source:'official_live',own_price_asof:'2026-10-15T01:58:10Z',identity_verified:true} }, tr => {
+    const pill = tr.querySelectorAll('td')[2].querySelector('.status-pill');
+    check(pill.textContent.includes('已核实持位'), 'seller-name verified holding is not downgraded to a price guess');
+    check(!pill.textContent.includes('疑似'), 'verified holding is never called suspected');
+    check(pill.title.includes('Sold by'), 'verified holding names the evidence it rests on');
+  });
+  await scenario({ ...known, status: 'success', price_ownership: {state:'mismatch',own_price:269,own_price_source:'official_live',own_price_asof:'2026-10-15T01:58:10Z',identity_verified:true} }, tr => {
+    const pill = tr.querySelectorAll('td')[2].querySelector('.status-pill');
+    check(pill.textContent.includes('已核实'), 'seller-name verified mismatch says it was verified, not inferred');
+    check(pill.title.includes('别家卖家'), 'verified mismatch explains it is the seller name, not the price');
+  });
   await scenario({ ...known, status: 'success', source: undefined, snapshot: {} }, tr => {
     check(tr.textContent.includes('报价来源：未记录'), 'legacy source remains unknown');
     check(tr.textContent.includes('卖家：未读取'), 'legacy seller remains unknown');

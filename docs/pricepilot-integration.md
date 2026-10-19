@@ -521,3 +521,25 @@ WorkBuddy；基线 a030b3161641。
 ② `backend/services/translator.py` 的 `translate_via_google()`：零引用，且是全仓唯一一处把商品英文名发到 `translate.googleapis.com` 的异步实现；实际在用的是 `translate_to_chinese_sync()`（词典优先，未命中才用 `requests` 调同一个接口）。连带删掉因此变为未使用的 `import httpx`，并把「内部调用 httpx 同步」的注释改成它真正用的 `requests`——注释与代码相反比没有注释更容易误导。
 
 复测：后端全量 381 passed / 1 skipped（与改动前同数，无用例增减）；selfcheck 25/25 全绿（209.2s），含 `test-operations.cjs`（直接 require 本文件并调用 `computeReplenish`）。未改调价参数、未动数据模型、无生产写入。
+
+### UI-OWNERSHIP-01 卖家名核实过的持位不再显示成「疑似」（2026-10-20）
+
+WorkBuddy；基线 a80c14788020。调价页「本店价 / Buybox」那一列的徽标只有一个「疑似在持位」，`src/utils/buyboxStatus.ts` 的注释还写着「后端 `identity_verified` 恒为 False」「`holding_buybox` 从不写 True」，并引用 `buybox_monitor.py:65` 的一句英文原文。这三条现在都不成立：`services/price_ownership.py` 的 `estimate()` 在 `verified` 为 `True`/`False` 时都会写 `identity_verified=True`，`buybox_monitor.py` 把 `holding_buybox` 的 True/False/None 三态如实落库，那句英文在该行已经不存在（第 65 行现在是骨架屏重试判断）。后果不是文案难看：调价引擎按 `holdingBuyboxVerified is True` 直接走持位提价，同一屏的徽标却说「价格相同不能证明是本店在占位」，两个结论互相打脸，用户没法判断这条 SKU 到底动不动。
+
+复现（纯函数，不碰生产）：`describeOwnership({buybox_price:269, price_ownership:{state:'matched', identity_verified:true}})`，旧实现返回 `label='疑似在持位'`、`tone='warning'`，`explain` 里是「不能证明是本店在占位」——而这一行的证据恰恰是卖家名，不是价格。
+
+改动：`describeOwnership()` 先按 `price_ownership.identity_verified === true` 分流——`matched` → 「已核实持位」（tone success，说明证据是页面 `Sold by` 的卖家名）、`mismatch` → 「不在持位 · 已核实」；没有 `identity_verified` 时一律维持原来的价格推断口径（「疑似在持位」「同价 · 卖家未核实」），历史记录里残留的 `holding_buybox=true` 依旧不给成功态。判据没有放宽，只是把第 1 级证据补上。注释改成如实描述两级证据。
+
+复测：`test-buybox-copy.cjs` 238 断言（新增 4 条：核实态必须说已核实、必须是唯一的成功态、必须点名 `Sold by` 证据；核实过的 mismatch 必须说明是卖家名判的）；`test-buybox-status.cjs` 146 断言（新增 5 条，含「核实态不得再出现『疑似』」）；后端全量 381 passed / 1 skipped；selfcheck 25/25 全绿。未改调价参数、未动数据模型、无生产写入。
+
+### DEAD-CODE-04 删掉三处零引用的定义（2026-10-20）
+
+WorkBuddy；基线 a80c14788020。
+
+① `backend/services/packing_excel.py` 的 `split_name()`：全仓零引用（`backend/`、`scripts/`、`tools/`、`docs/` 都搜过），纯函数无副作用；同段的 `infer_flags()` / `infer_material()` 才是真正被调用的推断工具。连带把段首注释里的「与本地 app.py 一致」去掉——本仓库没有 app.py，这句让人以为存在一个需要同步的外部文件。
+
+② `src/api.ts` 的 `IMAGE_PROXY_BASE = ''`：零引用，且值是空串。真正的图片代理地址在 `remoteApi.getImageUrl()` 里按 `api_base_url` 现拼 `/api/image-proxy?url=…`；留着这个空常量，谁照着它拼 URL 都会拼出相对路径。
+
+③ `src/remoteApi.ts` 的 `getBuybox()`：`GET /api/buybox` 的客户端包装，零调用方——页面走的是 `getAutomaticPricing()`（已把规则与 monitor 合并好）。后端路由保留不动（原生采集器仍在用），只删前端这份没人调用的包装。
+
+复测：`tsc --noEmit` 通过（`noUnusedLocals` 开）；后端全量 381 passed / 1 skipped（与改动前同数）；selfcheck 25/25 全绿。未改调价参数、未动数据模型、无生产写入。

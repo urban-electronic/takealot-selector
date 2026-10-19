@@ -448,11 +448,18 @@ const OWNERSHIP_COPY: Record<string, OwnershipView> = {
 /**
  * 「本店是不是这个 Buybox 的持有者」的翻译。
  *
- * 这里故意没有"已确认"态：后端 identity_verified 恒为 False，
- * buybox_monitor.py:65 也写明「A price match alone is not proof of seller identity」。
- * holding_buybox 是历史字段——后端现在只会写 False（价不同）或 None（价相同），
- * 从不写 True；旧记录里残留的 True 也只能说明"当时价相同"，不构成卖家身份证据。
- * 所以它和 price_matches_buybox 合并到同一条"同价但未核实"的结论，不给成功态。
+ * 证据分两级，界面必须分开说，否则两个方向都会骗人：
+ *   1. **卖家名核实**（`price_ownership.identity_verified === true`）——采集器按
+ *      本店卖家名比对了页面 "Sold by X"，`services/price_ownership.estimate()` 在
+ *      `verified` 为 True/False 时都会写 `identity_verified=True`。这是硬证据，
+ *      同价时说"已核实是本店"，同价但卖家是别家时说"已核实不在持位"。
+ *   2. **同价推断**（`identity_verified !== true`）——只有价格相同这一个信号，
+ *      别的卖家也可能挂同价，所以只能说"疑似"，不能据此声称本店在持位。
+ * 旧注释写的是「identity_verified 恒为 False / holding_buybox 从不写 True」，
+ * 那是卖家名核实上线前的口径；现在 `buybox_monitor.py` 会把三态如实落库
+ * （`holding_buybox` = True/False/None），照着旧注释做会漏掉整个第 1 级。
+ * 历史记录里残留的 `holding_buybox=true` 没有 `identity_verified` 佐证，
+ * 仍然只按第 2 级显示，不给成功态。
  */
 export function describeOwnership(monitor: any): OwnershipView {
   const m = monitor || {};
@@ -461,6 +468,24 @@ export function describeOwnership(monitor: any): OwnershipView {
     return { tone: 'neutral', label: '未采集', explain: '还没有采到 Buybox 报价，所以无法判断本店是否在持位。' };
   }
   const state = m.price_ownership?.state;
+  // 第 1 级：卖家名已核实。`matched` 和 `mismatch` 两个态都可能是核实过的，
+  // 差别只在结论方向，所以先按 identity_verified 分流，再落到下面的价格推断。
+  if (m.price_ownership?.identity_verified === true) {
+    if (state === 'matched') {
+      return {
+        tone: 'success',
+        label: '已核实持位',
+        explain: '页面 "Sold by" 的卖家就是本店（按卖家名比对），不是靠同价推断，所以这里是已确认在持位。',
+      };
+    }
+    if (state === 'mismatch') {
+      return {
+        tone: 'neutral',
+        label: '不在持位 · 已核实',
+        explain: '页面 "Sold by" 是别家卖家，所以哪怕价格和本店一样，也判定本店不在持位。',
+      };
+    }
+  }
   if (state && OWNERSHIP_COPY[state]) return OWNERSHIP_COPY[state];
   if (m.holding_buybox === true || m.price_matches_buybox) {
     return {
