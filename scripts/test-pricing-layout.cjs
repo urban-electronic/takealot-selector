@@ -79,6 +79,17 @@ rows.push(
   row({ product_id: 'p2', offer_id: 'o2', sku: '9900000000002', name: 'Camping Hat', chinese_name: '露营帽', image: '', price: 1999 }),
   // 没有中文名 → 标题回退到「中文名待核对」，英文名必须还在
   row({ product_id: 'p3', offer_id: 'o3', sku: '9900000000003', name: 'Dog Ball', chinese_name: '', name_status: 'missing', image: '' }),
+  // 配额用满 → 详情里要说清「今天不会再动」，否则看到的是「运行中但价格不变」
+  row({
+    product_id: 'p4', offer_id: 'o4', sku: '9900000000004', name: 'Quota Hat', chinese_name: '配额帽', image: '',
+    rule: {
+      strategy: 'takealot_buybox', enabled: true, use_system_min: true, min_price: null, max_price: null,
+      last_evaluated_at: null, max_daily_changes: 10, today_changes: 10,
+      change_day: new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg' }).format(new Date()),
+      plan: { regime: 'hold', reason: '今日改价次数已用满', confidence: 'low', risk: 'low', floor: 100, ceiling: null,
+              cheapest: null, live_count: 0, dark_count: 0, sole_seller: false },
+    },
+  }),
 );
 
 const host = document.getElementById('root');
@@ -134,6 +145,15 @@ const root = createRoot(host);
   check(select.includes('max-width:200px'), 'the strategy select is capped: it must not stretch across the row');
   check(rule('.pricing-table thead th:nth-child(5)').includes('430px'), 'the pricing column has a fixed width instead of eating all the slack');
   check(!/pricing-table thead th:nth-child\(2\)/.test(css), 'the product column is the only elastic one');
+
+  // 5) 配额：用满时必须自己说出来。后端 max_daily_changes 是硬闸，
+  //    闸落下来的时候界面还在说「运行中」，用户只会判定成故障。
+  const capped = rowOf('9900000000004');
+  const quotaLine = [...capped.querySelectorAll('.decision-card span')].find(s => s.textContent.includes('今日改价'));
+  check(!!quotaLine, 'the decision card shows how many changes were used today');
+  check(quotaLine.textContent.includes('10/10'), 'the counter shows used against the daily cap');
+  check(quotaLine.textContent.includes('已用满'), 'a used-up quota says so instead of leaving the reason blank');
+  check(!!quotaLine.querySelector('b.text-warning'), 'a used-up quota is highlighted, not printed in the same tone as normal');
 
   check(writes === 0, 'rendering the table never writes to the backend');
   await act(async () => root.unmount());

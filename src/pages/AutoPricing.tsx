@@ -216,6 +216,16 @@ export default function AutoPricing() {
   // max_drop_pct——压力档不许替用户放宽他自己设的闸。
   const PRESSURE: Record<string,string> = { tight:'紧张', normal:'正常', glut:'滞销' };
   const planOf = (r:any) => r.rule?.plan && typeof r.rule.plan === 'object' ? r.rule.plan : null;
+  // 每天能改几次是规则里的硬上限，用满了当天真的不会再动价。不显示的话，
+  // 用户看到的是「运行中、有决策、价格却不变」，只会以为程序坏了。
+  // 计数按约翰内斯堡的日期切天（平台在那边），跨时区不能拿本地日期比。
+  const quotaOf = (r:any) => {
+    const cap = Number(r.rule?.max_daily_changes) || 0;
+    if (!cap) return null;
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Johannesburg' }).format(new Date());
+    const used = r.rule?.change_day === today ? Number(r.rule?.today_changes) || 0 : 0;
+    return { used, cap };
+  };
   // 状态翻译集中在 utils/buyboxStatus，渲染层只负责摆放，不再各自拼文案。
   // 这里显式取一次时钟，保证同一屏内所有相对时间用的是同一个基准。
   const ctx = { now: Date.now(), collectorSource, configured };
@@ -364,7 +374,7 @@ export default function AutoPricing() {
 
       <div className="operations-table-scroll"><table className="data-table pricing-table"><thead><tr><th><input type="checkbox" aria-label="勾选当前筛选的全部SKU" checked={visible.length>0&&visible.every(r=>selected.includes(key(r)))} onChange={e=>setSelected(e.target.checked?visible.map(key):[])} /></th><th>商品</th><th>本店价 / Buybox</th><th>采集</th><th>调价区间 / 策略</th></tr></thead><tbody>{pageRows.map(r=>{
         const m=market(r); const view=collection(r); const own=describeOwnership(r.monitor); const hasQuote=m.buybox_price!=null; const diag=r.monitor?.diagnostics;
-        const plan=planOf(r);
+        const plan=planOf(r); const quota=quotaOf(r);
         // 一个数字只说一次。原来本店价在商品行、Buybox 列、判断依据里各印一遍，
         // 同一行出现三次 R 269——这不是信息，是噪音。
         const bb=m.buybox_price; const same=bb!=null&&r.price!=null&&Math.abs(bb-r.price)<0.01;
@@ -398,6 +408,7 @@ export default function AutoPricing() {
                 <span>对手最低 <b>{plan.cheapest==null?'无现货':`R ${plan.cheapest}`}</b></span>
                 {plan.pressure&&plan.pressure!=='unknown'&&<span>库存 <b>{PRESSURE[plan.pressure]||plan.pressure}{plan.cover_days!=null?` · 约 ${Math.round(plan.cover_days)} 天`:''}</b></span>}
                 {plan.outliers>0&&<span>剔除异常报价 <b>{plan.outliers} 个</b></span>}
+                {quota&&<span>今日改价 <b className={quota.used>=quota.cap?'text-warning':''}>{quota.used}/{quota.cap}</b>{quota.used>=quota.cap?' 已用满，明天再动':''}</span>}
                 <p>{plan.reason}</p>
               </div>}
               <small role="status">{own.explain}</small>

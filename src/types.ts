@@ -68,6 +68,10 @@ export interface Product {
   link_status: string | null;
   selection_status: string;
   exchange_rate_used: number;
+  // 变体分组来自 products 表（backend/models.py），后端一直在返回，只是这里漏了声明。
+  // 前端靠它判断「同组同图」要不要重新抓图，缺类型就只能靠 any 绕过去。
+  variant_group?: string;
+  is_primary_variant?: boolean;
   created_at: string | null;
   updated_at: string | null;
 }
