@@ -602,5 +602,5 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
     }
     return none('success', `${auto} 个 SKU 自动采集中${when}`, '');
   }
-  return none('neutral', '自动采集未开启', '选中 SKU 后点「开启选中采集」');
+  return none('neutral', '自动采集未开启', '选中 SKU 后点「开启采集」');
 }

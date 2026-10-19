@@ -25,6 +25,8 @@ export default function AutoPricing() {
   const [maintenance, setMaintenance] = useState(false);
   // 原名 interval 会遮蔽 window.setInterval，排查定时器时极易误读，改名与后端字段一致。
   const [intervalMinutes, setIntervalMinutes] = useState(5);
+  // 次要动作默认收起：一屏只留「开启采集 / 启动调价」两个主操作。
+  const [moreOpen, setMoreOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [collectorSource, setCollectorSource] = useState('cloud_browser');
@@ -356,7 +358,9 @@ export default function AutoPricing() {
       </div>}
     </section>}
 
-    {loaded&&<div className={`collection-bar tone-${fleet.tone}`}>
+    {/* 只在「有事要做」时出现。一切正常时这一条只重复上面已经说过的数字，
+        每天要占掉一行高度却从不提供新信息。 */}
+    {loaded&&(fleet.action||canAct)&&<div className={`collection-bar tone-${fleet.tone}`}>
       <span className={`status-pill tone-${fleet.tone}`}>{fleet.summary}</span>
       {fleet.action&&<small>{fleet.action}</small>}
       <div className="collection-bar-actions">
@@ -369,8 +373,28 @@ export default function AutoPricing() {
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
 
     <div className="card operations-table-card">
-      <div className="pricing-toolbar"><input aria-label="搜索调价商品" placeholder="商品名称 / SKU" value={search} onChange={e=>setSearch(e.target.value)} /><select aria-label="SKU分类筛选" value={group} onChange={e=>{setGroup(e.target.value);setSelected([]);}}><option value="all">全部分类</option>{[...new Set(rows.map(r=>r.group))].map(g=><option key={g} value={g}>{g}</option>)}</select><select aria-label="采集分段筛选" value={segment} onChange={e=>{setSegment(e.target.value);setSelected([]);}}><option value="all">全部分段</option>{[...new Set(rows.map(r=>r.monitor?.segment||'未分段'))].map(sg=><option key={sg} value={sg}>{sg}</option>)}</select><input placeholder="本段名称（可选）" value={segmentName} onChange={e=>setSegmentName(e.target.value)}/><span className="selection-count">已选 {selected.length} SKU</span></div>
-      <div className="pricing-actions"><div><span>Buybox采集</span><select aria-label="自动采集间隔" value={intervalMinutes} onChange={e=>setIntervalMinutes(Number(e.target.value))}>{[5,10,15,30,60,120].map(n=><option key={n} value={n}>{n}分钟</option>)}</select><button className="btn btn-info" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(true)}>开启选中采集</button><button className="btn btn-info" disabled={!!busy||!pageRows.length||!configured} onClick={()=>monitorBulk(true,true)}>开启本页 {pageRows.length} 个</button><button className="btn btn-outline" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(false)}>停采</button></div><div><span>实际调价</span><button className="btn btn-success" disabled={!!busy||!selected.length||!configured} onClick={()=>bulk('start')}>启动选中调价</button><button className="btn btn-outline" disabled={!!busy||!selected.length} onClick={()=>bulk('pause')}>暂停</button><input placeholder="分类名称" value={groupName} onChange={e=>setGroupName(e.target.value)} /><button className="btn btn-outline" disabled={!!busy||!selected.length} onClick={()=>bulk('group')}>归类</button><button className="btn btn-danger" disabled={!!busy||!rows.some(r=>r.rule.enabled)} onClick={emergencyStop}>停止全部调价</button></div></div>
+      <div className="pricing-toolbar"><input aria-label="搜索调价商品" placeholder="商品名称 / SKU" value={search} onChange={e=>setSearch(e.target.value)} /><select aria-label="SKU分类筛选" value={group} onChange={e=>{setGroup(e.target.value);setSelected([]);}}><option value="all">全部分类</option>{[...new Set(rows.map(r=>r.group))].map(g=><option key={g} value={g}>{g}</option>)}</select><select aria-label="采集分段筛选" value={segment} onChange={e=>{setSegment(e.target.value);setSelected([]);}}><option value="all">全部分段</option>{[...new Set(rows.map(r=>r.monitor?.segment||'未分段'))].map(sg=><option key={sg} value={sg}>{sg}</option>)}</select><span className="selection-count">已选 {selected.length} SKU</span></div>
+      {/* 一屏只留两个真正的动作。原来 8 个按钮平铺，最常用的和「停止全部调价」
+          一样显眼，等于没有主次；现在次要动作收进「更多」，要用再展开。 */}
+      <div className="pricing-actions">
+        <button className="btn btn-info" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(true)}>开启采集</button>
+        <button className="btn btn-success" disabled={!!busy||!selected.length||!configured} onClick={()=>bulk('start')}>启动调价</button>
+        <button className="btn btn-outline btn-sm actions-more-toggle" aria-expanded={moreOpen} onClick={()=>setMoreOpen(v=>!v)}>{moreOpen?'收起':'更多'}</button>
+        {moreOpen&&<div className="actions-more-panel">
+          <div className="actions-group"><span>采集</span>
+            <select aria-label="自动采集间隔" value={intervalMinutes} onChange={e=>setIntervalMinutes(Number(e.target.value))}>{[5,10,15,30,60,120].map(n=><option key={n} value={n}>{n}分钟</option>)}</select>
+            <input placeholder="本段名称（可选）" value={segmentName} onChange={e=>setSegmentName(e.target.value)}/>
+            <button className="btn btn-outline btn-sm" disabled={!!busy||!pageRows.length||!configured} onClick={()=>monitorBulk(true,true)}>开启本页 {pageRows.length} 个</button>
+            <button className="btn btn-outline btn-sm" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(false)}>停采</button>
+          </div>
+          <div className="actions-group"><span>调价</span>
+            <button className="btn btn-outline btn-sm" disabled={!!busy||!selected.length} onClick={()=>bulk('pause')}>暂停</button>
+            <input placeholder="分类名称" value={groupName} onChange={e=>setGroupName(e.target.value)}/>
+            <button className="btn btn-outline btn-sm" disabled={!!busy||!selected.length} onClick={()=>bulk('group')}>归类</button>
+            <button className="btn btn-danger btn-sm" disabled={!!busy||!rows.some(r=>r.rule?.enabled)} onClick={emergencyStop}>停止全部调价</button>
+          </div>
+        </div>}
+      </div>
 
       <div className="operations-table-scroll"><table className="data-table pricing-table"><thead><tr><th><input type="checkbox" aria-label="勾选当前筛选的全部SKU" checked={visible.length>0&&visible.every(r=>selected.includes(key(r)))} onChange={e=>setSelected(e.target.checked?visible.map(key):[])} /></th><th>商品</th><th>本店价 / Buybox</th><th>采集</th><th>调价区间 / 策略</th></tr></thead><tbody>{pageRows.map(r=>{
         const m=market(r); const view=collection(r); const own=describeOwnership(r.monitor); const hasQuote=m.buybox_price!=null; const diag=r.monitor?.diagnostics;

@@ -2274,7 +2274,9 @@ table tbody tr:hover { background: #f8fafc; }
 }
 .loop-lead { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .loop-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--text-muted); box-shadow: 0 0 0 3px rgba(90, 107, 130, 0.14); }
-.loop-strip.tone-success .loop-dot { background: var(--color-success); box-shadow: 0 0 0 3px rgba(35, 132, 92, 0.16); animation: loop-pulse 2.4s ease-in-out infinite; }
+/* 心跳点不做常驻脉动：一个每 2.4 秒闪一次的点，在一天里要被看几百次，
+   到最后只会变成干扰。状态用颜色和文字说清就够了。 */
+.loop-strip.tone-success .loop-dot { background: var(--color-success); box-shadow: 0 0 0 3px rgba(35, 132, 92, 0.16); }
 .loop-strip.tone-warning .loop-dot { background: var(--warning-strong); box-shadow: 0 0 0 3px rgba(138, 89, 0, 0.16); }
 .loop-strip.tone-danger .loop-dot { background: var(--danger-strong); box-shadow: 0 0 0 3px rgba(176, 48, 63, 0.16); }
 .loop-lead-text { display: flex; flex-direction: column; min-width: 0; }
@@ -2282,8 +2284,15 @@ table tbody tr:hover { background: #f8fafc; }
 .loop-lead-text small { font-size: var(--fs-label); color: var(--text-muted); line-height: 1.4; }
 .loop-strip.tone-danger .loop-lead-text strong { color: var(--danger-strong); }
 
-.loop-track { display: flex; align-items: stretch; gap: 3px; list-style: none; height: 24px; min-width: 0; }
-.loop-cell { flex: 1 1 0; min-width: 3px; border-radius: 2px; background: #e2e8f0; transition: background-color 0.25s ease; }
+/* 一条细轨道，不是 28 个按钮。
+ * 原来每个格子 24px 高、3px 间隙，读起来是一排彩色方块，像仪表盘装饰；
+ * 现在压到 6px、无间隙，颜色仍然编码状态，但整块只占一条线的高度，
+ * 视线可以直接落到下面的表格。点得动的格子仍是完整命中区（见 .loop-cell-hit）。 */
+.loop-track { display: flex; align-items: stretch; gap: 0; list-style: none; height: 6px; min-width: 0; }
+.loop-cell { flex: 1 1 0; min-width: 2px; background: #e2e8f0; transition: background-color 0.25s ease; }
+.loop-cell:first-child { border-radius: 3px 0 0 3px; }
+.loop-cell:last-child { border-radius: 0 3px 3px 0; }
+.loop-cell:only-child { border-radius: 3px; }
 .loop-cell.is-ok { background: var(--color-success); }
 .loop-cell.is-bad { background: var(--color-danger); }
 /* 待刷新：这一轮没采到，但手上的报价还能用。用黄色而不是红色——
@@ -2305,9 +2314,11 @@ table tbody tr:hover { background: #f8fafc; }
 /* 红色格子必须能回答「红的是哪一个」。轨道只给颜色，这里点名到 SKU：
  * 点一下就把表格筛到那一行——不用在 28 个格子里挨个悬停找。 */
 .loop-cell { position: relative; }
+/* 轨道只有 6px 高，但点击区要留够：上下各外扩 7px，命中区约 20px，
+   视觉仍然是一条线。 */
 .loop-cell-hit {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer;
+  position: absolute; inset: -7px 0; width: 100%;
+  padding: 0; border: 0; border-radius: 2px; background: transparent; cursor: pointer;
 }
 .loop-cell-hit:focus-visible { outline: 2px solid var(--link-strong); outline-offset: 1px; }
 .loop-cell:has(.loop-cell-hit):hover { box-shadow: 0 0 0 2px rgba(176, 48, 63, 0.28); }
@@ -2324,8 +2335,6 @@ table tbody tr:hover { background: #f8fafc; }
 .loop-capacity { flex: 1 1 100%; margin: 0; font-size: var(--fs-label); line-height: 1.6; color: var(--warning-strong); }
 /* 「排得下但快占满」不是故障，别用警告色喊；它只是解释为什么下一轮老是晚几分钟。 */
 .loop-capacity.is-tight { color: var(--text-muted); }
-
-@keyframes loop-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 @media (max-width: 980px) {
   .loop-strip { grid-template-columns: minmax(0, 1fr); gap: 10px; }
@@ -2361,10 +2370,21 @@ table tbody tr:hover { background: #f8fafc; }
 .pricing-stop { display:flex; align-items:center; }
 .pricing-toolbar { display:flex; gap:12px; align-items:center; padding:16px; border-bottom:1px solid #edf1f6; flex-wrap:wrap; }
 .pricing-toolbar input { width:260px; } .selection-count { margin-left:auto; font-size:12px; color:var(--text-muted); }
-.pricing-actions { display:flex; gap:24px; flex-wrap:wrap; padding:14px 16px 6px; }
+/* 工具栏只负责筛选，动作只留两个主按钮。
+   原来 8 个按钮平铺，主操作和急停一样大，眼睛没法先看到该做的事。 */
+.pricing-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px 16px; border-bottom:1px solid #edf1f6; }
 .pricing-actions > div { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .pricing-actions > div > span { color:var(--text-muted); font-size:12px; }
-.pricing-actions input { width:125px; }
+.pricing-actions input { width:150px; }
+.actions-more-toggle { margin-left:auto; }
+/* 展开后独占一行：绝对定位的浮层在 320px 会横向溢出，这里让它顺排。
+   采集、调价各占一行，标签不会夹在两个按钮中间让人看错组。 */
+.actions-more-panel { flex:1 1 100%; display:flex; flex-direction:column; gap:8px;
+  padding-top:10px; border-top:1px dashed var(--surface-border); }
+/* .pricing-actions > div 的 align-items:center 会把这个面板里的两组推到中间，
+   所以显式给每组撑满宽度，让「采集 / 调价」都从左边起。 */
+.actions-group { display:flex; align-items:center; gap:8px; flex-wrap:wrap; width:100%; }
+.actions-group > span { color:var(--text-muted); font-size:12px; min-width:28px; }
 .pricing-table td select { display:inline-block; margin:0; max-width:150px; }
 /* 商品格：缩略图 + 名字/规格两栏。这一列在宽屏上会吃掉多余宽度，
  * 长英文名终于能一行放下；窄屏则退回名字单栏（图仍在，只是更小）。 */
@@ -2386,6 +2406,13 @@ table tbody tr:hover { background: #f8fafc; }
 .stock-count { font-size:16px; font-weight:600; }
 .pricing-result { min-width:165px; max-width:220px; font-size:12px; }
 @media(max-width:850px) { .pricing-summary { grid-template-columns:repeat(3,1fr); } .pricing-stop { grid-column:1 / -1; justify-content:flex-end; } .pricing-actions { gap:12px; } }
+/* 窄屏下筛选不该占四行：搜索独占一行，两个下拉并排。 */
+@media(max-width:560px) {
+  .pricing-toolbar { gap:8px; padding:12px; }
+  .pricing-toolbar input { width:100%; }
+  .pricing-toolbar select { flex:1 1 calc(50% - 4px); min-width:0; }
+  .pricing-toolbar .selection-count { margin-left:0; }
+}
 .pricing-summary { grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); }
 
 .replenishment-summary { margin-bottom: 16px; padding: 16px 20px; }
