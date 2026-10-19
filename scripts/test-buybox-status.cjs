@@ -125,11 +125,14 @@ async function scenario(monitor, inspect, overrides = {}) {
   });
   // 延迟的真正原因要能看出来：一轮实测耗时比设定间隔长时，必须明说排期排不下。
   loopFixture = { ...loopFixture, next_due_in: -400, due_now: 3, interval_minutes: 5, round_seconds: 492, round_jobs: 28 };
+  // 文案从「一轮实测 8.2 分钟（4 个 SKU，每个…）」收成一句结论，完整推演挪进 title。
+  // 要求没变：仍然必须说清 ①实测多久 ②为什么追不上 ③该怎么改。
   await scenario({ ...known, status: 'success' }, () => {
     const strip = host.querySelector('.loop-strip');
-    check(strip.textContent.includes('一轮实测 8.2 分钟'), 'the measured round duration is stated');
-    check(strip.textContent.includes('排得比跑得完的更快'), 'the cause of the backlog is named, not just the symptom');
+    check(strip.textContent.includes('整轮约 8.2 分钟'), 'the measured round duration is stated');
+    check(strip.textContent.includes('已超过 5 分钟间隔'), 'the cause of the backlog is named, not just the symptom');
     check(strip.textContent.includes('调到 10 分钟以上'), 'the fix is an actionable interval suggestion');
+    check(!!strip.querySelector('.loop-capacity').getAttribute('title'), 'the full derivation stays available on hover');
   });
   loopFixture = { ...loopFixture, round_seconds: 60, round_jobs: 4 };
   await scenario({ ...known, status: 'success' }, () => {
@@ -142,9 +145,9 @@ async function scenario(monitor, inspect, overrides = {}) {
   await scenario({ ...known, status: 'success' }, () => {
     const strip = host.querySelector('.loop-strip');
     check(strip.textContent.includes('整轮约 4.9 分钟'), 'a partial round is extrapolated to the whole fleet');
-    check(strip.textContent.includes('几乎占满'), 'a round that barely fits explains the chronic lateness');
+    check(strip.textContent.includes('接近 5 分钟间隔'), 'a round that barely fits explains the chronic lateness');
     check(!!strip.querySelector('.loop-capacity.is-tight'), 'the tight-fit note is shown, not the over-capacity one');
-    check(!strip.textContent.includes('排得比跑得完的更快'), 'a round that fits is not described as over capacity');
+    check(!strip.textContent.includes('已超过'), 'a round that fits is not described as over capacity');
   });
   loopFixture = { ...loopFixture, enabled: 1, next_due_in: 130 };
   loopFixture = { ...loopFixture, round_seconds: null, round_jobs: null, seconds_per_sku: null };

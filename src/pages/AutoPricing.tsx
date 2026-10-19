@@ -301,6 +301,13 @@ export default function AutoPricing() {
     : tight
       ? `${roundText}，几乎占满 ${loop.interval_minutes} 分钟间隔——任何一个 SKU 变慢，下一轮立刻逾期`
       : roundText ? `${roundText}，间隔 ${loop?.interval_minutes ?? '?'} 分钟，排得下` : '';
+  // 上面那句是解释，不是标题。页面上只留一句能一眼看完的结论，
+  // 完整推演放进 title，想深究再悬停。
+  const capacityShort = overCapacity
+    ? `整轮约 ${roundEstimate} 分钟，已超过 ${loop?.interval_minutes} 分钟间隔`
+    : tight
+      ? `整轮约 ${roundEstimate} 分钟，接近 ${loop?.interval_minutes} 分钟间隔`
+      : '';
   // 逾期要说逾期，还要说清逾期到哪一步了：是「还没轮到」还是「已经在补跑」。
   const nextText = nextIn == null ? '—'
     : nextIn > 60 ? `约 ${Math.round(nextIn / 60)} 分钟后`
@@ -354,7 +361,7 @@ export default function AutoPricing() {
           <span>需处理 {failing.length} 个：</span>
           {failing.map(r=><button type="button" key={key(r)} onClick={()=>focusSku(r.sku)} title={errorCopy(r.monitor?.error_code, r.monitor?.error).title}>{r.sku}</button>)}
         </div>}
-        {(overCapacity||tight)&&<p className={`loop-capacity${overCapacity?'':' is-tight'}`}>{capacityNote}{overCapacity?`。把间隔调到 ${Math.ceil((roundEstimate??0)/5)*5} 分钟以上，循环才追得上。`:''}</p>}
+        {(overCapacity||tight)&&<p className={`loop-capacity${overCapacity?'':' is-tight'}`} title={capacityNote}>{capacityShort}{overCapacity?`。把间隔调到 ${Math.ceil((roundEstimate??0)/5)*5} 分钟以上才追得上。`:''}</p>}
       </div>}
     </section>}
 
