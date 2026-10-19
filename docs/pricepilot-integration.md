@@ -501,3 +501,23 @@ WorkBuddy；基线 971d646bed。`tools/native-collector/collector.py` 顶部还�
 改动：删掉该常量。同文件 `challenge_state` 的导入与全部调用不动，行为零变化。
 
 复测：selfcheck 25/25（211.7s）——注意 selfcheck 只跑 `backend/tests`，不覆盖本目录；另单独跑 `tools/native-collector` 套件 72 passed / 1 failed，失败项是 `test_gui_refresh_state_shows_challenge_unreliable` 在 venv 里 `import tkinter` 失败（`ModuleNotFoundError: No module named 'tkinter'`），与本次删除无关。
+
+### AUDIT-FIXTURE-01 文字重叠审计不再对未声明接口静默放行（2026-10-20）
+
+WorkBuddy；基线 a030b3161641。`scripts/test-text-overlap.py` 拦截 `/api/*` 时，凡是 `test-responsive-layout.py` 的 `DATA` 里没有的路径，一律 `404 {'detail':'fixture missing'}` 后继续跑，既不记录也不失败。页面拿到 404 会静默降级成空列表/默认值，版式照样「0 处重叠」——这一屏等于没测过，却给了通过结论。同目录的 `test-responsive-layout.py` 会把未声明路径记进 `unknown` 并断言为空，`ui_contrast_audit.py` 记进 `errors`，只有这个套件漏了。
+
+复现：把 `DATA` 里 `'/api/products':[PRODUCT]` 那一项临时删掉再跑 `--widths 390`，旧实现只报「弹窗打不开」，退出码 0；新实现额外点名 `审计 fixture 未声明接口：GET /api/products` 并返回 1。
+
+改动：拦截器把未声明路径记进 `undeclared`（`METHOD path`），收尾时按去重排序逐条并入 `problems`，走既有的非 0 退出。判据没有放宽，只是补上了原本缺失的一条。
+
+复测：`scripts/test-text-overlap.py` 全量 10 个宽度 × 160 个面，0 处重叠、无未声明接口；上面那次人为删 fixture 的探针确认会红（探针文件已删，`test-responsive-layout.py` 已 `git checkout` 还原）；selfcheck 25/25 全绿（209.2s）。
+
+### DEAD-CODE-03 删掉两处零引用的实现（2026-10-20）
+
+WorkBuddy；基线 a030b3161641。
+
+① `src/operations/replenish.ts` 的 `computeReplenishBatch()` / `summarize()` / `ReplenishSummary` / 只服务于前者的 `LEVEL_ORDER`：全仓零引用。线上补货判断走的是单行 `computeReplenish()`（`OperationsAssist.tsx` 唯一导入项），批量排序与汇总另有一套死实现，等于「哪个 SKU 最急」有两份判据，改了线上那份另一份不会跟着变。删掉不影响任何调用方。
+
+② `backend/services/translator.py` 的 `translate_via_google()`：零引用，且是全仓唯一一处把商品英文名发到 `translate.googleapis.com` 的异步实现；实际在用的是 `translate_to_chinese_sync()`（词典优先，未命中才用 `requests` 调同一个接口）。连带删掉因此变为未使用的 `import httpx`，并把「内部调用 httpx 同步」的注释改成它真正用的 `requests`——注释与代码相反比没有注释更容易误导。
+
+复测：后端全量 381 passed / 1 skipped（与改动前同数，无用例增减）；selfcheck 25/25 全绿（209.2s），含 `test-operations.cjs`（直接 require 本文件并调用 `computeReplenish`）。未改调价参数、未动数据模型、无生产写入。

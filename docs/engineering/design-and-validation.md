@@ -108,7 +108,10 @@ Use existing focused commands as applicable:
 
 These commands have different scopes; none proves production business correctness.
 Browser checks must use an isolated fixture server, intercept writes and external
-requests, wait for actual ready UI, and fail if pages cannot be measured. For
+requests, wait for actual ready UI, and fail if pages cannot be measured. An
+undeclared `/api` path must fail the run rather than 404 into an empty response:
+a page that silently degrades to defaults still renders, so a green layout result
+would certify a screen that was never actually measured. For
 geometry/focus checks capture the rendered page at the affected width and inspect
 console errors. JSDOM cannot certify layout, contrast or real browser focus.
 

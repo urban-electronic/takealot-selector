@@ -3,7 +3,6 @@
 使用 Google Translate 免费接口
 """
 
-import httpx
 import re
 
 
@@ -362,29 +361,6 @@ PRESET_TRANSLATIONS: dict[str, str] = {
     "bow": "蝴蝶结",
 }
 
-# 用于翻译特别长的或不常见的英文名称
-async def translate_via_google(english_name: str) -> str:
-    """调用 Google Translate 免费接口"""
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://translate.googleapis.com/translate_a/single",
-                params={
-                    "client": "gtx",
-                    "sl": "en",
-                    "tl": "zh-CN",
-                    "dt": "t",
-                    "q": english_name,
-                },
-                timeout=10,
-            )
-            result = resp.json()
-            translated = "".join([item[0] for item in result[0] if item[0]])
-            return translated.strip()
-    except Exception:
-        return ""
-
-
 def translate_with_dict(english_name: str) -> str:
     """使用预置词典翻译，提取关键词生成中文名"""
     if not english_name:
@@ -441,7 +417,7 @@ def translate_to_chinese(english_name: str, max_chars: int = 10) -> str:
     return result
 
 
-# 同步版本（用于非 async 上下文），内部调用 httpx 同步
+# 同步版本（用于非 async 上下文），词典没命中时用 requests 调 Google 接口
 def translate_to_chinese_sync(english_name: str, max_chars: int = 10) -> str:
     """同步版本，先词典翻译，失败则调用 Google API"""
     dict_result = translate_to_chinese(english_name, max_chars)

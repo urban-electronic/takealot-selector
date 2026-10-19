@@ -184,6 +184,9 @@ def main():
         ['node', 'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', str(PORT)],
         cwd=str(ROOT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     problems, report, surfaces = [], [], 0
+    # 未声明的接口请求要记账。以前这里直接 404 掉就算了，页面会静默降级成
+    # 空列表/默认值，版式照样"通过"——等于拿假数据给自己发了张合格证。
+    undeclared = []
     started = time.time()
     try:
         for _ in range(120):
@@ -209,6 +212,7 @@ def main():
                     if url.path in DATA:
                         route.fulfill(json=DATA[url.path])
                     else:
+                        undeclared.append(f'{route.request.method} {url.path}')
                         route.fulfill(status=404, json={'detail': 'fixture missing'})
                     return
                 if url.netloc == f'127.0.0.1:{PORT}':
@@ -254,6 +258,11 @@ def main():
 
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding='utf-8')
+
+    # 接口没声明就等于这一屏没被真正测到：静默降级的页面不会报版式问题。
+    for entry in sorted(set(undeclared)):
+        problems.append(f'审计 fixture 未声明接口：{entry}——请求被 404 掉，页面会静默降级，'
+                        '这一屏的结论不算数（补到 test-responsive-layout.py 的 DATA 里）')
 
     elapsed = time.time() - started
     if problems:
