@@ -543,3 +543,21 @@ WorkBuddy；基线 a80c14788020。
 ③ `src/remoteApi.ts` 的 `getBuybox()`：`GET /api/buybox` 的客户端包装，零调用方——页面走的是 `getAutomaticPricing()`（已把规则与 monitor 合并好）。后端路由保留不动（原生采集器仍在用），只删前端这份没人调用的包装。
 
 复测：`tsc --noEmit` 通过（`noUnusedLocals` 开）；后端全量 381 passed / 1 skipped（与改动前同数）；selfcheck 25/25 全绿。未改调价参数、未动数据模型、无生产写入。
+
+### UI-BAR-01 状态条收起时不再把「人工过验证」一起收掉（2026-10-20）
+
+WorkBuddy；基线 89e1a92213。`AutoPricing.tsx` 的采集状态条改成「只在有事要做时出现」时，判据是 `fleet.action || canAct`——但这条状态条里还挂着两个跟 `fleet.action` 无关的按钮：`fleet.blocked > 0` 时的「人工过验证」、有失败行时的「复制诊断」。`describeFleet()` 的 `running` 分支（`if (running) return none('info', …, '')`）给的是空 `action`、并且 `none()` 固定把 `suggestedInterval` 置为 null，于是 `canAct = retryable > 0 || (blocked > 0 && !!suggestedInterval)` 为假。结果是「一行正在采集 + 一行被 `site_challenge` 挡住」时 `blocked=1`、状态条整条消失，两个按钮一起没了——而这正是最该去过验证的时刻。
+
+复现（playwright + 现有 fixture，不碰生产）：`/api/automatic-pricing` 返回两行，一行 `status=running`、一行 `status=error / error_code=site_challenge` 且无可用报价；旧实现 `barShown=false`，轨道仍写「1 需处理」，按钮无处可点。jsdom 版断言见 `test-buybox-status.cjs` 新增的 `fleetScenario`。
+
+改动：把显示判据提成 `barUseful = !!fleet.action || canAct || fleet.blocked > 0 || hasErroredRow`，即「状态条的可见性 = 条内各元素自身条件的并集」；`hasErroredRow` 沿用「复制诊断」原来的 `status === 'error'` 口径，判据没有放宽也没有收紧。整个 fleet 都正常时四项全假，状态条仍然不出现——折叠的初衷保留。
+
+复测：`test-buybox-status.cjs` 151 断言（新增 4 条：被挡时状态条必须在、`人工过验证` 必须在、`复制诊断` 必须在、全健康时必须没有状态条）；把 `barUseful` 临时改回 `fleet.action||canAct` 后新断言确实转红（`test-buybox-status.cjs:236`），改回即绿。后端全量 381 passed / 1 skipped（未动后端）；selfcheck 25/25 全绿（209.2s）。未改调价参数、未动数据模型、无生产写入、未触发真实采集。
+
+### AUDIT-PANEL-01 调价页「更多」面板纳入版式审计（2026-10-20）
+
+WorkBuddy；基线 89e1a92213。`0b395e8` 把 8 个次要动作收进默认收起的「更多」面板，`test-responsive-layout.py` 只渲染页面、不点开关，所以这 8 个控件（含「停止全部调价」）在任何宽度下都没被审计过——包括这条折叠本来要解决的 320px。审计里其它弹层（卖家资料预览、装箱编辑、补货设置、管理工具菜单）都是点开再量的，只有这个面板漏了。
+
+改动：`/auto-pricing` 在 1280/390/320 三个视口下点开「更多」，断言面板本身不越界、`scrollWidth` 不溢出、面板内每个 `button/input/select` 都在视口内、整页不因此产生横向滚动，最后点「收起」并确认面板真的消失。判据是新增的，没有放宽任何既有断言。
+
+复测：全量审计 99 个「宽度×页面」组合 0 处失败、0 个未声明接口、0 个 page error；反向探针——给 `.actions-more-panel` 临时加 `min-width:2000px` 后，1280/390/320 三档全部报 `more panel clipped` 并退出码 1，探针已还原（`src/index.css` 无残留）。selfcheck 25/25 全绿（209.2s）。

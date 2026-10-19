@@ -237,6 +237,14 @@ export default function AutoPricing() {
   const fleetAction = fleet.suggestedInterval
     ? `改为 ${fleet.suggestedInterval} 分钟${fleet.retryable ? `，重试 ${fleet.retryable} 个` : ''}`
     : `重试 ${fleet.retryable} 个`;
+  // 状态条里除了「按 fleet 建议重试」，还挂着两个跟 fleet.action 无关的按钮：
+  // 被网站挡住时的「人工过验证」（看 fleet.blocked）、有失败行时的「复制诊断」（看行状态）。
+  // 所以显示条件不能只看 fleet.action||canAct——describeFleet 的 running 分支
+  // 给的 action 是空串、也不带 suggestedInterval，此时「一行在跑 + 一行被验证挡住」
+  // 会让 canAct 为假、blocked 却大于 0，整条状态条连按钮一起消失，
+  // 恰恰是最需要去过验证的时候。一切正常的成功态里这四项都为假，仍然不显示。
+  const hasErroredRow = rows.some(r => r.monitor?.status === 'error');
+  const barUseful = !!fleet.action || canAct || fleet.blocked > 0 || hasErroredRow;
   // 取更近的一份行情：采集成功晚于上次调价评估时用采集结果，否则用调价评估时留下的。
   const market = (r: any) => r.monitor?.last_success_at && (!r.rule.last_evaluated_at || r.monitor.last_success_at > r.rule.last_evaluated_at) ? r.monitor : r.rule;
   const collection = (r:any) => describeCollection(r.monitor, ctx);
@@ -366,14 +374,15 @@ export default function AutoPricing() {
     </section>}
 
     {/* 只在「有事要做」时出现。一切正常时这一条只重复上面已经说过的数字，
-        每天要占掉一行高度却从不提供新信息。 */}
-    {loaded&&(fleet.action||canAct)&&<div className={`collection-bar tone-${fleet.tone}`}>
+        每天要占掉一行高度却从不提供新信息。判据见 barUseful：它把条里两个
+        跟 fleet.action 无关的按钮（人工过验证 / 复制诊断）也算进来了。 */}
+    {loaded&&barUseful&&<div className={`collection-bar tone-${fleet.tone}`}>
       <span className={`status-pill tone-${fleet.tone}`}>{fleet.summary}</span>
       {fleet.action&&<small>{fleet.action}</small>}
       <div className="collection-bar-actions">
         {canAct&&<button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>retryFailed(fleet.suggestedInterval??undefined)}>{fleetAction}</button>}
         {fleet.blocked>0&&<button className="btn btn-outline btn-sm" disabled={!!busy} onClick={openMaintenance}>人工过验证</button>}
-        {rows.some(r=>r.monitor?.status==='error')&&<button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>{void copyDiagnostics();}}>{copied?'已复制':'复制诊断'}</button>}
+        {hasErroredRow&&<button className="btn btn-outline btn-sm" disabled={!!busy} onClick={()=>{void copyDiagnostics();}}>{copied?'已复制':'复制诊断'}</button>}
       </div>
     </div>}
 

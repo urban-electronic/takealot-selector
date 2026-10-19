@@ -73,6 +73,12 @@
 「需处理」只算真的没有报价的行——这一轮没刷新的不需要用户动手。
 不报红不等于瞒着：原因照样写在行里。
 
+页头那条汇总（`collection-bar`）只在「有事要做」时出现，判据是条内各元素
+自身条件的并集：`fleet.action`、`canAct`、`fleet.blocked > 0`（挂着「人工过验证」）、
+有 `status=error` 的行（挂着「复制诊断」）。只按 `fleet.action || canAct` 收，
+会在 `running` 分支（空 action、不带 `suggestedInterval`）里把「人工过验证」
+一起收掉——见 UI-BAR-01。
+
 ## 验证
 
 部署 `ccd88548` 后在线上逐条触发采集：

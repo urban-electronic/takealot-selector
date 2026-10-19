@@ -64,6 +64,16 @@ async function scenario(monitor, inspect, overrides = {}) {
     await inspect(host.querySelector('tbody tr'));
   } finally { act(() => root.unmount()); }
 }
+// 多行场景：状态条与轨道是按整个 fleet 判断的，单行 fixture 覆盖不到
+// 「一行在跑、另一行被网站挡住」这种组合。
+async function fleetScenario(rowsFixture, inspect) {
+  fixture = rowsFixture;
+  const root = createRoot(host);
+  try {
+    await act(async () => root.render(React.createElement(Page)));
+    await inspect();
+  } finally { act(() => root.unmount()); }
+}
 (async () => {
   const known = { buybox_price: 269, price_matches_buybox: true, holding_buybox: null,
     last_success_at: '2026-10-15T01:58:09Z', source: 'cloud_browser',
@@ -218,6 +228,27 @@ async function scenario(monitor, inspect, overrides = {}) {
     check(!tr.textContent.includes('页面打开了但没有 Buybox 价'), 'structural failure is not lumped into the ambiguous copy');
     const copy = [...host.querySelectorAll('.collection-bar-actions button')].find(b => b.textContent === '复制诊断');
     check(!!copy, 'a failing fleet offers a one-click diagnostics export');
+  });
+  // 2026-10-20 回归：状态条改成「只在有事要做时出现」时，判据只看了 fleet.action||canAct。
+  // describeFleet 的 running 分支给的是空 action、也不带 suggestedInterval，
+  // 于是「一行在跑 + 一行被网站验证挡住」时 canAct 为假、blocked 却是 1，
+  // 整条状态条连「人工过验证」「复制诊断」一起消失——而这一刻正是最需要去过验证的。
+  await fleetScenario([
+    { ...row({ ...known, status: 'running', enabled: true, error_code: null, error: null,
+      buybox_price: undefined, last_success_at: undefined }), product_id: 'p-run', offer_id: 'o-run', sku: 'run-sku' },
+    { ...row({ ...known, status: 'error', enabled: true, error_code: 'site_challenge', error: '网站验证阻挡',
+      buybox_price: undefined, last_success_at: undefined }), product_id: 'p-block', offer_id: 'o-block', sku: 'block-sku' },
+  ], () => {
+    const bar = host.querySelector('.collection-bar');
+    check(!!bar, 'a blocked SKU keeps the action bar even while another SKU is being collected');
+    check(!![...bar.querySelectorAll('button')].find(b => b.textContent === '人工过验证'),
+      'the manual verification entry stays reachable while a round is running');
+    check(!![...bar.querySelectorAll('button')].find(b => b.textContent === '复制诊断'),
+      'the diagnostics export stays reachable while a round is running');
+  });
+  // 反过来也要钉住：整个 fleet 都正常时这条不该出现——那正是把它折叠掉的理由。
+  await fleetScenario([row({ ...known, status: 'success', enabled: true })], () => {
+    check(!host.querySelector('.collection-bar'), 'an all-healthy fleet shows no action bar at all');
   });
   // 采集器自己没起来时，不能显示成「页面打开了但没有 Buybox 价」——那是把基础设施
   // 故障说成页面问题，2026-10-17 就因此查错了方向。

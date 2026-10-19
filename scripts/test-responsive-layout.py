@@ -132,6 +132,20 @@ def main():
                     if bounds['y']<0 or bounds['y']+bounds['height']>height: failures.append('replenishment close button unreachable')
                     page.keyboard.press('Escape')
                     if dialog.count():failures.append('replenishment Escape failed')
+                if path=='/auto-pricing' and (width,height) in ((1280,720),(390,680),(320,568)):
+                    # 8 个次要动作收在默认收起的「更多」面板里：不点开就等于没审计过。
+                    # 这条折叠的原始动因就是 320px 会溢出，所以必须在这个宽度上真开一次。
+                    page.get_by_role('button',name='更多',exact=True).click()
+                    panel=page.locator('.actions-more-panel');panel.wait_for()
+                    bounds=panel.bounding_box()
+                    if bounds['x']<0 or bounds['x']+bounds['width']>width+1: failures.append(f'{width}: more panel clipped {bounds}')
+                    if panel.evaluate('e=>e.scrollWidth>e.clientWidth+1'): failures.append(f'{width}: more panel content overflows')
+                    for control in panel.get_by_role('button').all()+panel.locator('input,select').all():
+                        b=control.bounding_box()
+                        if b['x']<0 or b['x']+b['width']>width+1: failures.append(f'{width}: more panel control clipped {b}')
+                    if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: more panel causes page overflow')
+                    page.get_by_role('button',name='收起',exact=True).click()
+                    if page.locator('.actions-more-panel').count(): failures.append(f'{width}: more panel did not collapse')
                 if args.screenshots and (path in ('/','/auto-pricing','/packing') and width in (1440,390)):
                     page.screenshot(path=str(Path(args.screenshots)/((path.strip('/').replace('/','-') or 'home')+f'-{width}.png')))
         browser.close()
