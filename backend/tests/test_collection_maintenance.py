@@ -9,7 +9,6 @@ import pytest
 
 from services.collection_maintenance import (
     MAX_BACKOFF_SECONDS,
-    REPAIR_COOLDOWN_SECONDS,
     repair_monitor,
 )
 
@@ -82,11 +81,15 @@ def test_paused_row_is_normalised_after_the_repair_attempt_failed():
     assert any('paused' in a for a in actions)
 
 
-def test_repair_collection_is_rate_limited():
-    """注定失败的 SKU 不能被每 10 秒重采一次。"""
+def test_repair_never_grants_a_one_shot_collection():
+    """自愈只改记录，任何时间窗内都不许替用户开采集（COLLECT-BOUNDARY-01）。
+
+    这条以前叫「修复性重采限速」，但重采授权已经在 COLLECT-BOUNDARY-01 里
+    移除，冷却期也就没有意义了；断言保留下来盯住「不自作主张排采」这个不变量。
+    """
     now = 1791912000.0
     record = challenge_record()
-    record['repair_attempted_at'] = now - REPAIR_COOLDOWN_SECONDS + 60
+    record['repair_attempted_at'] = now - 6 * 3600 + 60     # 上一次修复尝试就在 6 小时内
     fixed, _actions = repair_monitor(record, now=now)
     assert not fixed.get('request_once')
 

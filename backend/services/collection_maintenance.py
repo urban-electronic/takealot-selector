@@ -25,9 +25,6 @@ from services.buybox_monitor import PREFIX
 # 单次退避的上限（与 buybox_monitor 里的指数退避封顶一致）。
 # next_due 超过 last_attempt + 这个值再留 1 小时余量，就说明记录被卡住了。
 MAX_BACKOFF_SECONDS = 6 * 3600
-# 同一条记录两次「修复性重采」之间至少隔这么久：一个注定失败的 SKU
-# （比如商品已下架）不能每 10 秒被重采一次。
-REPAIR_COOLDOWN_SECONDS = 6 * 3600
 
 # 这些错误码是「已经定位到根因」的结论，不需要再拿 diagnostics 重判。
 # price_not_found 故意不在里面：它是旧版本对一堆不同原因的统一兜底，

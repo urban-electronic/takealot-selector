@@ -425,3 +425,11 @@ WorkBuddy；基线4472a5e3e4。AutoPricing页「调价与试涨规则」面板�
 改动只有文案、一处重复常量和一个死常量：面板补两条说明；`plan()`的试涨理由不再硬编码「20%」，改读`DEFAULT_RAISE_CEILING_PCT`，与`_raise_ceiling()`同源，避免以后调上限时两处打架；删掉未被任何代码引用的`REGIMES`（界面用的是前端`REGIME`，且`blind`标签两边已不一致）。
 
 复测：selfcheck 25/25全绿（216.0s），后端pytest 367 passed/1 skipped。未改调价参数默认值、未改数据模型、无生产写入，未触发真实采集或改价。
+
+### MAINT-DEAD-01 清掉已废弃的「修复性重采」残留（2026-10-19）
+
+WorkBuddy；基线ff9b8d7624。`collection_maintenance.py` 里留着 `REPAIR_COOLDOWN_SECONDS` 与一句「两次修复性重采之间至少隔 6h」的注释，但 COLLECT-BOUNDARY-01 已经把「停采记录自动置 `request_once`」整段移除，`repair_monitor()` 现在只改记录层、从不排采——这个冷却期没有任何调用方，注释描述的是一个不存在的行为。`docs/engineering/2026-10-18-collection-selfheal-and-variants.md` 的自愈小节也还在写「过 6h 冷却期就用 request_once 安排一次只读采集」，与代码相反。
+
+改动：删掉该常量与注释；把文档那条改成「不自作主张排采」并注明被 COLLECT-BOUNDARY-01 取代；对应用例原名「修复性重采限速」但断言其实是 `request_once` 不被设置，改名为 `test_repair_never_grants_a_one_shot_collection`，断言一字未动（不自作主张排采这个不变量继续被盯着）。
+
+复测：selfcheck 25/25 全绿（213.3s），`tests/test_collection_maintenance.py` 21 passed。无行为变更、未改调价参数、未动数据模型、无生产写入。

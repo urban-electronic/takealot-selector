@@ -38,10 +38,13 @@
   （验证页不再显示成「没找到 Buybox 价」）。`price_not_found` 故意不在
   `DECISIVE_CODES` 里——它恰恰是最需要重判的兜底码。
 - **next_due 卡死**：超过 `last_attempt + 6h + 1h` 的拉回按间隔排期。
-- **修复性重采**：停采却留着错误、且过冷却期（6h）的，用现成的 `request_once`
-  安排一次只读采集。采到了错误自然清掉，采不到就维持停采。
 - **停采归一**：已停采却留着 error 的记录改成 `paused`，真实原因存进
   `last_error_code` / `last_error`，信息不丢也不再报红。
+- **不自作主张排采**：自愈只改记录层，不设 `request_once`、不改 `enabled`。
+  本节初稿曾有一条「过 6h 冷却期就用 `request_once` 安排一次修复性重采」，
+  已由 `COLLECT-BOUNDARY-01` 移除——停采是用户的决定，自愈不能自己把采集
+  重新打开（配套的 `REPAIR_COOLDOWN_SECONDS` 死常量已在 2026-10-19 清掉）。
+  用户显式留下的单次请求照旧保留。
 
 ### 3. 同轮内重试（`services/buybox_monitor.py`）
 
