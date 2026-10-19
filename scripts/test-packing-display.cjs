@@ -114,6 +114,23 @@ const root = createRoot(host);
   check(!!rowOf('112'), 'expanding a group reveals its branch rows');
   check(textOf('112').includes('6.0 cm'), 'branch labels show their own qualifier');
 
+  const search = host.querySelector('.packing-search');
+  const setSearch = async value => act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(search, value);
+    search.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await setSearch('111');
+  check(!!rowOf('112'), 'searching the primary SKU preserves branches of an expanded group');
+  await act(async () => rowOf('111').querySelector('.packing-expand-link').click());
+  check(!rowOf('112'), 'searching a primary SKU still allows collapse');
+  await act(async () => rowOf('111').querySelector('.packing-expand-link').click());
+  check(!!rowOf('112'), 'expanding after searching the primary SKU reveals the branch');
+  await act(async () => rowOf('111').querySelector('.packing-expand-link').click());
+  await setSearch('112');
+  check(!!rowOf('112'), 'searching a branch SKU reveals it even when its group is collapsed');
+  check(!rowOf('114'), 'search excludes unrelated products');
+  await setSearch('');
+
   const flagged = rowOf('113');
   check(!!flagged.querySelector('.packing-name-flag'), 'a non-Chinese variant label is flagged for correction');
   check(flagged.querySelector('.packing-name-flag').title.includes('产品列表'), 'the flag points at where to fix it');
