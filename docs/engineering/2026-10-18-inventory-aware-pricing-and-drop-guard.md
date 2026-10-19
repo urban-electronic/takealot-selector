@@ -48,7 +48,7 @@ target = min(math.floor(raw), max_price)     # 没有任何幅度限制
 | --- | --- | --- |
 | `tight` | 可售 ≤ 21 天（短于空运周期） | **不跟降**；守位/试涨走 5% 档；试涨间隔减半 |
 | `normal` | 21 ~ 180 天 | 原行为 |
-| `glut` | ≥ 180 天 | 允许一次降 30%（回笼现金优先） |
+| `glut` | ≥ 180 天 | 允许降价（不额外放宽 `max_drop_pct`） |
 | `unknown` | 没有销量观测 | 完全保持原行为 |
 
 `tight` 时禁止降价的理由很硬：**库存是固定的**。手里就 5 件，降价只会让这 5 件
@@ -60,11 +60,14 @@ target = min(math.floor(raw), max_price)     # 没有任何幅度限制
 ### 3. 降价护栏 `max_drop_pct`（默认 15%）
 
 ```python
-drop_cap = rule.get('max_drop_pct', DEFAULT_MAX_DROP_PCT)
-if pressure == 'glut':
-    drop_cap = max(drop_cap, rule.get('glut_drop_pct', 30))
+drop_cap = max(0, min(100, rule.get('max_drop_pct', DEFAULT_MAX_DROP_PCT)))
 boundary = max(math.ceil(current * (1 - drop_cap / 100.0)), math.ceil(floor or 0))
 ```
+
+**库存压力不能覆盖显式配置的单次降幅上限。** 最初 `glut` 档会把 `drop_cap` 抬到
+30%，结果是用户明明配了 `max_drop_pct=5`，滞销时仍然一步降 30%——配置被策略档位
+悄悄改写，这是错的（Codex 报的 DROP-CAP-01，见 `docs/pricepilot-integration.md`）。
+要放宽必须显式把 `max_drop_pct` 配大，不能由「滞销」这个判断替用户做决定。
 
 护栏价和利润底价取更严的那个，两个都得守。被拦住时不是"这轮不动"，而是
 **朝着正确方向走一步**，reason 里写明「一次最多降 15%，本轮只走这一步」——
@@ -100,10 +103,10 @@ if outliers and not live:
 
 ## 验证
 
-- `pytest`：354 passed / 1 skipped。新增 `test_pricing_guardrails.py` 14 例：
-  库存紧张不跟降、正常库存照常抢位、紧张档涨 5%、滞销档降 30%、无观测不变、
-  单次跌幅护栏、护栏可配置、护栏不破底价、离群剔除、离群不触发独家涨价、
-  日销口径与封顶。
+- `pytest`：364 passed / 1 skipped。新增 `test_pricing_guardrails.py` 17 例：
+  库存紧张不跟降、正常库存照常抢位、紧张档涨 5%、滞销档不突破配置上限、无观测不变、
+  单次跌幅护栏、护栏可配置（5%/15%/50% 三档参数化）、护栏不破底价、离群剔除、
+  离群不触发独家涨价、日销口径与封顶。
 - `selfcheck.cjs`：25 步全绿。
 - 版式审计 99 个面、文字重叠审计 96 个面，0 问题。
 

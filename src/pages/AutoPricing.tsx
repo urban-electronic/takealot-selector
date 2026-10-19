@@ -202,7 +202,8 @@ export default function AutoPricing() {
   const CONFIDENCE: Record<string,string> = { high:'高', medium:'中', low:'低' };
   const RISK: Record<string,string> = { low:'低', medium:'中', high:'高', urgent:'紧急' };
   // 库存压力不是装饰：它直接决定「该不该降价、该涨多快」。
-  // 库存紧张时不跟降（同样的货少卖钱），滞销时允许一次降更多（回笼现金）。
+  // 紧张时不跟降（同样的货少卖钱、断货提前）；滞销只说明可以降，降幅仍守配置的
+  // max_drop_pct——压力档不许替用户放宽他自己设的闸。
   const PRESSURE: Record<string,string> = { tight:'紧张', normal:'正常', glut:'滞销' };
   const planOf = (r:any) => r.rule?.plan && typeof r.rule.plan === 'object' ? r.rule.plan : null;
   // 状态翻译集中在 utils/buyboxStatus，渲染层只负责摆放，不再各自拼文案。
