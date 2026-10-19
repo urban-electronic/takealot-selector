@@ -139,3 +139,38 @@ def test_listing_exposes_product_image_for_row_thumbnail(monkeypatch):
         assert rows['one']['image'] == 'https://media.takealot.com/covers_images/one.jpg'
         # 没有图片时给空串而不是 None：前端拿空串判断「无图」，None 会走到 img src=undefined。
         assert rows['two']['image'] == ''
+
+
+def test_saving_from_the_ui_keeps_parameters_the_form_does_not_show(monkeypatch):
+    """界面只显示区间和策略。保存不能把界面上看不见的参数重置成默认值。
+
+    原来的实现是 {**old, **Rule().model_dump()}：model_dump 会把没传的字段
+    也按默认值填上，于是用户配的 max_drop_pct=30 会被一次「保存区间」改回 15，
+    lead_amount/cooldown/max_daily_changes 同理。改的是 A，坏的是 B。
+    """
+    monkeypatch.setattr(routes, 'configured_key', lambda db: 'test')
+    with database() as db:
+        routes.configure('one', 'one', routes.Rule(enabled=True), db, DEFAULT_STORE_ID)
+        key = PREFIX + DEFAULT_STORE_ID + ':one:one'
+        row = db.query(SystemSettings).filter_by(key=key).first()
+        value = json.loads(row.value)
+        value.update(max_drop_pct=30, lead_amount=2, cooldown_minutes=45, max_daily_changes=3)
+        row.value = json.dumps(value); db.commit()
+        # 界面「保存区间」实际只带这几个字段
+        routes.configure('one', 'one', routes.Rule(
+            min_price=90, use_system_min=False, smart_raise=True,
+            max_price=200, strategy='takealot_buybox', enabled=True), db, DEFAULT_STORE_ID)
+        saved = json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        assert (saved['max_drop_pct'], saved['lead_amount'],
+                saved['cooldown_minutes'], saved['max_daily_changes']) == (30, 2, 45, 3)
+        assert (saved['min_price'], saved['max_price']) == (90, 200)
+
+
+def test_new_rule_still_gets_every_default(monkeypatch):
+    """只传少量字段也不能让新规则缺参数：缺了 plan() 只能吃硬编码默认。"""
+    monkeypatch.setattr(routes, 'configured_key', lambda db: 'test')
+    with database() as db:
+        value = routes.configure('one', 'one', routes.Rule(enabled=True), db, DEFAULT_STORE_ID)
+        assert value['max_drop_pct'] == 15 and value['lead_amount'] == 1
+        assert value['cooldown_minutes'] == 10 and value['max_daily_changes'] == 10
+        assert value['strategy'] == 'takealot_buybox' and value['use_system_min'] is True

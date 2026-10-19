@@ -99,7 +99,17 @@ export default function AutoPricing() {
         const min = useSystem ? r.suggested_min : Number(draft.min_price);
         if (!min || !Number.isInteger(min)) throw new Error('系统底价缺失，请补全成本或手工输入该SKU最低价。');
         if (draft.max_price && !Number.isInteger(Number(draft.max_price))) throw new Error('最高价必须为整数，也可留空使用智能上限。');
-        await configureAutomaticPricing(r.product_id, r.offer_id, { min_price: useSystem ? null : min, use_system_min: useSystem, smart_raise: (draft.strategy || 'takealot_buybox') === 'takealot_buybox', max_price: draft.max_price ? Number(draft.max_price) : null, strategy: draft.strategy || 'takealot_buybox', lead_amount: 1, cooldown_minutes: 10, max_daily_changes: 10, enabled: action === 'start' ? true : !!r.rule.enabled });
+        // 只提交这一行真正显示、真正能改的字段。lead_amount、max_drop_pct、
+        // cooldown_minutes、max_daily_changes 在界面上没有入口，如果在这里补默认值，
+        // 用户在别处调过的参数会被一次「保存区间」悄悄改回去。没传的字段后端保持原值。
+        await configureAutomaticPricing(r.product_id, r.offer_id, {
+          min_price: useSystem ? null : min,
+          use_system_min: useSystem,
+          smart_raise: (draft.strategy || 'takealot_buybox') === 'takealot_buybox',
+          max_price: draft.max_price ? Number(draft.max_price) : null,
+          strategy: draft.strategy || 'takealot_buybox',
+          enabled: action === 'start' ? true : !!r.rule.enabled,
+        });
         setDrafts(prev => { const next = { ...prev }; delete next[key(r)]; return next; });
       }
       await refresh(true);

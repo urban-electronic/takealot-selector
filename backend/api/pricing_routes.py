@@ -178,22 +178,28 @@ def pause_all(db: Session = Depends(get_db), store: str = Depends(get_store_id))
 @router.put('/{product_id}/{offer_id}')
 def configure(product_id: str, offer_id: str, data: Rule, db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     if store != DEFAULT_STORE_ID: raise HTTPException(400, '本店尚未绑定独立调价接口')
-    if data.min_price and data.max_price and data.min_price > data.max_price: raise HTTPException(400, '最低价不能高于最高价')
     rows = listing(db, store)['rows']
     match = next((r for r in rows if r['product_id'] == product_id and r['offer_id'] == offer_id), None)
     if not match: raise HTTPException(400, '商品尚未与卖家offer唯一匹配，请先同步店铺')
-    if data.enabled and (not configured_key(db) or not match['url']): raise HTTPException(400, '缺少卖家接口或商品公开页，不能启动')
-    minimum = match['suggested_min'] if data.use_system_min else data.min_price
-    if minimum is None: raise HTTPException(400, f'SKU {match["sku"]} 缺少系统利润底价，请补成本或手动输入最低价')
-    if data.max_price and minimum > data.max_price: raise HTTPException(400, '利润底价高于上限')
     key = PREFIX + store + ':' + product_id + ':' + offer_id
     row = db.query(SystemSettings).filter(SystemSettings.key == key).first()
     old = json.loads(row.value) if row else {}
-    if data.enabled and old.get('write_pending'): raise HTTPException(409, '上次改价尚未核验，请核对平台记录后处理，不重复提交')
-    value = {**old, **data.model_dump(), 'min_price': minimum, 'product_id': product_id, 'offer_id': offer_id, 'sku': match['sku'],
+    # 只覆盖这次真的传上来的字段。界面上只显示区间和策略，lead_amount、
+    # max_drop_pct、cooldown_minutes 这些看不见的参数不能因为点了一次
+    # 「保存区间」就被静默改回默认值——那等于用户在界面上改 A，系统偷偷改了 B。
+    patch = data.model_dump(exclude_unset=True)
+    merged = {**Rule().model_dump(), **old, **patch}
+    if merged.get('enabled') and (not configured_key(db) or not match['url']): raise HTTPException(400, '缺少卖家接口或商品公开页，不能启动')
+    minimum = match['suggested_min'] if merged.get('use_system_min', True) else merged.get('min_price')
+    if minimum is None: raise HTTPException(400, f'SKU {match["sku"]} 缺少系统利润底价，请补成本或手动输入最低价')
+    ceiling = merged.get('max_price')
+    if ceiling and minimum > ceiling: raise HTTPException(400, '利润底价高于上限')
+    if merged.get('min_price') and ceiling and merged['min_price'] > ceiling: raise HTTPException(400, '最低价不能高于最高价')
+    if merged.get('enabled') and old.get('write_pending'): raise HTTPException(409, '上次改价尚未核验，请核对平台记录后处理，不重复提交')
+    value = {**merged, 'min_price': minimum, 'product_id': product_id, 'offer_id': offer_id, 'sku': match['sku'],
              'revision': old.get('revision', 0) + 1, 'next_due': 0,
-             'last_result': '已触发，等待首轮采集与评估' if data.enabled else '已暂停'}
-    if data.enabled and not old.get('enabled'):
+             'last_result': '已触发，等待首轮采集与评估' if merged.get('enabled') else '已暂停'}
+    if merged.get('enabled') and not old.get('enabled'):
         value.update(reference_price=None, scarcity_trial_started=0, last_scarcity_raise=0)
     if row: row.value = json.dumps(value, ensure_ascii=False)
     else: db.add(SystemSettings(key=key, value=json.dumps(value, ensure_ascii=False)))

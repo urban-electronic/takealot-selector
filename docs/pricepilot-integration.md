@@ -433,3 +433,15 @@ WorkBuddy；基线ff9b8d7624。`collection_maintenance.py` 里留着 `REPAIR_COO
 改动：删掉该常量与注释；把文档那条改成「不自作主张排采」并注明被 COLLECT-BOUNDARY-01 取代；对应用例原名「修复性重采限速」但断言其实是 `request_once` 不被设置，改名为 `test_repair_never_grants_a_one_shot_collection`，断言一字未动（不自作主张排采这个不变量继续被盯着）。
 
 复测：selfcheck 25/25 全绿（213.3s），`tests/test_collection_maintenance.py` 21 passed。无行为变更、未改调价参数、未动数据模型、无生产写入。
+
+### SAVE-PARTIAL-01 保存区间不得重置未提交的参数（2026-10-19）
+
+WorkBuddy，P1；基线 4472a5e3e4。`PUT /api/automatic-pricing/{product}/{offer}` 原来写的是 `{**old, **data.model_dump()}`，而 `model_dump()` 会把请求里**没传**的字段也按默认值填上。前端「保存区间」只显示最低价、最高价、策略三项，其余靠硬编码（`lead_amount:1, cooldown_minutes:10, max_daily_changes:10`），`max_drop_pct` 则从未提交。
+
+后果：用户把 `max_drop_pct` 配成 30 之后，只要在界面上点一次「保存区间」，就会被静默改回 15；`lead_amount` 等三个参数同样被重置。改的是 A，坏的是 B，而且没有任何提示。
+
+复现（隔离 SQLite，不碰生产）：先 `configure(enabled=True)`，把落库值改成 `max_drop_pct=30, lead_amount=2, cooldown_minutes=45, max_daily_changes=3`，再按界面实际提交的字段调一次 `configure(min_price=90, use_system_min=False, max_price=200, strategy=..., enabled=True)`；旧实现四个参数全部回到默认值。
+
+改动：后端改用 `data.model_dump(exclude_unset=True)` 得到 patch，按 `{**Rule().model_dump(), **old, **patch}` 合并（新规则仍有完整默认值，老规则只覆盖真的传上来的字段），校验与 `minimum` 一律基于合并后的值；前端删掉三个硬编码参数，只提交界面显示且能改的字段。顺带把「最低价 > 最高价」的校验从「只比本次请求」改成「比合并后的最终值」，跨请求也能拦住。
+
+复测：`tests/test_pricing_routes.py` 11 passed（新增 2 例：未提交参数保持原值、新规则仍拿到全部默认值）；后端全量 369 passed / 1 skipped；selfcheck 25/25 全绿（223.6s）。未改任何参数默认值、未动数据模型、无生产写入、未触发真实采集或改价。
