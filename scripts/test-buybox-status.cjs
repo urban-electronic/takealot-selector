@@ -397,6 +397,51 @@ async function fleetScenario(rowsFixture, inspect) {
     } finally { act(() => fault.unmount()); }
   }
   {
+    // 「立即采集」失败的行 enabled 是 false、request_once 才是它的开关。
+    // 状态条把它算进失败数（所以写着「重试 1 个」），重试按钮却只挑 enabled 的行，
+    // 于是点下去一条请求都不发，而且没有任何提示——按钮看起来像坏了。
+    bulkCalls.length = 0;
+    fixture = [row({ status: 'error', error_code: 'collector_error', enabled: false, request_once: true,
+      last_success_at: new Date(Date.now() - 30 * 60000).toISOString(), next_due: Date.now() / 1000 + 1800 })];
+    readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+    const once = createRoot(host);
+    try {
+      await act(async () => once.render(React.createElement(Page)));
+      const retry = [...host.querySelector('.collection-bar').querySelectorAll('button')].find(b => b.textContent.includes('重试'));
+      check(!!retry && retry.textContent.includes('重试 1 个'), 'a failed one-shot request is counted as retryable in the bar');
+      await act(async () => retry.click());
+      check(bulkCalls.length === 1, 'retrying a failed one-shot request actually calls the endpoint');
+      check(bulkCalls[0].enabled === false, 'retrying a one-shot request must not switch on continuous collection');
+      check(bulkCalls[0].request_once === true, 'retrying a one-shot request stays a one-shot request');
+      check(bulkCalls[0].items.length === 1, 'the one-shot row is the one that gets retried');
+    } finally { act(() => once.unmount()); }
+  }
+  {
+    // 混合场景：状态条上的数字必须等于真正被重试的行数，否则用户点下去只会觉得「少了一条」。
+    bulkCalls.length = 0;
+    fixture = [
+      row({ status: 'error', error_code: 'collector_error', enabled: true,
+        last_success_at: new Date(Date.now() - 30 * 60000).toISOString(), next_due: Date.now() / 1000 + 1800 }),
+      { ...row({ status: 'error', error_code: 'collector_error', enabled: false, request_once: true,
+        last_success_at: new Date(Date.now() - 30 * 60000).toISOString(), next_due: Date.now() / 1000 + 1800 }),
+        product_id: 'p2', offer_id: 'o2' },
+    ];
+    readPricing = async () => ({ rows: fixture, configured: true, collector_source: 'cloud_browser' });
+    const mixed = createRoot(host);
+    try {
+      await act(async () => mixed.render(React.createElement(Page)));
+      const retry = [...host.querySelector('.collection-bar').querySelectorAll('button')].find(b => b.textContent.includes('重试'));
+      check(!!retry && retry.textContent.includes('重试 2 个'), 'both auto and one-shot failures are counted in the bar');
+      await act(async () => retry.click());
+      check(bulkCalls.length === 2, 'each collection mode is retried with its own intent');
+      const auto = bulkCalls.find(c => c.enabled === true);
+      const oneShot = bulkCalls.find(c => c.enabled === false);
+      check(!!auto && auto.items.length === 1 && auto.request_once === false, 'the enabled row keeps collecting automatically');
+      check(!!oneShot && oneShot.items.length === 1 && oneShot.request_once === true, 'the one-shot row is retried once, not switched to auto');
+      check(bulkCalls.reduce((n, c) => n + c.items.length, 0) === 2, 'the bar count matches the rows actually retried');
+    } finally { act(() => mixed.unmount()); }
+  }
+  {
     // 接口返回形状不对时保留上一次的有效列表并明确报错。整表清空比显示旧数据更危险：
     // 用户会以为 SKU 都没了，然后重新开一遍采集。
     const good = [row({ status: 'success', enabled: true, last_success_at: new Date().toISOString() })];
@@ -497,5 +542,26 @@ async function fleetScenario(rowsFixture, inspect) {
   }
   check(!status.isThrottled('collector_unavailable'), 'collector_unavailable self-heals, so it is retryable not blocked');
   check(!status.isThrottled(undefined), 'a missing error code is never treated as blocked');
+  // 失败行的集合与「重试哪些行」必须同源：describeFleet 数出来的行数，
+  // 和 retryGroups 交出去的 items 总数，必须永远相等。
+  {
+    const failing = (m) => ({ product_id: 'p', offer_id: 'o', monitor: m });
+    const rows = [
+      failing({ status: 'error', error_code: 'collector_error', enabled: true }),
+      failing({ status: 'error', error_code: 'collector_error', enabled: false, request_once: true }),
+      failing({ status: 'error', error_code: 'site_challenge', enabled: true }),
+      failing({ status: 'error', error_code: 'collector_error', enabled: false, request_once: false }),
+      failing({ status: 'success', enabled: true }),
+    ];
+    check(status.failingRows(rows).length === 3, 'a stopped row is not a failure; a one-shot request is');
+    const groups = status.retryGroups(rows);
+    check(groups.length === 3, 'auto/one-shot and blocked/retryable form separate batches');
+    check(groups.reduce((n, g) => n + g.items.length, 0) === 3, 'retryGroups covers exactly the failing rows');
+    check(groups.filter(g => g.keep_backoff).every(g => g.items.every(r => r.monitor.error_code === 'site_challenge')),
+      'only throttled rows keep their backoff');
+    check(groups.filter(g => g.request_once).every(g => g.items.every(r => !r.monitor.enabled)),
+      'request_once batches contain only rows the user never enabled');
+    check(status.retryGroups([]).length === 0 && status.failingRows(null).length === 0, 'empty input yields no retry work');
+  }
   console.log(`PASS ${checks} Buybox page assertions (jsdom, isolated API)`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

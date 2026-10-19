@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, getImageUrl } from '../remoteApi';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
-import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote, isThrottled } from '../utils/buyboxStatus';
+import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote, retryGroups } from '../utils/buyboxStatus';
 
 /**
  * 44px 商品缩略图。加载失败就留一个方块占位：
@@ -147,20 +147,22 @@ export default function AutoPricing() {
   //   被网站验证/限流挡住 → 只改间隔，不清 next_due。界面正文已经在劝用户
   //   「反复点立即采集没有用」，按钮自己就不能偷偷再点一次。
   // backend/api/pricing_routes.py 的 keep_backoff 就是为这件事加的。
-  // 「被挡住」的判据只从 utils/buyboxStatus 取：这里再抄一份字面量的话，
-  // 状态条按 A 判、重试按钮按 B 判，两边一漂就会出现「一边劝你别点、一边帮你点」。
+  // 「被挡住」与「哪些行算失败」的判据只从 utils/buyboxStatus 取：这里再抄一份字面量的话，
+  // 状态条按 A 判、重试按钮按 B 判，两边一漂就会出现「一边劝你别点、一边帮你点」，
+  // 或者状态条说「重试 2 个」、点下去只发 1 条。
   const retryFailed = async (minutes?: number) => {
-    const failed = rows.filter(r => r.monitor?.status === 'error' && r.monitor?.enabled);
-    if (!failed.length) return;
+    const groups = retryGroups(rows);
+    if (!groups.length) return;
     const next = minutes ?? intervalMinutes;
-    const blocked = failed.filter(r => isThrottled(r.monitor?.error_code));
-    const retryable = failed.filter(r => !isThrottled(r.monitor?.error_code));
     setBusy('retry'); setError('');
     try {
       if (minutes) setIntervalMinutes(minutes);
       const items = (list: any[]) => list.map(r => ({ product_id: r.product_id, offer_id: r.offer_id }));
-      if (retryable.length) await bulkBuyboxMonitor({ enabled: true, interval_minutes: next, segment: '', items: items(retryable) });
-      if (blocked.length) await bulkBuyboxMonitor({ enabled: true, keep_backoff: true, interval_minutes: next, segment: '', items: items(blocked) });
+      // 一批一次请求：启用中的行保持自动采集，一次性请求的行仍然只采一次；
+      // 被网站挡住的那批保留退避，只把间隔拉长。
+      for (const group of groups) {
+        await bulkBuyboxMonitor({ enabled: group.enabled, request_once: group.request_once, keep_backoff: group.keep_backoff, interval_minutes: next, segment: '', items: items(group.items) });
+      }
       await refresh(true);
     } catch (e) { setError((e as Error).message); } finally { setBusy(''); }
   };

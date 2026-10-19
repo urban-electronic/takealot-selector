@@ -123,7 +123,13 @@ but measures stub numbers. `scripts/test-contrast-audit.py` is the real run; kee
 it in the gate. Collapsed UI must be opened before measuring it — `details`
 elements such as the per-row decision card render nothing while closed, so a
 fixture without the data behind them (here `rule.plan`) measures an empty box and
-still reports a clean result.
+still reports a clean result. This applies to **both** browser suites: the layout
+audit opens the "more" panel and the per-row details, and the contrast audit does
+the same before it samples computed styles (AUDIT-CONTRAST-02). Route coverage is
+part of the same rule: a routed page that is missing from an audit's route list is
+not "clean", it is unmeasured — the product detail page was absent from the
+contrast run until it was added, while the layout and text-overlap audits already
+covered it.
 
 Separate four results: code committed, relevant tests passed, intended version
 deployed, real business acceptance. For session-only acceptance, hand off the

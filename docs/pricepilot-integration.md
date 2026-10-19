@@ -589,3 +589,31 @@ WorkBuddy；基线 3e59a00eee。同一个错误码集合（`site_challenge` / `r
 改动：`utils/buyboxStatus.ts` 导出 `isThrottled(code)`，`describeFleet` 内部两处判断改用它；`AutoPricing.tsx` 删掉本地 `BLOCKED` 改为导入同一个函数。行为不变（集合内容一字未动），只是把「谁算被挡住」收敛成一处。
 
 复测：`test-buybox-status.cjs` 151 → 159 断言，新增 8 条钉住「三个码必须落在 blocked、绝不落在 retryable」「`collector_unavailable` 可自愈所以不算 blocked」「错误码缺失不算 blocked」；把集合里的 `http_forbidden` 临时改成 `http_403` 后新断言转红（已还原）。`tsc --noEmit` 通过（`noUnusedLocals` 开）；未动后端，pytest 381 passed / 1 skipped。
+
+### AUDIT-CONTRAST-02 对比度审计补上详情页与展开态（2026-10-20）
+
+WorkBuddy；基线 05eb61012e。`docs/engineering/design-and-validation.md` 已经写明「折叠的界面必须在量之前打开」和「每一屏都要真量到」，但对比度审计只做默认渲染态：`ROUTES` 里没有 `/products/fixture-product`（产品详情页——费用表、利润拆解、长标题都在这一屏，版式与文字重叠审计都覆盖了它，只有对比度漏了），`/auto-pricing` 的「更多」面板（8 个次要动作）和每行「详情」里的决策卡片（10 个 chip 加一段长原因文案）也从不展开。这两处都默认收起，收起时连节点都不存在，所以报告里的「0 处低对比」对它们从来不是结论，只是没量。
+
+改动：① `ROUTES` 补 `/products/fixture-product`，覆盖面 30 → 33 个「路由×宽度」；② `/auto-pricing` 在测量前点开「更多」并展开首行「详情」，等 `.actions-more-panel` 与 `.decision-card` 真正渲染后再量。判据一个字没改：任何一处低对比仍然直接失败。
+
+复现：给 `src/index.css` 末尾临时加 `.decision-card span{color:#f2f2f2!important}`，旧审计（不展开）照样全绿；新审计在 `/auto-pricing` 三档报低对比并以 `RuntimeError: 视觉审计未通过` 退出 1，探针已还原（`src/index.css` 无残留）。
+
+复测：33/33 面全部测到、0 处低对比、0 个被拦请求、0 个 page error；全量 selfcheck 26 步全绿。
+
+### RETRY-ONESHOT-01「重试」不再对一次性采集失败的行空转（2026-10-20）
+
+WorkBuddy；基线 05eb61012e。`describeFleet()` 把「启用中 **或** 点过立即采集（`request_once`）」的行算作失败，所以状态条会写「1 个 SKU 采集失败」并给出「重试 1 个」；但 `AutoPricing.retryFailed()` 只挑 `status==='error' && enabled` 的行，而「立即采集」是一次性请求——`enabled` 是 false，`request_once` 才是它的开关。结果是：一条「立即采集」失败的 SKU，状态条说可以重试，点下去一条请求都不发，既不报错也没有任何提示，按钮看起来像坏了。混在自动采集的行里时更隐蔽：状态条写「重试 2 个」，实际只发 1 条。
+
+改动：`utils/buyboxStatus.ts` 抽出 `failingRows(rows)`（状态条与重试共用同一份失败集合）和 `retryGroups(rows)`（按「被挡住 / 可立即重试」× 「自动 / 一次性」分批）。`describeFleet` 改用 `failingRows`；`AutoPricing` 的 `retryFailed` 改为逐批提交，**保留每行原本的意图**：启用中的行仍然 `enabled:true`，一次性请求的行仍然 `enabled:false, request_once:true`（不会顺手把用户没要求开启的连续采集打开），被网站挡住的行仍然 `keep_backoff:true` 只拉长间隔。判据没有放宽，只是让两处用同一个。
+
+复现：`row({status:'error', error_code:'collector_error', enabled:false, request_once:true})`，旧实现状态条显示「重试 1 个」但点击后 `bulkBuyboxMonitor` 零调用；新实现调用一次且 `enabled===false, request_once===true`。
+
+复测：`test-buybox-status.cjs` 159 → 175 断言（新增 16 条：一次性请求失败必须计入状态条、点击必须真的发请求、必须保持一次性、混合场景必须按各自意图分两批提交且总数等于状态条数字、`failingRows`/`retryGroups` 的纯函数口径）。把 `retryFailed` 临时改回 `rows.filter(r => r.monitor?.enabled)` 后新断言转红（已还原）。`tsc --noEmit` 通过；未动后端。
+
+### DEAD-UI-01 删掉两个从未挂载的组件（2026-10-20）
+
+WorkBuddy；基线 05eb61012e。`src/operations/OperationsAssist.tsx` 与 `src/operations/BrowserCollector.tsx` 全仓零引用：前者是 5218929 引入的本地离线计算面板（调价 / 补货 / 选品三个 tab），后者是 c0e7cf6 引入的浏览器扩展状态面板。两者都没有被任何路由或页面 import，`src/App.tsx` 的 12 条路由里没有它们，`Replenishment.tsx` 用的是 `PipelinePlan.tsx`（走后端 `operations/profile`），`AutoPricing.tsx` 的采集维护用的是 `CloudBrowser.tsx`。DEAD-CODE-03 那条记录写着「线上补货判断走的是单行 `computeReplenish()`（`OperationsAssist.tsx` 唯一导入项）」——这句现在会把人引到一个根本没挂载的组件上，比没有注释更误导。
+
+改动：删掉这两个文件。`browser-collector-panel` 的样式**保留**——`CloudBrowser.tsx` 还在用它。`src/operations/{pricing,replenish,recommend,keywords}.ts` 这四个引擎模块**保留**：它们仍由 `test-operations.cjs` 直接编译并断言（`evaluatePricing` 17 例、`computeReplenish` 4 例、`buildSuggestions` 等），删掉等于连带删掉这些断言，属于本轮明确不做的事。副作用如实记录：删掉 UI 之后，这四个模块只剩测试在调用，没有生产调用方。
+
+复测：`tsc --noEmit` 通过（`noUnusedLocals` 开，删掉的文件不在任何 import 图里）；`test-operations.cjs` 照旧全绿；全量 selfcheck 26 步全绿。

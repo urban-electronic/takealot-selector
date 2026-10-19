@@ -28,6 +28,10 @@ class ReadyLocator:
         if self.missing: raise RuntimeError('fixture text is not rendered')
     def get_by_role(self, role, **kwargs):
         return ReadyLocator(self.missing or role != 'cell' or kwargs.get('name') != '1')
+    # 审计在测量前会点开「更多」面板和每行「详情」（AUDIT-CONTRAST-02），
+    # 桩不实现这两个动作就会把整条 /auto-pricing 记成 ERROR——测的就不是审计判据了。
+    def locator(self, *args): return self
+    async def click(self): pass
 
 class ReadyBrowser(FakeBrowser):
     async def goto(self, url, **kwargs): self.current = url
@@ -61,12 +65,17 @@ class Route:
     async def fulfill(self, **kwargs): self.action = 'fixture'
 
 class SafetyTests(unittest.TestCase):
+    # 下面三个数字是「覆盖面锁」：11 条路由 × 3 档宽度 = 33 个面。
+    # 写死而不是从 ROUTES 推导，是为了让「悄悄少测一条路由」也变成失败——
+    # 推导出来的数字会跟着一起变小，等于没有断言。
+    SURFACES = 33
+
     def test_procurement_without_sku_can_reach_measurement(self):
         fn = audit['main']
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()) as output:
             with patch.dict(fn.__globals__, {'OUT':directory, 'async_playwright':ReadyBrowser}):
                 asyncio.run(fn())
-            self.assertIn('"measured": 30', output.getvalue())
+            self.assertIn(f'"measured": {self.SURFACES}', output.getvalue())
             self.assertIn('"errors": 0', output.getvalue())
 
     def test_missing_procurement_record_still_fails(self):
@@ -75,7 +84,7 @@ class SafetyTests(unittest.TestCase):
             with patch.dict(fn.__globals__, {'OUT':directory, 'async_playwright':MissingProcurement}):
                 with self.assertRaisesRegex(RuntimeError, '视觉审计未通过'):
                     asyncio.run(fn())
-            self.assertIn('"measured": 27', output.getvalue())
+            self.assertIn(f'"measured": {self.SURFACES - 3}', output.getvalue())
             self.assertIn('"errors": 3', output.getvalue())
     def test_all_navigation_errors_fail_instead_of_zero_success(self):
         fn = audit['main']
@@ -84,7 +93,7 @@ class SafetyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, '视觉审计未通过'):
                     asyncio.run(fn())
             self.assertIn('"measured": 0', output.getvalue())
-            self.assertIn('"errors": 30', output.getvalue())
+            self.assertIn(f'"errors": {self.SURFACES}', output.getvalue())
 
     def test_context_interceptor_blocks_writes_and_external_requests(self):
         cases = [

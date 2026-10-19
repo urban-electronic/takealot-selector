@@ -45,7 +45,7 @@ OUT = os.path.join(HERE, "..", "ui_audit_out")
 
 ROUTES = [
     "/", "/products", "/inventory", "/auto-pricing", "/replenishment", "/packing",
-    "/procurement", "/stores", "/settings", "/create",
+    "/procurement", "/stores", "/settings", "/create", "/products/fixture-product",
 ]
 VIEWPORTS = [("w1366", 1366, 900), ("w768", 768, 1000), ("w390", 390, 844)]
 
@@ -179,6 +179,14 @@ async def main():
                         ).first.wait_for(timeout=8000)
                     elif route in ('/products', '/inventory', '/auto-pricing', '/packing'):
                         await page.get_by_text('TEST-001', exact=False).first.wait_for(timeout=8000)
+                    if route == '/auto-pricing':
+                        # 「更多」面板与每行「详情」都默认收起。不点开，里面那 8 个次要
+                        # 动作和决策卡片（最长的一段文案 + 8 个 chip）就从来没被量过对比度，
+                        # 而报告照样写「0 处低对比」。
+                        await page.get_by_role('button', name='更多', exact=True).click()
+                        await page.locator('.actions-more-panel').wait_for(timeout=8000)
+                        await page.locator('.row-details').first.locator('summary').click()
+                        await page.locator('.decision-card').first.wait_for(timeout=8000)
                     result = await page.evaluate(AUDIT)
                     if not isinstance(result, dict) or not isinstance(result.get('lowContrastCount'), int) or not isinstance(result.get('controls', {}).get('tooSmallCount'), int):
                         raise ValueError('页面未产生有效测量')

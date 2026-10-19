@@ -535,6 +535,48 @@ export function isThrottled(code?: string): boolean {
 }
 
 /**
+ * 采集失败的行：启用中的，或用户点过「立即采集」的一次性请求。
+ *
+ * 状态条按这份集合数「几个失败」，重试按钮也必须按同一份集合去重试。
+ * 之前重试只看 `enabled`，而「立即采集」失败的行 `enabled` 是 false
+ * （`request_once` 才是它的开关），于是状态条写着「重试 1 个」，
+ * 点下去一条请求都不发——按钮看起来像坏了，而且没有任何提示。
+ */
+export function failingRows(rows: any[]): any[] {
+  return (Array.isArray(rows) ? rows : []).filter(
+    r => r?.monitor?.status === 'error' && (r?.monitor?.enabled || r?.monitor?.request_once)
+  );
+}
+
+export interface RetryGroup {
+  items: any[];
+  enabled: boolean;
+  /** 一次性请求的行重试后仍然只是一次，不能顺手打开连续采集。 */
+  request_once: boolean;
+  /** 被网站挡住的行保留退避，只加长间隔。 */
+  keep_backoff: boolean;
+}
+
+/**
+ * 把失败行分成可以直接提交的批次。
+ *
+ * 两条轴都不能省：被挡住的行只加长间隔、保留退避，不能立刻再打一次；
+ * 一次性请求的行重试后仍然只是一次，不能把用户没要求开启的连续采集打开。
+ */
+export function retryGroups(rows: any[]): RetryGroup[] {
+  const groups = new Map<string, RetryGroup>();
+  for (const r of failingRows(rows)) {
+    const enabled = !!r?.monitor?.enabled;
+    const keep_backoff = isThrottled(r?.monitor?.error_code);
+    const key = `${keep_backoff ? 'blocked' : 'retry'}|${enabled ? 'auto' : 'once'}`;
+    const group = groups.get(key) || { items: [], enabled, request_once: !enabled, keep_backoff };
+    group.items.push(r);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+/**
  * 页头一句话状态。
  *
  * 之前这里是六行列表，信息全但没人看——用户的原话是「不需要那么多东西显示出来」。
@@ -549,12 +591,10 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const auto = monitors.filter(m => m.enabled).length;
   const running = monitors.filter(m => m.status === 'running').length;
   const queued = monitors.filter(m => m.status === 'queued').length;
-  // 失败只算「启用中、而且手上没有可用报价」的行。
+  // 失败只算「启用中、或点过立即采集、而且手上没有可用报价」的行。
   // 停采的行不该因为一条旧错误把整页刷红（用户已经把它关了）；
   // 有报价只是这一轮没刷新的行也不算失败（旧价还能用）。
-  const failedRows = list.filter(
-    r => r?.monitor?.status === 'error' && (r?.monitor?.enabled || r?.monitor?.request_once)
-  );
+  const failedRows = failingRows(list);
   const errored = failedRows.filter(r => !hasUsableQuote(r?.monitor)).map(r => r?.monitor || {});
   const failing = errored.length;
   const refreshing = failedRows.length - failing;
