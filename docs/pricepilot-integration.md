@@ -459,3 +459,29 @@ WorkBuddy；基线 e4b22a426c。`sync-from-products` 的响应里有 `duplicate_
 按「一个 SKU 被第二个产品再次认领」计数（去重后返回个数，重复同步结果稳定），不动既有的 `seen` 去重与行刷新逻辑。
 
 复测：新增 `tests/test_packing_rename_and_duplicates.py` 4 例（改名保图/改名撞车回滚/重复计数/无重复为 0），与既有三个 packing 测试文件共 15 passed；selfcheck 全绿。未改调价参数、未动数据模型、无生产写入。
+
+### DIAG-VARIANT-01 清洗白名单漏了变体维度名（2026-10-19）
+
+WorkBuddy；基线 046b70dd4071。`classify()` 靠 `diagnostics['variant_unmatched']` 点名「未能切到变体 Nude / L」，但 `safe_diagnostics()` 的白名单里没有这个键。转发采集器（`/api/collector/offers`）先清洗再分类，历史记录重判（`displayed_monitor()`）也只拿库里的 diagnostics——这两条路径上那句点名的消息永远出不来，只剩「未确认SKU对应变体」。多维度商品（颜色+尺码）少切了哪个维度因此看不出来，只能反复点采集。同一天工程文档写的还是「会点名是哪一段」，与代码相反。
+
+复现（隔离，不碰生产）：`classify({'variantSwitchFailed':True,'diagnostics':safe_diagnostics({'variant_unmatched':['Nude','L']})})`，旧实现 message 里没有 `Nude / L`，只有「未确认SKU对应变体」。
+
+改动：白名单保留 `variant_unmatched`，只收字符串、单项截 40 字符、最多 6 项（是商品规格名，不是页面正文；非列表、空串一律丢弃，不把任意文本当规格写进库）。
+
+复测：`tests/test_collection_diagnostics.py` 14 passed（新增 2 例：清洗后仍点名、非字符串与超长被截断丢弃）；后端全量 377 passed / 1 skipped；selfcheck 25/25 全绿（211.6s）。未触发真实采集，未改价。
+
+### UI-COPY-02 试涨两档写全（2026-10-19）
+
+WorkBuddy；基线 046b70dd4071。说明面板写「约 3% 试涨，12 小时观察一次」，但 `_raise_pct()` 在 `tight` 档取 `tight_step_pct`（5%），`plan()` 把观察间隔减半（12h → 6h）。按面板估算涨幅与频率的用户，会在库存紧张时看到对不上的数字。同一份工程文档里其实已经写了「紧张档涨 5%」，只有界面漏了。
+
+改动：同一句补「库存紧张时改为一次约 5%、6 小时观察一次」。只改文案，未动 `raise_step_pct`、`tight_step_pct`、`raise_interval_hours` 任何默认值，也未改 `plan()` 的判定。
+
+复测：selfcheck 25/25（211.6s），含 `test-pricing-layout.cjs`。无行为变更。
+
+### COLLECT-DEAD-01 删掉从没被调用的选择器健康度（2026-10-19）
+
+WorkBuddy；基线 046b70dd4071。`pricepilot_collector.py` 的 `_selector_calls` / `reset_selector_stats()` / `_record_selector()` / `selector_health()` 全链路没有任何调用方：`selector_health()` 零引用，`reset_selector_stats()` 的 docstring 写着「每轮开始重置」也没人调，计数只增不减。而 `SELECTORS["buybox_card"]` 上方的注释写着「由 selector_health() 检测大面积失效并告警」——一个不存在的告警。维护者读到会以为改版有监控，实际生效的只有 `classify()` 的 `page_structure_changed` / `page_not_recognized`。
+
+改动：删掉这组计数、`selector_health()` 与同样零引用的 `query_one_fallback()`；注释改成指向真正生效的 classify 分支。`_record_selector()` 都是纯计数调用，删除不改任何控制流，`[选择器降级]` 日志保留。
+
+复测：`tests/test_pricepilot_variant_gate.py` + `test_buybox_monitor.py` + `test_collection_diagnostics.py` 44 passed；后端全量 377 passed / 1 skipped；selfcheck 25/25（211.6s）。未请求真实商品页。

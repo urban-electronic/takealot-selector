@@ -152,8 +152,9 @@ SELECTORS = {
     # buybox 卡**只使用主选择器，不做自动降级**：
     # 缺货/无 offer 的商品本就没有 buybox 卡，此时主选择器正确返回空；
     # 而宽松候选（如 [class*="buybox"]）会匹配到页面其他元素，读出非 buybox 的价格，
-    # 据此调价将造成真实亏损。故此处不配候选——改版时宁可"采不到"也不"采错"，
-    # 由 selector_health() 检测大面积失效并告警，交由人工维护选择器。
+    # 据此调价将造成真实亏损。故此处不配候选——改版时宁可"采不到"也不"采错"；
+    # 真改版了由 classify() 报 page_structure_changed / page_not_recognized
+    # （0 个 buybox 卡但页面有价格 / 什么都认不出），交人工维护选择器。
     "buybox_card": [
         '[data-ref="buybox-offer"]',
     ],
@@ -177,37 +178,6 @@ SELECTORS = {
     ],
 }
 
-_selector_calls: dict[str, dict] = {k: {"ok": 0, "fail": 0, "max_idx": 0} for k in SELECTORS}
-
-def reset_selector_stats():
-    """每轮开始重置选择器健康度统计。"""
-    for k in _selector_calls:
-        _selector_calls[k] = {"ok": 0, "fail": 0, "max_idx": 0}
-
-def _record_selector(kind: str, ok: bool, idx: int = 0):
-    """记录一次选择器命中结果：ok=True 记成功并更新最坏候选索引，ok=False 记失败。"""
-    d = _selector_calls.setdefault(kind, {"ok": 0, "fail": 0, "max_idx": 0})
-    if ok:
-        d["ok"] += 1
-        d["max_idx"] = max(d.get("max_idx", 0), idx)
-    else:
-        d["fail"] += 1
-
-def selector_health():
-    """返回本轮 (degraded, broken)：降级（靠候选兜底）与失效（疑似改版）的选择器列表。
-    仅当样本 >= 3 且失败率 > 50%（或无一成功）才判失效，避免单个缺货商品误报。"""
-    degraded, broken = [], []
-    for k, d in _selector_calls.items():
-        total = d["ok"] + d["fail"]
-        if total < 3:
-            continue
-        fail_rate = d["fail"] / total
-        if d["ok"] == 0 or fail_rate > 0.5:
-            broken.append(k)
-        elif d.get("max_idx", 0) > 0:
-            degraded.append(k)
-    return degraded, broken
-
 async def query_all_fallback(page, kind: str):
     """按优先级尝试候选选择器，返回 (elements, selector)。
     主选择器失效（改版）时自动降级到候选；全部失效返回 ([], None)。"""
@@ -217,17 +187,10 @@ async def query_all_fallback(page, kind: str):
             if els:
                 if i > 0:
                     log(f"  [选择器降级] {kind}: 主选择器失效，已降级到候选#{i} {sel}")
-                _record_selector(kind, True, i)
                 return els, sel
         except Exception:
             continue
-    _record_selector(kind, False)
     return [], None
-
-async def query_one_fallback(page, kind: str):
-    """按优先级尝试候选选择器，返回首个命中的 element（未命中返回 None）。"""
-    els, _ = await query_all_fallback(page, kind)
-    return els[0] if els else None
 
 def _norm_label(s: str | None) -> str:
     """规范化变体标签：折叠空白（含不换行空格）、去首尾装饰符号、转小写。
@@ -410,20 +373,18 @@ async def price_of(page, card) -> float | None:
     满减、第二个真实报价）就放弃。宁可采不到，也不采错：这条价直接喂自动调价，
     读错就是真亏钱。
     """
-    for i, sel in enumerate(SELECTORS["price"]):
+    for sel in SELECTORS["price"]:
         try:
             pr = await card.query_selector(sel)
             if pr is not None:
                 p = parse_price(await pr.inner_text())
                 if p is not None:
-                    _record_selector("price", True, i)
                     return p
         except Exception:
             continue
-    # 降级：idx 传候选数量，表示这次不是靠选择器命中的，selector_health 会记成降级。
+    # 降级：候选选择器一个都没命中，改从卡片文本里取唯一金额。
     amounts = distinct_prices(await card_text_without_struck(card))
     if len(amounts) == 1:
-        _record_selector("price", True, len(SELECTORS["price"]))
         return amounts[0]
     # 摘不干净（划线价不是独立节点）时，原始文本本来就只有唯一金额也可信。
     try:
@@ -431,7 +392,6 @@ async def price_of(page, card) -> float | None:
     except Exception:
         return None
     if len(amounts) == 1:
-        _record_selector("price", True, len(SELECTORS["price"]))
         return amounts[0]
     return None
 

@@ -28,6 +28,8 @@
   `Select an option` → `L`）。不用价格变化当证据：选全之前本页压根没有价格。
 - **严格口径**：每一个变体段都必须确认选中。少确认一个，页面给的就是默认变体的
   价，拿它调价等于采错价。`diagnostics.variant_unmatched` 会点名是哪一段。
+  （2026-10-19 补：转发采集器与历史重判会先过 `safe_diagnostics()` 白名单，
+  原先该白名单里没有 `variant_unmatched`，这两条路径上「点名是哪一段」永远出不来。）
 - 去掉了原来的 URL 参数直达路径：多维度下一次只能表达一个维度，且无法逐个验证。
 
 ### 2. 记录自愈（`services/collection_maintenance.py`，新增）

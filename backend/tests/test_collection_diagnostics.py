@@ -86,3 +86,28 @@ def test_safe_diagnostics_keeps_new_measurements_not_free_text():
         'cookie':'fixture-private','failure_message':'fixture-private',
         'http_status':True,'buybox_cards':float('nan'),'debug':['fixture-private']})
     assert value=={'price_nodes':4,'diag_version':3,'buybox_card_struck':1}
+
+
+def test_safe_diagnostics_keeps_which_variant_dimension_failed():
+    """清洗不能把 classify() 要读的键洗掉。
+
+    转发采集器（/api/collector/offers）和历史记录重判都先过 safe_diagnostics，
+    再交给 classify()。清洗白名单里没有 variant_unmatched 时，那句
+    「未能切到变体 Nude / L」永远出不来，只剩「未确认SKU对应变体」。
+    """
+    from services.collection_diagnostics import classify, safe_diagnostics
+    value=safe_diagnostics({'variant_controls':3,'variant_unmatched':['Nude','L'],
+        'failure_message':'fixture-private','cookie':'fixture-private'})
+    assert value=={'variant_controls':3,'variant_unmatched':['Nude','L']}
+    code,message=classify({'variantSwitchFailed':True,'diagnostics':value})
+    assert code=='variant_unmatched' and 'Nude / L' in message
+
+
+def test_safe_diagnostics_bounds_variant_labels_and_rejects_other_types():
+    from services.collection_diagnostics import safe_diagnostics
+    value=safe_diagnostics({'variant_unmatched':[1,None,'','x'*80]+['d']*8})
+    labels=value['variant_unmatched']
+    assert len(labels)==6 and all(isinstance(item,str) and len(item)<=40 for item in labels)
+    # 不是列表就不是「维度名」，一律丢掉，不把任意文本当规格写进库。
+    assert safe_diagnostics({'variant_unmatched':'Nude'})=={}
+    assert safe_diagnostics({'variant_unmatched':['']})=={}

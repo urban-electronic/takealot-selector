@@ -31,6 +31,14 @@ def safe_diagnostics(raw):
     if raw.get('block_reason') in ('verify you are human','checking your browser',
             'automated traffic','unusual traffic','complete the captcha','challenge_page_title'):
         out['block_reason']=raw['block_reason']
+    # 哪个变体维度没切上（商品规格名，不是页面正文）。classify() 靠这个键点名
+    # 「未能切到变体 Nude / L」；清洗时漏了它，于是所有走过清洗的路径（转发采集器、
+    # 历史记录重判）都只能落到「未确认SKU对应变体」这句没法行动的兜底上，
+    # 而 docs/engineering/2026-10-18-collection-selfheal-and-variants.md 写的是会点名。
+    labels=raw.get('variant_unmatched')
+    if isinstance(labels,list):
+        kept=[item[:40] for item in labels if isinstance(item,str) and item]
+        if kept: out['variant_unmatched']=kept[:6]
     return out
 
 
