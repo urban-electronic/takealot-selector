@@ -277,13 +277,22 @@ export default function AutoPricing() {
     return '等待下轮';
   };
   const loopInterval = loop?.interval_minutes ?? intervalMinutes;
-  const loopTone = !loop ? 'neutral' : !loop.worker_alive ? 'danger' : loop.paused_by === 'local_collector' ? 'warning' : 'success';
+  // 心跳只证明线程还活着，不证明循环在转：任务卡死时心跳照样新鲜（2026-10-20
+  // 线上就是这样，界面一直写「运行中」，实际 17 分钟没开新一轮）。拿「上一轮
+  // 到现在多久」和间隔比，才能把「卡住」和「正在慢慢跑」分开。
+  const cycleStuck = !!loop && loop.worker_alive && loop.paused_by !== 'local_collector'
+    && typeof loop.cycle_age_seconds === 'number' && typeof loop.interval_minutes === 'number'
+    && loop.cycle_age_seconds > loop.interval_minutes * 60 * 2 + 180;
+  const loopTone = !loop ? 'neutral' : !loop.worker_alive ? 'danger' : cycleStuck ? 'danger'
+    : loop.paused_by === 'local_collector' ? 'warning' : 'success';
   const loopTitle = !loop ? '采集循环状态未知'
     : !loop.worker_alive ? '采集循环已停止'
+    : cycleStuck ? '采集循环卡住了'
     : loop.paused_by === 'local_collector' ? '本机采集器接管中'
     : '采集循环运行中';
   const loopNote = !loop ? '还没拿到后台心跳'
     : !loop.worker_alive ? '后台线程没在跑，SKU 不会自动重采，请检查服务状态'
+    : cycleStuck ? `${Math.round(loop.cycle_age_seconds / 60)} 分钟没开新一轮（间隔 ${loopInterval} 分钟）；卡住的采集任务已放弃，持续出现请重启服务`
     : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
     : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
   const nextIn = loop?.next_due_in;

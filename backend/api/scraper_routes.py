@@ -43,7 +43,13 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db), re
             except Exception:
                 seller_warning = '卖家 API 暂时不可用，已暂停重复请求；改用现有资料来源。'
     if result is None:
-        result = await scrape_product(url)
+        try:
+            result = await scrape_product(url)
+        except Exception as error:
+            # 抓取层抛异常时，原来会一路冒到全局处理器变成 500「服务器内部错误」，
+            # 用户拿不到任何线索。这里按同一套归因给出可行动的原因。
+            from api.product_routes import _read_reason
+            raise HTTPException(502, f'官网资料暂时无法读取（{_read_reason(error)}）')
     elif not result.get('product_image_url'):
         # Seller offers may omit images. One bounded public-page read fills only
         # the missing image, never replacing seller SKU, title or own price.

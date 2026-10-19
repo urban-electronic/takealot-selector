@@ -10,6 +10,14 @@ from database import DB_DIR
 _lock = threading.Lock()
 _display_lock = threading.Lock()
 _display = None
+# 等浏览器锁的上限。原来是无期限 acquire()：上一个任务卡死时，后面每个任务都会
+# 永远等在这把锁上，采集循环整条冻住，而且心跳还在刷新，界面显示「运行中」。
+# 与其无限等，不如如实报「忙」，让这一条记成失败、让循环继续转。
+LOCK_WAIT_SECONDS = 90
+
+
+class CollectorBusy(RuntimeError):
+    """浏览器被上一个任务占着；这不是页面问题，也不该重试到天荒地老。"""
 
 def browser_display():
     """Local virtual display only; no VNC server or public listening port."""
@@ -31,10 +39,15 @@ def browser_display():
 
 @asynccontextmanager
 async def quote_context(wait=True):
+    held = False
     if wait:
-        await asyncio.to_thread(_lock.acquire)
+        held = await asyncio.to_thread(_lock.acquire, True, LOCK_WAIT_SECONDS)
+        if not held:
+            raise CollectorBusy(f'采集浏览器被上一个任务占用超过 {LOCK_WAIT_SECONDS} 秒，本轮跳过')
     elif not _lock.acquire(blocking=False):
-        raise RuntimeError('采集浏览器忙，请稍后再打开')
+        raise CollectorBusy('采集浏览器忙，请稍后再打开')
+    else:
+        held = True
     playwright = context = None
     try:
         profile = os.environ.get('BUYBOX_BROWSER_PROFILE', os.path.join(DB_DIR, 'buybox_browser_profile'))
@@ -71,7 +84,8 @@ async def quote_context(wait=True):
                 # 进程真的退出、把 profile 交出来，再让下一轮进来。
                 await asyncio.sleep(1.2)
     finally:
-        _lock.release()
+        if held:
+            _lock.release()
 
 
 async def _launch(profile, display, args):

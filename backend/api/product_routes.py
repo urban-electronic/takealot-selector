@@ -564,6 +564,35 @@ class PriceRefreshOut(BaseModel):
     rating_value: Optional[float] = None
 
 
+def _read_reason(error: BaseException) -> str:
+    """把「读取失败」归到一个用户能行动的原因上。
+
+    原来这两个分支都只回一句「暂时无法读取」，密钥失效、被限流、网络不通、
+    代码报错四种情况长得一模一样，用户只能反复点重试。这里只做**归因**：
+    透出的是固定的类别或上游已经写好的中文提示，不打印路径、密钥、异常正文。
+    """
+    if isinstance(error, asyncio.TimeoutError):
+        return '读取超时，上游没有在时限内返回'
+    text = str(error or '').strip()
+    # _load_offers 自己写的中文提示已经是「原因 + 建议」，直接用。
+    if any(key in text for key in ('暂停请求', '格式异常', '超出本次读取上限')):
+        return text
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx 是硬依赖
+        httpx = None
+    if httpx is not None:
+        if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return '连不上上游接口（网络不可达或 DNS 失败）'
+        if isinstance(error, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+            return '上游接口响应超时'
+        if isinstance(error, httpx.HTTPStatusError):
+            return f'上游接口返回 HTTP {error.response.status_code}'
+    if isinstance(error, (ModuleNotFoundError, ImportError)):
+        return '运行环境缺少抓取组件（部署问题，不是商品问题）'
+    return f'内部错误 {type(error).__name__}'
+
+
 def _sku_variant_image(result: Dict[str, Any], sku: Optional[str]) -> str:
     """按本行 SKU 取变体图；多 SKU 汇总行与未匹配行返回空串。
 
@@ -617,9 +646,9 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id
                     result.setdefault('warnings', []).append('卖家资料最多缓存 30 分钟；本次读取不代表官网实时最低价。')
             except HTTPException:
                 raise
-            except Exception:
+            except Exception as error:
                 if source == 'seller':
-                    raise HTTPException(503, '本店报价暂时无法读取，请稍后重试；原售价保留')
+                    raise HTTPException(503, f'本店报价暂时无法读取（{_read_reason(error)}）；原售价保留')
         elif source == 'seller':
             raise HTTPException(400, '当前店铺尚未接入卖家 API，请选择官网售价')
     if source == 'seller' and result is None:
@@ -629,8 +658,8 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id
             result = await asyncio.wait_for(scrape_product(p.takealot_url), timeout=45)
         except asyncio.TimeoutError:
             raise HTTPException(504, '官网读取超时，请稍后重试或选择本店报价；原售价保留')
-        except Exception:
-            raise HTTPException(502, '官网资料暂时无法读取；原售价保留')
+        except Exception as error:
+            raise HTTPException(502, f'官网资料暂时无法读取（{_read_reason(error)}）；原售价保留')
     price = result.get('actual_sale_price_zar')
     valid_price = isinstance(price, (int, float)) and not isinstance(price, bool) and math.isfinite(price) and price > 0
     if source != 'details' and not valid_price:

@@ -35,6 +35,11 @@ _last_repair_at = 0.0
 COLLECT_ATTEMPTS = 2
 # 两次尝试之间的等待。给页面留出把报价渲染出来的时间。
 COLLECT_RETRY_DELAY = 5.0
+# 单个采集任务的硬上限。浏览器一旦卡死（profile 锁、渲染进程挂住），
+# 这个任务永远不会返回；以前循环会一直等下去，而且等待期间还在刷新心跳，
+# 界面上永远是「运行中」——2026-10-20 线上就是这么停采 17 分钟的。
+# 到点就放弃这一个任务并如实记账，让循环继续转、让自愈能跑起来。
+JOB_TIMEOUT = 240
 
 # 这些是「这一轮压根没跑起来」或「页面还没渲染完」的信号，同轮重试有意义。
 # 网站验证（site_challenge）不在里面：验证不会因为隔 5 秒再开一次就解除，
@@ -185,11 +190,16 @@ def process(row_id):
             # 旧计数（buybox_cards=2 等）也会被当成这一轮的结果。2026-10-17 就是
             # 这样被误导了好几轮。清掉，如实记下失败类型。
             finished = isinstance(error, ValueError)
-            code = result.get('error_code') if finished else 'collector_unavailable'
+            # 浏览器被上一个任务占着：既不是页面问题，也不是「采集器没起来」。
+            # 混成 collector_unavailable 会让界面劝用户「点立即采集重试」，
+            # 而实际重试只会继续等同一把锁。
+            from services.quote_browser import CollectorBusy
+            busy = isinstance(error, CollectorBusy)
+            code = result.get('error_code') if finished else ('collector_busy' if busy else 'collector_unavailable')
             if not finished:
                 result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__}
             result.update(status='error', error_stage=stage, error_code=code or ('seller_read_failed' if stage=='seller_api' else type(error).__name__),
-                          error=str(error) if finished else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
+                          error=str(error) if (finished or busy) else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat(),last_attempt_source='cloud_browser')
             delay=config.get('interval_minutes',5)*60
@@ -265,19 +275,26 @@ def start_worker():
                 # 不是故障，是排期本身排不下。不测这个数就只能猜。
                 round_started=time.time()
                 # Two bounded jobs; never open an unbounded browser fleet.
-                with ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read') as pool:
+                # 不能用 with：卡死的任务会让 pool.__exit__ 的 shutdown(wait=True)
+                # 无限等下去，循环照样冻住——只是把卡点从 wait 挪到了退出。
+                pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read')
+                started={}; owners={}
+                try:
                     pending=set()
                     for _,key in sorted(jobs):
                         if _stop.is_set(): break
                         while len(pending)>=2 and not _stop.is_set():
-                            done,pending=_wait_with_heartbeat(pending, SessionLocal)
+                            done,pending=_wait_with_heartbeat(pending, SessionLocal, started, owners)
                             for finished in done: finished.result()
                         if _stop.is_set(): break
-                        pending.add(pool.submit(process,key))
+                        future=pool.submit(process,key)
+                        pending.add(future); started[future]=time.time(); owners[future]=key
                         if _stop.wait(2): break
                     while pending:
-                        done,pending=_wait_with_heartbeat(pending, SessionLocal)
+                        done,pending=_wait_with_heartbeat(pending, SessionLocal, started, owners)
                         for future in done: future.result()
+                finally:
+                    pool.shutdown(wait=False)
                 if jobs:
                     with SessionLocal() as db:
                         _record_round_seconds(db, time.time()-round_started, len(jobs))
@@ -301,12 +318,17 @@ def _supervise():
             pass
 
 
-def _wait_with_heartbeat(pending, session_factory):
+def _wait_with_heartbeat(pending, session_factory, started=None, owners=None):
     """Keep the owning loop observable while bounded collection jobs run.
 
     No supervisor heartbeat: a dead owner must still become stale. Waiting does
     not count as another cycle or a successful quote, and never starts new jobs.
+
+    但「等待期间刷新心跳」有个致命副作用：任务卡死时心跳永远新鲜，界面一直显示
+    「运行中」，谁也不知道采集已经停了。所以这里必须带**每个任务自己的**硬上限：
+    超时就放弃这个任务、把这一行记成 collect_timeout，并让循环继续往下走。
     """
+    started = started if isinstance(started, dict) else {}
     while True:
         done, remaining = wait(pending, timeout=10, return_when=FIRST_COMPLETED)
         with session_factory() as db:
@@ -321,6 +343,56 @@ def _wait_with_heartbeat(pending, session_factory):
                 db.rollback()
         if done:
             return done, remaining
+        now = time.time()
+        stuck = {future for future in remaining if now - started.get(future, now) > JOB_TIMEOUT}
+        if stuck:
+            for future in stuck:
+                future.cancel()
+            _record_stuck(session_factory, stuck, owners or {})
+            return set(), remaining - stuck
+
+
+def _record_stuck(session_factory, futures, owners):
+    """把「超过 JOB_TIMEOUT 还没返回」的任务如实落库，而不是留在 running 里。
+
+    任务线程可能还挂在那里（浏览器卡死时无法可靠中断），但它已经不产生任何结果；
+    继续假装它在跑，界面就永远显示「采集中」，用户只能反复点立即采集。
+    """
+    keys = [owners.get(future) for future in futures]
+    keys = [key for key in keys if key]
+    now = time.time()
+    with session_factory() as db:
+        try:
+            for key in keys:
+                row = db.query(SystemSettings).filter(SystemSettings.key == key).first()
+                if not row:
+                    continue
+                value = json.loads(row.value)
+                if value.get('status') not in ('running', 'queued'):
+                    continue
+                interval = value.get('interval_minutes') if isinstance(value.get('interval_minutes'), int) else 5
+                value.update(
+                    status='error', error_stage='browser', error_code='collect_timeout',
+                    error=f'采集超过 {JOB_TIMEOUT} 秒没有返回（浏览器卡住），本轮已放弃，稍后重试',
+                    last_attempt_at=datetime.now(timezone.utc).isoformat(),
+                    last_attempt_source='cloud_browser',
+                    failures=int(value.get('failures') or 0) + 1,
+                    next_due=now + max(300, interval * 60))
+                row.value = json.dumps(value, ensure_ascii=False)
+            state = db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
+            if state:
+                payload = json.loads(state.value)
+                payload.update(stuck_at=datetime.now(timezone.utc).isoformat(), stuck_jobs=len(keys))
+                state.value = json.dumps(payload, ensure_ascii=False)
+            elif keys:
+                db.add(SystemSettings(key=WORKER_STATE, value=json.dumps(
+                    {'stuck_at': datetime.now(timezone.utc).isoformat(), 'stuck_jobs': len(keys)},
+                    ensure_ascii=False)))
+            db.commit()
+            if keys:
+                print(f'Buybox collection job exceeded {JOB_TIMEOUT}s; abandoned {len(keys)}', flush=True)
+        except Exception:
+            db.rollback()
 
 
 def _record_cycle(db, jobs, paused_by):
@@ -349,6 +421,14 @@ def _record_round_seconds(db, seconds, jobs):
         db.commit()
     except Exception:
         db.rollback()
+
+
+def _age_seconds(stamp, now):
+    """ISO 时间戳到现在的秒数；解析不了就返回 None（界面按「未知」处理）。"""
+    try:
+        return int(now - datetime.fromisoformat(stamp).timestamp())
+    except (TypeError, ValueError):
+        return None
 
 
 def loop_status(db, store=DEFAULT_STORE_ID):
@@ -386,6 +466,12 @@ def loop_status(db, store=DEFAULT_STORE_ID):
         'error': len([m for m in enabled if m.get('status')=='error']),
         'interval_minutes': max(set(intervals),key=intervals.count) if intervals else None,
         'next_due_in': int(min(dues)-now) if dues else None,
+        # 上一轮到现在多久了。心跳只能证明「线程还在等」，不能证明「循环在转」：
+        # 任务卡死时心跳照样新鲜。界面拿这个数和间隔比，才知道是排期排不下还是真停了。
+        'cycle_age_seconds': _age_seconds(state.get('last_cycle_at'), now),
+        # 最近一次放弃卡死任务的时间和个数。>0 说明采集环境出过问题，要提示重启。
+        'stuck_at': state.get('stuck_at'),
+        'stuck_jobs': state.get('stuck_jobs') or 0,
         # 上一轮实测耗时 + 设定间隔：两者一比就知道「延迟」是故障还是排期排不下。
         'round_seconds': state.get('round_seconds'),
         'round_jobs': state.get('round_jobs'),

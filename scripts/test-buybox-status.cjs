@@ -124,6 +124,18 @@ async function fleetScenario(rowsFixture, inspect) {
     check(!strip.classList.contains('tone-danger'), 'handover is not styled as an error');
   });
   loopFixture = { ...loopFixture, paused_by: null };
+  // 心跳新鲜 ≠ 循环在转。任务卡死时 alive_at 每 10 秒刷新一次，界面永远显示
+  // 「运行中」——线上 2026-10-20 就是这么停了 17 分钟没人发现。只有「上一轮
+  // 到现在多久」能揭穿它，所以这条必须单独断言。
+  loopFixture = { ...loopFixture, next_due_in: 60, due_now: 0, interval_minutes: 5, cycle_age_seconds: 900 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('采集循环卡住了'), 'a frozen cycle is called out even while the heartbeat is fresh');
+    check(strip.classList.contains('tone-danger'), 'a frozen cycle uses the danger tone');
+    check(strip.textContent.includes('15 分钟没开新一轮'), 'how long it has been stuck is stated, not just "stuck"');
+    check(strip.textContent.includes('重启服务'), 'the copy says what to do about a wedged browser');
+  });
+  loopFixture = { ...loopFixture, cycle_age_seconds: 30 };
   // 逾期必须说逾期。一直显示"马上开始"会把"循环跟不上"藏起来，
   // 而这恰恰是最需要人介入的时刻。
   loopFixture = { ...loopFixture, next_due_in: -400, due_now: 3 };

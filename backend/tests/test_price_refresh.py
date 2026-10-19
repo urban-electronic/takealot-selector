@@ -111,3 +111,39 @@ def test_multi_sku_row_keeps_page_image_without_guessing_a_variant(db, monkeypat
     p = db.get(Product, 'p'); p.sku = 'sku1 sku2'; db.commit()
     result = asyncio.run(refresh_price('p', db, 'default-store', 'details'))
     assert result['product_image_url'] == black
+
+
+def test_seller_refresh_says_why_it_failed_instead_of_a_generic_message(db, monkeypatch):
+    """失败原因必须说出来。原来一律「暂时无法读取」，用户只能反复点重试。
+
+    线上 2026-10-20 就卡在这里：本店报价和官网售价都失败，两条提示一模一样，
+    谁都看不出是密钥失效、被限流，还是代码报错。
+    """
+    import services.takealot_seller_api as service
+    monkeypatch.setattr(service, 'configured_key', lambda db: 'configured')
+    def blocked(url, key):
+        raise ValueError('卖家接口暂时不可用，已暂停请求，请稍后再试')
+    monkeypatch.setattr(service, 'seller_product', blocked)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(refresh_price('p', db, 'default-store', 'seller'))
+    assert exc.value.status_code == 503
+    assert '暂停请求' in exc.value.detail and '原售价保留' in exc.value.detail
+
+
+def test_official_refresh_names_the_failure_class(db, monkeypatch):
+    """抓取层抛异常时，至少要给出异常类型；原来只有一句「暂时无法读取」。"""
+    import services.takealot_scraper as scraper
+    async def boom(url):
+        raise RuntimeError('browser wedged')
+    monkeypatch.setattr(scraper, 'scrape_product', boom)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(refresh_price('p', db, 'default-store', 'official'))
+    assert exc.value.status_code == 502
+    assert 'RuntimeError' in exc.value.detail and '原售价保留' in exc.value.detail
+
+
+def test_read_reason_maps_runtime_gaps_without_leaking_details():
+    from api.product_routes import _read_reason
+    assert '部署' in _read_reason(ModuleNotFoundError('No module named curl_cffi'))
+    assert '超时' in _read_reason(asyncio.TimeoutError())
+    assert _read_reason(RuntimeError('boom')) == '内部错误 RuntimeError'
