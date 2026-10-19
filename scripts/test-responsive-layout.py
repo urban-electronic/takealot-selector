@@ -1,8 +1,13 @@
 """Real Chromium layout smoke; isolated fixture API, never touches production."""
 import argparse
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+# 约翰内斯堡全年 UTC+2、无夏令时，所以这里不用 zoneinfo（Windows 上要额外装 tzdata）。
+# 调价页的「今日改价 N/M」按平台所在时区切天，fixture 必须给出当天日期才会渲染这个计数。
+JNB_TODAY = (datetime.now(timezone.utc) + timedelta(hours=2)).date().isoformat()
 
 BASE = 'http://127.0.0.1:5173'
 PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳包 / Travel storage bag with a long product title', chinese_product_name='收纳包', sku='TEST-001', selection_status='数据待补充', product_image_url=None, product_image_path=None, takealot_url='https://catalog.example.invalid/product/this-is-a-deliberately-long-product-link-for-layout-validation', recorded_at='2026-10-15', purchase_quantity=1, fee_category_confirmed=False, is_archived=False)
@@ -12,7 +17,15 @@ for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny',
 STORE = dict(id='default-store', name='自营店铺', platform='Takealot', status='active', owner_name='', sync_method='manual', sync_interval_minutes=60, external_store_ref='', allow_negative_inventory_shipments=False, last_synced_at=None)
 PROCUREMENT = dict(id='fixture-record', product_id=PRODUCT['id'], product_no='1', product_name=PRODUCT['product_name'], recorded_at='2026-10-15', quantity=2, unit_price_cny=10, total_price_cny=20, status='in_transit', notes='', shipping_cost_cny=0)
 PACK = dict(sku='TEST-001', name='收纳包', name_zh='收纳包', name_en='Travel storage bag', image_file='', default_count=1, material='织物', electric='否', magnetic='否', unit='个', weight='0.2', brand='', battery='')
-RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last_result='未启动')
+RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last_result='未启动',
+            max_daily_changes=10, today_changes=4, change_day=JNB_TODAY,
+            # 决策卡片和「今日改价」都只从 rule.plan 渲染。没有 plan 时这一整块不出现，
+            # 审计照样报「0 处问题」——等于这一屏从没被量过。这里给一份真实形状的
+            # 决策（最长的原因文案 + 紧张档 + 剔除异常报价 + 配额计数），把卡片撑开。
+            plan=dict(regime='compete', current=269, floor=200, ceiling=320, cheapest=255, gap_pct=5.2,
+                      live_count=3, dark_count=1, sole_seller=False, pressure='tight', cover_days=12.4,
+                      outliers=2, confidence='high', risk='high',
+                      reason='3 个竞品有现货，最低 R 255；本店不在持位，按一次最多降 15% 走一步：269 → 255，够不着就分几轮走。库存紧张（约 12 天）时不跟降。'))
 PRICING = dict(product_id=PRODUCT['id'], offer_id='test-offer', sku='TEST-001', name=PRODUCT['product_name'], group='未分类', stock=10, price=269, suggested_min=200, rule=RULE, monitor=dict(status='error', enabled=False, interval_minutes=5, error_code='site_challenge', error='网站要求本人验证', last_success_at=None))
 PRICING['monitor'].update(buybox_price=269,last_success_at='2026-10-15T14:00:00Z',price_ownership=dict(state='matched',own_price=269,own_price_source='official_live',own_price_asof='2026-10-15T14:00:01Z',identity_verified=False))
 DATA = {
@@ -146,6 +159,24 @@ def main():
                     if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: more panel causes page overflow')
                     page.get_by_role('button',name='收起',exact=True).click()
                     if page.locator('.actions-more-panel').count(): failures.append(f'{width}: more panel did not collapse')
+                    # 每行的「详情」默认收起，里面装着决策卡片、诊断、持位依据。
+                    # 不点开就等于这些内容在任何宽度下都没被量过；而它恰恰是最长的一块
+                    # （长原因文案 + 8 个 chip），窄屏最容易挤爆的就是这里。
+                    row=page.locator('.row-details').first
+                    row.locator('summary').click()
+                    card=row.locator('.decision-card')
+                    if not card.is_visible(): failures.append(f'{width}: decision card not rendered after opening details')
+                    else:
+                        box=card.bounding_box()
+                        if box['height']<40: failures.append(f'{width}: decision card collapsed {box}')
+                        if card.evaluate('e=>e.scrollWidth>e.clientWidth+1'): failures.append(f'{width}: decision card content overflows')
+                        if row.evaluate('e=>e.scrollWidth>e.clientWidth+1'): failures.append(f'{width}: row details content overflows')
+                        for chip in card.locator('span').all():
+                            b=chip.bounding_box()
+                            if b and (b['x']<box['x']-1 or b['x']+b['width']>box['x']+box['width']+1): failures.append(f'{width}: decision chip outside card {b}')
+                    if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: opened details causes page overflow')
+                    row.locator('summary').click()
+                    if card.is_visible(): failures.append(f'{width}: details did not collapse')
                 if args.screenshots and (path in ('/','/auto-pricing','/packing') and width in (1440,390)):
                     page.screenshot(path=str(Path(args.screenshots)/((path.strip('/').replace('/','-') or 'home')+f'-{width}.png')))
         browser.close()

@@ -561,3 +561,31 @@ WorkBuddy；基线 89e1a92213。`0b395e8` 把 8 个次要动作收进默认收�
 改动：`/auto-pricing` 在 1280/390/320 三个视口下点开「更多」，断言面板本身不越界、`scrollWidth` 不溢出、面板内每个 `button/input/select` 都在视口内、整页不因此产生横向滚动，最后点「收起」并确认面板真的消失。判据是新增的，没有放宽任何既有断言。
 
 复测：全量审计 99 个「宽度×页面」组合 0 处失败、0 个未声明接口、0 个 page error；反向探针——给 `.actions-more-panel` 临时加 `min-width:2000px` 后，1280/390/320 三档全部报 `more panel clipped` 并退出码 1，探针已还原（`src/index.css` 无残留）。selfcheck 25/25 全绿（209.2s）。
+
+### AUDIT-CONTRAST-01 对比度审计真正接入门禁（2026-10-20）
+
+WorkBuddy；基线 3e59a00eee。`scripts/ui_contrast_audit.py` 一直在仓库里，注释写着「低对比均退出非0」，但**没有任何门禁执行过它**：`scripts/test-ui-audit-safety.py` 用假浏览器跑的是它的失败路径（`FakeBrowser.goto` 直接抛错、`evaluate` 恒返回 `lowContrastCount: 0`），验证的是「审计会报错、拦截器不碰生产」，量出来的全是桩数据。结果是真实页面的对比度从建库到现在一次都没量过，而 selfcheck 的结论仍然写着「视觉一致性通过」——和「审计静默跳过却报全部通过」是同一类假绿，只是这次连「跳过」都没显示。
+
+改动：新增 `scripts/test-contrast-audit.py`，起本机 Vite（127.0.0.1:5183，`--strictPort` 避免端口漂移后量到别的服务）、把 `OUT` 指到临时目录（不往仓库里留未跟踪文件），再以 `runpy` 调审计本体的 `main()`。判据一个字没改：未测到页面、任何请求被拦、任何一处低对比文字都算失败。`scripts/test-*.py` 由 selfcheck 自动纳入，因此不需要改 `package.json` 或 CI 清单。
+
+复现（不碰生产）：给 `src/index.css` 末尾加 `.operations-workspace .data-table small.quote-sub{color:#f2f4f6}`，旧状态下没有任何套件会红；新套件在 `/auto-pricing` 的 1366/768/390 三档各报 1 处低对比并以 `RuntimeError: 视觉审计未通过` 退出 1，探针已还原。
+
+复测：新套件 30 个「路由×宽度」面全部测到、0 处低对比、0 个被拦请求、0 个 page error，用时 20.6s；全量 selfcheck 26 步全绿（230.2s）。
+
+### AUDIT-DETAIL-01 调价页「详情」里的决策卡片纳入版式审计（2026-10-20）
+
+WorkBuddy；基线 3e59a00eee。`/auto-pricing` 每行的「详情」默认收起，决策卡片（regime、把握、风险、底价、上限、对手最低、库存压力、剔除异常报价、今日改价、原因长文案）全在里面。版式审计只渲染页面、不点开关，所以这块在任何宽度下都没被量过——而它恰恰是这一屏最长的一块：10 个 chip 加一段长中文原因，窄屏最容易挤爆。更隐蔽的是 fixture 的 `rule` 里根本没有 `plan`，就算点开也只会渲染空卡片，审计照样报「0 处问题」。这与 AUDIT-PANEL-01（「更多」面板）是同一类漏测。
+
+改动：① `test-responsive-layout.py` 的 `RULE` fixture 补一份真实形状的 `plan`（含 `pressure='tight'`、`cover_days`、`outliers=2`、长原因文案）和「今日改价」计数（`change_day` 按约翰内斯堡当天算，UTC+2 无夏令时，不用 zoneinfo 避免 Windows 上缺 tzdata）；② 审计在 1280/390/320 三档点开首行「详情」，断言卡片确实渲染且高度不小于 40px、卡片内容不溢出自身（`scrollWidth<=clientWidth+1`）、`details` 容器不溢出、每个 chip 都落在卡片横向范围内、打开后整页不产生横向滚动，最后收起并确认卡片消失。判据是新增的，没有放宽任何既有断言；表格本身横向滚动的既有豁免保持不变，所以断言的是「内容在卡片内换行」而不是「卡片不超过视口」。
+
+复现：给 `.pricing-table .decision-card` 临时加 `min-width:2000px`，三档全部报 `row details content overflows`（探针已还原）。
+
+复测：全量版式审计 99 个「宽度×页面」组合 0 失败、0 个未声明接口、0 个 page error；`test-text-overlap.py` 用同一份 `DATA`，同步 0 处重叠；全量 selfcheck 26 步全绿。
+
+### THROTTLE-ONE-01「被网站挡住」只保留一份判据（2026-10-20）
+
+WorkBuddy；基线 3e59a00eee。同一个错误码集合（`site_challenge` / `rate_limited` / `http_forbidden`）在前端有两份字面量：`utils/buyboxStatus.ts` 的 `THROTTLED`（决定 `fleet.blocked` 和建议间隔）与 `AutoPricing.tsx` 里 `retryFailed` 用的 `BLOCKED`（决定「重试」是清 `next_due` 立刻再打一次，还是只调间隔）。两份一旦漂开，就会出现状态条劝「把间隔调到 120 分钟」、同一屏的重试按钮却在清退避立刻重试——正是那段注释在防的事，也是后端 `buybox_monitor.THROTTLED_CODES` 存在的理由。
+
+改动：`utils/buyboxStatus.ts` 导出 `isThrottled(code)`，`describeFleet` 内部两处判断改用它；`AutoPricing.tsx` 删掉本地 `BLOCKED` 改为导入同一个函数。行为不变（集合内容一字未动），只是把「谁算被挡住」收敛成一处。
+
+复测：`test-buybox-status.cjs` 151 → 159 断言，新增 8 条钉住「三个码必须落在 blocked、绝不落在 retryable」「`collector_unavailable` 可自愈所以不算 blocked」「错误码缺失不算 blocked」；把集合里的 `http_forbidden` 临时改成 `http_403` 后新断言转红（已还原）。`tsc --noEmit` 通过（`noUnusedLocals` 开）；未动后端，pytest 381 passed / 1 skipped。

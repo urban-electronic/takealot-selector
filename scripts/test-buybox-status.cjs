@@ -484,5 +484,18 @@ async function fleetScenario(rowsFixture, inspect) {
     globalThis.setInterval = nativeSetInterval;
     globalThis.clearInterval = nativeClearInterval;
   }
+  // 「被网站挡住」只能有一份判据：状态条的 blocked/建议间隔，和「重试」按钮
+  // 决定要不要清 next_due，必须同源。两处各抄一份字面量的话，一边劝「别反复点」、
+  // 一边帮你立刻再打一次，正好是页面正文在劝用户别做的事。
+  const status = localModule('../utils/buyboxStatus');
+  for (const code of ['site_challenge', 'rate_limited', 'http_forbidden']) {
+    check(status.isThrottled(code), `${code} must be treated as throttled`);
+    const fleet = status.describeFleet(
+      [{ ...row({ status: 'error', enabled: true, error_code: code, last_success_at: null, buybox_price: null }) }],
+      { now: Date.now() });
+    check(fleet.blocked === 1 && fleet.retryable === 0, `${code} must land in blocked, never retryable`);
+  }
+  check(!status.isThrottled('collector_unavailable'), 'collector_unavailable self-heals, so it is retryable not blocked');
+  check(!status.isThrottled(undefined), 'a missing error code is never treated as blocked');
   console.log(`PASS ${checks} Buybox page assertions (jsdom, isolated API)`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

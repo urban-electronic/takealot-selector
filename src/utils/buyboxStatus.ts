@@ -523,6 +523,18 @@ export interface FleetView {
 const THROTTLED = new Set(['site_challenge', 'rate_limited', 'http_forbidden']);
 
 /**
+ * 这个错误码是不是「被网站挡住」（只能等 / 加长间隔，不能立刻重试）。
+ *
+ * 后端 `services/buybox_monitor.THROTTLED_CODES` 是同一组码，前端只在这一处判。
+ * 之前调价页自己又抄了一份字面量给「重试」用，两处一旦不一致就会出现
+ * 「状态条劝你把间隔调长、重试按钮却在清 next_due 立刻再打一次」——
+ * 而这恰恰是页面正文在劝用户别做的事。
+ */
+export function isThrottled(code?: string): boolean {
+  return THROTTLED.has(code || '');
+}
+
+/**
  * 页头一句话状态。
  *
  * 之前这里是六行列表，信息全但没人看——用户的原话是「不需要那么多东西显示出来」。
@@ -547,7 +559,7 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const failing = errored.length;
   const refreshing = failedRows.length - failing;
   const blocked = failedRows.filter(
-    r => !hasUsableQuote(r?.monitor) && THROTTLED.has(r?.monitor?.error_code || '')
+    r => !hasUsableQuote(r?.monitor) && isThrottled(r?.monitor?.error_code)
   ).length;
   const retryable = failing - blocked;
   const newest = monitors.reduce((max, m) => {
@@ -569,7 +581,7 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   }
   const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
   const reason = dominant && dominant !== 'unknown' ? errorCopy(dominant).title : '采集未取得报价';
-  const throttled = dominant ? THROTTLED.has(dominant) : false;
+  const throttled = dominant ? isThrottled(dominant) : false;
   const interval = Math.max(1, Number(monitors.find(m => m.interval_minutes)?.interval_minutes) || 5);
   const suggestedInterval = throttled && interval < 120 ? 120 : null;
 

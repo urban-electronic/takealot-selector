@@ -104,6 +104,8 @@ Use existing focused commands as applicable:
 | Inventory interactions | `npm run test:inventory` |
 | Shared visual styles | `npm run check:visual` |
 | Browser audit harness | `npm run test:audit-safety` |
+| Contrast / control-size in a real browser | `scripts/test-contrast-audit.py` |
+| Layout and overflow in a real browser | `scripts/test-responsive-layout.py` |
 | Frontend compilation | `npm run build` |
 
 These commands have different scopes; none proves production business correctness.
@@ -114,6 +116,14 @@ a page that silently degrades to defaults still renders, so a green layout resul
 would certify a screen that was never actually measured. For
 geometry/focus checks capture the rendered page at the affected width and inspect
 console errors. JSDOM cannot certify layout, contrast or real browser focus.
+
+A harness that is never executed is worth nothing: `scripts/test-ui-audit-safety.py`
+drives the contrast audit with a fake browser, which proves the audit fails loudly
+but measures stub numbers. `scripts/test-contrast-audit.py` is the real run; keep
+it in the gate. Collapsed UI must be opened before measuring it — `details`
+elements such as the per-row decision card render nothing while closed, so a
+fixture without the data behind them (here `rule.plan`) measures an empty box and
+still reports a clean result.
 
 Separate four results: code committed, relevant tests passed, intended version
 deployed, real business acceptance. For session-only acceptance, hand off the

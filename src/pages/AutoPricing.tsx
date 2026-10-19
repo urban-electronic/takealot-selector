@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, getImageUrl } from '../remoteApi';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
-import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote } from '../utils/buyboxStatus';
+import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote, isThrottled } from '../utils/buyboxStatus';
 
 /**
  * 44px 商品缩略图。加载失败就留一个方块占位：
@@ -147,13 +147,14 @@ export default function AutoPricing() {
   //   被网站验证/限流挡住 → 只改间隔，不清 next_due。界面正文已经在劝用户
   //   「反复点立即采集没有用」，按钮自己就不能偷偷再点一次。
   // backend/api/pricing_routes.py 的 keep_backoff 就是为这件事加的。
-  const BLOCKED = ['site_challenge', 'rate_limited', 'http_forbidden'];
+  // 「被挡住」的判据只从 utils/buyboxStatus 取：这里再抄一份字面量的话，
+  // 状态条按 A 判、重试按钮按 B 判，两边一漂就会出现「一边劝你别点、一边帮你点」。
   const retryFailed = async (minutes?: number) => {
     const failed = rows.filter(r => r.monitor?.status === 'error' && r.monitor?.enabled);
     if (!failed.length) return;
     const next = minutes ?? intervalMinutes;
-    const blocked = failed.filter(r => BLOCKED.includes(r.monitor?.error_code));
-    const retryable = failed.filter(r => !BLOCKED.includes(r.monitor?.error_code));
+    const blocked = failed.filter(r => isThrottled(r.monitor?.error_code));
+    const retryable = failed.filter(r => !isThrottled(r.monitor?.error_code));
     setBusy('retry'); setError('');
     try {
       if (minutes) setIntervalMinutes(minutes);
