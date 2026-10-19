@@ -445,3 +445,17 @@ WorkBuddy，P1；基线 4472a5e3e4。`PUT /api/automatic-pricing/{product}/{offe
 改动：后端改用 `data.model_dump(exclude_unset=True)` 得到 patch，按 `{**Rule().model_dump(), **old, **patch}` 合并（新规则仍有完整默认值，老规则只覆盖真的传上来的字段），校验与 `minimum` 一律基于合并后的值；前端删掉三个硬编码参数，只提交界面显示且能改的字段。顺带把「最低价 > 最高价」的校验从「只比本次请求」改成「比合并后的最终值」，跨请求也能拦住。
 
 复测：`tests/test_pricing_routes.py` 11 passed（新增 2 例：未提交参数保持原值、新规则仍拿到全部默认值）；后端全量 369 passed / 1 skipped；selfcheck 25/25 全绿（223.6s）。未改任何参数默认值、未动数据模型、无生产写入、未触发真实采集或改价。
+
+### PACK-RENAME-01 改 SKU 不得清空人工资料（2026-10-19）
+
+WorkBuddy；基线 e4b22a426c。`POST /api/packing/product` 带 `old_sku` 时走的是「删旧行 + 建新行」，新行的 `image_file` 一律是空串，`template_row`/`default_count` 落到 `None`/`1`，`variant_group`/`variant_label` 也回到空、`is_primary_variant` 回到 `True`。远程装箱单页（`backend/packing_ui/index.html`）的编辑框每次都带 `old_sku`，所以只是把 SKU 从 `OLD-1` 改成 `NEW-1`，已上传的图片、排好的模板行、默认件数和变体归属会一起消失，且没有任何提示。
+
+改名是同一行的主键变更，不是新建。改成先用旧行的 `variant_group`/`variant_label`/`is_primary_variant` 建新行，再把 `old` 传给 `_apply_values()`（图片、模板行、默认件数本来就走 `old` 兜底），最后删旧行。目标 SKU 已被占用时仍然 400 且两行都不动。
+
+### PACK-DUP-01 「N 条 SKU 重复」不再恒为 0（2026-10-19）
+
+WorkBuddy；基线 e4b22a426c。`sync-from-products` 的响应里有 `duplicate_sku`，前端装箱单页据此提示「另有 M 条 SKU 重复，无法作为独立装箱产品」，但后端只声明、从未累加，`M` 永远是 0——同一个 SKU 被两个选品产品占用时，用户看不到这条提示。
+
+按「一个 SKU 被第二个产品再次认领」计数（去重后返回个数，重复同步结果稳定），不动既有的 `seen` 去重与行刷新逻辑。
+
+复测：新增 `tests/test_packing_rename_and_duplicates.py` 4 例（改名保图/改名撞车回滚/重复计数/无重复为 0），与既有三个 packing 测试文件共 15 passed；selfcheck 全绿。未改调价参数、未动数据模型、无生产写入。

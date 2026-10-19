@@ -3,18 +3,22 @@
 云端装箱单 API 路由
 =================
 
-对齐本地版 kunjia_analyze（server.py + app.py）的接口语义，共 10 个接口：
+对齐本地版 kunjia_analyze（server.py + app.py）的接口语义，共 14 个接口：
 
-1.  GET    /api/packing/products            产品列表（按 sku 排序）
+1.  GET    /api/packing/products            产品列表（按 sku 排序，带选品库图片回退）
 2.  POST   /api/packing/products            批量 UPSERT（按 sku 幂等）
-3.  POST   /api/packing/product             单产品 UPSERT（支持 old_sku 改名）
+3.  POST   /api/packing/product             单产品 UPSERT（支持 old_sku 改名，保留图片/模板行）
 4.  POST   /api/packing/delete              删除产品
-5.  POST   /api/packing/image               base64 上传图片（SHA256 命名 + 魔数校验）/ 移除
-6.  GET    /api/packing/images/{filename}   图片访问
-7.  POST   /api/packing/export              生成装箱单 Excel（DISPIMG 图片）
-8.  POST   /api/packing/import              迁移导入（zip：packing_migration.json + images，幂等）
-9.  GET    /api/packing/backup              全量备份 zip（JSON + 图片）
-10. GET    /packing-ui                      远程版前端静态页
+5.  POST   /api/packing/sync-from-products  选品库轻量同步（幂等、并发安全）
+6.  POST   /api/packing/import-from-products 按产品 id 导入（抓图转存 SHA256）
+7.  POST   /api/packing/sync-images-from-products 按 SKU 补图（只补空图）
+8.  POST   /api/packing/sync-variants-from-takealot 官网结构化变体匹配
+9.  POST   /api/packing/image               base64 上传图片（SHA256 命名 + 魔数校验）/ 移除
+10. GET    /api/packing/images/{filename}   图片访问
+11. POST   /api/packing/export              生成装箱单 Excel（DISPIMG 图片）
+12. POST   /api/packing/import              迁移导入（zip：packing_migration.json + images，幂等）
+13. GET    /api/packing/backup              全量备份 zip（JSON + 图片）
+14. GET    /packing-ui                      远程版前端静态页
 
 鉴权：复用 main.py 的 X-API-Key 中间件（所有 /api 前缀接口），无需重复实现。
 """
@@ -166,9 +170,19 @@ def _upsert(db: Session, data: ProductIn) -> PackingProduct:
     if data.sku != old_sku and _find(db, data.sku):
         raise ValueError('SKU 已存在')
     if old and old_sku != data.sku:
+        # 改名不是新建：图片、模板行、默认件数和变体归属都是人工维护的资料，
+        # 旧实现删旧建新会把它们静默清空（远程装箱单页每次编辑都带 old_sku）。
+        renamed = PackingProduct(
+            sku=data.sku,
+            variant_group=old.variant_group or '',
+            variant_label=old.variant_label or '',
+            is_primary_variant=old.is_primary_variant,
+        )
+        _apply_values(renamed, data, old)
         db.delete(old)
         db.flush()
-        old = None
+        db.add(renamed)
+        return renamed
     p = _find(db, data.sku)
     if p is None:
         p = PackingProduct(sku=data.sku)
@@ -196,18 +210,27 @@ def _parse_migration_zip(content: bytes) -> tuple:
 
 # ---- 1. GET /api/packing/products ----
 
+def _catalog_images_by_sku(products):
+    """A group cover identifies its first SKU only; exact SKU records take priority."""
+    images = {}
+    for product in products:
+        skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
+        image_url = (product.product_image_url or '').strip()
+        if skus and image_url:
+            images.setdefault(skus[0], image_url)
+    for product in products:
+        skus = [x for x in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if x]
+        if len(skus) == 1 and product.product_image_url:
+            images[skus[0]] = product.product_image_url.strip()
+    return images
+
 @router.get('/products')
 def list_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     store_products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all()
     store_skus = {sku for product in store_products for sku in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if sku}
     rows = db.query(PackingProduct).filter(PackingProduct.sku.in_(store_skus)).order_by(PackingProduct.sku).all() if store_skus else []
     rows.sort(key=lambda p: (p.variant_group or p.sku, 0 if p.is_primary_variant else 1, p.sku))
-    source_images = {}
-    for raw_sku, image_url in db.query(Product.sku, Product.product_image_url).filter(Product.store_id == store_id, Product.sku.isnot(None)).all():
-        if raw_sku and image_url:
-            for sku in re.split(r'[\s,，;；]+', raw_sku.strip()):
-                if sku:
-                    source_images[sku] = image_url
+    source_images = _catalog_images_by_sku(store_products)
     result = []
     for p in rows:
         item = public(p)
@@ -260,8 +283,12 @@ def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(ge
 def _sync_from_products(db: Session, store_id: str):
     products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).order_by(Product.created_at.asc()).all()
     existing = {sku for (sku,) in db.query(PackingProduct.sku).all()}
-    imported = skipped_no_sku = duplicate_sku = 0
+    imported = skipped_no_sku = 0
     seen = set(existing)
+    # 一个 SKU 被第二个产品再次认领 = 装箱单无法把它当成独立产品，前端会提示
+    # 「N 条 SKU 重复」。旧实现只声明并回传 0，提示里的数字永远是 0（假通过）。
+    claimed = {}       # sku -> 首个认领它的产品 id
+    duplicates = set()  # 被后续产品重复认领的 SKU
     for prod in products:
         raw_sku = (prod.sku or '').strip()
         sku_variants = [x for x in re.split(r'[\s,，;；]+', raw_sku) if x]
@@ -278,6 +305,8 @@ def _sync_from_products(db: Session, store_id: str):
         electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
         legacy = _find(db, raw_sku) if len(sku_variants) > 1 else None
         for idx, sku in enumerate(sku_variants):
+            if claimed.setdefault(sku, prod.id) != prod.id:
+                duplicates.add(sku)
             current = _find(db, sku) if sku in seen else None
             if labels_align:
                 variant_name = zh_variants[idx]
@@ -329,7 +358,7 @@ def _sync_from_products(db: Session, store_id: str):
         'packing_products': len(seen),
         'imported': imported,
         'skipped_no_sku': skipped_no_sku,
-        'duplicate_sku': duplicate_sku,
+        'duplicate_sku': len(duplicates),
     }
 
 
@@ -426,9 +455,10 @@ def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str)
         return
     if source.actual_weight_kg:
         product.weight = str(source.actual_weight_kg)
-    if not product.image_file and (source.product_image_url or '').strip():
+    image_url = _catalog_images_by_sku([source]).get(product.sku, '')
+    if not product.image_file and image_url:
         try:
-            product.image_file = _fetch_takealot_image(source.product_image_url.strip())
+            product.image_file = _fetch_takealot_image(image_url)
         except Exception:
             # 单张图片抓取失败时保留空图，避免阻断整份装箱单。
             pass
@@ -504,18 +534,11 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db),
     )
     if limit > 0:
         pending = pending[:limit]
+    source_images = _catalog_images_by_sku(db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all())
     updated = 0
     failed = []
     for p in pending:
-        prod = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku == p.sku).first()
-        if prod is None:
-            for candidate in db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.sku.isnot(None)).all():
-                if p.sku in [x for x in re.split(r'[\s,，;；]+', (candidate.sku or '').strip()) if x]:
-                    prod = candidate
-                    break
-        if prod is None:
-            continue
-        image_url = (prod.product_image_url or '').strip()
+        image_url = source_images.get(p.sku, '')
         if not image_url:
             continue
         try:
