@@ -21,6 +21,9 @@ _thread = None
 # 降价原来只有利润底价兜着——一次读到离谱报价就能把价格砍到地板，而底价是
 # 「20% 毛利」，对一件 R 1999 的货就是砍到 R 800 也叫合规。
 DEFAULT_MAX_DROP_PCT = 15
+# 累计涨幅上限。原来这个 20 只在 _raise_ceiling() 里写一次、在决策理由里又硬编码
+# 一次，两处各写各的；改上限时漏掉一处，用户看到的理由就和实际闸门对不上。
+DEFAULT_RAISE_CEILING_PCT = 20
 # 可售天数比空运周期（约 21 天）还短就算库存紧张。此时降价是纯亏：库存是固定的，
 # 便宜卖只会让同样的货少赚钱，还会把断货提前。这是算术，不是保守。
 DEFAULT_TIGHT_COVER_DAYS = 21
@@ -91,10 +94,6 @@ def decide(current, stock, rule, snapshot):
     return result['target'], result['reason']
 
 
-REGIMES = {'off': '无库存', 'blind': '证据不足', 'compete': '抢位让利',
-           'climb': '守位提价', 'scarcity': '独家提价', 'hold': '保持现价'}
-
-
 def _pools(raw_offers, typed):
     """把竞品分成「能抢走 Buybox 的」和「抢不走的」。
 
@@ -123,7 +122,7 @@ def _winnable(pool, rule):
 
 def _raise_ceiling(rule, current):
     """提价的天花板：人工上限，与「参考价 + 累计涨幅」取小。"""
-    pct = rule.get('raise_ceiling_pct', 20)
+    pct = rule.get('raise_ceiling_pct', DEFAULT_RAISE_CEILING_PCT)
     reference = rule.get('reference_price') or current
     return min(rule.get('max_price') or math.inf, math.floor(reference * (1 + pct / 100.0)))
 
@@ -253,7 +252,8 @@ def plan(current, stock, rule, snapshot):
             return p
         p.update(regime='scarcity', target=target, trial='raise',
                  reason=('本店是唯一在售，' if p['sole_seller'] else '确认竞品非现货，')
-                        + f'智能试涨到 R {int(target)}（每次约{_raise_pct(rule, pressure):g}%，累计不超过参考价20%）')
+                        + f'智能试涨到 R {int(target)}（每次约{_raise_pct(rule, pressure):g}%，'
+                        + f'累计不超过参考价{rule.get("raise_ceiling_pct", DEFAULT_RAISE_CEILING_PCT):g}%）')
         return p
     # 抢位：只降不升。降价就是让利，所以下限必须由利润底价来守。
     if pressure == 'tight':
