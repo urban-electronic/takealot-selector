@@ -13,7 +13,7 @@ import urllib.request
 
 API = "https://backboard.railway.app/graphql/v2"
 LIVE = "https://takealot-selector-production.up.railway.app/"
-TARGET_PREFIX = "ecc779740557"  # main 上包含多市场参考价的提交
+OLD_BUILD = "3ab844f4079d"  # 2026-10-20 18:41 的旧版本，没有多市场参考价
 SERVICE_ID = "a4a7215e-5eeb-4f6f-ad3d-8408df66f2d1"
 ENVIRONMENT_ID = "01353cb9-9318-4c1e-b1b2-7c4fe9030f50"
 TOKEN = os.environ.get("RAILWAY_TOKEN", "")
@@ -51,8 +51,8 @@ def main():
         return 1
     cur = live_build()
     print("线上 build =", cur)
-    if cur.startswith(TARGET_PREFIX):
-        print("已是最新版本，跳过")
+    if cur and not cur.startswith(OLD_BUILD):
+        print("线上已不是旧版本，无需部署")
         return 0
     res = gql(MUT, {"s": SERVICE_ID, "e": ENVIRONMENT_ID})
     print("触发结果:", json.dumps(res, ensure_ascii=False)[:400])
@@ -67,7 +67,7 @@ def main():
         time.sleep(20)
         cur = live_build()
         print("  build =", cur)
-        if cur.startswith(TARGET_PREFIX):
+        if cur and not cur.startswith(OLD_BUILD):
             print("部署成功:", cur)
             return 0
     print("等待超时，构建可能仍在进行")
