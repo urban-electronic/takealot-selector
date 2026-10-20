@@ -110,6 +110,7 @@ Use existing focused commands as applicable:
 | Browser audit harness | `npm run test:audit-safety` |
 | Contrast / control-size in a real browser | `scripts/test-contrast-audit.py` |
 | Layout and overflow in a real browser | `scripts/test-responsive-layout.py` |
+| Frontend HTTP calls (path + verb) | `scripts/test-api-contract.cjs` |
 | Frontend compilation | `npm run build` |
 
 These commands have different scopes; none proves production business correctness.
@@ -134,6 +135,17 @@ part of the same rule: a routed page that is missing from an audit's route list 
 not "clean", it is unmeasured — the product detail page was absent from the
 contrast run until it was added, while the layout and text-overlap audits already
 covered it.
+
+The same "measured vs. assumed" rule applies to the HTTP contract between
+`src/remoteApi.ts` and `backend/`: a path and a verb are plain strings, so `tsc`
+cannot see a typo, and a 404/405 looks exactly like any other rejected call. Two
+such defects shipped and stayed invisible because the call sites swallowed the
+error (`/api/translate` instead of `/api/products/translate`, and `PUT` on a route
+that only registers `PATCH`). `scripts/test-api-contract.cjs` now parses the
+backend route table and every `request()` call in `remoteApi.ts` and compares
+verb + path; both ends of the parser have a minimum count so a parsing regression
+fails instead of silently comparing zero entries. A call site that needs a
+parameter is matched segment-by-segment, so a missing or extra segment still fails.
 
 Separate four results: code committed, relevant tests passed, intended version
 deployed, real business acceptance. For session-only acceptance, hand off the

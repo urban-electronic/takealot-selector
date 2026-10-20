@@ -716,3 +716,18 @@ WorkBuddy；基线 e47203c70e。
 - `src/api.ts` 与 `src/remoteApi.ts` 各有一个 `updateFeeMappingRule()`，两者都零调用（设置页只 `createFeeMappingRule`，产品新建页与设置页只 `getFeeMappingRules`）。其中 `remoteApi` 版本用 `method: 'PUT'` 打 `/api/fee-mapping-rules/{id}`，而 `backend/api/category_routes.py` 注册的是 `@router.patch`——真有人调用会拿到 405。删掉比留一个「看起来能用、其实动词错」的封装更安全。
 
 复测：`tsc --noEmit` 通过（`noUnusedLocals` 开，证明没有残留引用）；全量 selfcheck 全绿；`test-page-import.mjs`、`test-buybox-copy.cjs` 等前端套件全过。
+
+### API-CONTRACT-01 网页版两个接口打错动词/路径，功能静默失效（2026-10-20）
+
+WorkBuddy；基线 400647fc11。两条都是 `src/remoteApi.ts` 与后端注册表不一致，都只在**网页版**复现（Tauri 版走 `src/api.ts` 的 `invoke`，根本不发 HTTP），而且都不会被 `tsc` 发现——路径和动词都是字符串：
+
+- `updateFeeCategory()` 用 `PUT /api/fee-categories/{id}`，而 `backend/api/category_routes.py` 只注册了 `@router.patch('/fee-categories/{category_id}')`。设置页的「启用/停用费率分类」和「修改成功率」都走这里（`Settings.tsx` 的 `handleToggleCategory` / `handleUpdateFeeRate`），网页版点一次就报 405，且界面只显示一句 `405 Method Not Allowed`。
+- `translateProductName()` 打 `/api/translate`，而翻译接口挂在产品路由下（`product_routes` 前缀 `/api/products` + `@router.post('/translate')`），完整路径是 `/api/products/translate`。网页版必 404；两个调用点（`ProductCreate.tsx` 的页面导入与 `handleScrape`）都把异常吞掉了（`.catch(() => {})` 与空 `catch`），于是表现为「自动翻译中文品名在网页版从来不生效」，既没有提示也没有日志。
+
+改动：只改 `src/remoteApi.ts` 两处——动词 `PUT` → `PATCH`，路径补上 `/products` 段。没有动后端路由，也没有放宽任何判据（后端本来就只有 PATCH 和 `/api/products/translate`，前端是错的这一侧）。
+
+防回归：新增 `scripts/test-api-contract.cjs`，静态解析 `backend/api/*.py` + `backend/main.py` 的路由表与 `remoteApi.ts` 里每一条 `request()`，逐条核对「动词 + 路径」；带参数的调用按段匹配（少一段、多一段、动词错都会红）；两端各设解析条数下限（路由 ≥70、调用 ≥60），解析器失效时失败而不是静默比对 0 条。同类错误此前已出现过一次（`updateFeeMappingRule` 用 PUT 打 PATCH 路由，DEAD-CODE-06 直接删掉了那个封装），这次是把它变成门禁而不是再删一次。
+
+复现：`node scripts/test-api-contract.cjs`。把 `updateFeeCategory` 改回 `method: 'PUT'` → `updateFeeCategory: PUT /api/fee-categories/:p` 转红（已还原）；把 `translateProductName` 改回 `/api/translate` → 同样转红（已还原）。
+
+复测：`test-api-contract.cjs` 10 条断言（91 条路由 / 64 条调用全对齐）；`tsc --noEmit` 通过；全量 selfcheck 28 步全绿（新增套件自动纳入）；未动后端，pytest 随 selfcheck 通过。

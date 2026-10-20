@@ -236,9 +236,15 @@ export const getDashboard = (): Promise<DashboardStats> =>
 export const getFeeCategories = (): Promise<FeeCategory[]> =>
   request<FeeCategory[]>('/api/fee-categories');
 
+// 动词必须与后端一致：backend/api/category_routes.py 注册的是
+// @router.patch('/fee-categories/{category_id}')，没有 PUT。用 PUT 打过去是
+// 405 Method Not Allowed，而设置页的「启用/停用分类」「改成功率」都走这里
+// （src/pages/Settings.tsx 的 handleToggleCategory / handleUpdateFeeRate），
+// 网页版点一次就报一次错，Tauri 版走 api.ts 的 invoke 不受影响——所以只在
+// 网页版复现，很容易被当成「偶发」。
 export const updateFeeCategory = (id: string, data: Partial<FeeCategory>): Promise<FeeCategory> =>
   request<FeeCategory>(`/api/fee-categories/${encodeURIComponent(id)}`, {
-    method: 'PUT',
+    method: 'PATCH',
     body: JSON.stringify(data),
   });
 
@@ -263,8 +269,13 @@ export const updateSettings = (data: Record<string, string>): Promise<string> =>
   });
 
 // Translation
+// 翻译接口挂在产品路由下（backend/api/product_routes.py 的 router 前缀是
+// /api/products，路由是 @router.post('/translate')），完整路径是
+// /api/products/translate。原来这里少了 /products 段，网页版必 404；
+// 两个调用点（ProductCreate.tsx 的页面导入与 handleScrape）都把异常吞掉了，
+// 于是表现为「自动翻译中文品名」在网页版从来不生效，也不报错。
 export const translateProductName = (text: string): Promise<{ chinese_name: string }> =>
-  request<{ chinese_name: string }>('/api/translate', {
+  request<{ chinese_name: string }>('/api/products/translate', {
     method: 'POST',
     body: JSON.stringify({ text }),
   });
