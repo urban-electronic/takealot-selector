@@ -1,0 +1,87 @@
+/**
+ * 多市场参考价：存成一段 JSON 文本挂在 Product.market_prices 上。
+ *
+ * 只做展示与比价参考，不参与利润计算，所以不拆字段、不建表；
+ * 市场集合由这里维护，后端只校验「是对象 + 每个市场有数值 price」。
+ */
+
+export type MarketCode = 'CN' | 'SG' | 'TB';
+
+export interface MarketPriceEntry {
+  price: number;
+  cur?: string;
+  /** 官网 / 淘宝均价 / 手工 */
+  src?: string;
+  /** 采集日期 YYYY-MM-DD */
+  at?: string;
+  url?: string;
+  /** 淘宝均价的样本条数 */
+  n?: number;
+}
+
+export type MarketPrices = Partial<Record<MarketCode, MarketPriceEntry>>;
+
+export const MARKET_ORDER: MarketCode[] = ['CN', 'SG', 'TB'];
+
+export const MARKET_META: Record<MarketCode, { label: string; short: string; symbol: string; cur: string }> = {
+  CN: { label: '中国官网', short: 'CN', symbol: '¥', cur: 'CNY' },
+  SG: { label: '新加坡官网', short: 'SG', symbol: 'S$', cur: 'SGD' },
+  TB: { label: '淘宝均价', short: '淘', symbol: '¥', cur: 'CNY' },
+};
+
+export function parseMarketPrices(raw?: string | null): MarketPrices {
+  if (!raw) return {};
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+    const out: MarketPrices = {};
+    for (const code of MARKET_ORDER) {
+      const item = (obj as Record<string, unknown>)[code];
+      if (item && typeof item === 'object' && Number.isFinite(Number((item as MarketPriceEntry).price))) {
+        out[code] = { ...(item as MarketPriceEntry), price: Number((item as MarketPriceEntry).price) };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function serializeMarketPrices(prices: MarketPrices): string {
+  const out: Record<string, MarketPriceEntry> = {};
+  for (const code of MARKET_ORDER) {
+    const item = prices[code];
+    if (item && Number.isFinite(Number(item.price))) {
+      out[code] = { ...item, price: Number(item.price) };
+    }
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : '';
+}
+
+export function formatMarketPrice(code: MarketCode, entry: MarketPriceEntry): string {
+  const value = Number(entry.price);
+  const text = Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
+  return `${MARKET_META[code].symbol}${text}`;
+}
+
+export function today(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * 比价结论：只用同币种能直接比的两项，避免引入汇率假设。
+ *  - 淘宝 / 中国官网：渠道折扣深度，越大说明淘宝越贵
+ *  - 最低官方价：各官方市场里最低的那个（不同币种不直接比，只做提示）
+ */
+export function marketInsights(prices: MarketPrices): { label: string; value: string }[] {
+  const out: { label: string; value: string }[] = [];
+  const cn = prices.CN?.price;
+  const tb = prices.TB?.price;
+  if (cn && tb && cn > 0) {
+    const ratio = Math.round((tb / cn) * 100);
+    out.push({ label: '淘宝 / 中国官网', value: `${ratio}%` });
+  }
+  return out;
+}

@@ -5,10 +5,11 @@
 from datetime import datetime
 from typing import Optional, List, Literal, Dict, Any
 import asyncio
+import json
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from database import get_db
 from models import Product, SelectionStatus, ScrapeLog
@@ -20,6 +21,29 @@ router = APIRouter(prefix="/api/products", tags=["products"])
 
 
 # --- Pydantic Schemas ---
+
+def _check_market_prices(raw: Optional[str]) -> Optional[str]:
+    """多市场参考价由前端拼成 JSON 文本，写入前挡掉坏数据。
+
+    只做展示与比价参考，不参与任何计算；这里只保证「是对象、每个市场带数值 price」，
+    具体市场集合由前端决定（新增市场不用改后端）。
+    """
+    if not raw:
+        return raw
+    try:
+        obj = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("market_prices 必须是合法 JSON")
+    if not isinstance(obj, dict):
+        raise ValueError("market_prices 必须是 JSON 对象")
+    for code, item in obj.items():
+        if not isinstance(item, dict):
+            raise ValueError(f"market_prices.{code} 必须是对象")
+        price = item.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0:
+            raise ValueError(f"market_prices.{code}.price 必须是非负数值")
+    return raw
+
 
 class ProductCreate(BaseModel):
     takealot_url: Optional[str] = ""
@@ -62,6 +86,13 @@ class ProductCreate(BaseModel):
     stock_remaining: Optional[int] = None
     review_count: Optional[int] = None
     rating_value: Optional[float] = None
+    # 多市场参考价（JSON 文本，见 models.Product.market_prices）
+    market_prices: Optional[str] = ""
+
+    @field_validator("market_prices")
+    @classmethod
+    def _validate_market_prices(cls, v):
+        return _check_market_prices(v)
 
 
 class ProductUpdate(BaseModel):
@@ -105,6 +136,13 @@ class ProductUpdate(BaseModel):
     stock_remaining: Optional[int] = None
     review_count: Optional[int] = None
     rating_value: Optional[float] = None
+    # 多市场参考价（JSON 文本）
+    market_prices: Optional[str] = None
+
+    @field_validator("market_prices")
+    @classmethod
+    def _validate_market_prices(cls, v):
+        return _check_market_prices(v)
 
 
 class ProductOut(BaseModel):
@@ -154,6 +192,8 @@ class ProductOut(BaseModel):
     stock_remaining: Optional[int] = None
     review_count: Optional[int] = None
     rating_value: Optional[float] = None
+    # 多市场参考价（JSON 文本）
+    market_prices: Optional[str] = None
     # Calculated
     volume_cbm: Optional[float] = None
     volumetric_weight_kg: Optional[float] = None
@@ -480,7 +520,7 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
         "manual_total_cost_zar",
     ]
     metadata_fields = {'sku', 'chinese_product_name', 'product_name', 'product_image_url',
-                       'product_image_path', 'takealot_url', 'tsin', 'note'}
+                       'product_image_path', 'takealot_url', 'tsin', 'note', 'market_prices'}
     if not set(update_data).issubset(metadata_fields):
         for mf in manual_fields:
             if mf not in update_data:

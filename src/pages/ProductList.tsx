@@ -6,6 +6,7 @@ import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAs
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
+import { MARKET_META, MARKET_ORDER, formatMarketPrice, marketInsights, parseMarketPrices } from '../utils/marketPrice';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
@@ -42,6 +43,7 @@ const allColumns: ColumnDef[] = [
   { key: 'product_name', label: '标题', defaultWidth: 200 },
   { key: 'chinese_product_name', label: '中文品名', defaultWidth: 120 },
   { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 132 },
+  { key: 'market_prices', label: '参考价', defaultWidth: 190 },
   { key: 'fee_category', label: 'Fee品类', defaultWidth: 140 },
   { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
@@ -168,6 +170,8 @@ export default function ProductList() {
     return () => { document.removeEventListener('keydown', handleKey, true); if (opener?.isConnected) opener.focus(); };
   }, [variantEditorOpen]);
   const [contextProduct, setContextProduct] = useState<{ id: string; x: number; y: number } | null>(null);
+  // 参考价悬停卡：坐标用 fixed 定位，避免被表格滚动容器裁掉
+  const [marketTip, setMarketTip] = useState<{ product: Product; x: number; y: number } | null>(null);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(readStoreStorage(LS_SELECTED_SKUS_KEY) || '[]');
@@ -828,6 +832,35 @@ export default function ProductList() {
             {refreshMessages[p.id] && <button type="button" className="price-refresh-status" data-result={refreshMessages[p.id].includes('已更新') ? 'success' : 'error'} aria-label={refreshMessages[p.id].includes('已更新') ? '售价已更新，查看说明' : '读取失败，查看原因'} title={refreshMessages[p.id].includes('已更新') ? '已更新，点击查看说明' : '读取失败，点击查看原因'} onClick={() => setRefreshDetail({ id: p.id, message: refreshMessages[p.id] })}>{refreshMessages[p.id].includes('已更新') ? '✓' : '!'}</button>}
           </div>
         );
+      case 'market_prices': {
+        const prices = parseMarketPrices(p.market_prices);
+        const codes = MARKET_ORDER.filter((code) => prices[code]);
+        if (!codes.length) return <span style={{ color: 'var(--color-text-secondary)' }}>—</span>;
+        return (
+          <span
+            onMouseEnter={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setMarketTip({ product: p, x: rect.left, y: rect.bottom + 6 });
+            }}
+            onMouseLeave={() => setMarketTip(null)}
+            style={{ display: 'inline-flex', gap: 4, alignItems: 'center', whiteSpace: 'nowrap' }}
+          >
+            {codes.map((code) => (
+              <span
+                key={code}
+                style={{
+                  padding: '1px 6px', borderRadius: 4, fontSize: 12, whiteSpace: 'nowrap',
+                  border: '0.5px solid var(--color-border)',
+                  background: 'var(--surface-muted)',
+                  color: 'var(--color-text)',
+                }}
+              >
+                {MARKET_META[code].short} {formatMarketPrice(code, prices[code]!)}
+              </span>
+            ))}
+          </span>
+        );
+      }
       case 'fee_category':
         return (
           <select
@@ -1294,6 +1327,67 @@ export default function ProductList() {
           <div className="modal-actions"><button className="btn btn-outline" disabled={savingVariant} onClick={() => setVariantEditor(null)}>取消</button><button className="btn btn-primary" disabled={savingVariant} onClick={saveVariant}>{savingVariant ? '保存中…' : '保存分支'}</button></div>
         </div>
       </div>}
+      {marketTip && (() => {
+        const prices = parseMarketPrices(marketTip.product.market_prices);
+        const codes = MARKET_ORDER.filter((code) => prices[code]);
+        const insights = marketInsights(prices);
+        return (
+          <div
+            role="tooltip"
+            style={{
+              position: 'fixed',
+              left: Math.max(8, Math.min(marketTip.x, window.innerWidth - 340)),
+              top: marketTip.y,
+              zIndex: 60,
+              width: 320,
+              padding: '10px 12px',
+              background: 'var(--color-card)',
+              border: '0.5px solid var(--color-border)',
+              borderRadius: 8,
+              boxShadow: 'var(--shadow-lg)',
+              fontSize: 12.5,
+              color: 'var(--color-text)',
+            }}
+          >
+            <div style={{ fontWeight: 500, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {marketTip.product.product_name || '(无标题)'}
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}>
+                  <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>市场</th>
+                  <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>价格</th>
+                  <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>来源 / 日期</th>
+                </tr>
+              </thead>
+              <tbody>
+                {codes.map((code) => (
+                  <tr key={code}>
+                    <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)' }}>{MARKET_META[code].label}</td>
+                    <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums' }}>
+                      {formatMarketPrice(code, prices[code]!)}
+                    </td>
+                    <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                      {prices[code]!.src || '手工'}
+                      {prices[code]!.n ? ` · ${prices[code]!.n} 条` : ''}
+                      {prices[code]!.at ? ` · ${prices[code]!.at}` : ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {insights.length > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 7, borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                {insights.map((it) => (
+                  <span key={it.label} style={{ marginRight: 12 }}>
+                    {it.label} <span style={{ color: 'var(--color-text)', fontWeight: 500 }}>{it.value}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       {contextProduct && <div className="product-context-menu" style={{ left: contextProduct.x, top: contextProduct.y }} onClick={e => e.stopPropagation()}>
         <button onClick={() => navigate(`/products/${contextProduct.id}?edit=1&from=list`)}>修改资料</button>
         <button disabled={refreshingIds.has(contextProduct.id)} onClick={() => { const id = contextProduct.id; setContextProduct(null); handleRefreshPrice(id, 'official'); }}>读取官网售价</button>
