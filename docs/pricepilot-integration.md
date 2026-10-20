@@ -792,3 +792,39 @@ fixture，所以这一列在两个审计的 160 个面上都从没被量过。�
 
 复测：`tsc --noEmit` 通过；`test-market-prices.cjs` 30 条断言；文字重叠审计 160 个面
 0 处问题；全量 selfcheck 29 步全绿（新套件自动纳入）；未动后端，pytest 随 selfcheck 通过。
+
+### STORE-ISOLATION-01 装箱产品库与发货单号按店铺隔离（2026-10-21）
+
+Codex（PR #160）；基线 `4c064f73f4`。原提交只带代码与测试，没有文档，本条为复核后补记。
+
+- `packing_products` 的主键从 `sku` 改成 `(store_id, sku)`：两个店铺出现同名 SKU
+  （代理品牌代运营 CK 接入后是常态）会互相覆盖重量/材质/图片/模板行，属静默数据污染。
+- `shipments.shipment_no` 的唯一约束从全局改成 `(store_id, shipment_no)`：否则两个店铺
+  同一天不能都有 `PK-YYYYMMDD-001`，编号会被别店占用。`draft_key` 仍全局唯一
+  （它本身已带 store_id 前缀）。
+- 启动期迁移 `_migrate_packing_products_store_scope()` / `_migrate_shipments_store_scope()`
+  重建这两张表，老数据全部归入默认店铺。判断是「列或主键/唯一约束形态不对」才重建，
+  已经是新形态则直接返回，重复启动不会反复重建。
+- 所有按 SKU 取装箱产品的查询都必须带 `store_id`（`_find()` / `list_products` /
+  `_sync_from_products` / 补图 / 迁移包导入 / 对账 `preview`+`apply`），否则跨店读到别店记录。
+
+复测：`backend/tests/test_store_isolation_packing.py` 6 例（同 SKU 跨店互不影响、按店删除、
+发货单号按店唯一、老库两种迁移）。
+
+### PACK-UI-STORE-01 装箱工作台的店铺下拉只列在用店铺（2026-10-21）
+
+WorkBuddy；基线 `e39fbdde9c`（STORE-ISOLATION-01 刚上线）。
+
+- 症状：静态装箱工作台（`backend/packing_ui/index.html`）的店铺下拉直接取 `/api/stores`
+  全量结果。`get_store_id` 对非 `active` 店铺一律 400「店铺不存在或已停用」，所以一旦
+  选中一个停用店铺，产品库、导出、上传图片全部报错，而且下拉本身不解释为什么。
+  React 端 `App.tsx` 早就 `filter(store => store.status === 'active')`，两套前端不一致。
+- 顺带修掉同一函数里的两处静默：`if (!r.ok) return` 与 `catch {}` 把读取失败吞掉，
+  下拉留空、页面照常用 localStorage 里的旧店铺继续跑；当前店铺不在列表里时只改
+  localStorage 不重渲染，`<select>` 显示的和实际请求的店铺可以不是同一个。
+- 改动：`/api/stores` 增加可选 `active=1`（默认仍返回全部，店铺管理页要能看到并重新启用
+  停用店铺，`Stores.tsx` 行为不变）；下拉改请求 `?active=1`，当前店铺失效时回落到第一个
+  在用店铺并重渲染；读取失败在下拉里写「店铺列表读取失败」并 toast。
+- 复现：`pytest backend/tests/test_store_isolation_packing.py` 里的
+  `test_store_list_can_be_limited_to_active_stores` / `test_packing_ui_only_offers_active_stores`。
+  把 `active` 过滤去掉、或把 HTML 的 `?active=1` 改回 `/api/stores`，两例同时转红（已还原）。

@@ -53,8 +53,16 @@ def serialize_store(row: Store):
 
 
 @router.get("")
-def list_stores(db: Session = Depends(get_db)):
-    rows = db.query(Store).order_by(Store.created_at.asc()).all()
+def list_stores(active: bool = False, db: Session = Depends(get_db)):
+    """默认返回全部店铺（店铺管理页要看停用的）；active=1 只返回在用店铺。
+
+    `get_store_id` 会拒绝非 active 店铺（400「店铺不存在或已停用」），所以
+    任何「选一个店铺去发请求」的下拉都必须只要 active 的，否则选中即全线报错。
+    """
+    query = db.query(Store)
+    if active:
+        query = query.filter(Store.status == "active")
+    rows = query.order_by(Store.created_at.asc()).all()
     return [serialize_store(row) for row in rows]
 
 

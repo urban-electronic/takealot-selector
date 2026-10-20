@@ -211,3 +211,30 @@ def test_migration_makes_shipment_no_unique_per_store(tmp_path, monkeypatch):
                 "INSERT INTO shipments (id, store_id, draft_key, shipment_no, shipment_date) "
                 "VALUES ('dup-1', 'default-store', 'd-dup', 'PK-20261020-001', '2026-10-20')"
             ))
+
+
+def test_store_list_can_be_limited_to_active_stores(tmp_path):
+    """装箱工作台只能选在用店铺：停用店铺一旦被选中，get_store_id 会 400。
+
+    `/api/stores` 默认仍返回全部（店铺管理页要能看到并重新启用停用店铺），
+    只有显式 active=1 时才过滤。
+    """
+    from api import store_routes
+    from models import Store
+
+    Session = _session(tmp_path, "iso_stores")
+    db = Session()
+    db.add(Store(id="store-b", name="代运营CK", status="active"))
+    db.add(Store(id="store-c", name="已停用店", status="disabled"))
+    db.commit()
+
+    assert {r["id"] for r in store_routes.list_stores(db=db)} == {"store-b", "store-c"}
+    assert [r["id"] for r in store_routes.list_stores(active=True, db=db)] == ["store-b"]
+
+
+def test_packing_ui_only_offers_active_stores():
+    """静态装箱工作台的店铺下拉必须走 active=1，否则会列出停用店铺。"""
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "packing_ui" / "index.html").read_text(encoding="utf-8")
+    assert "/api/stores?active=1" in html

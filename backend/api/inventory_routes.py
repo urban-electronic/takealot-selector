@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import (
-    InventoryAdjustment, PackingProduct, ProcurementRecord, Product,
+    InventoryAdjustment, ProcurementRecord, Product,
     Shipment, ShipmentLine, ShipmentAllocation, Store, SystemSettings,
 )
 from services.inbound_excel import generate_inbound
