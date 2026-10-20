@@ -29,6 +29,22 @@ export const MARKET_META: Record<MarketCode, { label: string; short: string; sym
   TB: { label: '淘宝均价', short: '淘', symbol: '¥', cur: 'CNY' },
 };
 
+/** 把「像价格的值」归一成数字；null / 空串 / 布尔 / NaN / 负数一律当没有数据。
+ *
+ * 为什么不用 `Number(x)` 直接判：`Number(null)` 和 `Number('')` 都是 0，
+ * 于是「这个市场没填」会被渲染成「¥0」——一个看起来像真价格的假价格。
+ * 后端写入时有校验，但 /api/migrate 是整行搬运、不过 Pydantic，
+ * 桌面版导出的历史行可能带 null 或字符串，所以展示边界要自己守。
+ */
+function toPrice(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  return null;
+}
+
 export function parseMarketPrices(raw?: string | null): MarketPrices {
   if (!raw) return {};
   try {
@@ -37,9 +53,9 @@ export function parseMarketPrices(raw?: string | null): MarketPrices {
     const out: MarketPrices = {};
     for (const code of MARKET_ORDER) {
       const item = (obj as Record<string, unknown>)[code];
-      if (item && typeof item === 'object' && Number.isFinite(Number((item as MarketPriceEntry).price))) {
-        out[code] = { ...(item as MarketPriceEntry), price: Number((item as MarketPriceEntry).price) };
-      }
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const price = toPrice((item as MarketPriceEntry).price);
+      if (price !== null) out[code] = { ...(item as MarketPriceEntry), price };
     }
     return out;
   } catch {
@@ -51,8 +67,9 @@ export function serializeMarketPrices(prices: MarketPrices): string {
   const out: Record<string, MarketPriceEntry> = {};
   for (const code of MARKET_ORDER) {
     const item = prices[code];
-    if (item && Number.isFinite(Number(item.price))) {
-      out[code] = { ...item, price: Number(item.price) };
+    const price = item ? toPrice(item.price) : null;
+    if (item && price !== null) {
+      out[code] = { ...item, price };
     }
   }
   return Object.keys(out).length ? JSON.stringify(out) : '';
@@ -73,7 +90,7 @@ export function today(): string {
 /**
  * 比价结论：只用同币种能直接比的两项，避免引入汇率假设。
  *  - 淘宝 / 中国官网：渠道折扣深度，越大说明淘宝越贵
- *  - 最低官方价：各官方市场里最低的那个（不同币种不直接比，只做提示）
+ * （新加坡价是 SGD，跟人民币不能直接比，不在这里出结论，只在上面的明细里展示。）
  */
 export function marketInsights(prices: MarketPrices): { label: string; value: string }[] {
   const out: { label: string; value: string }[] = [];

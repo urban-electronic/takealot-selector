@@ -411,16 +411,22 @@ export default function ProductDetail() {
                   </td>
                   <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)', fontSize: 12 }}>
                     {code === 'TB' && editMode ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <input
-                          type="number" step="1" min="0"
-                          aria-label="淘宝均价样本条数"
-                          value={entry?.n ?? ''}
-                          onChange={(e) => setMarketSample(code, e.target.value)}
-                          style={{ width: 70 }}
-                        />
-                        <span>条样本</span>
-                      </span>
+                      entry ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <input
+                            type="number" step="1" min="0"
+                            aria-label="淘宝均价样本条数"
+                            value={entry?.n ?? ''}
+                            onChange={(e) => setMarketSample(code, e.target.value)}
+                            style={{ width: 70 }}
+                          />
+                          <span>条样本</span>
+                        </span>
+                      ) : (
+                        // 没有均价就没有「均了几个样本」：setMarketSample 在没有该市场时会直接返回，
+                        // 输入框留着只会让敲进去的数字被静默丢掉。
+                        <span>先填价格</span>
+                      )
                     ) : (
                       <>
                         {entry?.n ? `${entry.n} 条样本` : ''}

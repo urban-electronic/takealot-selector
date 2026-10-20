@@ -755,3 +755,40 @@ WorkBuddy；基线 3ab844f407。两个都是零引用的残留，且都容易误
 复测：`grep -rn "ShippingMethod"` 与 `grep -rn "\.describe("` 在 backend/src/scripts 均无命中；`tsc --noEmit` 通过（`noUnusedLocals` 开）；后端全量 pytest 394 passed / 1 skipped；全量 selfcheck 28 步全绿。
 
 > 说明：两处删除在推送前逐条核对过引用（`backend/`、`src/`、`scripts/` 全仓 grep）与行为，`tsc --noEmit` 的 `noUnusedLocals` 与后端全量 pytest 一起兜底；没有删除或削弱任何测试断言。
+
+### MARKET-DISPLAY-01 参考价的「没填」不再显示成 ¥0，淘宝样本框不再空转（2026-10-21）
+
+WorkBuddy；基线 ecc7797405（PR #157 多市场参考价刚合入，本轮是它的第一遍复核）。
+
+- `src/utils/marketPrice.ts` 的解析/序列化用 `Number.isFinite(Number(x))` 判价格是否有效。
+  `Number(null)` 与 `Number('')` 都是 **0**、`Number(true)` 是 **1**，于是「这个市场没填」
+  会被渲染成一个像真价格的假价格：`parseMarketPrices('{"CN":{"price":null}}')` 得到
+  `{CN:{price:0}}`，列表里显示「CN ¥0」、详情页显示「¥0」。后端写入有
+  `_check_market_prices` 挡（`null`/`true`/字符串都会被 400），但 `/api/migrate` 是整行
+  搬运、不过 Pydantic，桌面版导出的历史行可能带 null 或数字字符串——展示层是最后一道
+  边界，不能假设上游一定干净。
+- 详情页编辑态里「淘宝均价样本条数」输入框在没有均价时照样渲染，而
+  `setMarketSample()` 在没有该市场时直接 return：输入框可点、可输入、数字被静默丢弃，
+  没有任何反馈。改成没有价格时只显示「先填价格」。
+- 顺带删掉 `marketInsights()` 注释里「最低官方价」这一条——函数从来没返回过它，
+  而且 SGD 与 CNY 不能直接比，注释描述的是不存在的行为。
+
+改动：`src/utils/marketPrice.ts` 抽出 `toPrice()`（数字或数字字符串 → 非负有限数，
+其余一律 null），`parseMarketPrices` / `serializeMarketPrices` 共用；`ProductDetail.tsx`
+把样本框放进 `entry ? ... : 「先填价格」` 分支。判据没有放宽：负数、布尔、空串仍然拒绝。
+
+复现：`node scripts/test-market-prices.cjs`。把 `parseMarketPrices` 改回
+`Number.isFinite(Number(...))` → 「price=null 必须当成没数据」等 8 条断言转红（已还原）。
+
+防回归：新增 `scripts/test-market-prices.cjs`（30 条断言，不启浏览器直接编译 TS）——
+解析、空值不当 0、数字字符串归一、坏 JSON 不抛、序列化丢空市场、往返一致、
+币种符号与小数位、比价结论的除零与跨币种不比。这个功能此前只有后端测试，
+前端零断言。
+
+版式覆盖：`scripts/test-responsive-layout.py` 的 `PRODUCT` fixture 补上 `market_prices`
+（CN 1289 / SG 245.9 / TB 899，四位数 + 带小数的最宽一档）。此前 fixture 不带这个字段，
+列表的「参考价」列永远只渲染「—」、详情页卡片是空的，`test-text-overlap.py` 复用同一份
+fixture，所以这一列在两个审计的 160 个面上都从没被量过。补上后实测 0 处问题。
+
+复测：`tsc --noEmit` 通过；`test-market-prices.cjs` 30 条断言；文字重叠审计 160 个面
+0 处问题；全量 selfcheck 29 步全绿（新套件自动纳入）；未动后端，pytest 随 selfcheck 通过。

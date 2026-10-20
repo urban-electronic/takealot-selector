@@ -14,6 +14,14 @@ PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳
 # Optional numeric values used by the existing detail view; fixtures are never saved.
 for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny','length_mm','width_mm','height_mm','actual_weight_kg','packaging_cost_per_unit_cny','inbound_listing_fee_cny','outbound_operation_fee_cny','last_mile_delivery_fee_cny','other_fee_cny','fulfillment_fee_zar','success_fee_rate','total_cost_zar','profit_zar','profit_margin']:
     PRODUCT[key] = 0
+# 多市场参考价：列表里是一格并列三个货币标签（190px），详情页是一张表。
+# 不给数据时这一列永远只渲染一个「—」，等于从没被量过；这里按四位数价格 + 带小数的
+# 新加坡价给最宽的一档（价格越高标签越宽，四位数是代运营包袋的真实量级）。
+PRODUCT['market_prices'] = json.dumps({
+    'CN': dict(price=1289, cur='CNY', src='官网', at='2026-10-21'),
+    'SG': dict(price=245.9, cur='SGD', src='官网', at='2026-10-21'),
+    'TB': dict(price=899, cur='CNY', src='淘宝均价', n=128, at='2026-10-21'),
+}, ensure_ascii=False)
 STORE = dict(id='default-store', name='自营店铺', platform='Takealot', status='active', owner_name='', sync_method='manual', sync_interval_minutes=60, external_store_ref='', allow_negative_inventory_shipments=False, last_synced_at=None)
 PROCUREMENT = dict(id='fixture-record', product_id=PRODUCT['id'], product_no='1', product_name=PRODUCT['product_name'], recorded_at='2026-10-15', quantity=2, unit_price_cny=10, total_price_cny=20, status='in_transit', notes='', shipping_cost_cny=0)
 PACK = dict(sku='TEST-001', name='收纳包', name_zh='收纳包', name_en='Travel storage bag', image_file='', default_count=1, material='织物', electric='否', magnetic='否', unit='个', weight='0.2', brand='', battery='')
