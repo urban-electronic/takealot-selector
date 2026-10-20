@@ -38,7 +38,7 @@ def test_rename_keeps_image_template_row_and_variant_membership():
 
         routes.upsert_product(routes.ProductIn(
             sku='NEW-1', old_sku='OLD-1', name_zh='新名', name_en='new',
-        ), db)
+        ), db, store_id=DEFAULT_STORE_ID)
         db.commit()
 
         rows = {p.sku: p for p in db.query(PackingProduct).all()}
@@ -60,7 +60,7 @@ def test_rename_into_taken_sku_is_rejected_without_touching_either_row():
         ])
         db.commit()
 
-        resp = routes.upsert_product(routes.ProductIn(sku='B-1', old_sku='A-1', name_zh='A'), db)
+        resp = routes.upsert_product(routes.ProductIn(sku='B-1', old_sku='A-1', name_zh='A'), db, store_id=DEFAULT_STORE_ID)
         assert resp.status_code == 400
         rows = {p.sku: p.image_file for p in db.query(PackingProduct).all()}
         assert rows == {'A-1': 'a.png', 'B-1': 'b.png'}

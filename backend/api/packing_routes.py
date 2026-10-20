@@ -133,8 +133,13 @@ def fail(status: int, msg: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={'error': msg})
 
 
-def _find(db: Session, sku: str) -> Optional[PackingProduct]:
-    return db.query(PackingProduct).filter(PackingProduct.sku == sku).first()
+def _find(db: Session, store_id: str, sku: str) -> Optional[PackingProduct]:
+    """按 (店铺, SKU) 定位装箱产品；不同店铺的同名 SKU 是两条独立记录。"""
+    return (
+        db.query(PackingProduct)
+        .filter(PackingProduct.store_id == store_id, PackingProduct.sku == sku)
+        .first()
+    )
 
 
 def _apply_values(p: PackingProduct, data: ProductIn, old: Optional[PackingProduct]) -> PackingProduct:
@@ -164,15 +169,16 @@ def _apply_values(p: PackingProduct, data: ProductIn, old: Optional[PackingProdu
     return p
 
 
-def _upsert(db: Session, data: ProductIn) -> PackingProduct:
+def _upsert(db: Session, store_id: str, data: ProductIn) -> PackingProduct:
     old_sku = (data.old_sku or '').strip() or data.sku
-    old = _find(db, old_sku)
-    if data.sku != old_sku and _find(db, data.sku):
+    old = _find(db, store_id, old_sku)
+    if data.sku != old_sku and _find(db, store_id, data.sku):
         raise ValueError('SKU 已存在')
     if old and old_sku != data.sku:
         # 改名不是新建：图片、模板行、默认件数和变体归属都是人工维护的资料，
         # 旧实现删旧建新会把它们静默清空（远程装箱单页每次编辑都带 old_sku）。
         renamed = PackingProduct(
+            store_id=store_id,
             sku=data.sku,
             variant_group=old.variant_group or '',
             variant_label=old.variant_label or '',
@@ -183,9 +189,9 @@ def _upsert(db: Session, data: ProductIn) -> PackingProduct:
         db.flush()
         db.add(renamed)
         return renamed
-    p = _find(db, data.sku)
+    p = _find(db, store_id, data.sku)
     if p is None:
-        p = PackingProduct(sku=data.sku)
+        p = PackingProduct(store_id=store_id, sku=data.sku)
         db.add(p)
     _apply_values(p, data, old)
     return p
@@ -228,7 +234,7 @@ def _catalog_images_by_sku(products):
 def list_products(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     store_products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all()
     store_skus = {sku for product in store_products for sku in re.split(r'[\s,，;；]+', (product.sku or '').strip()) if sku}
-    rows = db.query(PackingProduct).filter(PackingProduct.sku.in_(store_skus)).order_by(PackingProduct.sku).all() if store_skus else []
+    rows = db.query(PackingProduct).filter(PackingProduct.store_id == store_id, PackingProduct.sku.in_(store_skus)).order_by(PackingProduct.sku).all() if store_skus else []
     rows.sort(key=lambda p: (p.variant_group or p.sku, 0 if p.is_primary_variant else 1, p.sku))
     source_images = _catalog_images_by_sku(store_products)
     result = []
@@ -274,7 +280,10 @@ def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(ge
                 return _sync_from_products(db, store_id)
             except IntegrityError as exc:
                 db.rollback()
-                if str(exc.orig).strip().lower() != 'unique constraint failed: packing_products.sku':
+                msg = str(exc.orig).strip().lower()
+                # 主键现在是 (store_id, sku)，SQLite 报错串会带上两列，
+                # 用包含判断兼容单列/复合主键两种形态。
+                if 'unique constraint failed' not in msg or 'packing_products' not in msg or 'sku' not in msg:
                     raise
                 if attempt == 2:
                     raise HTTPException(status_code=409, detail='装箱同步发生并发冲突，请重试') from None
@@ -282,7 +291,9 @@ def sync_from_products(db: Session = Depends(get_db), store_id: str = Depends(ge
 
 def _sync_from_products(db: Session, store_id: str):
     products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).order_by(Product.created_at.asc()).all()
-    existing = {sku for (sku,) in db.query(PackingProduct.sku).all()}
+    existing = {
+        sku for (sku,) in db.query(PackingProduct.sku).filter(PackingProduct.store_id == store_id).all()
+    }
     imported = skipped_no_sku = 0
     seen = set(existing)
     # 一个 SKU 被第二个产品再次认领 = 装箱单无法把它当成独立产品，前端会提示
@@ -303,11 +314,11 @@ def _sync_from_products(db: Session, store_id: str):
         labels_align = len(zh_variants) == len(sku_variants)
         electric_hint = '是' if '带电' in (prod.shipping_method or '') else ''
         electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
-        legacy = _find(db, raw_sku) if len(sku_variants) > 1 else None
+        legacy = _find(db, store_id, raw_sku) if len(sku_variants) > 1 else None
         for idx, sku in enumerate(sku_variants):
             if claimed.setdefault(sku, prod.id) != prod.id:
                 duplicates.add(sku)
-            current = _find(db, sku) if sku in seen else None
+            current = _find(db, store_id, sku) if sku in seen else None
             if labels_align:
                 variant_name = zh_variants[idx]
             elif len(sku_variants) == 1:
@@ -327,6 +338,7 @@ def _sync_from_products(db: Session, store_id: str):
                     current.is_primary_variant = idx == 0
                 continue
             p = PackingProduct(
+                store_id=store_id,
                 sku=sku,
                 name=' / '.join(x for x in (variant_name, name_en) if x),
                 name_zh=variant_name,
@@ -365,11 +377,11 @@ def _sync_from_products(db: Session, store_id: str):
 # ---- 2. POST /api/packing/products（批量 UPSERT） ----
 
 @router.post('/products')
-def upsert_products(data: BatchIn, db: Session = Depends(get_db)):
+def upsert_products(data: BatchIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     count = 0
     for item in data.products:
         try:
-            _upsert(db, item)
+            _upsert(db, store_id, item)
             count += 1
         except ValueError as e:
             return fail(400, f'第 {count + 1} 条失败：{e}')
@@ -380,9 +392,9 @@ def upsert_products(data: BatchIn, db: Session = Depends(get_db)):
 # ---- 3. POST /api/packing/product ----
 
 @router.post('/product')
-def upsert_product(data: ProductIn, db: Session = Depends(get_db)):
+def upsert_product(data: ProductIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     try:
-        _upsert(db, data)
+        _upsert(db, store_id, data)
     except ValueError as e:
         return fail(400, str(e))
     db.commit()
@@ -392,8 +404,8 @@ def upsert_product(data: ProductIn, db: Session = Depends(get_db)):
 # ---- 4. POST /api/packing/delete ----
 
 @router.post('/delete')
-def delete_product(data: DeleteIn, db: Session = Depends(get_db)):
-    p = _find(db, data.sku.strip())
+def delete_product(data: DeleteIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    p = _find(db, store_id, data.sku.strip())
     if p:
         db.delete(p)
         db.commit()
@@ -483,12 +495,12 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
             skipped += 1
             failed.append({'sku': sku, 'reason': 'SKU 为空'})
             continue
-        if _find(db, sku):
+        if _find(db, store_id, sku):
             skipped += 1
             continue
         electric_hint = '是' if (prod.shipping_method or '').find('带电') >= 0 else ''
         electric, magnetic = px.infer_flags(name_zh, name_en, electric_hint)
-        p = PackingProduct(sku=sku)
+        p = PackingProduct(store_id=store_id, sku=sku)
         p.name = ' / '.join(x for x in (name_zh, name_en) if x)
         p.name_zh = name_zh
         p.name_en = name_en
@@ -528,7 +540,7 @@ def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db),
     limit = max(0, int(getattr(data, 'limit', 100) or 100))
     pending = (
         db.query(PackingProduct)
-        .filter(PackingProduct.image_file == '')
+        .filter(PackingProduct.store_id == store_id, PackingProduct.image_file == '')
         .order_by(PackingProduct.sku)
         .all()
     )
@@ -578,7 +590,7 @@ async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depend
         group_matched = 0
         for sku in known_skus:
             item = official.get(sku)
-            row = _find(db, sku)
+            row = _find(db, store_id, sku)
             if not item or not row:
                 continue
             label = str(item.get('label') or '').strip()
@@ -603,9 +615,9 @@ async def sync_variants_from_takealot(data: SyncVariantsIn, db: Session = Depend
 # ---- 5. POST /api/packing/image ----
 
 @router.post('/image')
-def upload_image(data: ImageIn, db: Session = Depends(get_db)):
+def upload_image(data: ImageIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     sku = data.sku.strip()
-    p = _find(db, sku)
+    p = _find(db, store_id, sku)
     if not p:
         return fail(400, '产品不存在')
     if data.remove:
@@ -668,7 +680,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         return fail(409, '此草稿已按其他方式留档，请新建装箱单后导出，避免重复扣库存')
     requested_by_sku = {}
     for line in data.items:
-        p = _find(db, line.sku.strip())
+        p = _find(db, store_id, line.sku.strip())
         if not p:
             return fail(400, '找不到产品 ' + line.sku)
         if not _catalog_product_for_sku(db, p.sku, store_id):
@@ -700,7 +712,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         return fail(400, f'生成失败：{e}')
     if not existing_shipment:
         # 导出快照和正式发货分别留档，只有 confirmed 记录参与库存核减。
-        day_count = db.query(Shipment).filter(Shipment.shipment_date == date.isoformat()).count()
+        day_count = db.query(Shipment).filter(Shipment.store_id == store_id, Shipment.shipment_date == date.isoformat()).count()
         shipment = Shipment(
             id=str(uuid.uuid4()),
             store_id=store_id,
@@ -743,7 +755,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
 # ---- 8. POST /api/packing/import ----
 
 @router.post('/import')
-async def import_migration(file: Optional[UploadFile] = File(None), db: Session = Depends(get_db)):
+async def import_migration(file: Optional[UploadFile] = File(None), db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """迁移导入，幂等：
     - 支持上传 backup 产出的 zip（packing_migration.json + images/*）
     - 产品按 sku INSERT OR IGNORE：已存在的 SKU 跳过，不覆盖云端已有编辑
@@ -765,10 +777,10 @@ async def import_migration(file: Optional[UploadFile] = File(None), db: Session 
         sku = str(row.get('sku') or '').strip()
         if not sku:
             continue
-        if _find(db, sku):
+        if _find(db, store_id, sku):
             skipped += 1
             continue
-        p = PackingProduct(sku=sku)
+        p = PackingProduct(store_id=store_id, sku=sku)
         for k in ('name', 'name_zh', 'name_en', 'unit', 'weight', 'material',
                   'brand', 'battery', 'electric', 'magnetic', 'image_file'):
             v = row.get(k)
@@ -816,8 +828,8 @@ async def import_migration(file: Optional[UploadFile] = File(None), db: Session 
 # ---- 9. GET /api/packing/backup ----
 
 @router.get('/backup')
-def backup(db: Session = Depends(get_db)):
-    products = [public(p) for p in db.query(PackingProduct).order_by(PackingProduct.sku).all()]
+def backup(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    products = [public(p) for p in db.query(PackingProduct).filter(PackingProduct.store_id == store_id).order_by(PackingProduct.sku).all()]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('packing_migration.json', json.dumps(products, ensure_ascii=False, indent=1))
