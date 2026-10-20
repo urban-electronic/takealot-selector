@@ -227,16 +227,3 @@ def holds_buybox(snapshot, our_name):
     if not seller:
         return None
     return normalize(seller) == normalize(our_name)
-
-
-def describe(db, store, snapshot=None):
-    """给界面/诊断用的一小段状态：名字从哪来、这次判成了什么。"""
-    value = load(db, store)
-    state = None if snapshot is None else holds_buybox(snapshot, value.get('name') or '')
-    return {
-        'name': value.get('name') or '',
-        'source': value.get('source') or '',
-        'state': state,
-        'skus': {k: len((v or {}).get('skus') or []) for k, v in (value.get('observations') or {}).items()}
-        if isinstance(value.get('observations'), dict) else {},
-    }

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import SystemSettings, DEFAULT_STORE_ID
 from api.store_routes import get_store_id
-from services.buybox_monitor import PREFIX, catalog, interval_seconds
+from services.buybox_monitor import PREFIX, catalog, interval_seconds, normalize_interval_minutes
 
 router = APIRouter(prefix='/api/collector', tags=['collector'])
 HEARTBEAT = '_buybox_local_collector'
@@ -129,7 +129,7 @@ def web_open(data:WebOpen,db:Session=Depends(get_db),store:str=Depends(get_store
         old=item['monitor']
         if old.get('status') in ('running','paused') or (old.get('next_due',0)>now and not (data.initial and old.get('status')=='error')): continue
         value={**old,'product_id':item['product_id'],'offer_id':item['offer_id'],'sku':item['sku'],
-            'enabled':old.get('enabled',False),'request_once':True,'web_requested':True,'interval_minutes':old.get('interval_minutes',5),
+            'enabled':old.get('enabled',False),'request_once':True,'web_requested':True,'interval_minutes':normalize_interval_minutes(old.get('interval_minutes')),
             'revision':old.get('revision',0)+1,'status':'queued','next_due':0}
         key=PREFIX+store+':'+item['product_id']+':'+item['offer_id']
         row=db.query(SystemSettings).filter_by(key=key).first()

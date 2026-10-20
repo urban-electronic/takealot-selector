@@ -60,6 +60,11 @@ future 永远不完成，这个 while 就永远不退出。更糟的是它在**�
 下一轮又选中同一行、又抛一次。一条脏记录足以让整批 SKU 永久停采，日志里只有
 一句通用的「worker unavailable」。详见 INTERVAL-NULL-01。
 
+归一后来被提成 `normalize_interval_minutes()`（INTERVAL-NULL-02）：只堵读路径不够，
+`collect-now` 与 `web-open` 两条**写**路径当时还在用 `.get('interval_minutes',5)`，
+null 会被原样塞回 `MonitorBulk`（Pydantic 判 422，界面表现为「点立即采集就报错」）
+或被重新写进库里，让读路径永远有脏值可归。现在读写两侧共用同一个函数。
+
 ## 顺带修的：失败原因说不出来
 
 同一时刻「刷新售价」对本店报价和官网售价都只回一句

@@ -47,23 +47,34 @@ COLLECT_RETRY_DELAY = 5.0
 JOB_TIMEOUT = 240
 
 
-def interval_seconds(value, default_minutes=5):
-    """采集间隔（秒）。记录里的 interval_minutes 可能是 null，这里统一归一。
+def normalize_interval_minutes(value, default_minutes=5):
+    """把记录里的 interval_minutes 归一成合法的正整数（分钟）。
 
     `interval_minutes` 在库里有三个来源：用户配置（Pydantic 保证 int≥5）、
     旧版本写回的行、以及直接改库的历史数据。后两者可能是 null，而 `.get(key, 5)`
-    只在**键缺失**时给默认值，键存在但值是 null 时返回 None，接着 `None * 60`
-    抛 TypeError。
+    只在**键缺失**时给默认值，键存在但值是 null 时返回 None。
+
+    null 往下游走有两条路，两条都得堵：
+      1. 读路径（`interval_seconds`）：`None * 60` 抛 TypeError；
+      2. 写路径（`collect-now` / `web-open`）：把 null 原样塞回 `MonitorBulk`
+         或库里，前者被 Pydantic 判 422（点「立即采集」直接报错），后者把
+         null 一直传下去，让第 1 条永远有货。
+
+    默认值 5 与 loop_status、repair_monitor、前端 `Number(x) || 5` 的既有口径一致，
+    没有引入新语义。
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default_minutes
+
+
+def interval_seconds(value, default_minutes=5):
+    """采集间隔（秒）。
 
     为什么这个归一不能省：`process()` 里算 `next_due` 的那段在 `finally` 里，
     抛出去就整轮采集一起中断（`run()` 只打印一句「worker unavailable」），
     而这一行因为 `next_due` 没被推进，每一轮都会被重新选中、每一轮再抛一次——
     一条脏记录足以让 28 个 SKU 永久停采，日志里却只有一句通用失败。
-    默认值 5 与 loop_status、repair_monitor、前端 `Number(x) || 5` 的既有口径一致，
-    没有引入新语义。
     """
-    minutes = value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default_minutes
-    return minutes * 60
+    return normalize_interval_minutes(value, default_minutes) * 60
 
 # 这些是「这一轮压根没跑起来」或「页面还没渲染完」的信号，同轮重试有意义。
 # 网站验证（site_challenge）不在里面：验证不会因为隔 5 秒再开一次就解除，

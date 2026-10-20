@@ -283,9 +283,11 @@ def monitor_configure(product_id:str,offer_id:str,data:MonitorConfig,db:Session=
 
 @router.post('/{product_id}/{offer_id}/collect-now')
 def collect_now(product_id:str,offer_id:str,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
-    from services.buybox_monitor import catalog as collection_catalog
+    from services.buybox_monitor import catalog as collection_catalog, normalize_interval_minutes
     item=next((r for r in collection_catalog(db,store) if r['product_id']==product_id and r['offer_id']==offer_id),None)
     if not item: raise HTTPException(404,'SKU未匹配')
     old=item['monitor']
+    # 历史行的 interval_minutes 可能是 null。原样塞回 MonitorBulk 会被 Pydantic 判 422，
+    # 表现成「点立即采集就报错」，而这条记录本身是能采的。
     return save_monitors(MonitorBulk(items=[Item(product_id=product_id,offer_id=offer_id)], enabled=old.get('enabled',False),
-                                    interval_minutes=old.get('interval_minutes',5),segment=old.get('segment',''),request_once=True),db,store)
+                                    interval_minutes=normalize_interval_minutes(old.get('interval_minutes')),segment=old.get('segment',''),request_once=True),db,store)

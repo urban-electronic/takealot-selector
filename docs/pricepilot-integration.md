@@ -731,3 +731,27 @@ WorkBuddy；基线 400647fc11。两条都是 `src/remoteApi.ts` 与后端注册�
 复现：`node scripts/test-api-contract.cjs`。把 `updateFeeCategory` 改回 `method: 'PUT'` → `updateFeeCategory: PUT /api/fee-categories/:p` 转红（已还原）；把 `translateProductName` 改回 `/api/translate` → 同样转红（已还原）。
 
 复测：`test-api-contract.cjs` 10 条断言（91 条路由 / 64 条调用全对齐）；`tsc --noEmit` 通过；全量 selfcheck 28 步全绿（新增套件自动纳入）；未动后端，pytest 随 selfcheck 通过。
+
+### INTERVAL-NULL-02 `interval_minutes` 的**写**路径也归一：点「立即采集」不再 422（2026-10-21）
+
+WorkBuddy；基线 3ab844f407。INTERVAL-NULL-01 只堵了读路径（`interval_seconds` 归一后再 `*60`），写路径仍然把库里的 null 原样往下传，于是同一个脏值有两个新出口：
+
+- `pricing_routes.collect_now()` 把 `old.get('interval_minutes',5)` 直接塞回 `MonitorBulk`。`.get(key, 5)` 只在**键缺失**时给默认值，键存在而值是 null 时返回 None，`MonitorConfig.interval_minutes` 声明为 `int = Field(ge=5, le=1440)`，Pydantic 判「不是整数」→ FastAPI 转 **422**。这条记录本身完全能采，用户看到的是「点立即采集就报错」，而且每次点都报。
+- `collector_routes.web_open()` 同样用 `.get('interval_minutes',5)` 拼新记录写回库。它把 null 又存了一遍，于是 `interval_seconds` 的归一永远有货可归——脏值会自己繁殖。
+
+改动：把归一从 `interval_seconds` 里提出来成 `buybox_monitor.normalize_interval_minutes(value, default_minutes=5)`，`interval_seconds` 改为 `normalize_interval_minutes(...) * 60`（行为一字未变），上述两条写路径改用同一个函数。默认值仍是 5 分钟，与 `loop_status`、`repair_monitor`、前端 `Number(x) || 5` 的口径一致，没有引入新语义，也没有动任何调价参数。
+
+复现：`test_buybox_monitor.py::test_collect_now_survives_a_null_interval`——先 `monitor_configure(interval_minutes=30)`，把库里该行的 `interval_minutes` 改成 null，再调 `collect_now`。修复前该调用抛 422；修复后落库为 `interval_minutes=5` 且 `request_once=True`。把 `collect_now` 里的归一改回 `old.get('interval_minutes',5)` 后该用例转红（已还原）。
+
+复测：后端全量 pytest 394 passed / 1 skipped（新增 1 例）；全量 selfcheck 28 步全绿。
+
+### DEAD-CODE-07 删掉 `models.ShippingMethod` 与 `seller_identity.describe()`（2026-10-21）
+
+WorkBuddy；基线 3ab844f407。两个都是零引用的残留，且都容易误导后来者：
+
+- `models.ShippingMethod`（`AIR_REGULAR`/`AIR_BATTERY`/`SEA_REGULAR`/`SEA_BATTERY` 四值枚举）全仓零引用——商品的运输方式实际是 `products.shipping_method` 这个自由文本列，前端 `ProductCreate.tsx` 的 `shippingMethod` 是它自己的 `useState`，跟这个枚举毫无关系。留着会让人以为运输方式受枚举约束，实际改枚举不影响任何校验。
+- `services/seller_identity.describe(db, store, snapshot)` 全仓零调用（诊断接口用的是 `name_of` / `holds_buybox` / `normalize`）。它返回的 `skus` 计数来自 `observations`，而观测结构的读取方已经改成别处，留着等于留一份没人验证过的第二套解读。
+
+复测：`grep -rn "ShippingMethod"` 与 `grep -rn "\.describe("` 在 backend/src/scripts 均无命中；`tsc --noEmit` 通过（`noUnusedLocals` 开）；后端全量 pytest 394 passed / 1 skipped；全量 selfcheck 28 步全绿。
+
+> 说明：两处删除在推送前逐条核对过引用（`backend/`、`src/`、`scripts/` 全仓 grep）与行为，`tsc --noEmit` 的 `noUnusedLocals` 与后端全量 pytest 一起兜底；没有删除或削弱任何测试断言。

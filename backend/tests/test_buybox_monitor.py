@@ -254,3 +254,22 @@ def test_collector_exception_keeps_type_without_private_message(monkeypatch):
     assert result['diagnostics']['failure']=='RuntimeError'
     assert 'fixture-private' not in json.dumps(result)
     assert '/private/profile' not in json.dumps(result)
+
+
+def test_collect_now_survives_a_null_interval(monkeypatch):
+    """历史行的 interval_minutes 是 null 时，「立即采集」不能 422。
+
+    原实现把 `old.get('interval_minutes',5)` 直接塞回 MonitorBulk：`.get` 只在
+    键缺失时给默认值，键存在但值是 null 时返回 None，Pydantic 判「不是整数」，
+    FastAPI 转 422。这条记录本身完全能采，只是配置写在 interval 字段存在之前。
+    写路径不堵，null 还会被 web-open 原样写回库里，让读路径的归一永远有货。
+    """
+    monkeypatch.setattr(routes,'configured_key',lambda db:'test')
+    with route_db()as db:
+        routes.monitor_configure('two','two',routes.MonitorConfig(enabled=True,interval_minutes=30),db,DEFAULT_STORE_ID)
+        key=monitor.PREFIX+DEFAULT_STORE_ID+':two:two'
+        row=db.query(SystemSettings).filter_by(key=key).first()
+        value=json.loads(row.value);value['interval_minutes']=None;row.value=json.dumps(value);db.commit()
+        routes.collect_now('two','two',db,DEFAULT_STORE_ID)
+        saved=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+        assert saved['interval_minutes']==5 and saved['request_once']

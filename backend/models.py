@@ -33,13 +33,6 @@ class Store(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class ShippingMethod(str, enum.Enum):
-    AIR_REGULAR = "空运普货"
-    AIR_BATTERY = "空运带电"
-    SEA_REGULAR = "海运普货"
-    SEA_BATTERY = "海运带电"
-
-
 class SelectionStatus(str, enum.Enum):
     DATA_INCOMPLETE = "数据待补充"
     CATEGORY_PENDING = "待确认品类"
