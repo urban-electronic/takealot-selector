@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Float, Integer, Boolean, DateTime, Text, Enum as SAEnum,
-    ForeignKey
+    ForeignKey, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from database import Base
@@ -237,9 +237,13 @@ class PackingProduct(Base):
     字段顺序与本地 sqlite products 表一致：
     sku / name / name_zh / name_en / unit / weight / material / brand /
     battery / electric / magnetic / template_row / default_count / image_file
+
+    多店铺隔离：主键是 (store_id, sku)。同一个 SKU 在两个店铺是两条互不影响的
+    记录，重量/材质/图片/模板行不会互相覆盖。
     """
     __tablename__ = "packing_products"
 
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, primary_key=True, index=True)
     sku = Column(String, primary_key=True)
     name = Column(String, nullable=False, default="")
     name_zh = Column(String, default="")
@@ -276,13 +280,18 @@ class InventoryAdjustment(Base):
 
 
 class Shipment(Base):
-    """装箱/发货快照。只有 confirmed 状态扣库存；exported 仅留档。"""
+    """装箱/发货快照。只有 confirmed 状态扣库存；exported 仅留档。
+
+    发货单号按店铺独立编号，因此唯一约束是 (store_id, shipment_no)，
+    两个店铺同一天都可以有 PK-YYYYMMDD-001。
+    """
     __tablename__ = "shipments"
+    __table_args__ = (UniqueConstraint("store_id", "shipment_no", name="ux_shipments_store_no"),)
 
     id = Column(String, primary_key=True, default=generate_uuid)
     store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
     draft_key = Column(String, unique=True, nullable=False, index=True)
-    shipment_no = Column(String, unique=True, nullable=False, index=True)
+    shipment_no = Column(String, nullable=False, index=True)
     shipment_date = Column(String, nullable=False)
     mark = Column(String, default="")
     shipping = Column(String, default="")

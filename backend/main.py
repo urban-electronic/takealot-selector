@@ -229,6 +229,99 @@ def _repair_product_metadata():
         db.close()
 
 
+def _strip_foreign_keys(table):
+    """重建临时表时去掉外键：目标表不在同一个 MetaData 里，SQLite 建表会报找不到被引用表。"""
+    from sqlalchemy import ForeignKeyConstraint
+
+    for con in list(table.constraints):
+        if isinstance(con, ForeignKeyConstraint):
+            table.constraints.discard(con)
+    for col in table.columns:
+        col.foreign_keys.clear()
+
+
+def _migrate_packing_products_store_scope():
+    """packing_products：全局 sku 主键 → (store_id, sku) 复合主键。
+
+    两个店铺共用一张装箱产品表时，同名 SKU 会互相覆盖重量/材质/图片/模板行。
+    create_all 不会改已有表，只能重建：老数据全部归入默认店铺。
+    """
+    from sqlalchemy import inspect, text, MetaData, ForeignKeyConstraint
+    from models import PackingProduct
+
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("packing_products")}
+    pk = insp.get_pk_constraint("packing_products") or {}
+    pk_cols = list(pk.get("constrained_columns") or [])
+    if "store_id" in cols and pk_cols == ["store_id", "sku"]:
+        return
+
+    tmp_name = "packing_products__new"
+    target_cols = [c.name for c in PackingProduct.__table__.columns]
+    old_cols = [c for c in target_cols if c in cols]
+    if "store_id" not in old_cols:
+        old_cols.append("store_id")
+    select_cols = ", ".join(
+        f"'{DEFAULT_STORE_ID}'" if c == "store_id" else c for c in old_cols
+    )
+    tmp = PackingProduct.__table__.to_metadata(MetaData(), name=tmp_name)
+    _strip_foreign_keys(tmp)
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP TABLE IF EXISTS {tmp_name}"))
+        tmp.create(conn)
+        conn.execute(text(
+            f"INSERT INTO {tmp_name} ({', '.join(old_cols)}) SELECT {select_cols} FROM packing_products"
+        ))
+        conn.execute(text("DROP TABLE packing_products"))
+        conn.execute(text(f"ALTER TABLE {tmp_name} RENAME TO packing_products"))
+    print("[startup] packing_products 已按店铺隔离重建（老数据归入默认店铺）", flush=True)
+
+
+def _migrate_shipments_store_scope():
+    """shipments：发货单号从「全局唯一」改为「按店铺唯一」。
+
+    否则两个店铺不能同时拥有 PK-YYYYMMDD-001，编号会被别店占用。
+    """
+    from sqlalchemy import inspect, text, MetaData, UniqueConstraint
+    from models import Shipment
+
+    insp = inspect(engine)
+    ucs = insp.get_unique_constraints("shipments") or []
+    single_no = [
+        u for u in ucs
+        if [c for c in (u.get("column_names") or [])] == ["shipment_no"]
+    ]
+    if not single_no:
+        return
+
+    tmp_name = "shipments__new"
+    cols = [c.name for c in Shipment.__table__.columns]
+    tmp = Shipment.__table__.to_metadata(MetaData(), name=tmp_name)
+    _strip_foreign_keys(tmp)
+    tmp.indexes = set()
+    for col in tmp.columns:
+        col.index = False
+        col.unique = False
+    for con in list(tmp.constraints):
+        if isinstance(con, UniqueConstraint):
+            tmp.constraints.discard(con)
+    tmp.append_constraint(UniqueConstraint("draft_key", name="uq_shipments_draft_key"))
+    tmp.append_constraint(UniqueConstraint("store_id", "shipment_no", name="ux_shipments_store_no"))
+
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP TABLE IF EXISTS {tmp_name}"))
+        tmp.create(conn)
+        conn.execute(text(
+            f"INSERT INTO {tmp_name} ({', '.join(cols)}) SELECT {', '.join(cols)} FROM shipments"
+        ))
+        conn.execute(text("DROP TABLE shipments"))
+        conn.execute(text(f"ALTER TABLE {tmp_name} RENAME TO shipments"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shipments_store_id ON shipments (store_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shipments_shipment_no ON shipments (shipment_no)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shipments_draft_key ON shipments (draft_key)"))
+    print("[startup] shipments 发货单号已改为按店铺唯一", flush=True)
+
+
 def _ensure_columns():
     """轻量迁移：为已存在的表补齐新增列（create_all 不会修改已有表）"""
     from sqlalchemy import inspect, text
@@ -270,6 +363,9 @@ def _ensure_columns():
                     if name not in packing_cols:
                         conn.execute(text(f"ALTER TABLE packing_products ADD COLUMN {name} {sql_type}"))
                         print(f"[startup] packing_products 表已补列 {name}", flush=True)
+            _migrate_packing_products_store_scope()
+        if "shipments" in insp.get_table_names():
+            _migrate_shipments_store_scope()
         if "stores" in insp.get_table_names():
             store_cols = {c["name"] for c in insp.get_columns("stores")}
             store_additions = {
