@@ -706,7 +706,7 @@ WorkBuddy；基线 e47203c70e。调价页「调价与试涨规则」面板里有
 
 改动：只改 `src/pages/AutoPricing.tsx` 面板文案——补上「订单快照超过 2 小时没同步时本轮不回退」，把「短于空运周期」改成「不超过 21 天」。判据一行未动，调价行为完全不变（`plan()` 未修改）。`docs/pricing/2026-10-18-buybox-pricing-model.md` 的回滚段落同步补上三个前提。
 
-复测：`tsc --noEmit` 通过（`noUnusedLocals` 开）；`test-buybox-copy.cjs` 全过；全量 selfcheck 全绿。
+复测：`tsc --noEmit` 通过（`noUnusedLocals` 开）；`test-buybox-copy.cjs` 全过；全量 selfcheck 全绿。`test-pricing-layout.cjs` 28 → 34 断言：新增 6 条钉住这块面板——必须出现「48 小时」「2 小时」「暂停试涨 24 小时」「不超过 21 天」，且**不许**再出现「短于空运周期」。把文案改回旧版后该断言转红（已还原）。以后改这段文案会直接让门禁失败，这是有意的：文案与 `plan()` 判据不一致时，用户会照着文案判断「该回退没回退」。
 
 ### DEAD-CODE-06 删掉重复的重定向组件与两个零引用的费率映射更新封装（2026-10-20）
 
