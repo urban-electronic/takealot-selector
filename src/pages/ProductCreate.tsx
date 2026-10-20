@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import type { ScrapeResult, FeeCategory, Product } from '../types';
+import type { ScrapeResult, Product } from '../types';
 import { SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { importSavedTakealotPage, makeTakealotBookmarklet, parseTakealotPageImport } from '../takealotPageImport';
 import { ProductImage } from '../utils/imageFallback';
+import { useFeeCategories } from '../utils/useFeeCategories';
 
 export default function ProductCreate() {
   const navigate = useNavigate();
@@ -13,7 +14,8 @@ export default function ProductCreate() {
   const [scraping, setScraping] = useState(false);
   const [scrapeResult, setScrapeResult] = useState<ScrapeResult | null>(null);
   const [error, setError] = useState('');
-  const [feeCategories, setFeeCategories] = useState<FeeCategory[]>([]);
+  const feeCategoryState = useFeeCategories(api);
+  const feeCategories = feeCategoryState.categories;
   const [productName, setProductName] = useState('');
   const [productImage, setProductImage] = useState('');
   const [salePrice, setSalePrice] = useState('');
@@ -66,10 +68,6 @@ export default function ProductCreate() {
   const [linkStatus, setLinkStatus] = useState('未购买');
   const [lastCostProduct, setLastCostProduct] = useState<Product | null>(null);
   const [costCopyNotice, setCostCopyNotice] = useState('');
-
-  useEffect(() => {
-    api.getFeeCategories().then(setFeeCategories).catch(() => {});
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -321,6 +319,14 @@ export default function ProductCreate() {
             系统推荐: <strong>{scrapeResult.recommended_fee_category || '无推荐'}</strong>
             {scrapeResult.fee_match_reason && ` (${scrapeResult.fee_match_reason})`}
           </div>
+          {feeCategoryState.error && (
+            <div className="alert alert-error" role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span>{feeCategoryState.error}</span>
+              <button type="button" className="btn btn-outline btn-sm" onClick={feeCategoryState.reload}>
+                重新读取
+              </button>
+            </div>
+          )}
           <div className="form-row">
             <div className="form-group">
               <label>Fee 品类</label>

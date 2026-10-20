@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { openUrl } from '../api';
-import type { Product, FeeCategory } from '../types';
+import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
+import { useFeeCategories } from '../utils/useFeeCategories';
 import { MARKET_META, MARKET_ORDER, formatMarketPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { toNumber } from '../utils/number';
@@ -19,7 +20,8 @@ export default function ProductDetail() {
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [feeCategories, setFeeCategories] = useState<FeeCategory[]>([]);
+  const feeCategoryState = useFeeCategories(api);
+  const feeCategories = feeCategoryState.categories;
   const [editMode, setEditMode] = useState(searchParams.get('edit') === '1');
 
   // edit form
@@ -82,8 +84,6 @@ export default function ProductDetail() {
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-
-    api.getFeeCategories().then(setFeeCategories).catch(() => {});
   }, [id]);
 
   const handleSave = async () => {
@@ -250,6 +250,16 @@ export default function ProductDetail() {
       {/* Fee Category */}
       <div className="card">
         <div className="card-title">Fee 品类</div>
+        {/* 提示放在编辑态之外：只读时「费率范围/计算比例」也是从品类表算的，
+            读失败同样会显示成「-」，两种情况都要能看出是没读到而不是没有。 */}
+        {feeCategoryState.error && (
+          <div className="alert alert-error" role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>{feeCategoryState.error}</span>
+            <button type="button" className="btn btn-outline btn-sm" onClick={feeCategoryState.reload}>
+              重新读取
+            </button>
+          </div>
+        )}
         {editMode ? (
           <div className="form-group">
             <select
@@ -257,6 +267,12 @@ export default function ProductDetail() {
               onChange={(e) => updateField('fee_category', e.target.value || null)}
             >
               <option value="">-- 请选择 --</option>
+              {/* 当前值不在下拉里时补一条：品类表读失败、或品类后来被改名/停用时，
+                  原来下拉会直接显示「-- 请选择 --」，看起来像这件货没设过品类。
+                  值不变，只是让屏幕上显示的和库里存的一致。 */}
+              {editData.fee_category && !feeCategories.some((fc) => fc.name === editData.fee_category) && (
+                <option value={editData.fee_category}>{editData.fee_category}（当前值）</option>
+              )}
               {feeCategories.map((fc) => (
                 <option key={fc.id} value={fc.name}>
                   {fc.name} ({(fc.success_fee_rate * 100).toFixed(0)}%)

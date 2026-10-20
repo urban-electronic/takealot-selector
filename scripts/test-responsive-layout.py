@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright
 JNB_TODAY = (datetime.now(timezone.utc) + timedelta(hours=2)).date().isoformat()
 
 BASE = 'http://127.0.0.1:5173'
-PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳包 / Travel storage bag with a long product title', chinese_product_name='收纳包', sku='TEST-001', selection_status='数据待补充', product_image_url=None, product_image_path=None, takealot_url='https://catalog.example.invalid/product/this-is-a-deliberately-long-product-link-for-layout-validation', recorded_at='2026-10-15', purchase_quantity=1, fee_category_confirmed=False, is_archived=False)
+PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳包 / Travel storage bag with a long product title', chinese_product_name='收纳包', sku='TEST-001', selection_status='数据待补充', product_image_url=None, product_image_path=None, takealot_url='https://catalog.example.invalid/product/this-is-a-deliberately-long-product-link-for-layout-validation', recorded_at='2026-10-15', purchase_quantity=1, fee_category='Home', fee_category_confirmed=False, is_archived=False)
 # Optional numeric values used by the existing detail view; fixtures are never saved.
 for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny','length_mm','width_mm','height_mm','actual_weight_kg','packaging_cost_per_unit_cny','inbound_listing_fee_cny','outbound_operation_fee_cny','last_mile_delivery_fee_cny','other_fee_cny','fulfillment_fee_zar','success_fee_rate','total_cost_zar','profit_zar','profit_margin']:
     PRODUCT[key] = 0
@@ -62,10 +62,14 @@ def main():
         browser=p.chromium.launch(headless=True)
         context=browser.new_context()
         context.add_init_script("localStorage.setItem('api_base_url', 'http://127.0.0.1:5173')")
+        # 需要模拟「这个接口读失败」时把路径放进来（见文件末尾的降级界面检查）。
+        failing=set()
         def intercept(route):
             from urllib.parse import urlsplit
             url=urlsplit(route.request.url)
             if url.path.startswith('/api/'):
+                if url.path in failing:
+                    route.fulfill(status=500,json={'detail':'Fixture failure'});return
                 allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open', '/api/products/seller-assist/preview')
                 if route.request.method != 'GET' and not allowed_write:
                     unknown.append(route.request.method+' '+url.path);route.abort();return
@@ -187,6 +191,51 @@ def main():
                     if card.is_visible(): failures.append(f'{width}: details did not collapse')
                 if args.screenshots and (path in ('/','/auto-pricing','/packing') and width in (1440,390)):
                     page.screenshot(path=str(Path(args.screenshots)/((path.strip('/').replace('/','-') or 'home')+f'-{width}.png')))
+        # ---- 费率品类读失败时的降级界面 -------------------------------------
+        # /api/fee-categories 在正常 fixture 里返回空列表（= 读取成功但没品类），
+        # 所以「读取失败」这条分支在任何宽度下都没被渲染过。而它恰恰是新建产品页
+        # 和详情页选品类的唯一入口：读失败时下拉是空的，如果提示再挤爆窄屏或跑出
+        # 卡片，用户就只剩「没有品类可选」这一种解释（原来的行为正是如此）。
+        # 这里单独把该接口打成 500，只量这一条提示是否可见、在卡片内、不撑破页面。
+        failing.add('/api/fee-categories')
+        try:
+            for width,height in ((390,680),(320,568)):
+                page.set_viewport_size({'width':width,'height':height})
+                path='/products/'+PRODUCT['id']
+                print(f'Checking {width} {path} (fee categories failing)',flush=True)
+                page.goto(BASE+path)
+                try: page.get_by_role('heading',name='多用途收纳包',exact=False).first.wait_for(timeout=8000)
+                except Exception: failures.append(f'{width} {path}: missing heading (degraded)');continue
+                page.locator('.loading').wait_for(state='hidden')
+                alert=page.get_by_role('alert')
+                if alert.count()!=1: failures.append(f'{width}: fee category failure shows no alert');continue
+                if not alert.is_visible(): failures.append(f'{width}: fee category alert hidden')
+                text=alert.inner_text()
+                if '不是没有品类' not in text: failures.append(f'{width}: fee category alert text lost the point: {text!r}')
+                box=alert.bounding_box(); card=page.locator('.card').filter(has=alert).first.bounding_box()
+                if box['x']<0 or box['x']+box['width']>width+1: failures.append(f'{width}: fee category alert clipped {box}')
+                if card and (box['x']<card['x']-1 or box['x']+box['width']>card['x']+card['width']+1): failures.append(f'{width}: fee category alert outside its card')
+                retry=alert.get_by_role('button',name='重新读取')
+                b=retry.bounding_box()
+                if not b or b['x']<0 or b['x']+b['width']>width+1 or b['y']<0: failures.append(f'{width}: fee category retry unreachable {b}')
+                if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: fee category alert causes page overflow')
+                if args.screenshots: page.screenshot(path=str(Path(args.screenshots)/f'fee-error-{width}.png'))
+                # 编辑态：品类表读不到时，下拉必须继续显示库里已有的品类。
+                # 原来下拉只由品类表生成，读失败就只剩「-- 请选择 --」，
+                # 屏幕上看起来像这件货没设过品类（实际有值，保存也不会丢）。
+                page.goto(BASE+path+'?edit=1')
+                try: page.get_by_role('heading',name='多用途收纳包',exact=False).first.wait_for(timeout=8000)
+                except Exception: failures.append(f'{width} {path}: missing heading (degraded edit)');continue
+                page.locator('.loading').wait_for(state='hidden')
+                select=page.locator('select').filter(has=page.locator('option',has_text='请选择')).first
+                if select.count()!=1: failures.append(f'{width}: fee category select missing in edit mode');continue
+                if select.input_value()!=PRODUCT['fee_category']:
+                    failures.append(f"{width}: fee category select lost the stored value ({select.input_value()!r})")
+                if '当前值' not in select.locator('option:checked').inner_text():
+                    failures.append(f'{width}: stored fee category not labelled as current value')
+                if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: fee category edit select causes page overflow')
+        finally:
+            failing.clear()
         browser.close()
     report=dict(checked=checked,failures=failures,page_errors=errors,undeclared_api=sorted(set(unknown)))
     print(json.dumps(report,ensure_ascii=False,indent=2))

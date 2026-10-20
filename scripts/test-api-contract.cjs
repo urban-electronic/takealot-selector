@@ -183,4 +183,68 @@ check(byName.get('updateFeeCategory')?.method === 'PATCH',
 check(byName.get('translateProductName')?.path === '/api/products/translate',
   'translateProductName 必须打 /api/products/translate：少 /products 段是 404，而调用方把异常吞了，网页版自动翻译永远不生效');
 
-console.log(`test-api-contract: ${checks} checks passed (${routes.size} routes / ${calls.length} calls)`);
+// ---- 直接 fetch() 的接口：上面只解析了 request()，这里补齐 -------------------
+//
+// 为什么要补：Excel 导出、装箱单图片、入库单模板、云端浏览器画面、迁移包这五个
+// 接口返回的是 blob / 二进制，走不了 request() 的 JSON 解析，都是自己写 fetch()。
+// 它们的路径字符串从来没被任何门禁检查过——改错一个段就是 404，而下载失败的表现
+// 是「点了没反应」或「图片空白」，没有异常类型、没有日志，最容易长期没人发现。
+// 这里扫 src 下所有带字面量的 fetch()，只认 /api 开头的，动词默认 GET。
+const srcFiles = fs.readdirSync(path.join(ROOT, 'src'), { recursive: true })
+  .filter(f => /\.(ts|tsx)$/.test(f))
+  .map(f => path.join(ROOT, 'src', f));
+
+const directCalls = [];
+for (const file of srcFiles) {
+  const text = fs.readFileSync(file, 'utf8');
+  for (const match of text.matchAll(/fetch\(/g)) {
+    let i = match.index + 'fetch('.length;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    const quote = text[i];
+    if (quote !== '`' && quote !== "'" && quote !== '"') continue;  // fetch(url) 这类变量，跳过
+    const bodyStart = i + 1;
+    let j = bodyStart;
+    while (j < text.length) {
+      if (text[j] === '\\') { j += 2; continue; }
+      if (quote === '`' && text[j] === '$' && text[j + 1] === '{') { j = skipTemplateExpr(text, j); continue; }
+      if (text[j] === quote) break;
+      j += 1;
+    }
+    const raw = text.slice(bodyStart, j)
+      .replace(/^\$\{getBaseUrl\(\)\}/, '')
+      .replace(/^\$\{baseUrl\}/, '');
+    if (!raw.startsWith('/api')) continue;
+    // 动词只在这一个调用的参数里找（往后再看 400 字符，足够覆盖多行 options）
+    const verb = text.slice(j, j + 400).match(/method:\s*['"](\w+)['"]/);
+    directCalls.push({
+      name: `${path.basename(file)}:${text.slice(0, bodyStart).split('\n').length}`,
+      method: verb ? verb[1].toUpperCase() : 'GET',
+      path: normalizeFrontendPath(raw),
+      raw,
+    });
+  }
+}
+
+// 解析器失效（比如把 fetch 换成封装的 request、或换了写法）时必须红：
+// 否则这一整段会静默变成 0 条比对，又回到「没人检查」的状态。
+check(directCalls.length >= 5,
+  `直接 fetch() 解析结果只有 ${directCalls.length} 条，解析器可能失效（预期 ≥5：导出/图片/模板/画面/迁移）`);
+
+const missingDirect = directCalls
+  .filter(c => !resolve(c.method, c.path))
+  .map(c => `${c.name}: ${c.method} ${c.path}`);
+check(missingDirect.length === 0,
+  `以下直接 fetch() 的接口在后端没有对应路由（下载/图片会静默失败）：\n  ${missingDirect.join('\n  ')}`);
+
+// 钉住这几个二进制接口的存在：它们是「点下去没反应」最容易发生的地方
+for (const [method, target, why] of [
+  ['POST', '/api/packing/export', '装箱单 Excel 导出'],
+  ['GET', '/api/packing/images/:p', '装箱单图片'],
+  ['POST', '/api/inventory/shipments/inbound-template', '入库单模板导出'],
+  ['GET', '/api/buybox-browser/frame', '云端浏览器画面'],
+  ['POST', '/api/migrate', '云端迁移包导入'],
+]) {
+  check(routes.has(`${method} ${target}`), `后端必须注册 ${method} ${target}（${why}）`);
+}
+
+console.log(`test-api-contract: ${checks} checks passed (${routes.size} routes / ${calls.length} request calls / ${directCalls.length} direct fetches)`);

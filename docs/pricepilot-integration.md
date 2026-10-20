@@ -863,3 +863,46 @@ WorkBuddy；基线 `645c4be426`。
   「三个市场都要手工录入」「不与人民币直接比价」，不得再出现旧句）。
   把文案改回旧版，断言在第一条就转红（已还原）。
 - 复测：`test-market-prices.cjs` 33 条断言；全量 selfcheck 29 步全绿。
+
+### FEE-CATEGORY-LOAD-01 费率品类读失败不再静默（2026-10-21）
+
+WorkBuddy；基线 `790f1244a3`。
+
+- 症状：`/api/fee-categories` 读失败时，新建产品页与商品详情页都是
+  `.catch(() => {})`——下拉只剩「-- 请选择 --」，用户看到的是「没有品类可选」，
+  不是「这一次没读到」，于是去找品类或干脆不填品类就保存。同一个接口在设置页
+  是会报错的（`Settings.tsx` 用 `Promise.all` + `setError`），同一份数据在两处
+  给出两种结论。详情页编辑态还有第二层：下拉只由品类表生成，读失败时库里明明
+  有品类也显示成「-- 请选择 --」，看起来像这件货没设过品类。
+- 改动：新增 `src/utils/useFeeCategories.ts`（`categories` / `error` / `loading`
+  / `reload`），两个页面共用；读取失败显示「费率品类读取失败，下拉是空的——
+  不是没有品类，请重试」并提供「重新读取」；同步抛错也落进同一状态（用
+  `Promise.resolve().then()` 包一层，异常不从 effect 冒出去）；重试失败保留
+  上一次成功的列表。详情页把提示放在编辑态之外（只读时费率列同样受影响），
+  并在当前值不在下拉里时补一条「<品类>（当前值）」，值不变、只是显示与库里一致。
+- 复现：`node scripts/test-fee-categories.cjs` 14 条断言（成功 / 失败 / 同步抛错 /
+  重试 / 重试失败不清空）。把 catch 改回静默，第 2 组断言转红（已还原）。
+- 版式审计补降级场景：`scripts/test-responsive-layout.py` 新增一遍「该接口打成
+  500」的检查（390 / 320），量提示是否出现、在卡片内、重试按钮可达、不撑破页面，
+  并在 `?edit=1` 下断言下拉仍保留库里的品类。删掉提示渲染 → 报
+  `390: fee category failure shows no alert`；去掉「当前值」选项 → 报
+  `fee category select lost the stored value ('')`（均已还原）。fixture 的
+  `PRODUCT` 补 `fee_category='Home'`（此前详情页品类行永远是「-」）。
+- 复测：`test-fee-categories` 14 条；版式审计 99 组合 + 2 组降级 0 失败；全量 selfcheck 全绿。
+
+### API-CONTRACT-BLOB-01 契约门禁覆盖直接 fetch() 的二进制接口（2026-10-21）
+
+WorkBuddy；基线 `790f1244a3`。
+
+- 症状：`scripts/test-api-contract.cjs` 只解析 `request()`（JSON 接口），而装箱单
+  Excel 导出、装箱单图片、入库单模板、云端浏览器画面、迁移包导入这五个接口返回
+  blob，都是自己写 `fetch()`，路径字符串从来没被任何门禁检查过。改错一个路径段
+  就是 404，而下载失败的表现是「点了没反应」或「图片空白」——没有异常类型、
+  没有日志，和 `translateProductName` 少写 `/products` 那次属于同一类问题。
+- 改动：同一脚本增加第二遍扫描，扫 `src/**/*.ts(x)` 里带字面量的 `fetch(`，只认
+  `/api` 开头的（`fetch(url)` 这类变量跳过），动词默认 GET，逐条比对后端路由表；
+  另加 5 条「这些路由必须存在」的显式断言。解析条数设下限 5，解析器失效即红，
+  不会静默变成 0 条比对。
+- 复现：把 `exportPacking` 的 `/api/packing/export` 改成 `/api/packing/export-v2`，
+  报 `remoteApi.ts:459: POST /api/packing/export-v2 没有对应路由`（已还原）。
+- 复测：`test-api-contract` 12 → 17 条断言（91 路由 / 64 request 调用 / 5 直接 fetch）。
