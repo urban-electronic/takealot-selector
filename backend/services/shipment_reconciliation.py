@@ -72,7 +72,10 @@ def preview(db, store_id, data):
         from api.inventory_routes import _find_product_for_sku
         if not _find_product_for_sku(db, sku, store_id)[0]:
             raise HTTPException(400, f'SKU {sku} 不在当前店铺有效产品库中')
-        if not db.query(PackingProduct).filter(PackingProduct.sku == sku).first():
+        if not db.query(PackingProduct).filter(
+            PackingProduct.store_id == store_id,
+            PackingProduct.sku == sku,
+        ).first():
             raise HTTPException(400, f'SKU {sku} 不在装箱产品库中')
     balances = {sku: inventory_balance_for_sku(db, sku, store_id) + restored[sku] for sku in skus}
     remaining = {sku: max(0, v) for sku, v in balances.items()}
@@ -125,7 +128,10 @@ def apply(db, store_id, data):
                                 shipment_date=date, shipping=shipping, mark=box, status='transit')
             db.add(shipment); db.flush(); numbers.append(shipment.shipment_no)
             for x in lines:
-                product = db.query(PackingProduct).filter(PackingProduct.sku == x['sku']).first()
+                product = db.query(PackingProduct).filter(
+                    PackingProduct.store_id == store_id,
+                    PackingProduct.sku == x['sku'],
+                ).first()
                 line = ShipmentLine(shipment_id=shipment.id, sku=x['sku'], name_zh=product.name_zh,
                                     name_en=product.name_en, cartons=1, count_per_carton=x['quantity'], total_quantity=x['quantity'])
                 db.add(line); db.flush()

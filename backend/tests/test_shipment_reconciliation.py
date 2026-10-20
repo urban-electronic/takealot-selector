@@ -16,7 +16,7 @@ def db():
         db.add(Store(id='s', name='Test'))
         for sku, count in [('a', 10), ('b', 0)]:
             db.add(Product(id=sku, store_id='s', sku=sku, is_archived=False))
-            db.add(PackingProduct(sku=sku, name_zh=sku))
+            db.add(PackingProduct(store_id='s', sku=sku, name_zh=sku))
             db.add(InventoryAdjustment(store_id='s', sku=sku, quantity_delta=count, occurred_at='2026-10-01'))
         old = Shipment(id='old', store_id='s', draft_key='old', shipment_no='old', shipment_date='2026-10-07', status='confirmed')
         db.add(old); db.flush()
@@ -108,7 +108,7 @@ def test_executable_http_preview_apply_and_readback(tmp_path):
     with Session(engine) as session:
         session.add(Store(id='s',name='runtime'))
         session.add(Product(id='runtime',store_id='s',sku='runtime',is_archived=False))
-        session.add(PackingProduct(sku='runtime',name_zh='Runtime'))
+        session.add(PackingProduct(store_id='s',sku='runtime',name_zh='Runtime'))
         session.add(InventoryAdjustment(store_id='s',sku='runtime',quantity_delta=4,occurred_at='2026-10-01'))
         session.commit()
     app=FastAPI(); app.include_router(router)
@@ -130,4 +130,35 @@ def test_executable_http_preview_apply_and_readback(tmp_path):
     assert after['available']==0 and after['overseas_in_transit']==9 and after['in_transit']==0
     assert client.post('/api/inventory/reconciliation/apply',json=body).json()['replayed']
     assert len(client.get('/api/inventory/shipments').json())==1
+    engine.dispose()
+
+
+def test_reconciliation_never_reads_another_store_packing_product(tmp_path):
+    """369 件补登路径也必须遵守装箱产品的店铺边界。"""
+    engine = create_engine(f'sqlite:///{tmp_path}/cross-store.db')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all([
+            Store(id='a', name='A'),
+            Store(id='b', name='B'),
+            Product(id='a-product', store_id='a', sku='same', is_archived=False),
+            Product(id='b-product', store_id='b', sku='same', is_archived=False),
+            PackingProduct(store_id='b', sku='same', name_zh='B 店名称'),
+        ])
+        db.commit()
+        request = ReconcileIn(lines=[dict(
+            date='2026-10-07', shipping='海运', box='1', sku='same', quantity=1,
+        )])
+        with pytest.raises(HTTPException) as err:
+            preview(db, 'a', request)
+        assert err.value.status_code == 400
+        assert '不在装箱产品库' in err.value.detail
+
+        db.add(PackingProduct(store_id='a', sku='same', name_zh='A 店名称'))
+        db.commit()
+        plan = preview(db, 'a', request)
+        result = apply(db, 'a', ReconcileIn(lines=request.lines, token=plan['token']))
+        shipment = db.query(Shipment).filter_by(store_id='a', shipment_no=result['shipment_numbers'][0]).one()
+        line = db.query(ShipmentLine).filter_by(shipment_id=shipment.id).one()
+        assert line.name_zh == 'A 店名称'
     engine.dispose()
