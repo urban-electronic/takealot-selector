@@ -110,6 +110,13 @@ class Product(Base):
     review_count = Column(Integer, nullable=True)
     rating_value = Column(Float, nullable=True)
 
+    # 多市场参考价（JSON 文本，空串表示未采集）：
+    # {"CN":{"price":469,"cur":"CNY","src":"官网","at":"2026-10-21"},
+    #  "SG":{"price":115,"cur":"SGD","src":"官网","at":"2026-10-21","url":"..."},
+    #  "TB":{"price":268,"cur":"CNY","src":"淘宝均价","n":12,"at":"2026-10-21"}}
+    # 只做展示与比价参考，不参与利润计算，因此不拆字段/不建表。
+    market_prices = Column(Text, default="")
+
     # Calculated results (computed fields, stored for query efficiency)
     volume_cbm = Column(Float, nullable=True)
     volumetric_weight_kg = Column(Float, nullable=True)

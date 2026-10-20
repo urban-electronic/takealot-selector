@@ -47,6 +47,8 @@ export interface Product {
   stock_remaining?: number | null;
   review_count?: number | null;
   rating_value?: number | null;
+  /** 多市场参考价 JSON 文本，见 utils/marketPrice */
+  market_prices?: string | null;
   // calculated
   volume_cbm: number | null;
   volumetric_weight_kg: number | null;

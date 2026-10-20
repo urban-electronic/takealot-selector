@@ -5,6 +5,8 @@ import { openUrl } from '../api';
 import type { Product, FeeCategory } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
+import { MARKET_META, MARKET_ORDER, formatMarketPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
+import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
@@ -22,6 +24,8 @@ export default function ProductDetail() {
 
   // edit form
   const [editData, setEditData] = useState<Partial<Product>>({});
+  // 多市场参考价：草稿态便于逐格编辑，保存时序列化回 editData.market_prices
+  const [mpDraft, setMpDraft] = useState<MarketPrices>({});
   const [copiedSku, setCopiedSku] = useState(false);
   const copySku = async () => {
     if (!product?.sku) return;
@@ -40,6 +44,7 @@ export default function ProductDetail() {
     api.getProduct(id)
       .then((p: Product) => {
         setProduct(p);
+        setMpDraft(parseMarketPrices(p.market_prices));
         setEditData({
           product_name: p.product_name || '',
           takealot_url: p.takealot_url || '',
@@ -72,6 +77,7 @@ export default function ProductDetail() {
           manual_success_fee_zar: p.manual_success_fee_zar ?? null,
           manual_fulfillment_fee_zar: p.manual_fulfillment_fee_zar ?? null,
           manual_total_cost_zar: p.manual_total_cost_zar ?? null,
+          market_prices: p.market_prices || '',
         });
       })
       .catch((e: Error) => setError(e.message))
@@ -138,6 +144,38 @@ export default function ProductDetail() {
       }
       return next;
     });
+  };
+
+  /** 改一个市场的参考价：清空即删除该市场；写入时自动补币种、来源和日期 */
+  const setMarketPrice = (code: MarketCode, raw: string) => {
+    const next: MarketPrices = { ...mpDraft };
+    const value = raw.trim() === '' ? NaN : Number(raw);
+    if (!Number.isFinite(value) || value < 0) {
+      delete next[code];
+    } else {
+      next[code] = {
+        ...(next[code] || {}),
+        price: value,
+        cur: MARKET_META[code].cur,
+        src: next[code]?.src || '手工',
+        at: today(),
+      };
+    }
+    setMpDraft(next);
+    updateField('market_prices', serializeMarketPrices(next));
+  };
+
+  /** 淘宝均价的样本条数 */
+  const setMarketSample = (code: MarketCode, raw: string) => {
+    const entry = mpDraft[code];
+    if (!entry) return;
+    const n = raw.trim() === '' ? NaN : Number(raw);
+    const next: MarketPrices = {
+      ...mpDraft,
+      [code]: { ...entry, n: Number.isFinite(n) && n > 0 ? Math.round(n) : undefined },
+    };
+    setMpDraft(next);
+    updateField('market_prices', serializeMarketPrices(next));
   };
 
   if (loading) return <div className="loading">加载中...</div>;
@@ -332,6 +370,78 @@ export default function ProductDetail() {
                 </span></td></tr>
             </tbody>
           </table>
+        )}
+      </div>
+
+      {/* 多市场参考价 */}
+      <div className="card">
+        <div className="card-title">多市场参考价</div>
+        <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
+          只作定价参考，不参与利润计算。中国官网价与淘宝均价需手工录入，新加坡官网价取自官网商品页。
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>
+              <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>市场</th>
+              <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>价格</th>
+              <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>样本 / 日期</th>
+            </tr>
+          </thead>
+          <tbody>
+            {MARKET_ORDER.map((code) => {
+              const entry = mpDraft[code];
+              return (
+                <tr key={code}>
+                  <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)' }}>{MARKET_META[code].label}</td>
+                  <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)' }}>
+                    {editMode ? (
+                      <input
+                        type="number" step="0.01" min="0"
+                        aria-label={`${MARKET_META[code].label}价格`}
+                        value={entry?.price ?? ''}
+                        onChange={(e) => setMarketPrice(code, e.target.value)}
+                        style={{ width: 110 }}
+                        placeholder={MARKET_META[code].cur}
+                      />
+                    ) : entry ? (
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatMarketPrice(code, entry)}</span>
+                    ) : (
+                      <span style={{ color: 'var(--color-text-secondary)' }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)', fontSize: 12 }}>
+                    {code === 'TB' && editMode ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <input
+                          type="number" step="1" min="0"
+                          aria-label="淘宝均价样本条数"
+                          value={entry?.n ?? ''}
+                          onChange={(e) => setMarketSample(code, e.target.value)}
+                          style={{ width: 70 }}
+                        />
+                        <span>条样本</span>
+                      </span>
+                    ) : (
+                      <>
+                        {entry?.n ? `${entry.n} 条样本` : ''}
+                        {entry?.at ? `${entry.n ? ' · ' : ''}${entry.at}` : ''}
+                        {!entry?.n && !entry?.at ? '—' : ''}
+                      </>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {marketInsights(mpDraft).length > 0 && (
+          <div style={{ marginTop: 10, paddingTop: 8, borderTop: '0.5px solid var(--color-border)', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
+            {marketInsights(mpDraft).map((it) => (
+              <span key={it.label} style={{ marginRight: 16 }}>
+                {it.label} <span style={{ color: 'var(--color-text)', fontWeight: 500 }}>{it.value}</span>
+              </span>
+            ))}
+          </div>
         )}
       </div>
 

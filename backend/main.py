@@ -249,6 +249,7 @@ def _ensure_columns():
             product_additions = {
                 "is_archived": "BOOLEAN DEFAULT 0",
                 "archived_at": "DATETIME",
+                "market_prices": "TEXT DEFAULT ''",
             }
             with engine.begin() as conn:
                 for name, sql_type in product_additions.items():
