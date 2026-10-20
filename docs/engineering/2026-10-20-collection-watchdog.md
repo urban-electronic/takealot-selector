@@ -44,7 +44,7 @@ future 永远不完成，这个 while 就永远不退出。更糟的是它在**�
 | 位置 | 改动 |
 | --- | --- |
 | `_wait_with_heartbeat` | 记下每个 future 的开始时间，超过 `JOB_TIMEOUT`(240s) 就取消、放弃、返回，不再等 |
-| `_record_stuck` | 把被放弃的任务写成 `status=error / error_code=collect_timeout`，`next_due` 排到下一轮，并在 `_buybox_worker_state` 里记 `stuck_at` / `stuck_jobs` |
+| `_record_stuck` | 把被放弃的任务写成 `status=error / error_code=collect_timeout`，`next_due` 排到下一轮，并在 `_buybox_worker_state` 里记 `stuck_at` / `stuck_jobs`。落库前 `pop('diagnostics')`：旧计数属于上一轮，留着会被自愈重判成 `page_structure_changed`，也会在「复制诊断」里冒充这一轮的结果（COLLECT-DIAG-02）。`snapshot` 保留 |
 | `run()` | `ThreadPoolExecutor` 改成显式 `shutdown(wait=False)` |
 | `quote_browser.quote_context` | 锁改成 `acquire(timeout=LOCK_WAIT_SECONDS=90)`，拿不到抛 `CollectorBusy`；只有真拿到了才 release |
 | `process()` | `CollectorBusy` 记成 `collector_busy`，不再混进 `collector_unavailable`（那条会劝用户「点立即采集重试」，而重试只会继续等同一把锁）。`collector_busy` 与 `collector_unavailable` 同属 `TRANSIENT_CODES`：按用户间隔重试，不走指数退避（WATCHDOG-RETRY-01） |
@@ -53,6 +53,12 @@ future 永远不完成，这个 while 就永远不退出。更糟的是它在**�
 
 判断「卡住」不能用 `worker_alive`，只能用**上一轮到现在多久**。这是这次事故
 最贵的一课：心跳证明的是「线程还在」，不是「循环在转」。
+
+同一轮还补了 `interval_seconds()`：`process()` 的 `finally` 里算 `next_due`
+用的是 `config.get('interval_minutes',5)*60`，键存在但值为 null 时会 `None*60`
+抛 TypeError，而这段代码在 `finally` 里——抛出去就整轮中断，`next_due` 没推进，
+下一轮又选中同一行、又抛一次。一条脏记录足以让整批 SKU 永久停采，日志里只有
+一句通用的「worker unavailable」。详见 INTERVAL-NULL-01。
 
 ## 顺带修的：失败原因说不出来
 

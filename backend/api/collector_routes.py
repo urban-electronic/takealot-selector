@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import SystemSettings, DEFAULT_STORE_ID
 from api.store_routes import get_store_id
-from services.buybox_monitor import PREFIX, catalog
+from services.buybox_monitor import PREFIX, catalog, interval_seconds
 
 router = APIRouter(prefix='/api/collector', tags=['collector'])
 HEARTBEAT = '_buybox_local_collector'
@@ -188,7 +188,7 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
         else:
             stale=relayed and relayed_at is None
             config.update(status='error',error='原程序报价时间缺失、过期或无效，未作为新行情使用' if stale else message or '本机采集未取得有效行情',error_code='stale_source_quote' if stale else code or 'local_collection_failed',diagnostics=diagnostics,failures=config.get('failures',0)+1)
-        config.update(request_once=False,last_attempt_at=at,last_attempt_source=report_source,next_due=now+config.get('interval_minutes',5)*60)
+        config.update(request_once=False,last_attempt_at=at,last_attempt_source=report_source,next_due=now+interval_seconds(config.get('interval_minutes')))
         if db.query(SystemSettings).filter_by(key=row.key,value=job['claim']).update({'value':json.dumps(config,ensure_ascii=False)})==1:
             processed+=1
             if valid:

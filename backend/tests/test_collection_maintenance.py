@@ -115,6 +115,39 @@ def test_decisive_code_is_never_rewritten_by_diagnostics():
     assert not any('错误码' in a for a in actions)
 
 
+def test_collector_busy_is_never_rewritten_by_diagnostics():
+    """浏览器被占用的结论不能被「这一轮没打开页面」的 diagnostics 改成页面问题。
+
+    `process()` 在 CollectorBusy 时只写 {'stage','failure'} 两个键（这一轮压根
+    没打开商品页）。旧实现会拿它去 classify()，落到 price_not_found，界面于是
+    劝用户「人工打开页面看看是不是已下架」——把一把没释放的浏览器锁说成商品下架。
+    """
+    record = challenge_record()
+    record.update(enabled=True, error_code='collector_busy',
+                  error='采集浏览器被占用，本轮未执行',
+                  diagnostics={'stage': 'catalog', 'failure': 'CollectorBusy'})
+    fixed, actions = repair_monitor(record, now=1791912000)
+    assert fixed['error_code'] == 'collector_busy'
+    assert fixed['error'] == '采集浏览器被占用，本轮未执行'
+    assert not any('错误码' in a for a in actions)
+
+
+def test_collect_timeout_is_never_rewritten_by_stale_diagnostics():
+    """看门狗放弃的任务不能被上一轮的计数改判成「网站改版」。
+
+    collect_timeout 的 diagnostics 可能残留着上一轮成功/失败的计数
+    （buybox_cards=0 / price_nodes=12）。旧实现会据此判成
+    page_structure_changed，让用户去改解析锚点，而真实原因是浏览器没返回。
+    """
+    record = challenge_record()
+    record.update(enabled=True, error_code='collect_timeout',
+                  error='采集超过 240 秒没有返回（浏览器卡住），本轮已放弃，稍后重试',
+                  diagnostics={'http_status': 200, 'buybox_cards': 0, 'price_nodes': 12})
+    fixed, actions = repair_monitor(record, now=1791912000)
+    assert fixed['error_code'] == 'collect_timeout'
+    assert not any('错误码' in a for a in actions)
+
+
 def test_stuck_next_due_is_pulled_back_to_the_interval():
     record = challenge_record()
     record.update(enabled=True)

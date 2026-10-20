@@ -56,6 +56,48 @@ def test_stuck_job_is_abandoned_and_recorded_instead_of_waited_forever(monkeypat
     assert state['stuck_jobs'] == 1 and state['stuck_at']
 
 
+def test_abandoned_job_drops_the_previous_round_diagnostics(monkeypatch):
+    """放弃的任务不能把上一轮的计数挂在自己名下。
+
+    旧 diagnostics 属于上一轮（可能是成功的那一轮）。留着它，「复制诊断」就会
+    带出 buybox_cards=0 / price_nodes=12 这类数字，看起来像是这一轮量到的，
+    于是有人去查解析锚点——而真正的问题是浏览器没返回。
+    """
+    prefix = monitor.PREFIX + DEFAULT_STORE_ID + ':'
+    key = prefix + 'p:1'
+    factory = make_db({
+        monitor.WORKER_STATE: {'alive_at': time.time()},
+        key: {'enabled': True, 'status': 'running', 'next_due': 0, 'interval_minutes': 5,
+              'diagnostics': {'http_status': 200, 'buybox_cards': 0, 'price_nodes': 12},
+              'snapshot': {'offers': []}},
+    })
+    monkeypatch.setattr(monitor, 'wait', lambda pending, timeout, return_when: (set(), set(pending)))
+    monkeypatch.setattr(monitor, 'JOB_TIMEOUT', 0.01)
+
+    hung = Future()
+    monitor._wait_with_heartbeat({hung}, factory, {hung: time.time() - 60}, {hung: key})
+
+    with factory() as db:
+        value = json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
+    assert value['error_code'] == 'collect_timeout'
+    assert 'diagnostics' not in value          # 旧计数不许冒充这一轮的结果
+    assert 'snapshot' in value                 # 上一份报价快照仍然保留，不删数据
+
+
+def test_null_interval_does_not_break_the_next_due(monkeypatch):
+    """interval_minutes 是 null 时不能 `None * 60`。
+
+    这段算 next_due 的代码在 `process()` 的 finally 里：抛出去就整轮采集中断，
+    而这一行因为 next_due 没被推进会被每轮重新选中、每轮再抛一次——一条脏记录
+    足以让整批 SKU 永久停采，日志里只有一句通用的「worker unavailable」。
+    """
+    assert monitor.interval_seconds(None) == 300
+    assert monitor.interval_seconds(30) == 1800
+    assert monitor.interval_seconds(True) == 300      # bool 不是间隔
+    assert monitor.interval_seconds(0) == 300         # 0 会让记录每轮都到期
+    assert monitor.interval_seconds('5') == 300       # 字符串不是整数
+
+
 def test_healthy_job_is_not_mistaken_for_a_stuck_one(monkeypatch):
     prefix = monitor.PREFIX + DEFAULT_STORE_ID + ':'
     key = prefix + 'p:1'

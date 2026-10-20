@@ -29,12 +29,23 @@ MAX_BACKOFF_SECONDS = 6 * 3600
 # 这些错误码是「已经定位到根因」的结论，不需要再拿 diagnostics 重判。
 # price_not_found 故意不在里面：它是旧版本对一堆不同原因的统一兜底，
 # 恰恰最需要用 diagnostics 重新判一次。
+#
+# collector_busy / collect_timeout 是 2026-10-20 看门狗新增的两个码，两个都
+# 必须在这里，否则自愈会在 5 分钟内把它们改写成别的结论：
+#   - collector_busy 写进去的 diagnostics 只有 {'stage','failure'}（这一轮压根
+#     没打开商品页），classify() 拿它判会落到 price_not_found，界面于是劝用户
+#     「人工打开页面看看是不是已下架」——把一个浏览器锁的排队问题说成商品页面问题。
+#   - collect_timeout 沿用上一轮的 diagnostics（_record_stuck 只改结论、不清旧
+#     计数），旧计数里的 buybox_cards=0 / price_nodes=12 会被判成
+#     page_structure_changed，也就是把浏览器卡死说成网站改版、要人改解析规则。
+# 两者都是「这一轮没跑完」的确定性结论，任何旧 diagnostics 都不该推翻它。
 DECISIVE_CODES = frozenset({
     'site_challenge', 'rate_limited', 'http_forbidden', 'site_unavailable',
     'product_not_found', 'invalid_url', 'variant_unmatched', 'tls_error',
     'navigation_timeout', 'collector_error', 'network_error', 'product_redirect',
     'unstable_price', 'page_structure_changed', 'page_not_recognized',
     'collector_unavailable', 'seller_read_failed', 'parse_error',
+    'collector_busy', 'collect_timeout',
 })
 
 

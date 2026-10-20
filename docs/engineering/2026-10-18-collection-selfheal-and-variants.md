@@ -38,7 +38,10 @@
 
 - **错误码重判**：原结论不是「已定位根因」时，用 diagnostics 重判一次
   （验证页不再显示成「没找到 Buybox 价」）。`price_not_found` 故意不在
-  `DECISIVE_CODES` 里——它恰恰是最需要重判的兜底码。
+  `DECISIVE_CODES` 里——它恰恰是最需要重判的兜底码。新增错误码时必须同步进
+  这个白名单：`collector_busy` / `collect_timeout`（2026-10-20 看门狗引入）
+  当天就漏了，结果 `collector_busy` 被重判成 `price_not_found`、
+  `collect_timeout` 被重判成 `page_structure_changed`，见 COLLECT-DIAG-02。
 - **next_due 卡死**：超过 `last_attempt + 6h + 1h` 的拉回按间隔排期。
 - **停采归一**：已停采却留着 error 的记录改成 `paused`，真实原因存进
   `last_error_code` / `last_error`，信息不丢也不再报红。

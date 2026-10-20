@@ -46,6 +46,25 @@ COLLECT_RETRY_DELAY = 5.0
 # 到点就放弃这一个任务并如实记账，让循环继续转、让自愈能跑起来。
 JOB_TIMEOUT = 240
 
+
+def interval_seconds(value, default_minutes=5):
+    """采集间隔（秒）。记录里的 interval_minutes 可能是 null，这里统一归一。
+
+    `interval_minutes` 在库里有三个来源：用户配置（Pydantic 保证 int≥5）、
+    旧版本写回的行、以及直接改库的历史数据。后两者可能是 null，而 `.get(key, 5)`
+    只在**键缺失**时给默认值，键存在但值是 null 时返回 None，接着 `None * 60`
+    抛 TypeError。
+
+    为什么这个归一不能省：`process()` 里算 `next_due` 的那段在 `finally` 里，
+    抛出去就整轮采集一起中断（`run()` 只打印一句「worker unavailable」），
+    而这一行因为 `next_due` 没被推进，每一轮都会被重新选中、每一轮再抛一次——
+    一条脏记录足以让 28 个 SKU 永久停采，日志里却只有一句通用失败。
+    默认值 5 与 loop_status、repair_monitor、前端 `Number(x) || 5` 的既有口径一致，
+    没有引入新语义。
+    """
+    minutes = value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default_minutes
+    return minutes * 60
+
 # 这些是「这一轮压根没跑起来」或「页面还没渲染完」的信号，同轮重试有意义。
 # 网站验证（site_challenge）不在里面：验证不会因为隔 5 秒再开一次就解除，
 # 重试只是白白多打一次请求，对站点也不礼貌。
@@ -207,7 +226,7 @@ def process(row_id):
                           error=str(error) if (finished or busy) else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat(),last_attempt_source='cloud_browser')
-            delay=config.get('interval_minutes',5)*60
+            delay=interval_seconds(config.get('interval_minutes'))
             if result.get('status')=='error':
                 if result.get('error_code') in TRANSIENT_CODES:
                     # 网站拦截随时可能解除，指数退避只会把"恢复检测"拖到 6 小时：
@@ -362,6 +381,12 @@ def _record_stuck(session_factory, futures, owners):
 
     任务线程可能还挂在那里（浏览器卡死时无法可靠中断），但它已经不产生任何结果；
     继续假装它在跑，界面就永远显示「采集中」，用户只能反复点立即采集。
+
+    旧 diagnostics 必须清掉：那一份计数属于上一轮（可能是成功的那一轮），
+    留着它等于把旧结论挂在新结论下面——「复制诊断」会带出 buybox_cards=0 /
+    price_nodes=12 这类数字，谁看都会以为是这一轮量到的，于是去查解析锚点，
+    而真正的问题是浏览器没返回。`process()` 里对「这一轮没跑完」也是同样处理
+    （见那句「不能沿用上一轮的 error_code 和 diagnostics」）。
     """
     keys = [owners.get(future) for future in futures]
     keys = [key for key in keys if key]
@@ -375,14 +400,14 @@ def _record_stuck(session_factory, futures, owners):
                 value = json.loads(row.value)
                 if value.get('status') not in ('running', 'queued'):
                     continue
-                interval = value.get('interval_minutes') if isinstance(value.get('interval_minutes'), int) else 5
                 value.update(
                     status='error', error_stage='browser', error_code='collect_timeout',
                     error=f'采集超过 {JOB_TIMEOUT} 秒没有返回（浏览器卡住），本轮已放弃，稍后重试',
                     last_attempt_at=datetime.now(timezone.utc).isoformat(),
                     last_attempt_source='cloud_browser',
                     failures=int(value.get('failures') or 0) + 1,
-                    next_due=now + max(300, interval * 60))
+                    next_due=now + max(300, interval_seconds(value.get('interval_minutes'))))
+                value.pop('diagnostics', None)
                 row.value = json.dumps(value, ensure_ascii=False)
             state = db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
             if state:

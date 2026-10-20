@@ -671,3 +671,28 @@ WorkBuddy；基线 4916e8387c。`src/operations/keywords.ts` 的 `buildSearchQue
 改动：删掉这四个函数。`normalizeTitle()` / `tokenize()` / `extractBrand()` / `isNoise()` 保留——前三个仍被 `recommend.ts` 与 `test-operations.cjs` 使用。判据没有动：`test-operations.cjs` 的 22 条断言一条未改。
 
 复测：`tsc --noEmit` 通过（`noUnusedLocals` 开，证明没有残留引用）；`test-operations.cjs` 22 条断言全过；全量 selfcheck 27 步全绿。
+
+### COLLECT-DIAG-02 看门狗放弃的任务不再被旧 diagnostics 改写（2026-10-20）
+
+WorkBuddy；基线 c75a5abcbc。COLLECT-WATCHDOG-01 新增了 `collector_busy` 与 `collect_timeout` 两个错误码，但 `collection_maintenance.DECISIVE_CODES`（「已定位根因、不许再拿 diagnostics 重判」的白名单）没有跟着更新。自愈每 5 分钟跑一次，于是这两个结论在写进库后的 5 分钟内就被改写成别的：
+
+- `collector_busy` 的 diagnostics 只有 `{'stage','failure'}`（这一轮压根没打开商品页，`process()` 在 `finished=False` 分支只记失败类型）。`classify()` 拿它判会落到 `price_not_found`，界面于是显示「页面打开了但没有 Buybox 价 / 人工打开页面看看是不是已下架」——把一把没释放的浏览器锁说成商品下架，方向完全反了。
+- `collect_timeout` 沿用上一轮的 diagnostics（`_record_stuck` 只改结论、不清旧计数）。旧计数里的 `buybox_cards=0` / `price_nodes=12` 会被判成 `page_structure_changed`，也就是把浏览器卡死说成网站改版、劝人去改解析锚点。
+
+改动：① `DECISIVE_CODES` 补 `collector_busy` / `collect_timeout`；② `_record_stuck` 落库前 `pop('diagnostics')`——旧计数不许挂在新结论名下，`process()` 对「这一轮没跑完」本来就是这么处理的，同一模块两种口径不一致本身就是 bug。`snapshot`（上一份报价快照）保留不删。
+
+复现：`repair_monitor({'error_code':'collector_busy','diagnostics':{'stage':'catalog','failure':'CollectorBusy'}, ...})`，旧实现返回 `price_not_found`，新实现原样返回 `collector_busy`；`collect_timeout` + `{'buybox_cards':0,'price_nodes':12}` 旧实现返回 `page_structure_changed`。把 `DECISIVE_CODES` 里那两个码去掉后，`test_collection_maintenance.py` 两条新用例转红（已还原）。
+
+复测：`test_collection_maintenance.py` 新增 2 例、`test_collection_watchdog.py` 新增 1 例（放弃的任务必须丢掉旧 diagnostics，且不许删 snapshot）；后端全量 pytest 393 passed / 1 skipped。
+
+### INTERVAL-NULL-01 `interval_minutes` 为 null 不再 `None * 60` 打断整轮采集（2026-10-20）
+
+WorkBuddy；基线 c75a5abcbc。`buybox_monitor.process()` 在 `finally` 里算 `next_due`，用的是 `config.get('interval_minutes',5)*60`。`.get(key, 5)` 只在**键缺失**时给默认值——键存在但值是 `null` 时返回 `None`，`None * 60` 抛 `TypeError`。同一模块另外三处（`_record_stuck`、`repair_monitor`、`loop_status`）都用 `isinstance(int)` 归一，只有这一处没有。
+
+后果不是「这一行排期错」，而是整轮停摆：`finally` 抛出去 → `future.result()` 再抛 → `run()` 只打印一句「worker unavailable」并放弃这一轮剩下的任务；而这一行的 `next_due` 没被推进，下一轮又被选中、又抛一次。一条脏记录足以让整批 SKU 永久停采，日志里看不出原因。`collector_routes` 上报路径（`next_due=now+config.get('interval_minutes',5)*60`）是同一个写法，null 会让整个上报接口 500、后面的上报全部不处理。
+
+改动：新增 `buybox_monitor.interval_seconds(value, default_minutes=5)`，把「非正整数 → 默认 5 分钟」的归一收在一处，`process()` 与 `collector_routes` 上报路径都改用它；`_record_stuck` 里原来那段 `isinstance` 判断也改用它（行为不变）。默认值仍是 5 分钟——与 `loop_status`、`repair_monitor`、前端 `Number(x) || 5` 的既有口径一致，没有引入新语义，也没有动任何调价参数。
+
+复现：`interval_seconds(None) == 300`、`interval_seconds(30) == 1800`、`interval_seconds(True) == 300`、`interval_seconds(0) == 300`、`interval_seconds('5') == 300`（`test_collection_watchdog.py::test_null_interval_does_not_break_the_next_due`）。
+
+复测：后端全量 pytest 393 passed / 1 skipped；全量 selfcheck 27 步全绿。
