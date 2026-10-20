@@ -2,6 +2,7 @@
 
 全部通过 httpx.MockTransport 验证，不向内网/真实 CDN 发出任何请求：
 - URL 白名单：仅 HTTPS + media.takealot.com + 无凭据 + 标准端口 + 拒绝 IP 字面量
+- 路径目录限定：卖家 S3 仅 /covers_images/、官网来源图仅 /dw/image/
 - 跳转逐跳校验：跳向非允许主机在发出跳转请求前即被拒绝
 - 上游 403/404 负缓存：第二次请求不再出站；到期后恢复出站
 - 同 URL 并发去重：5 个并发请求只出站一次
@@ -22,6 +23,9 @@ from api import image_proxy
 
 ALLOWED = "https://media.takealot.com/covers_images/abc123.jpg"
 ALLOWED_B = "https://media.takealot.com/covers_images/def456.jpg"
+OFFICIAL = ("https://www.charleskeith.com/dw/image/v2/BCWJ_PRD/on/demandware.static/"
+            "-/Sites-ck-products/default/dw49bfe045/images/hi-res/2026-L6-CK2-30782933-1-ID-1.jpg"
+            "?sw=370&sh=494")
 
 
 def make_service(handler):
@@ -107,6 +111,29 @@ def test_seller_legacy_bucket_image_passes_display_proxy():
 def test_legacy_bucket_scope_is_not_expanded(url):
     with pytest.raises(HTTPException):
         image_proxy._validate_image_url(url)
+
+
+def test_official_site_image_passes_display_proxy():
+    """选品库要显示尚未上架 Takealot 的官网来源产品图。"""
+    safe = image_proxy._validate_image_url(OFFICIAL)
+    assert safe.startswith("https://www.charleskeith.com/dw/image/")
+    assert safe.endswith("?sw=370&sh=494")  # 尺寸参数原样保留，否则取不到图
+    service, calls = make_service(lambda request: image_bytes(b'official-image'))
+    assert asyncio.run(service.fetch(OFFICIAL)) == (b'official-image', 'image/jpeg')
+    assert calls == [safe]
+
+
+@pytest.mark.parametrize('url', [
+    'https://www.charleskeith.com/account/order.jpg',              # 非图片目录
+    'https://www.charleskeith.com/dw/image/../account/order.jpg',  # 目录穿越
+    'https://www.charleskeith.com/dw/image%2f..%2fsecret.jpg',     # 编码后的穿越
+    'https://www.charleskeith.com.evil.test/dw/image/a.jpg',       # 伪装子域
+    'https://charleskeith.com/dw/image/a.jpg',                     # 裸域不在白名单
+])
+def test_official_site_scope_is_not_expanded(url):
+    with pytest.raises(HTTPException) as exc:
+        image_proxy._validate_image_url(url)
+    assert exc.value.status_code == 400
 
 
 def test_successful_response_is_micro_cached_for_repeat_calls():
