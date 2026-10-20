@@ -653,3 +653,21 @@ WorkBuddy；基线 f4175cddaa。`AutoPricing.tsx` 的 `cycleStuck` 只拿 `cycle
 复现：`round_seconds:1200, round_jobs:28, interval_minutes:5, cycle_age_seconds:900`，旧逻辑报「采集循环卡住了 / 重启服务」，新逻辑报「采集循环运行中」。
 
 复测：`test-buybox-status.cjs` 179 → 184 断言（新增 5 条：慢轮次不算卡死、不用 danger 色、不出现「卡住」；无 `stuck_jobs` 时不许说「已被放弃」；`stuck_jobs=1` 时必须说）。把 `expectedCycleSeconds` 里的整轮耗时项改回 0 后新断言在 `test-buybox-status.cjs:154` 转红（已还原）。`tsc --noEmit` 通过（`noUnusedLocals` 开）；全量 selfcheck 26 步全绿。
+
+### EXPORT-SAFE-01 导出到云端不再把「读不到」当成「0 条」（2026-10-20）
+
+WorkBuddy；基线 4916e8387c。`Settings.tsx` 的「一键导出到云端」用 `try { rules.push(...r) } catch {}` 读费率映射规则：读失败就带着一张**空表**继续导出，界面还写「导出成功！fee_mapping_rules: 0」。而 `backend/main.py` 的 `bulk_migrate` 是「先按 payload 里的表名 DELETE，再逐行 INSERT」——`payload_tables` 包含 `fee_mapping_rules` 时，云端那张表会被清空、且一条也不会插回去。本地模式下 `getFeeMappingRules()` 走 Tauri `invoke`，在浏览器里必然失败，所以这条路径不是理论风险：用网页版点一次「导出到云端」就能把云端的映射规则清干净，且没有任何提示。
+
+改动：新增 `src/utils/exportPayload.ts` 的 `buildExportPayload()`，把「读不到」与「本地确实是 0 条」分开——`feeRules === null` 时整表省略（后端根本不会碰它），空数组照常同步；`Settings.tsx` 改用该函数，成功提示对省略的表写「未同步（本地读取失败，云端原值保留）」而不是「0」。判据没有放宽：其余读失败（products / fee_categories / settings）仍然中止整次导出。
+
+复现：`buildExportPayload({..., feeRules: null})`，旧实现（`rules: []` 直接进 payload）会让 `payload` 里出现 `fee_mapping_rules` 空表；新实现在 `skipped` 里点名且不出现该表。把 `exportPayload.ts` 的判断改回 `rows: source.feeRules || []` 后 `test-export-payload.cjs:39` 转红（已还原）。
+
+复测：新增 `scripts/test-export-payload.cjs` 13 条断言（读不到必须省略 / 0 条仍同步 / 读到的原样带过去 / settings 逐条转 key-value / 表名不重复）；`tsc --noEmit` 通过（`noUnusedLocals` 开）；全量 selfcheck 27 步全绿。
+
+### DEAD-CODE-05 删掉 `buildSearchQuery` / `salientTokens` 与两个 storage 读取封装（2026-10-20）
+
+WorkBuddy；基线 4916e8387c。`src/operations/keywords.ts` 的 `buildSearchQuery()` 全仓零引用，它唯一的下游 `salientTokens()` 也只被它调用——删掉前者，后者立刻变成同一簇死代码；`src/utils/storage.ts` 的 `safeGetItem()` / `safeRemoveItem()` 同样零引用（只有 `safeSetItem()` 被十几处写入点使用，也是该文件注释里唯一描述的行为）。
+
+改动：删掉这四个函数。`normalizeTitle()` / `tokenize()` / `extractBrand()` / `isNoise()` 保留——前三个仍被 `recommend.ts` 与 `test-operations.cjs` 使用。判据没有动：`test-operations.cjs` 的 22 条断言一条未改。
+
+复测：`tsc --noEmit` 通过（`noUnusedLocals` 开，证明没有残留引用）；`test-operations.cjs` 22 条断言全过；全量 selfcheck 27 步全绿。

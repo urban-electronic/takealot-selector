@@ -56,30 +56,3 @@ export function extractBrand(title: string): string | null {
   const looksLikeBrand = /^[A-Z]/.test(first) && !isNoise(first.toLowerCase());
   return looksLikeBrand ? first.toLowerCase() : null;
 }
-
-export function salientTokens(title: string, limit = 6): string[] {
-  const norm = normalizeTitle(title).split(" ");
-  const seen = new Set<string>();
-  const scored: Array<{ token: string; score: number; idx: number }> = [];
-
-  norm.forEach((t, i) => {
-    if (!t || isNoise(t) || seen.has(t)) return;
-    seen.add(t);
-    const posScore = Math.max(0, 1 - i / 12);
-    const lenScore = Math.min(t.length, 10) / 10;
-    const digitPenalty = /\d/.test(t) ? 0.55 : 1;
-    scored.push({ token: t, score: (posScore * 0.65 + lenScore * 0.35) * digitPenalty, idx: i });
-  });
-
-  return scored
-    .sort((a, b) => b.score - a.score || a.idx - b.idx)
-    .slice(0, Math.max(1, limit))
-    .map((s) => s.token);
-}
-
-export function buildSearchQuery(title: string, limit = 5): string {
-  const brand = extractBrand(title);
-  const tokens = salientTokens(title, limit + 1);
-  const merged = [...new Set([...(brand ? [brand] : []), ...tokens])];
-  return merged.slice(0, Math.max(1, limit)).join(" ");
-}

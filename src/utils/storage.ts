@@ -22,22 +22,3 @@ export function safeSetItem(key: string, value: string): boolean {
     return false;
   }
 }
-
-/** 读取；失败返回 null。 */
-export function safeGetItem(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-/** 删除；失败返回 false。 */
-export function safeRemoveItem(key: string): boolean {
-  try {
-    localStorage.removeItem(key);
-    return true;
-  } catch {
-    return false;
-  }
-}

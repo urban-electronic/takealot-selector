@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
 import { getSellerApiStatus, getSellerIdentity, setSellerIdentity } from '../remoteApi';
+import { buildExportPayload } from '../utils/exportPayload';
 
 export default function Settings() {
   const api = useApi();
@@ -186,16 +187,14 @@ export default function Settings() {
     try {
       const products = await api.getProducts() as any[];
       const categories = await api.getFeeCategories();
-      const rules: FeeMappingRule[] = [];
-      try { const r = await api.getFeeMappingRules(); rules.push(...r); } catch {}
+      // 读不到费率映射规则不能当成「本地没有规则」：后端 /api/migrate 会先清空
+      // 本次 payload 涉及的每一张表，发一张空表过去等于把云端规则全删掉，
+      // 而界面还写「导出成功」。失败时传 null，让 buildExportPayload 整表省略。
+      const rules: FeeMappingRule[] | null = await api.getFeeMappingRules().catch(() => null);
       const settingsData = await api.getSettings(); // 跟随当前数据源
-      const settingsRows = Object.entries(settingsData).map(([key, value]) => ({ key, value }));
-      const payload = [
-        { table: 'products', rows: products },
-        { table: 'fee_categories', rows: categories },
-        { table: 'fee_mapping_rules', rows: rules },
-        { table: 'system_settings', rows: settingsRows },
-      ];
+      const { payload, skipped } = buildExportPayload({
+        products, feeCategories: categories, feeRules: rules, settings: settingsData,
+      });
       const migrateKey = (apiKeyRef.current?.value ?? apiKey ?? localStorage.getItem('api_key') ?? '').trim();
       const res = await fetch(`${baseUrl}/api/migrate`, {
         method: 'POST',
@@ -204,7 +203,13 @@ export default function Settings() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setMessage(`导出成功！products: ${data.imported?.products || 0}, fee_categories: ${data.imported?.fee_categories || 0}, fee_mapping_rules: ${data.imported?.fee_mapping_rules || 0}, system_settings: ${data.imported?.system_settings || 0}`);
+      const imported = data.imported || {};
+      // 被省略的表不能写成「0 条」——那读起来像「同步过去 0 条规则」，
+      // 而实际是根本没动云端那张表。如实说是「未同步 + 原因」。
+      const rulesPart = skipped.includes('fee_mapping_rules')
+        ? 'fee_mapping_rules: 未同步（本地读取失败，云端原值保留）'
+        : `fee_mapping_rules: ${imported.fee_mapping_rules || 0}`;
+      setMessage(`导出成功！products: ${imported.products || 0}, fee_categories: ${imported.fee_categories || 0}, ${rulesPart}, system_settings: ${imported.system_settings || 0}`);
     } catch (e: any) {
       setError(`导出失败: ${e.message}`);
     } finally {

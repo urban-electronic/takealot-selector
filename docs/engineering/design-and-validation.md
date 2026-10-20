@@ -84,6 +84,10 @@ permissions. This workflow never requests or transfers credentials.
 - Queueing, a heartbeat and an attempt timestamp do not prove fresh collection.
   Show last valid quote separately. Preserve source, quote time and variant
   evidence; official own price is not a Buybox/competitor quote.
+- A sync that replaces a remote table must distinguish "read failed" from "there
+  is nothing to send": an empty array is a legitimate state and a wipe command at
+  the same time. Omit the table and say so in the result instead of reporting
+  `0` rows as success (EXPORT-SAFE-01).
 - Inventory and overseas transit must agree after an authorized correction. Read
   existing records first, guard against duplicates/concurrent changes and read
   back the result. Do not create purchases or arrivals to make totals look right.
