@@ -70,9 +70,6 @@ export const getFeeMappingRules = (): Promise<FeeMappingRule[]> =>
 export const createFeeMappingRule = (data: Partial<FeeMappingRule>): Promise<FeeMappingRule> =>
   invoke('create_fee_mapping_rule', { data }) as Promise<FeeMappingRule>;
 
-export const updateFeeMappingRule = (id: string, data: Partial<FeeMappingRule>): Promise<FeeMappingRule> =>
-  invoke('update_fee_mapping_rule', { id, data }) as Promise<FeeMappingRule>;
-
 // Settings
 export const getSettings = (): Promise<Record<string, string>> =>
   invoke('get_settings') as Promise<Record<string, string>>;

@@ -155,6 +155,22 @@ const root = createRoot(host);
   check(quotaLine.textContent.includes('已用满'), 'a used-up quota says so instead of leaving the reason blank');
   check(!!quotaLine.querySelector('b.text-warning'), 'a used-up quota is highlighted, not printed in the same tone as normal');
 
+  // 6) 「调价与试涨规则」面板是用户唯一能读到判定条件的地方，写漏前提就等于说错。
+  //    这两条都曾写漏：面板说「48 小时没成交就回退」，代码还要求本店订单快照在
+  //    2 小时内同步过（`rule['sales_recent']`，见 automatic_pricing.plan()）；面板说
+  //    「短于空运周期」，代码其实是固定 21 天（DEFAULT_TIGHT_COVER_DAYS），
+  //    不读每个商品可配的 emergency_air_days。用户照面板判断，只会以为该回退没回退、
+  //    或者以为改了空运天数就会改调价档位。
+  const rulesPanel = [...host.querySelectorAll('details.operations-explanation')]
+    .find(d => (d.querySelector('summary')?.textContent || '').includes('调价与试涨规则'));
+  check(!!rulesPanel, 'the pricing rules panel is rendered');
+  const rulesText = (rulesPanel.textContent || '').replace(/\s+/g, '');
+  check(rulesText.includes('48小时'), 'the panel still states the 48-hour trial window');
+  check(rulesText.includes('2小时'), 'the rollback names the order-snapshot freshness requirement');
+  check(rulesText.includes('暂停试涨24小时'), 'the rollback says it also pauses the trial for 24 hours');
+  check(rulesText.includes('不超过21天'), 'the tight-stock threshold is stated as 21 days');
+  check(!rulesText.includes('短于空运周期'), 'the panel no longer implies the threshold follows the per-product air days');
+
   check(writes === 0, 'rendering the table never writes to the backend');
   await act(async () => root.unmount());
   console.log(`PASS ${checks} pricing layout assertions (jsdom + css, isolated API)`);

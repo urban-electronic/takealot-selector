@@ -696,3 +696,23 @@ WorkBuddy；基线 c75a5abcbc。`buybox_monitor.process()` 在 `finally` 里算 
 复现：`interval_seconds(None) == 300`、`interval_seconds(30) == 1800`、`interval_seconds(True) == 300`、`interval_seconds(0) == 300`、`interval_seconds('5') == 300`（`test_collection_watchdog.py::test_null_interval_does_not_break_the_next_due`）。
 
 复测：后端全量 pytest 393 passed / 1 skipped；全量 selfcheck 27 步全绿。
+
+### PRICING-COPY-03 调价说明面板两条规则写漏了前提条件（2026-10-20）
+
+WorkBuddy；基线 e47203c70e。调价页「调价与试涨规则」面板里有两条与代码不符：
+
+- 写的是「**48 小时没有新成交**则回退到之前的价位」，而 `automatic_pricing.plan()` 的回滚分支要求三件事同时成立：试涨已满 48 小时、`rule['sales_recent']` 为真（`process()` 把它算成 `operations_profile.synced_at` 距今 < 7200 秒，即本店订单快照在 2 小时内同步过）、且 `sku_last_sale_epoch <= 试涨起点`。快照过期时**这一轮根本不会回退**，但界面照着原文写「48 小时没成交就回退」，用户会以为价格该降没降、程序坏了。`docs/pricepilot-integration.md` 上文「试涨 48 小时没有新订单时回退此前价格」那句本来就写了「依赖近期成功同步的逐SKU订单时间」，只有面板文案漏了这半句。
+- 写的是「库存紧张（可售天数**短于空运周期**）时不跟降」。代码判据是 `automatic_pricing.DEFAULT_TIGHT_COVER_DAYS = 21`（`cover_days <= 21`），是个固定常量，**不读**每个商品可配的 `emergency_air_days`（1–30 天，默认 21）。把「空运周期」当判据说，等于暗示改了空运天数就会改调价档位，实际不会。
+
+改动：只改 `src/pages/AutoPricing.tsx` 面板文案——补上「订单快照超过 2 小时没同步时本轮不回退」，把「短于空运周期」改成「不超过 21 天」。判据一行未动，调价行为完全不变（`plan()` 未修改）。`docs/pricing/2026-10-18-buybox-pricing-model.md` 的回滚段落同步补上三个前提。
+
+复测：`tsc --noEmit` 通过（`noUnusedLocals` 开）；`test-buybox-copy.cjs` 全过；全量 selfcheck 全绿。
+
+### DEAD-CODE-06 删掉重复的重定向组件与两个零引用的费率映射更新封装（2026-10-20）
+
+WorkBuddy；基线 e47203c70e。
+
+- `src/pages/Buybox.tsx` 只有 2 行（`<Navigate to="/auto-pricing" replace />`），全仓零引用：`App.tsx` 早就把同样的重定向内联在 `<Route path="/buybox">` 上，这个文件是那次内联之后留下的副本。删掉它不影响 `/buybox` 路由（路由仍由 `App.tsx` 处理）。
+- `src/api.ts` 与 `src/remoteApi.ts` 各有一个 `updateFeeMappingRule()`，两者都零调用（设置页只 `createFeeMappingRule`，产品新建页与设置页只 `getFeeMappingRules`）。其中 `remoteApi` 版本用 `method: 'PUT'` 打 `/api/fee-mapping-rules/{id}`，而 `backend/api/category_routes.py` 注册的是 `@router.patch`——真有人调用会拿到 405。删掉比留一个「看起来能用、其实动词错」的封装更安全。
+
+复测：`tsc --noEmit` 通过（`noUnusedLocals` 开，证明没有残留引用）；全量 selfcheck 全绿；`test-page-import.mjs`、`test-buybox-copy.cjs` 等前端套件全过。

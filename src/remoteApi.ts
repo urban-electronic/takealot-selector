@@ -252,12 +252,6 @@ export const createFeeMappingRule = (data: Partial<FeeMappingRule>): Promise<Fee
     body: JSON.stringify(data),
   });
 
-export const updateFeeMappingRule = (id: string, data: Partial<FeeMappingRule>): Promise<FeeMappingRule> =>
-  request<FeeMappingRule>(`/api/fee-mapping-rules/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    body: JSON.stringify(data),
-  });
-
 // Settings
 export const getSettings = (): Promise<Record<string, string>> =>
   request<Record<string, string>>('/api/settings');
