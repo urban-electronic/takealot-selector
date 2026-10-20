@@ -5,6 +5,8 @@
 - 仅放行已确认的 HTTPS 图片 CDN 主机（media.takealot.com:443，解析器抓取的
   product_image_url 均在此域）；拒绝 URL 凭据、非标准端口、IP 字面量/内网地址，
   并对每一跳跳转目标重新校验，避免跳转脱管。
+- 部分主机额外限定路径目录（卖家 S3 只放行 /covers_images/，官网来源图只放行
+  /dw/image/），代理不会被当成任意路径的读取器。
 - 上游 403/404 负缓存（300s）：CDN 防盗链拒绝时不再每次重复出站请求。
 - 同 URL 并发去重（单航班）+ 30s 正向微缓存：同屏重复图片只出站一次。
 - 共享连接池复用（不再每请求新建 client），响应体积上限 10MB。
@@ -26,7 +28,19 @@ router = APIRouter(prefix="/api", tags=["image-proxy"])
 _API_KEY = os.environ.get("API_KEY", "").strip()
 
 # 已确认的图片 CDN 主机白名单（HTTPS、443 标准端口）
-ALLOWED_IMAGE_HOSTS = frozenset({"media.takealot.com", "takealot.s3.amazonaws.com"})
+# www.charleskeith.com：选品库收录的新加坡官网来源产品（尚未在 Takealot 建 listing，
+# 只有官网图可显示），其图片统一由 demandware 的 /dw/image/ 出图。
+ALLOWED_IMAGE_HOSTS = frozenset({
+    "media.takealot.com",
+    "takealot.s3.amazonaws.com",
+    "www.charleskeith.com",
+})
+
+# 主机 -> 允许的路径前缀（只放行产品图目录，避免代理被当作任意路径读取器）
+ALLOWED_PATH_PREFIXES = {
+    "takealot.s3.amazonaws.com": ("/covers_images/",),
+    "www.charleskeith.com": ("/dw/image/",),
+}
 MAX_REDIRECTS = 3
 NEGATIVE_TTL_SECONDS = 300.0   # 上游 403/404 负缓存时长
 POSITIVE_TTL_SECONDS = 30.0    # 正向微缓存时长（承接同屏/滚动重复请求）
@@ -73,11 +87,12 @@ def _validate_image_url(url: str) -> str:
         is_ip_literal = False
     if is_ip_literal or host not in ALLOWED_IMAGE_HOSTS:
         raise HTTPException(status_code=400, detail="图片主机不在允许列表")
-    # Seller API also returns the legacy Takealot image bucket. Allow only
-    # its product-image directory, never arbitrary S3 buckets or object paths.
-    if host == "takealot.s3.amazonaws.com":
+    # 部分主机只能读产品图目录：卖家 API 的历史 S3 桶仅 /covers_images/，
+    # 官网来源图仅 demandware 的 /dw/image/，其余路径一律拒绝。
+    prefixes = ALLOWED_PATH_PREFIXES.get(host)
+    if prefixes is not None:
         decoded_path = unquote(parts.path)
-        if (not decoded_path.startswith('/covers_images/') or
+        if (not decoded_path.startswith(prefixes) or
                 any(p in ('.', '..') for p in decoded_path.split('/')) or
                 '\\' in decoded_path):
             raise HTTPException(status_code=400, detail="图片路径不在允许列表")
