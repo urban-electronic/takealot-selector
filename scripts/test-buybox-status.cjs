@@ -134,7 +134,28 @@ async function fleetScenario(rowsFixture, inspect) {
     check(strip.classList.contains('tone-danger'), 'a frozen cycle uses the danger tone');
     check(strip.textContent.includes('15 分钟没开新一轮'), 'how long it has been stuck is stated, not just "stuck"');
     check(strip.textContent.includes('重启服务'), 'the copy says what to do about a wedged browser');
+    // 后端没报过 stuck_jobs，就不能声称「任务已被放弃」——超时可能是正常的慢轮次，
+    // 也可能是一个还没到 240 秒上限的任务。这句话是有证据才说的。
+    check(!strip.textContent.includes('已被放弃'), 'abandonment is only claimed when a job really was abandoned');
   });
+  // 但「已放弃」有依据时必须说出来：用户要知道是采集环境出过问题。
+  loopFixture = { ...loopFixture, stuck_jobs: 1 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('已被放弃'), 'a real abandonment is reported as such');
+  });
+  loopFixture = { ...loopFixture, stuck_jobs: 0 };
+  // 慢轮次不是卡死：28 个 SKU 一轮实测 20 分钟，15 分钟没开新一轮完全正常。
+  // 只拿设定间隔（5 分钟）比，会把健康的循环报成红的、还劝用户重启服务。
+  loopFixture = { ...loopFixture, interval_minutes: 5, round_seconds: 1200, round_jobs: 28,
+    enabled: 28, cycle_age_seconds: 900 };
+  await scenario({ ...known, status: 'success' }, () => {
+    const strip = host.querySelector('.loop-strip');
+    check(strip.textContent.includes('采集循环运行中'), 'a slow round is not mistaken for a frozen cycle');
+    check(!strip.classList.contains('tone-danger'), 'a slow round does not use the danger tone');
+    check(!strip.textContent.includes('卡住'), 'a slow round is never described as stuck');
+  });
+  loopFixture = { ...loopFixture, round_seconds: undefined, round_jobs: undefined, enabled: 1 };
   loopFixture = { ...loopFixture, cycle_age_seconds: 30 };
   // 逾期必须说逾期。一直显示"马上开始"会把"循环跟不上"藏起来，
   // 而这恰恰是最需要人介入的时刻。

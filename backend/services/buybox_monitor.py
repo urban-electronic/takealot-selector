@@ -20,7 +20,12 @@ THROTTLED_CODES = ('site_challenge', 'rate_limited', 'http_forbidden')
 # 采集器自身暂时起不来（浏览器启动失败等）：这是可自愈的瞬时故障，按用户设定的
 # 间隔重试就行。用指数退避会把一次启动抖动放大成 6 小时停采——2026-10-17 那次
 # 浏览器起不来，界面就一直显示「约 8 小时后自动重试」。
-TRANSIENT_CODES = THROTTLED_CODES + ('collector_unavailable',)
+# collector_busy 同理：浏览器被上一个任务占着（它卡死了没释放锁），不是页面问题，
+# 也不是本程序的确定性故障。卡死的任务由看门狗在 JOB_TIMEOUT 后放弃，锁迟早会
+# 放开；这时候如果按指数退避，第 5 次就排到 80 分钟后、第 7 次封顶 6 小时——
+# 浏览器明明恢复了，这一行还在睡。界面文案写的是「等下一轮自动重试」，
+# 所以退避必须真的按用户间隔走。
+TRANSIENT_CODES = THROTTLED_CODES + ('collector_unavailable', 'collector_busy')
 _stop = threading.Event()
 _thread = None
 _supervisor = None

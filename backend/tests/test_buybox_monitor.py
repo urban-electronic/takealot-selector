@@ -132,6 +132,19 @@ def test_collector_crash_does_not_inherit_stale_price_not_found(monkeypatch):
     assert result['error_code'] not in monitor.THROTTLED_CODES
     assert result['next_due'] <= monitor.time.time() + 1830
 
+def test_busy_browser_retries_at_user_interval_instead_of_backing_off_for_hours(monkeypatch):
+    # 复现：浏览器被一个卡死任务占着，process() 记 collector_busy。它既不是网站
+    # 拦截、也不是确定性故障，但如果落进「自身故障」的指数退避，第 5 次失败
+    # （30 分钟间隔）就排到 80 分钟后、第 7 次封顶 6 小时——浏览器恢复了这一行
+    # 还在睡，而界面文案写的是「等下一轮自动重试」。
+    from services.quote_browser import CollectorBusy
+    _,result=run(monkeypatch,raises=CollectorBusy('采集浏览器被上一个任务占用超过 90 秒，本轮跳过'),failures=5)
+    assert result['status']=='error' and result['error_code']=='collector_busy'
+    assert result['error'].startswith('采集浏览器被上一个任务占用')
+    assert result['error_code'] not in monitor.THROTTLED_CODES
+    assert result['next_due'] <= monitor.time.time() + 1830
+
+
 def test_value_error_still_keeps_classified_code(monkeypatch):
     # 跑完了但判定无有效行情（ValueError）：仍沿用 classify 给出的具体码，
     # 不能一律变成 collector_unavailable，否则又丢失了「页面结构变了」这类判断。

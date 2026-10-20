@@ -617,3 +617,39 @@ WorkBuddy；基线 05eb61012e。`src/operations/OperationsAssist.tsx` 与 `src/o
 改动：删掉这两个文件。`browser-collector-panel` 的样式**保留**——`CloudBrowser.tsx` 还在用它。`src/operations/{pricing,replenish,recommend,keywords}.ts` 这四个引擎模块**保留**：它们仍由 `test-operations.cjs` 直接编译并断言（`evaluatePricing` 17 例、`computeReplenish` 4 例、`buildSuggestions` 等），删掉等于连带删掉这些断言，属于本轮明确不做的事。副作用如实记录：删掉 UI 之后，这四个模块只剩测试在调用，没有生产调用方。
 
 复测：`tsc --noEmit` 通过（`noUnusedLocals` 开，删掉的文件不在任何 import 图里）；`test-operations.cjs` 照旧全绿；全量 selfcheck 26 步全绿。
+
+### COLLECT-WATCHDOG-01 卡死的采集任务不再冻住整条循环（2026-10-20）
+
+Codex（zengtian798-alt，提交 5db40cc）；基线 f4175cddaa。线上 2026-10-20 07:31(GMT+8) 起采集全停：一个采集任务卡在浏览器里没返回，循环在 `_wait_with_heartbeat` 里无限等，而等待期间每 10 秒刷新心跳，于是界面一直写「采集循环运行中」，实际 17 分钟没开新一轮、26 个 SKU 排队不动。补记本条是因为原提交只写了 `docs/engineering/2026-10-20-collection-watchdog.md`，没有在本文件留条目。
+
+改动：① 单个采集任务加 240 秒硬上限 `JOB_TIMEOUT`，到点放弃、记 `collect_timeout`、排到下一轮；② `ThreadPoolExecutor` 不再用 `with`（卡死任务会让 `__exit__` 的 `shutdown(wait=True)` 无限等）；③ 浏览器锁改成有上限的 `acquire(90s)`，拿不到抛 `CollectorBusy`；④ `loop_status` 新增 `cycle_age_seconds` / `stuck_at` / `stuck_jobs`。
+
+复测：`test_collection_watchdog.py` 4 例；后端 pytest 388 passed / 1 skipped（本机复跑 388 passed / 1 skipped）。
+
+### REFRESH-REASON-01 刷新售价失败不再只有一句话（2026-10-20）
+
+Codex（zengtian798-alt，提交 5db40cc）；基线 f4175cddaa。同一次事故里，「刷新售价」对本店报价和官网售价都只回「暂时无法读取」，密钥失效 / 限流 / 网络不通 / 代码报错四种原因长得一模一样，用户只能反复点重试。
+
+改动：新增 `product_routes._read_reason()`，把失败归到「读取超时 / 限流暂停 / 连不上上游 / 上游 HTTP 状态 / 缺组件（部署问题）/ 内部错误 <类型>」，只透出固定类别或上游已写好的中文提示，不含路径、密钥、异常正文。售价刷新（503 / 502）与 `/scrape-takealot`（原来直接冒 500）都带上原因。
+
+复测：`test_price_refresh.py` 3 例；后端 pytest 388 passed / 1 skipped。
+
+### WATCHDOG-RETRY-01 浏览器被占用按用户间隔重试，不再指数退避到 6 小时（2026-10-20）
+
+WorkBuddy；基线 f4175cddaa。COLLECT-WATCHDOG-01 引入 `collector_busy`（浏览器被卡死任务占着）后，这个码没进 `TRANSIENT_CODES`，落进「自身故障」的指数退避：30 分钟间隔下第 5 次失败排到 80 分钟后、第 7 次封顶 6 小时。浏览器一旦恢复，这一行还在睡，而 `buyboxStatus.ts` 给 `collector_busy` 的文案写的是「等下一轮自动重试」——文案与行为互相矛盾，也正是 `TRANSIENT_CODES` 注释在防的那类「把一次抖动放大成 6 小时停采」。
+
+改动：`backend/services/buybox_monitor.py` 的 `TRANSIENT_CODES` 补 `collector_busy`（与 `collector_unavailable` 同类：可自愈的瞬时故障，按用户间隔重试、不低于 30 分钟）。判据没有放宽：真正的解析器/配置故障仍然是 6 小时封顶的指数退避。
+
+复现：`run(monkeypatch, raises=CollectorBusy(...), failures=5)`，旧逻辑 `next_due` 落在 80 分钟后，新逻辑落在 30 分钟内。
+
+复测：`test_buybox_monitor.py` 新增 1 例（20 → 21 passed）；把 `collector_busy` 从元组里去掉后该例转红（已还原）；后端全量 pytest 389 passed / 1 skipped。
+
+### WATCHDOG-SLOW-01 慢轮次不再被报成「采集循环卡住了」（2026-10-20）
+
+WorkBuddy；基线 f4175cddaa。`AutoPricing.tsx` 的 `cycleStuck` 只拿 `cycle_age_seconds` 和「设定间隔 ×2 + 180 秒」比，但 `cycle_age` 里本来就包含「这一轮正在采」的时间：28 个 SKU 一轮实测 20 分钟时，5 分钟间隔下 13 分钟就报红，文案还劝用户「重启服务」——把健康的循环说成故障。同一段文案还无条件写「卡住的采集任务已放弃」，可 `stuck_jobs`（后端专门为此新增的字段）从没被读过：一个正常的慢轮次也会被说成「任务已放弃」。
+
+改动：基准改成「设定间隔」与「实测整轮耗时」取大者（`expectedCycleSeconds`），再留一倍余量；「已被放弃」只在 `stuck_jobs > 0` 时才说，并在超时说明里带上「一轮约 N 分钟」。判据没有放宽——真正卡死（`cycle_age` 超过 2 倍预期 + 3 分钟）仍然报红并给处置建议。
+
+复现：`round_seconds:1200, round_jobs:28, interval_minutes:5, cycle_age_seconds:900`，旧逻辑报「采集循环卡住了 / 重启服务」，新逻辑报「采集循环运行中」。
+
+复测：`test-buybox-status.cjs` 179 → 184 断言（新增 5 条：慢轮次不算卡死、不用 danger 色、不出现「卡住」；无 `stuck_jobs` 时不许说「已被放弃」；`stuck_jobs=1` 时必须说）。把 `expectedCycleSeconds` 里的整轮耗时项改回 0 后新断言在 `test-buybox-status.cjs:154` 转红（已还原）。`tsc --noEmit` 通过（`noUnusedLocals` 开）；全量 selfcheck 26 步全绿。

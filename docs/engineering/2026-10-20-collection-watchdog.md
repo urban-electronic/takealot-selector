@@ -47,9 +47,9 @@ future 永远不完成，这个 while 就永远不退出。更糟的是它在**�
 | `_record_stuck` | 把被放弃的任务写成 `status=error / error_code=collect_timeout`，`next_due` 排到下一轮，并在 `_buybox_worker_state` 里记 `stuck_at` / `stuck_jobs` |
 | `run()` | `ThreadPoolExecutor` 改成显式 `shutdown(wait=False)` |
 | `quote_browser.quote_context` | 锁改成 `acquire(timeout=LOCK_WAIT_SECONDS=90)`，拿不到抛 `CollectorBusy`；只有真拿到了才 release |
-| `process()` | `CollectorBusy` 记成 `collector_busy`，不再混进 `collector_unavailable`（那条会劝用户「点立即采集重试」，而重试只会继续等同一把锁） |
+| `process()` | `CollectorBusy` 记成 `collector_busy`，不再混进 `collector_unavailable`（那条会劝用户「点立即采集重试」，而重试只会继续等同一把锁）。`collector_busy` 与 `collector_unavailable` 同属 `TRANSIENT_CODES`：按用户间隔重试，不走指数退避（WATCHDOG-RETRY-01） |
 | `loop_status` | 新增 `cycle_age_seconds` / `stuck_at` / `stuck_jobs` |
-| `AutoPricing.tsx` | 心跳新鲜但 `cycle_age > 间隔×2+180s` 时显示「采集循环卡住了 · 15 分钟没开新一轮」，danger 色 |
+| `AutoPricing.tsx` | 心跳新鲜但 `cycle_age > max(间隔, 实测整轮耗时)×2+180s` 时显示「采集循环卡住了」，danger 色；「任务已被放弃」只在 `stuck_jobs>0` 时说（WATCHDOG-SLOW-01） |
 
 判断「卡住」不能用 `worker_alive`，只能用**上一轮到现在多久**。这是这次事故
 最贵的一课：心跳证明的是「线程还在」，不是「循环在转」。

@@ -277,25 +277,6 @@ export default function AutoPricing() {
     return '等待下轮';
   };
   const loopInterval = loop?.interval_minutes ?? intervalMinutes;
-  // 心跳只证明线程还活着，不证明循环在转：任务卡死时心跳照样新鲜（2026-10-20
-  // 线上就是这样，界面一直写「运行中」，实际 17 分钟没开新一轮）。拿「上一轮
-  // 到现在多久」和间隔比，才能把「卡住」和「正在慢慢跑」分开。
-  const cycleStuck = !!loop && loop.worker_alive && loop.paused_by !== 'local_collector'
-    && typeof loop.cycle_age_seconds === 'number' && typeof loop.interval_minutes === 'number'
-    && loop.cycle_age_seconds > loop.interval_minutes * 60 * 2 + 180;
-  const loopTone = !loop ? 'neutral' : !loop.worker_alive ? 'danger' : cycleStuck ? 'danger'
-    : loop.paused_by === 'local_collector' ? 'warning' : 'success';
-  const loopTitle = !loop ? '采集循环状态未知'
-    : !loop.worker_alive ? '采集循环已停止'
-    : cycleStuck ? '采集循环卡住了'
-    : loop.paused_by === 'local_collector' ? '本机采集器接管中'
-    : '采集循环运行中';
-  const loopNote = !loop ? '还没拿到后台心跳'
-    : !loop.worker_alive ? '后台线程没在跑，SKU 不会自动重采，请检查服务状态'
-    : cycleStuck ? `${Math.round(loop.cycle_age_seconds / 60)} 分钟没开新一轮（间隔 ${loopInterval} 分钟）；卡住的采集任务已放弃，持续出现请重启服务`
-    : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
-    : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
-  const nextIn = loop?.next_due_in;
   // 一轮实测耗时 vs 设定间隔。这两个数一比就能回答「为什么一直在延迟」：
   // 28 个 SKU 串行采、每个十几秒，实际一轮可能把 5 分钟的间隔占满——那延迟
   // 不是故障，是排期本身就紧。不说清楚，用户只会以为程序卡住了。
@@ -306,6 +287,31 @@ export default function AutoPricing() {
     ?? (loop?.round_seconds && loop?.round_jobs ? Math.round(loop.round_seconds / loop.round_jobs * 10) / 10 : null);
   const fullMinutes = perSku && loop?.enabled ? Math.round(perSku * loop.enabled / 6) / 10 : null;
   const roundEstimate = Math.max(roundMinutes ?? 0, fullMinutes ?? 0) || null;
+  // 心跳只证明线程还活着，不证明循环在转：任务卡死时心跳照样新鲜（2026-10-20
+  // 线上就是这样，界面一直写「运行中」，实际 17 分钟没开新一轮）。拿「上一轮
+  // 到现在多久」和间隔比，才能把「卡住」和「正在慢慢跑」分开。
+  // 但「上一轮到现在」里本来就包含「这一轮在采」的时间：28 个 SKU 一轮要跑
+  // 十几分钟，只拿设定间隔比，会把正常的慢轮次报成卡死，还劝用户重启服务。
+  // 所以基准取「设定间隔」和「实测整轮耗时」里大的那个，再留一倍余量。
+  const expectedCycleSeconds = Math.max(loopInterval * 60, (roundEstimate ?? 0) * 60);
+  const cycleStuck = !!loop && loop.worker_alive && loop.paused_by !== 'local_collector'
+    && typeof loop.cycle_age_seconds === 'number' && typeof loopInterval === 'number'
+    && loop.cycle_age_seconds > expectedCycleSeconds * 2 + 180;
+  const loopTone = !loop ? 'neutral' : !loop.worker_alive ? 'danger' : cycleStuck ? 'danger'
+    : loop.paused_by === 'local_collector' ? 'warning' : 'success';
+  const loopTitle = !loop ? '采集循环状态未知'
+    : !loop.worker_alive ? '采集循环已停止'
+    : cycleStuck ? '采集循环卡住了'
+    : loop.paused_by === 'local_collector' ? '本机采集器接管中'
+    : '采集循环运行中';
+  // 只有超时确实放弃过任务（stuck_jobs>0）才敢说「任务已放弃」；否则只能说
+  // 「可能卡住」——正常的慢轮次、或者一个还没到 240 秒上限的任务，都会走到这里。
+  const loopNote = !loop ? '还没拿到后台心跳'
+    : !loop.worker_alive ? '后台线程没在跑，SKU 不会自动重采，请检查服务状态'
+    : cycleStuck ? `${Math.round(loop.cycle_age_seconds / 60)} 分钟没开新一轮（间隔 ${loopInterval} 分钟${roundEstimate ? `，一轮约 ${roundEstimate} 分钟` : ''}）；${loop.stuck_jobs ? '卡住的采集任务已被放弃，' : ''}持续出现请重启服务`
+    : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
+    : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
+  const nextIn = loop?.next_due_in;
   const overCapacity = roundEstimate != null && loop?.interval_minutes != null && roundEstimate > loop.interval_minutes;
   const tight = !overCapacity && roundEstimate != null && loop?.interval_minutes != null
     && roundEstimate > loop.interval_minutes * 0.8;
