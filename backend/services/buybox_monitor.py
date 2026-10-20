@@ -444,6 +444,12 @@ def _record_cycle(db, jobs, paused_by):
         value.update(alive_at=time.time(), cycles=int(value.get('cycles',0))+1,
                      last_cycle_at=datetime.now(timezone.utc).isoformat(),
                      last_jobs=jobs, paused_by=paused_by)
+        # 新的一轮已经开起来了，上一轮「放弃过卡死任务」就不再是本次卡死的证据。
+        # 原来这两个字段只写不清：只要出过一次超时，stuck_jobs 就永久 >0，之后
+        # 任何一次慢轮次（排期排不下、不是故障）都会被界面加上一句「卡住的采集
+        # 任务已被放弃」——而那一轮可能一个任务都没超时。历史现场不等于当前状态。
+        value.pop('stuck_at', None)
+        value.pop('stuck_jobs', None)
         if row: row.value=json.dumps(value,ensure_ascii=False)
         else: db.add(SystemSettings(key=WORKER_STATE,value=json.dumps(value,ensure_ascii=False)))
         db.commit()

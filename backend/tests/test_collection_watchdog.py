@@ -149,3 +149,52 @@ def test_loop_status_exposes_cycle_age_and_stuck_count():
     assert state['worker_alive'] is True       # 心跳新鲜，但…
     assert 895 <= state['cycle_age_seconds'] <= 905   # …上一轮已经是 15 分钟前
     assert state['stuck_jobs'] == 2
+
+
+def test_a_new_cycle_clears_the_previous_stuck_marker():
+    """开新一轮就要把上一轮的「已放弃」清掉。
+
+    这两个字段原来只写不清，于是第一次超时之后 stuck_jobs 永久 >0：界面上
+    「卡住的采集任务已被放弃」这句话会挂到之后每一次慢轮次上——包括那种
+    「一轮本来就排不下、一个任务都没超时」的正常情况。历史现场不是当前状态。
+    """
+    now = time.time()
+    factory = make_db({
+        monitor.WORKER_STATE: {
+            'alive_at': now, 'cycles': 12,
+            'last_cycle_at': monitor.datetime.fromtimestamp(now - 3600, monitor.timezone.utc).isoformat(),
+            'stuck_at': monitor.datetime.fromtimestamp(now - 3600, monitor.timezone.utc).isoformat(),
+            'stuck_jobs': 2,
+        },
+    })
+    with factory() as db:
+        monitor._record_cycle(db, 0, None)
+    with factory() as db:
+        state = monitor.loop_status(db, DEFAULT_STORE_ID)
+    assert state['stuck_jobs'] == 0, '新一轮开始后不得再声称「上一轮放弃过任务」'
+    assert state['stuck_at'] is None
+    assert state['cycles'] == 13        # 心跳照常计数，清理只针对这两个字段
+    assert 0 <= state['cycle_age_seconds'] <= 5
+
+
+def test_the_current_cycle_still_records_its_own_abandonment(monkeypatch):
+    """清理只发生在「开新一轮」时：同一轮里刚放弃的任务必须留着，否则界面看不见。
+
+    `_record_cycle` 在循环开头调用、`_record_stuck` 在本轮等待超时时调用，
+    顺序决定了这条清理不会抹掉本轮自己的结论。
+    """
+    prefix = monitor.PREFIX + DEFAULT_STORE_ID + ':'
+    key = prefix + 'p:1'
+    factory = make_db({
+        monitor.WORKER_STATE: {'alive_at': time.time()},
+        key: {'enabled': True, 'status': 'running', 'next_due': 0, 'interval_minutes': 5},
+    })
+    with factory() as db:
+        monitor._record_cycle(db, 1, None)
+    monkeypatch.setattr(monitor, 'wait', lambda pending, timeout, return_when: (set(), set(pending)))
+    monkeypatch.setattr(monitor, 'JOB_TIMEOUT', 0.01)
+    hung = Future()
+    monitor._wait_with_heartbeat({hung}, factory, {hung: time.time() - 60}, {hung: key})
+    with factory() as db:
+        state = monitor.loop_status(db, DEFAULT_STORE_ID)
+    assert state['stuck_jobs'] == 1 and state['stuck_at']

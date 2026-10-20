@@ -96,4 +96,15 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
     '只有 SGD 与 CNY 时不比（不引入汇率假设）');
 }
 
+// ---- 文案：不能让人以为新加坡价是系统自己去官网抓的 -----------------------
+// 三个市场全是手工录入，代码里没有任何官网抓取（按红线也不做）。
+// 旧文案写「新加坡官网价取自官网商品页」，读起来像自动读取，会让人以为填不填都行。
+{
+  const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
+  check(detail.includes('三个市场都要手工录入'), '详情页必须说清三个市场都是手工录入');
+  check(!detail.includes('新加坡官网价取自官网商品页'),
+    '不得再写「取自官网商品页」：系统不会自动读取，三个市场都是手输');
+  check(detail.includes('不与人民币直接比价'), 'SGD 不能与人民币直接比，文案要写明');
+}
+
 console.log(`test-market-prices: ${checks} checks passed`);

@@ -377,7 +377,7 @@ export default function ProductDetail() {
       <div className="card">
         <div className="card-title">多市场参考价</div>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
-          只作定价参考，不参与利润计算。中国官网价与淘宝均价需手工录入，新加坡官网价取自官网商品页。
+          只作定价参考，不参与利润计算。三个市场都要手工录入（新加坡官网价可从官网商品页抄，但那是 SGD，不与人民币直接比价）。
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>

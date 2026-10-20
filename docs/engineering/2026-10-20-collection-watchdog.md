@@ -49,6 +49,7 @@ future 永远不完成，这个 while 就永远不退出。更糟的是它在**�
 | `quote_browser.quote_context` | 锁改成 `acquire(timeout=LOCK_WAIT_SECONDS=90)`，拿不到抛 `CollectorBusy`；只有真拿到了才 release |
 | `process()` | `CollectorBusy` 记成 `collector_busy`，不再混进 `collector_unavailable`（那条会劝用户「点立即采集重试」，而重试只会继续等同一把锁）。`collector_busy` 与 `collector_unavailable` 同属 `TRANSIENT_CODES`：按用户间隔重试，不走指数退避（WATCHDOG-RETRY-01） |
 | `loop_status` | 新增 `cycle_age_seconds` / `stuck_at` / `stuck_jobs` |
+| `_record_cycle` | 开新一轮时清掉上一轮的 `stuck_at` / `stuck_jobs`（WATCH-STUCK-STICKY-01）。这两个字段原来只写不清，第一次超时之后永久 >0，界面会把「卡住的采集任务已被放弃」挂到之后每一次慢轮次上——包括「一轮本来就排不下、一个任务都没超时」的正常情况。清理发生在循环开头，本轮自己 `_record_stuck` 的结论不受影响 |
 | `AutoPricing.tsx` | 心跳新鲜但 `cycle_age > max(间隔, 实测整轮耗时)×2+180s` 时显示「采集循环卡住了」，danger 色；「任务已被放弃」只在 `stuck_jobs>0` 时说（WATCHDOG-SLOW-01） |
 
 判断「卡住」不能用 `worker_alive`，只能用**上一轮到现在多久**。这是这次事故
@@ -91,7 +92,8 @@ except Exception:
 
 - `pytest` 388 passed / 1 skipped；新增 `test_collection_watchdog.py` 4 例
   （卡死任务被放弃并记账 / 正常任务不被误判 / 浏览器忙立即报错而不是排队 /
-  `cycle_age` 与 `stuck_jobs` 读数）。
+  `cycle_age` 与 `stuck_jobs` 读数）。2026-10-21 追加 2 例：新一轮开始后
+  `stuck_jobs` 归零、本轮自己的放弃记录仍在（WATCH-STUCK-STICKY-01）。
 - `test_price_refresh.py` +3 例：限流原因透出、官网异常带类型名、`_read_reason` 映射。
 - `test-buybox-status.cjs` 179 断言（+4：卡住文案、danger 色、卡了多久、该怎么办）。
 - `tsc --noEmit` + `vite build` 通过。

@@ -35,9 +35,10 @@ MAX_BACKOFF_SECONDS = 6 * 3600
 #   - collector_busy 写进去的 diagnostics 只有 {'stage','failure'}（这一轮压根
 #     没打开商品页），classify() 拿它判会落到 price_not_found，界面于是劝用户
 #     「人工打开页面看看是不是已下架」——把一个浏览器锁的排队问题说成商品页面问题。
-#   - collect_timeout 沿用上一轮的 diagnostics（_record_stuck 只改结论、不清旧
-#     计数），旧计数里的 buybox_cards=0 / price_nodes=12 会被判成
-#     page_structure_changed，也就是把浏览器卡死说成网站改版、要人改解析规则。
+#   - collect_timeout 的 diagnostics 已经被 _record_stuck 清空（旧计数不许冒充
+#     本轮，见 COLLECT-DIAG-02），但字段仍可能是 {} 或历史值；一旦被当成证据，
+#     buybox_cards=0 / price_nodes=12 这类计数会被判成 page_structure_changed，
+#     也就是把浏览器卡死说成网站改版、要人改解析规则。
 # 两者都是「这一轮没跑完」的确定性结论，任何旧 diagnostics 都不该推翻它。
 DECISIVE_CODES = frozenset({
     'site_challenge', 'rate_limited', 'http_forbidden', 'site_unavailable',

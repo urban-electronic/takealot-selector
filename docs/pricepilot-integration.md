@@ -828,3 +828,38 @@ WorkBuddy；基线 `e39fbdde9c`（STORE-ISOLATION-01 刚上线）。
 - 复现：`pytest backend/tests/test_store_isolation_packing.py` 里的
   `test_store_list_can_be_limited_to_active_stores` / `test_packing_ui_only_offers_active_stores`。
   把 `active` 过滤去掉、或把 HTML 的 `?active=1` 改回 `/api/stores`，两例同时转红（已还原）。
+
+### WATCH-STUCK-STICKY-01 「任务已被放弃」不再永久挂着（2026-10-21）
+
+WorkBuddy；基线 `645c4be426`。
+
+- 症状：`_record_stuck` 把 `stuck_at` / `stuck_jobs` 写进 `_buybox_worker_state`，
+  但 `_record_cycle` 从不清理它们。于是**第一次**超时之后 `stuck_jobs` 永久 >0，
+  界面在任何一次「循环卡住」判断里都会补一句「卡住的采集任务已被放弃」——
+  包括那种「一轮本来就排不下（间隔 5 分钟、实测一轮 12 分钟）、一个任务都没超时」
+  的正常情况。历史现场被当成当前状态，用户据此去重启服务，重启也解决不了排期。
+- 改动：`_record_cycle` 开新一轮时 `pop('stuck_at')` / `pop('stuck_jobs')`。清理发生在
+  循环开头，本轮自己 `_record_stuck` 的结论不受影响（顺序：`_record_cycle` →
+  提交任务 → 等待超时 → `_record_stuck`）。
+- 连带：`collection_maintenance.py` 里「`_record_stuck` 只改结论、不清旧计数」这句
+  注释已与代码相反（COLLECT-DIAG-02 起就 `pop('diagnostics')` 了），改成如实描述。
+- 复现：`pytest backend/tests/test_collection_watchdog.py` 新增 2 例
+  （新一轮开始后 `stuck_jobs` 归零且 `cycles` 照常 +1；同一轮里刚放弃的任务仍在）。
+  把 `_record_cycle` 的两次 `pop` 去掉，第一例转红（`assert 2 == 0`，已还原）。
+- 复测：后端全量 422 passed / 1 skipped（新增 2 例）；全量 selfcheck 29 步全绿。
+
+### MARKET-COPY-01 参考价说明不再暗示「系统自动去官网取价」（2026-10-21）
+
+WorkBuddy；基线 `645c4be426`。
+
+- 症状：商品详情页「多市场参考价」的说明写「中国官网价与淘宝均价需手工录入，
+  新加坡官网价取自官网商品页」。后半句读起来是**系统自动读取**，而代码里没有任何
+  官网取价（按红线也不做抓取，`docs/engineering/2026-10-21-market-prices.md`
+  写的是三个市场都手工录入、新加坡价可从官网 JSON-LD 人工抄）。用户会以为
+  新加坡那格不用管，或者以为没填是系统没采到。
+- 改动：`src/pages/ProductDetail.tsx` 改成「三个市场都要手工录入（新加坡官网价可从
+  官网商品页抄，但那是 SGD，不与人民币直接比价）」。判据、数据结构、比价结论一字未动。
+- 复现：`node scripts/test-market-prices.cjs` 新增 3 条文案断言（必须出现
+  「三个市场都要手工录入」「不与人民币直接比价」，不得再出现旧句）。
+  把文案改回旧版，断言在第一条就转红（已还原）。
+- 复测：`test-market-prices.cjs` 33 条断言；全量 selfcheck 29 步全绿。
