@@ -20,6 +20,10 @@ import time
 # 线程数的告警线。正常运行时这个服务大约 20~40 个线程（uvicorn + 几个后台
 # worker + Playwright 的 node 驱动）；接近 100 就说明有东西在漏。
 THREAD_WARN = 100
+# 僵尸进程告警线。正常情况下 PID 1（tini）会立刻回收，这个数应该长期是 0；
+# 一旦开始单调上涨，说明容器里没有 init 在回收孤儿进程——那就是 2026-10-21
+# 那次「pids 攒满 1000 → 起不了线程 → 图片全线 500」的前兆。
+ZOMBIE_WARN = 50
 WATCHDOG_INTERVAL = 300
 
 
@@ -142,7 +146,11 @@ def start_watchdog(interval=WATCHDOG_INTERVAL):
             try:
                 data = snapshot()
                 line = format_snapshot(data)
-                if data["threads"] >= THREAD_WARN:
+                if data["zombies"] >= ZOMBIE_WARN:
+                    # 比线程数更早、更准的前兆：僵尸只增不减，攒满 pids 上限才会
+                    # 以「起不了线程」的形式爆出来，那时已经很难倒查了。
+                    print(f"[runtime] 僵尸进程堆积 {line}（容器缺少 init 回收？）", flush=True)
+                elif data["threads"] >= THREAD_WARN:
                     print(f"[runtime] 线程数偏高 {line}", flush=True)
                 else:
                     print(f"[runtime] {line}", flush=True)

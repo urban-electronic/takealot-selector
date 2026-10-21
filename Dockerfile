@@ -27,7 +27,7 @@ WORKDIR /app
 
 # curl_cffi build dependencies
 RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y --no-install-recommends \
-    libcurl4-openssl-dev build-essential xvfb \
+    libcurl4-openssl-dev build-essential xvfb tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
@@ -44,4 +44,16 @@ RUN rm -f dist/404.html
 
 EXPOSE 8000
 
+# 必须有一个真正的 init 当 PID 1。
+#
+# 2026-10-21 线上故障的根因就在这里：容器里 PID 1 是 uvicorn，而 Playwright 每次
+# 启动/停止浏览器都会产生一批 chromium 子进程；它们被 reparent 到 PID 1 后退出，
+# 却没有人 wait()，于是全变成僵尸进程。僵尸不占内存，但**占 pid**——
+# `/api/diag/runtime` 实测 45 分钟内僵尸从 10 涨到 45，chrome + chrome_crashpad
+# 同步堆积；攒到 cgroup 的 pids.max（1000）之后，连 DNS 解析要起个线程都会
+# `RuntimeError: can't start new thread`，表现就是 `/api/image-proxy` 全线 500。
+#
+# tini 作为 PID 1 负责回收所有孤儿进程，僵尸不再累积。它同时转发信号，
+# 让 Railway 的 SIGTERM 能正常传到 uvicorn（原来直接发给了 shell 层的子进程）。
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
