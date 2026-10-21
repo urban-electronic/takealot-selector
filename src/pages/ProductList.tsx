@@ -6,7 +6,7 @@ import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAs
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { MARKET_META, MARKET_ORDER, formatMarketPrice, marketInsights, parseMarketPrices } from '../utils/marketPrice';
+import { MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, marketInsights, parseMarketPrices } from '../utils/marketPrice';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
@@ -1156,7 +1156,7 @@ export default function ProductList() {
                 {MARKET_ORDER.map((code) => (
                   <span key={code}>{MARKET_META[code].label} {mpStatus.coverage[code]?.filled ?? 0}{mpStatus.coverage[code]?.stale ? `（${mpStatus.coverage[code].stale} 条过期）` : ''}</span>
                 ))}
-                <span>上次同步 {String((mpStatus.last_sync as any)?.at || '尚未运行')}</span>
+                <span>上次同步 {formatSyncTime(mpStatus.last_sync?.at)}（北京时间）</span>
                 <button className="btn btn-outline btn-sm" disabled={mpBusy} onClick={runMarketSync}>立即重读官网价</button>
               </div>
             )}

@@ -101,6 +101,25 @@ export function today(): string {
 }
 
 /**
+ * 「上次同步」的时间文案。
+ *
+ * 后端存的是 `datetime.now(timezone.utc).isoformat()`（形如
+ * `2026-10-21T05:12:33+00:00`），直接塞进界面有两个问题：一是露出机器格式，
+ * 二是比北京时间慢 8 小时——早上 13 点同步完，界面写 05:12，用户会以为今天没跑。
+ * 这里统一按北京时间（UTC+8，与后端 `_today()` 的「今天」一致）显示，
+ * 并且用 getUTC* 计算，不依赖浏览器所在时区。
+ */
+export function formatSyncTime(at: unknown): string {
+  if (typeof at !== 'string' || at.trim() === '') return '尚未运行';
+  const stamp = new Date(at);
+  if (Number.isNaN(stamp.getTime())) return '时间未知';
+  const beijing = new Date(stamp.getTime() + 8 * 3600 * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${beijing.getUTCFullYear()}-${pad(beijing.getUTCMonth() + 1)}-${pad(beijing.getUTCDate())} `
+    + `${pad(beijing.getUTCHours())}:${pad(beijing.getUTCMinutes())}`;
+}
+
+/**
  * 比价结论：只用同币种能直接比的两项，避免引入汇率假设。
  *  - 到手价 / 原价：国内折扣深度，90% 表示实付是吊牌的九折
  * （新加坡价是 SGD，跟人民币不能直接比，不在这里出结论，只在上面的明细里展示。）

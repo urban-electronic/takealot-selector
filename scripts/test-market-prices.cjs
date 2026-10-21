@@ -22,7 +22,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, marketInsights, MARKET_ORDER, MARKET_META } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -106,7 +106,7 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
 }
 
 // ---- 文案：谁自动、谁手工，必须和代码实际行为一致 -------------------------
-// 现在只有官网直营市场（SG/MY）由后端每天重读；中国官网已停摆、淘宝/天猫要登录态，
+// 现在只有官网直营市场（SG）由后端每天重读；中国官网已停摆、淘宝/天猫要登录态，
 // 两者都不做自动抓取。文案写成「都会自动」会让用户等着一个永远不来的数，
 // 写成「全手工」又会让用户白填一遍 SG。
 {
@@ -125,6 +125,22 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   check(sync.includes('AUTO_SOURCES'), '同步服务要显式声明哪些来源可自动更新');
   check(sync.includes('手工'), '手工录入的价格必须被排除在自动更新之外');
   check(sync.includes('不做平台反爬对抗'), '淘宝/天猫不做自动抓取，代码里要有明确说明');
+}
+
+// ---- 「上次同步」按北京时间显示，不露 UTC 原始串 --------------------------
+// 后端存的是 UTC ISO（…+00:00）。直接显示会差 8 小时：北京时间 13:12 同步完，
+// 界面写 05:12，用户会以为今天根本没跑过。
+{
+  check(formatSyncTime('2026-10-21T05:12:33+00:00') === '2026-10-21 13:12', 'UTC 时间戳要换算成北京时间');
+  check(formatSyncTime('2026-10-21T20:30:00+00:00') === '2026-10-22 04:30', '跨日的换算不能丢一天');
+  check(formatSyncTime(undefined) === '尚未运行', '没有同步记录时写「尚未运行」');
+  check(formatSyncTime(null) === '尚未运行', 'null 也要写「尚未运行」');
+  check(formatSyncTime('') === '尚未运行', '空串也要写「尚未运行」');
+  check(formatSyncTime('昨天') === '时间未知', '解析不了的串不能原样显示成时间');
+  check(!formatSyncTime('2026-10-21T05:12:33+00:00').includes('T'), '不许把 ISO 原始串直接摆到界面上');
+  const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
+  check(list.includes('formatSyncTime(mpStatus.last_sync?.at)'), '列表页「上次同步」必须走 formatSyncTime');
+  check(!list.includes("String((mpStatus.last_sync as any)?.at"), '不许再直接 String() 原始 ISO 串');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);

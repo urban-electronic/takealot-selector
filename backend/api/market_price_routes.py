@@ -114,7 +114,9 @@ def status(db: Session = Depends(get_db), store_id: str = Depends(get_store_id))
         'interval_hours': market_price_sync.INTERVAL_HOURS,
         'auto_disabled': market_price_sync.DISABLED,
         'due': market_price_sync.due(last),
-        'auto_markets': ['SG', 'MY'],
+        # 只有这里列出的市场会被每日重读。曾经写成 ['SG','MY']，但 MY 不在
+        # MARKETS / CURRENCY / 前端 MARKET_ORDER 里，客户端照着它提交会直接 422。
+        'auto_markets': ['SG'],
         'manual_only': {'TB': '淘宝/天猫需登录，不做自动抓取', 'CN': '中国官网已停摆，需人工录入'},
     }
 

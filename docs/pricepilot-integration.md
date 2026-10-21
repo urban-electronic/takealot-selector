@@ -1004,3 +1004,39 @@ WorkBuddy；基线 `cff1ad684d`。
   `.catch(() => {})` 即转红（已还原）。
 - 复测：tsc（`noUnusedLocals`）通过；`test-fee-categories` 14 → 18 条断言；全量
   selfcheck 全绿。
+
+### MARKET-SYNC-01 参考价「上次同步」按北京时间显示，坏行不再打断整轮同步（2026-10-21）
+
+WorkBuddy；基线 `c14f7eb6c6`（并行提交的多市场参考价自动同步 #162）。
+
+- 症状：①列表页「多市场参考价」面板把 `last_sync.at` 直接 `String()` 出来，界面上是
+  `2026-10-21T05:12:33+00:00`——机器格式，而且比北京时间慢 8 小时，早上 13 点同步完
+  显示 05:12，用户会以为今天没跑过；②`market_price_sync.sync_prices()` 对条目字段
+  直接 `.strip()` / `int()`，`market_prices` 是自由 JSON（`/api/migrate` 整行搬运
+  不过 Pydantic），历史行里 `url` 是数字、`miss` 是字符串时会抛 `AttributeError`，
+  而这个异常发生在 `run_once()` 的产品循环里 → 整轮回滚、`last_run` 永不更新，
+  于是每 30 分钟重试一次、每次都在同一条上炸掉，表现就是「自动同步从来没跑过」。
+- 改动：①`src/utils/marketPrice.ts` 新增 `formatSyncTime()`（UTC ISO → 北京时间
+  `YYYY-MM-DD HH:mm`，非法/缺失分别给「时间未知」/「尚未运行」，用 `getUTC*` 计算
+  所以不依赖浏览器时区），列表页改走它；②`is_auto_entry()` 只认字符串 `src`/`url`，
+  `apply_fetch()` 对 `miss` 兜底，`sync_prices()` 逐条 try/except——坏的那条原值保留并
+  报 `failed`，其余市场照常同步；③`/api/market-prices/status` 的 `auto_markets`
+  由 `['SG','MY']` 改为 `['SG']`：MY 不在 `MARKETS` / `CURRENCY` / 前端 `MARKET_ORDER`
+  里，客户端照着它提交会被 422，属声明与实现不符（`parse_official_price` 仍能解析
+  MYR 页面，将来真加 MY 再放回来）。
+- 复现：`_probe_sync.py` 用 `{'SG': {'price': 115, 'src': '官网', 'url': 123}}` 调
+  `sync_prices()`，旧代码抛 `AttributeError: 'int' object has no attribute 'strip'`；
+  改后该条被跳过、其余条目正常返回。
+- 复测：`test_market_price_sync.py` 30 → 33 例（新增坏 url 只跳该条、非数字 miss
+  计一次失败、apply_fetch 兜底）；把 `is_auto_entry` 改回旧写法即转红（已还原）。
+  `test-market-prices.cjs` 42 → 51 条断言（时间换算跨日、非法串、列表页必须走
+  `formatSyncTime`）；把列表页改回 `String(...)` 即转红（已还原）。全量 selfcheck 全绿。
+- 本轮开工时远端已前进到 `4719956fb7`（#168 同一 SKU 多行时批量录入全部写入，改了
+  `market_price_routes._matches()` 与两处测试）。这三处改动是在 #168 的版本上叠加的，
+  未回退 `_matches()` 的「写全部命中行」语义。
+
+### MARKET-DUP-01 同一 SKU 多行时批量录入写全部命中行（2026-10-21，并行提交 #168）
+
+基线 `c14f7eb6c6`。`_match()` 只取第一行，CK 选品表里 Apfra 重复了一条，于是两条
+一模一样的记录一条有价、一条空白，用户会以为没保存成功。改为 `_matches()` 返回全部
+命中行并逐行写入，结果里带 `products` 计数。本轮只补记录，代码未改。

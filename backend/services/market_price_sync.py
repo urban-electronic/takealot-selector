@@ -125,8 +125,23 @@ def _to_price(raw):
     return int(value) if value.is_integer() else round(value, 2)
 
 
+def _text(value) -> str:
+    """只把字符串当文本。
+
+    `market_prices` 是一段自由 JSON，`/api/migrate` 整行搬运时不过 Pydantic，
+    历史行里的 `url` / `miss` 可能是数字或 null。直接 `.strip()` 会抛
+    AttributeError，而它发生在 `run_once` 的产品循环里——一条坏数据就能让
+    整轮同步回滚，且 `last_run` 永不更新，于是每 30 分钟重试一次、每次都在
+    同一条上炸掉，看起来像「自动同步从来没跑过」。
+    """
+    return value.strip() if isinstance(value, str) else ''
+
+
 def is_auto_entry(entry: dict) -> bool:
-    return (entry.get('src') or '') in AUTO_SOURCES and bool((entry.get('url') or '').strip())
+    src = entry.get('src') or ''
+    if not isinstance(src, str):
+        return False
+    return src in AUTO_SOURCES and bool(_text(entry.get('url')))
 
 
 def apply_fetch(entry: dict, result: dict | None, today: str, error: str = '') -> tuple[dict, str]:
@@ -148,7 +163,11 @@ def apply_fetch(entry: dict, result: dict | None, today: str, error: str = '') -
             entry.pop('stale', None)
             entry.pop('last_error', None)
             return entry, 'updated' if changed else 'unchanged'
-    miss = int(entry.get('miss') or 0) + 1
+    try:
+        miss = int(entry.get('miss') or 0) + 1
+    except (TypeError, ValueError):
+        # 历史行里的 miss 可能是字符串/对象：当它是第一次失败，别让整轮中断。
+        miss = 1
     entry['miss'] = miss
     if miss >= STALE_AFTER:
         entry['stale'] = True
@@ -161,6 +180,7 @@ def sync_prices(prices: dict, fetch, today: str | None = None) -> tuple[dict, li
     """同步一组市场价。`fetch(url) -> dict | None` 由调用方注入，便于测试。
 
     返回 (新 prices, 报告列表)。手工录入的市场原样返回，不出现在报告里。
+    单条条目出错只影响它自己：其余市场照常同步，坏的那条原值保留。
     """
     today = today or _today()
     out = dict(prices or {})
@@ -175,7 +195,12 @@ def sync_prices(prices: dict, fetch, today: str | None = None) -> tuple[dict, li
             result, error = None, f'{type(exc).__name__}: {exc}'
         else:
             error = '' if result else '页面里没有可解析的价格'
-        out[code], status = apply_fetch(entry, result, today, error)
+        try:
+            out[code], status = apply_fetch(entry, result, today, error)
+        except Exception as exc:
+            # 单条条目无论如何不许打断整轮：坏的那条保持原值并报 failed，
+            # 其余市场照常同步。价格是决策输入，宁可留着旧值也不能整轮不跑。
+            status, error = 'failed', f'{type(exc).__name__}: {exc}'
         report.append({'market': code, 'status': status, 'price': out[code].get('price'), 'url': url, 'error': error})
     return out, report
 

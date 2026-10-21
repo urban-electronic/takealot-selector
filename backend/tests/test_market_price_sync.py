@@ -130,6 +130,31 @@ def test_success_clears_stale_flag():
     assert out['SG']['price'] == 120 and 'stale' not in out['SG'] and out['SG']['miss'] == 0
 
 
+def test_malformed_url_skips_that_entry_only():
+    """url 不是字符串（/api/migrate 整行搬运可能带数字）不许打断整轮。"""
+    prices = {
+        'CN': {'price': 469, 'src': '官网', 'url': 123},
+        'SG': {'price': 99, 'src': '官网', 'url': 'https://www.charleskeith.com/sg/X.html'},
+    }
+    out, report = sync.sync_prices(prices, lambda url: {'price': 115, 'cur': 'SGD'}, today='2026-10-22')
+    assert out['SG']['price'] == 115              # 好的一条照常更新
+    assert out['CN'] == prices['CN']              # 坏的一条原样保留
+    assert [item['market'] for item in report] == ['SG']
+
+
+def test_non_numeric_miss_still_counts_as_one_failure():
+    entry = {'price': 115, 'src': '官网', 'url': 'u', 'miss': 'oops'}
+    out, report = sync.sync_prices({'SG': entry}, lambda url: None)
+    assert out['SG']['price'] == 115 and out['SG']['miss'] == 1
+    assert report[0]['status'] == 'failed'
+
+
+def test_apply_fetch_never_raises_on_garbage_entry():
+    """apply_fetch 是最后一层兜底：任何字段类型异常都要变成 failed 而不是抛出。"""
+    out, status = sync.apply_fetch({'price': 115, 'miss': {'n': 1}}, None, '2026-10-22', 'boom')
+    assert status == 'failed' and out['price'] == 115 and out['miss'] == 1
+
+
 # ---- 调度 ---------------------------------------------------------------
 
 def test_due_without_history_runs_immediately():
