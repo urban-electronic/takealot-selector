@@ -221,6 +221,47 @@ export const refreshPrice = (id: string, source: 'official' | 'seller' | 'detail
     method: 'POST',
   });
 
+// ---- 多市场参考价 ----
+// 淘宝/天猫要登录态、中国官网已停摆，两者都拿不到稳定数据源，所以录入走批量接口；
+// 官网直营市场（SG/MY）由后端每天自动重读一次（backend/services/market_price_sync.py）。
+export interface MarketPriceCoverage {
+  filled: number;
+  stale: number;
+}
+
+export interface MarketPriceStatus {
+  store_id: string;
+  products: number;
+  products_with_price: number;
+  coverage: Record<string, MarketPriceCoverage>;
+  last_sync: Record<string, unknown> | null;
+  interval_hours: number;
+  auto_disabled: boolean;
+  due: boolean;
+  auto_markets: string[];
+  manual_only: Record<string, string>;
+}
+
+export interface MarketPriceBatchItem {
+  sku?: string;
+  product_id?: string;
+  market: 'CN' | 'SG' | 'TB';
+  /** null 表示清除该市场 */
+  price?: number | null;
+  src?: string;
+  n?: number;
+  url?: string;
+}
+
+export const getMarketPriceStatus = (): Promise<MarketPriceStatus> =>
+  request<MarketPriceStatus>('/api/market-prices/status');
+
+export const saveMarketPrices = (items: MarketPriceBatchItem[]): Promise<{ saved: number; products: number; results: Array<Record<string, unknown>> }> =>
+  request('/api/market-prices/batch', { method: 'POST', body: JSON.stringify({ items }) });
+
+export const syncMarketPrices = (): Promise<{ started: boolean; message: string }> =>
+  request('/api/market-prices/sync', { method: 'POST' });
+
 // Scraper - still uses local invoke via Tauri (needs Safari WebView)
 export const scrapeTakealot = (productUrl: string): Promise<ScrapeResult> =>
   request<ScrapeResult>('/api/products/scrape-takealot', {

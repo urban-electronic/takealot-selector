@@ -10,13 +10,21 @@ export type MarketCode = 'CN' | 'SG' | 'TB';
 export interface MarketPriceEntry {
   price: number;
   cur?: string;
-  /** 官网 / 淘宝均价 / 手工 */
+  /** 官网 / 官网自动 / 淘宝均价 / 手工 */
   src?: string;
   /** 采集日期 YYYY-MM-DD */
   at?: string;
   url?: string;
   /** 淘宝均价的样本条数 */
   n?: number;
+  /** 最近一次自动重读的时间（ISO 8601）；手工条目没有这个字段 */
+  checked_at?: string;
+  /** 连续抓取失败次数，成功一次即清零 */
+  miss?: number;
+  /** 连续失败到阈值后打上的标记：价格是旧的，界面要弱化显示 */
+  stale?: boolean;
+  /** 最近一次失败原因，只用于排障，不展示给用户 */
+  last_error?: string;
 }
 
 export type MarketPrices = Partial<Record<MarketCode, MarketPriceEntry>>;
