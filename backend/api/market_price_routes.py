@@ -116,7 +116,7 @@ def status(db: Session = Depends(get_db), store_id: str = Depends(get_store_id))
         'interval_hours': market_price_sync.INTERVAL_HOURS,
         'auto_disabled': market_price_sync.DISABLED,
         'due': market_price_sync.due(last),
-        'auto_markets': ['SG', 'MY'],
+        'auto_markets': ['SG'],
         'manual_only': {'TB': '淘宝/天猫需登录，不做自动抓取', 'CN': '中国官网已停摆，需人工录入'},
     }
 
