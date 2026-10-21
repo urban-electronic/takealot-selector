@@ -2,11 +2,11 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
@@ -180,7 +180,8 @@ export default function ProductList() {
   const [mpBusy, setMpBusy] = useState(false);
   const [mpMessage, setMpMessage] = useState('');
   // 兰特汇率：参考价是三地本币，折成 R 才能和 Takealot 售价直接比。
-  const fx = useFxRates();
+  // 加载器从 remoteApi 注入（而不是让 hook 自己 import），见 useFxRates 的注释。
+  const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(readStoreStorage(LS_SELECTED_SKUS_KEY) || '[]');

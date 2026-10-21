@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
+import { getFxRates } from '../remoteApi';
 import { openUrl } from '../api';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { useFeeCategories } from '../utils/useFeeCategories';
-import { MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { toNumber } from '../utils/number';
@@ -30,7 +31,7 @@ export default function ProductDetail() {
   // 多市场参考价：草稿态便于逐格编辑，保存时序列化回 editData.market_prices
   const [mpDraft, setMpDraft] = useState<MarketPrices>({});
   // 兰特汇率：三个市场各自的本币，折成 R 才能和 Takealot 售价直接比
-  const fx = useFxRates();
+  const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
   const [copiedSku, setCopiedSku] = useState(false);
   const copySku = async () => {
     if (!product?.sku) return;
