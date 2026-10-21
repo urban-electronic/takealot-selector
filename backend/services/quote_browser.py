@@ -4,6 +4,7 @@ import os
 import threading
 import shutil
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from database import DB_DIR
 
@@ -14,10 +15,45 @@ _display = None
 # 永远等在这把锁上，采集循环整条冻住，而且心跳还在刷新，界面显示「运行中」。
 # 与其无限等，不如如实报「忙」，让这一条记成失败、让循环继续转。
 LOCK_WAIT_SECONDS = 90
+# 关闭动作的上限。采集超时被取消时，收尾代码就在「已经被取消」的协程里跑：
+# 这时如果 context.close() 也跟着卡住（浏览器进程无响应），整个取消流程永远走不完，
+# 线程、node 驱动、Chromium 全留在那儿——2026-10-21 线程耗尽就是这么来的。
+# 关不掉也要认，宁可留一个僵尸进程让下次重启清掉，也不能把线程池和 _lock 锁死。
+CLEANUP_TIMEOUT = 10
 
 
 class CollectorBusy(RuntimeError):
     """浏览器被上一个任务占着；这不是页面问题，也不该重试到天荒地老。"""
+
+
+async def _bounded(coro, what):
+    """跑一个收尾动作，但绝不让它无限等下去。
+
+    CancelledError 继承自 BaseException，不会被这里的 `except Exception` 吞掉——
+    外层取消信号照常向上传播，只是我们不再替卡死的浏览器陪葬。
+    """
+    try:
+        await asyncio.wait_for(coro, timeout=CLEANUP_TIMEOUT)
+    except asyncio.TimeoutError:
+        print(f'[quote_browser] {what} 超过 {CLEANUP_TIMEOUT} 秒未完成，放弃等待', flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f'[quote_browser] {what} 失败：{type(exc).__name__}: {exc}', flush=True)
+
+
+async def _acquire_lock(timeout):
+    """异步等锁，不用 asyncio.to_thread。
+
+    原来是 `to_thread(_lock.acquire, True, 90)`：每次采集都要借一个线程去阻塞，
+    而线程正是 2026-10-21 被耗尽的资源（`can't start new thread` 之后连 DNS 都
+    解析不了，图片代理全线 500）。这里改成非阻塞试探 + 异步睡眠，一次线程都不借。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if _lock.acquire(blocking=False):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.2)
 
 def browser_display():
     """Local virtual display only; no VNC server or public listening port."""
@@ -41,7 +77,7 @@ def browser_display():
 async def quote_context(wait=True):
     held = False
     if wait:
-        held = await asyncio.to_thread(_lock.acquire, True, LOCK_WAIT_SECONDS)
+        held = await _acquire_lock(LOCK_WAIT_SECONDS)
         if not held:
             raise CollectorBusy(f'采集浏览器被上一个任务占用超过 {LOCK_WAIT_SECONDS} 秒，本轮跳过')
     elif not _lock.acquire(blocking=False):
@@ -75,9 +111,9 @@ async def quote_context(wait=True):
             yield context
         finally:
             try:
-                await context.close()
+                await _bounded(context.close(), '关闭浏览器上下文')
             finally:
-                await playwright.stop()
+                await _bounded(playwright.stop(), '停止 Playwright 驱动')
                 # 释放宽限：worker 是 2 并发、共用同一个 profile，前一个 Chromium
                 # 刚 stop 就立刻启动下一个会偶发 TargetClosedError（线上实测约 7%
                 # 的采集因此失败）。这里在**仍持有 _lock** 时多等一会儿，确保上一个
