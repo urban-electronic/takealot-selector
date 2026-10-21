@@ -207,12 +207,13 @@ def run_once(db=None, store_id: str | None = None) -> dict:
     own_session = db is None
     session = db or SessionLocal()
     started = time.time()
-    stats = {'products': 0, 'updated': 0, 'unchanged': 0, 'failed': 0, 'manual': 0, 'errors': []}
+    stats = {'products': 0, 'updated': 0, 'unchanged': 0, 'failed': 0, 'manual': 0, 'conflicts': 0, 'errors': []}
     try:
         query = session.query(Product).filter(Product.market_prices.isnot(None))
         if store_id:
             query = query.filter(Product.store_id == store_id)
         for product in query.all():
+            original = product.market_prices
             raw = (product.market_prices or '').strip()
             if not raw:
                 continue
@@ -225,14 +226,24 @@ def run_once(db=None, store_id: str | None = None) -> dict:
             stats['products'] += 1
             new_prices, report = sync_prices(prices, _fetch_official)
             stats['manual'] += len(prices) - len(report)
+            if report:
+                # 网络读取期间可能有人改了任一市场。整段 JSON 必须按读取版本回写，
+                # 否则会把刚录入的手工价格或清除操作覆盖掉。
+                values = {'market_prices': json.dumps(new_prices, ensure_ascii=False, sort_keys=True)}
+                if hasattr(product, 'updated_at'):
+                    values['updated_at'] = datetime.utcnow()
+                written = session.query(Product).filter(
+                    Product.id == product.id,
+                    Product.store_id == product.store_id,
+                    Product.market_prices == original,
+                ).update(values, synchronize_session=False)
+                if written != 1:
+                    stats['conflicts'] += 1
+                    continue
             for item in report:
                 stats[item['status']] = stats.get(item['status'], 0) + 1
                 if item['error'] and len(stats['errors']) < 5:
                     stats['errors'].append(f"{product.sku or product.id}/{item['market']}: {item['error']}")
-            if report:
-                product.market_prices = json.dumps(new_prices, ensure_ascii=False, sort_keys=True)
-                if hasattr(product, 'updated_at'):
-                    product.updated_at = datetime.utcnow()
         session.commit()
         stats['seconds'] = round(time.time() - started, 1)
         stats['at'] = _now_iso()
