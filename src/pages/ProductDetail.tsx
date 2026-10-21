@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
+import { getFxRates } from '../remoteApi';
 import { openUrl } from '../api';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { useFeeCategories } from '../utils/useFeeCategories';
-import { MARKET_META, MARKET_ORDER, formatMarketPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
+import { useFxRates } from '../utils/useFxRates';
 import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
@@ -28,6 +30,8 @@ export default function ProductDetail() {
   const [editData, setEditData] = useState<Partial<Product>>({});
   // 多市场参考价：草稿态便于逐格编辑，保存时序列化回 editData.market_prices
   const [mpDraft, setMpDraft] = useState<MarketPrices>({});
+  // 兰特汇率：三个市场各自的本币，折成 R 才能和 Takealot 售价直接比
+  const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
   const [copiedSku, setCopiedSku] = useState(false);
   const copySku = async () => {
     if (!product?.sku) return;
@@ -393,7 +397,8 @@ export default function ProductDetail() {
       <div className="card">
         <div className="card-title">多市场参考价</div>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
-          只作定价参考，不参与利润计算。新加坡官网价由服务端每天自动重读一次（SGD，不与人民币直接比价）；
+          只作定价参考，不参与利润计算。三个市场都是本币（S$ / ¥），下面另起一列按当日汇率折成兰特（R），
+          方便和 Takealot 售价直接比。新加坡官网价由服务端每天自动重读一次；
           国内原价与到手价需要人工录入——中国官网（charleskeith.cn）已停摆，淘宝/天猫要登录态，都不做自动抓取。
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -401,6 +406,7 @@ export default function ProductDetail() {
             <tr style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>
               <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>市场</th>
               <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>价格</th>
+              <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>兰特</th>
               <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 400 }}>样本 / 日期</th>
             </tr>
           </thead>
@@ -428,6 +434,9 @@ export default function ProductDetail() {
                     ) : (
                       <span style={{ color: 'var(--color-text-secondary)' }}>—</span>
                     )}
+                  </td>
+                  <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums', color: 'var(--color-text-secondary)' }}>
+                    {entry ? (formatZarPrice(code, entry, fx) || '无汇率') : '—'}
                   </td>
                   <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)', fontSize: 12 }}>
                     {code === 'TB' && editMode ? (

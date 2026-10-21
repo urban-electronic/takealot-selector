@@ -223,7 +223,7 @@ export const refreshPrice = (id: string, source: 'official' | 'seller' | 'detail
 
 // ---- 多市场参考价 ----
 // 淘宝/天猫要登录态、中国官网已停摆，两者都拿不到稳定数据源，所以录入走批量接口；
-// 官网直营市场（当前只有 SG）由后端每天自动重读一次（backend/services/market_price_sync.py）。
+// 官网直营市场（SG/MY）由后端每天自动重读一次（backend/services/market_price_sync.py）。
 export interface MarketPriceCoverage {
   filled: number;
   stale: number;
@@ -261,6 +261,26 @@ export const saveMarketPrices = (items: MarketPriceBatchItem[]): Promise<{ saved
 
 export const syncMarketPrices = (): Promise<{ started: boolean; message: string }> =>
   request('/api/market-prices/sync', { method: 'POST' });
+
+/**
+ * 兰特汇率：`rates[cur]` = 1 单位该货币值多少兰特。
+ *
+ * 后端缓存 24 小时，拉不到上游时会降级返回旧缓存或内置兜底值，
+ * 并用 `stale` / `fallback` 标记出来——前端据此在界面上写清汇率来源。
+ */
+export interface FxRatePayload {
+  base: string;
+  rates: Record<string, number>;
+  at?: string | null;
+  src?: string;
+  fetched_at?: string | null;
+  stale?: boolean;
+  fallback?: boolean;
+  error?: string;
+}
+
+export const getFxRates = (): Promise<FxRatePayload> =>
+  request<FxRatePayload>('/api/market-prices/fx');
 
 // Scraper - still uses local invoke via Tauri (needs Safari WebView)
 export const scrapeTakealot = (productUrl: string): Promise<ScrapeResult> =>

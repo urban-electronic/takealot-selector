@@ -2,11 +2,12 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, marketInsights, parseMarketPrices, visibleMarkets, type MarketCode } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
+import { useFxRates } from '../utils/useFxRates';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
@@ -43,7 +44,7 @@ const allColumns: ColumnDef[] = [
   { key: 'product_name', label: '标题', defaultWidth: 200 },
   { key: 'chinese_product_name', label: '中文品名', defaultWidth: 120 },
   { key: 'actual_sale_price_zar', label: '售价', defaultWidth: 132 },
-  { key: 'market_prices', label: '参考价', defaultWidth: 190 },
+  { key: 'market_prices', label: '参考价（R）', defaultWidth: 210 },
   { key: 'fee_category', label: 'Fee品类', defaultWidth: 140 },
   { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
@@ -178,6 +179,9 @@ export default function ProductList() {
   const [mpStatus, setMpStatus] = useState<MarketPriceStatus | null>(null);
   const [mpBusy, setMpBusy] = useState(false);
   const [mpMessage, setMpMessage] = useState('');
+  // 兰特汇率：参考价是三地本币，折成 R 才能和 Takealot 售价直接比。
+  // 加载器从 remoteApi 注入（而不是让 hook 自己 import），见 useFxRates 的注释。
+  const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(readStoreStorage(LS_SELECTED_SKUS_KEY) || '[]');
@@ -916,6 +920,10 @@ export default function ProductList() {
         const [lead, ...rest] = available;
         const leadEntry = prices[lead]!;
         const tag = (code: MarketCode) => (code === 'CN' ? '原' : code === 'TB' ? '到手' : '');
+        // 统一折成兰特：三地本币跟 Takealot 售价不同币种，不折算就没法直接比。
+        // 汇率缺失时退回原币而不是留空——原币也是真数据，空着等于说「没采到」。
+        const money = (code: MarketCode) =>
+          formatZarPrice(code, prices[code]!, fx) || formatMarketPrice(code, prices[code]!);
         return (
           <span
             onMouseEnter={(e) => {
@@ -931,7 +939,7 @@ export default function ProductList() {
             }}
           >
             <span style={{ fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
-              {formatMarketPrice(lead, leadEntry)}
+              {money(lead)}
             </span>
             {rest.length > 0 && (
               <span aria-hidden="true" style={{ width: 1, height: 11, background: 'var(--color-border)' }} />
@@ -942,7 +950,7 @@ export default function ProductList() {
                 style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}
               >
                 {tag(code)}
-                {formatMarketPrice(code, prices[code]!)}
+                {money(code)}
               </span>
             ))}
           </span>
@@ -1165,6 +1173,7 @@ export default function ProductList() {
                   <span key={code}>{MARKET_META[code].label} {mpStatus.coverage[code]?.filled ?? 0}{mpStatus.coverage[code]?.stale ? `（${mpStatus.coverage[code].stale} 条过期）` : ''}</span>
                 ))}
                 <span>上次同步 {formatSyncTime(mpStatus.last_sync?.at)}（北京时间）</span>
+                <span>汇率 {fxCaption(fx)}</span>
                 <button className="btn btn-outline btn-sm" disabled={mpBusy} onClick={runMarketSync}>立即重读官网价</button>
               </div>
             )}
@@ -1179,24 +1188,37 @@ export default function ProductList() {
                     return (
                       <tr key={p.id}>
                         <td>#{p.product_no ?? ''} {p.product_name || p.sku || '(无标题)'}<br /><span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>{p.sku}</span></td>
-                        {(['CN', 'TB'] as const).map((market) => (
-                          <td key={market}>
-                            <input
-                              aria-label={`${MARKET_META[market].label}价格：${p.sku || p.product_name}`}
-                              inputMode="decimal"
-                              value={draft[market]}
-                              placeholder="未录入"
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                setMpPanel((prev) => prev ? { draft: { ...prev.draft, [p.id]: { ...(prev.draft[p.id] || { CN: '', TB: '' }), [market]: value } } } : prev);
-                              }}
-                              style={{ width: 96 }}
-                            />
-                          </td>
-                        ))}
+                        {(['CN', 'TB'] as const).map((market) => {
+                          // 边输边给兰特，省得每次都要自己按汇率算一遍。
+                          const typed = Number((draft[market] || '').trim());
+                          const hint = Number.isFinite(typed) && typed > 0 ? toZar(typed, 'CNY', fx) : null;
+                          return (
+                            <td key={market}>
+                              <input
+                                aria-label={`${MARKET_META[market].label}价格：${p.sku || p.product_name}`}
+                                inputMode="decimal"
+                                value={draft[market]}
+                                placeholder="未录入"
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setMpPanel((prev) => prev ? { draft: { ...prev.draft, [p.id]: { ...(prev.draft[p.id] || { CN: '', TB: '' }), [market]: value } } } : prev);
+                                }}
+                                style={{ width: 96 }}
+                              />
+                              {hint !== null && (
+                                <div style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                                  ≈ {formatZar(hint)}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
                         <td style={{ fontVariantNumeric: 'tabular-nums', color: prices.SG ? 'var(--color-text)' : 'var(--color-text-secondary)' }}>
                           {prices.SG ? formatMarketPrice('SG', prices.SG) : '未采集'}
                           {prices.SG?.at ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}> · {prices.SG.at}</span> : null}
+                          {prices.SG && formatZarPrice('SG', prices.SG, fx) ? (
+                            <div style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}>≈ {formatZarPrice('SG', prices.SG, fx)}</div>
+                          ) : null}
                         </td>
                       </tr>
                     );
@@ -1483,15 +1505,18 @@ export default function ProductList() {
         // 与列表单元格同一口径：只列采到的市场，采不到的不占行。
         const codes = visibleMarkets(prices);
         const insights = marketInsights(prices);
+        // 四列（市场 / 原币 / 兰特 / 来源·日期）比原来宽，窄屏上不能硬撑，
+        // 否则会顶出视口；窗口装不下时按窗口宽度收，靠省略号兜住最长的来源列。
+        const tipWidth = Math.max(280, Math.min(440, window.innerWidth - 16));
         return (
           <div
             role="tooltip"
             style={{
               position: 'fixed',
-              left: Math.max(8, Math.min(marketTip.x, window.innerWidth - 340)),
+              left: Math.max(8, Math.min(marketTip.x, window.innerWidth - tipWidth - 8)),
               top: marketTip.y,
               zIndex: 60,
-              width: 320,
+              width: tipWidth,
               padding: '10px 12px',
               background: 'var(--color-card)',
               border: '0.5px solid var(--color-border)',
@@ -1509,28 +1534,31 @@ export default function ProductList() {
                 还没有采集到价格。新加坡官网价由服务端每天自动重读；国内原价 / 到手价在「参考价」里人工录入。
               </div>
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                 <thead>
                   <tr style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}>
-                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>市场</th>
-                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>价格</th>
-                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>来源 / 日期</th>
+                    <th style={{ textAlign: 'left', padding: '2px 8px 2px 0', fontWeight: 400, width: 74 }}>市场</th>
+                    <th style={{ textAlign: 'left', padding: '2px 8px 2px 0', fontWeight: 400, width: 68 }}>原币</th>
+                    <th style={{ textAlign: 'left', padding: '2px 8px 2px 0', fontWeight: 400, width: 62 }}>兰特</th>
+                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>来源 · 日期</th>
                   </tr>
                 </thead>
                 <tbody>
                   {codes.map((code) => {
                     const entry = prices[code]!;
+                    const zar = formatZarPrice(code, entry, fx);
                     return (
                       <tr key={code}>
-                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)' }}>
+                        <td style={{ padding: '4px 8px 4px 0', borderTop: '0.5px solid var(--color-border)', whiteSpace: 'nowrap' }}>
                           {MARKET_META[code].label}
-                          {/* 只有真被服务端重读过才标「自动」：历史行是人工抄的官网价，没有 checked_at */}
-                          {entry.checked_at ? ' · 自动' : ''}
                         </td>
-                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+                        <td style={{ padding: '4px 8px 4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums', color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>
                           {formatMarketPrice(code, entry)}
                         </td>
-                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                        <td style={{ padding: '4px 8px 4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums', fontWeight: 500, whiteSpace: 'nowrap' }}>
+                          {zar || <span style={{ color: 'var(--color-text-secondary)', fontWeight: 400 }}>无汇率</span>}
+                        </td>
+                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)', fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {entry.src || '手工'}
                           {entry.n ? ` · ${entry.n} 条` : ''}
                           {entry.at ? ` · ${entry.at}` : ''}
@@ -1551,6 +1579,10 @@ export default function ProductList() {
                 ))}
               </div>
             )}
+            {/* 折算依据要写出来：兰特是算出来的，不写汇率就没法核对。 */}
+            <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--color-text-secondary)' }}>
+              {fxCaption(fx)}
+            </div>
           </div>
         );
       })()}

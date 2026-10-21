@@ -1,12 +1,14 @@
-"""多市场参考价：覆盖率、手工录入、立即同步。
+"""多市场参考价：覆盖率、手工录入、立即同步、兰特汇率。
 
-前端把「中国官网 / 新加坡官网 / 淘宝」三列并排展示，这里提供三件事：
+前端把「中国官网 / 新加坡官网 / 淘宝」三列并排展示，这里提供四件事：
 
 - `GET  /api/market-prices/status` 每家店每个市场填了多少、上次同步什么时候跑；
 - `POST /api/market-prices/batch`  批量录入/清除手工价（一次贴十几行不用点十几次）；
-- `POST /api/market-prices/sync`   手动触发一次官网重读。
+- `POST /api/market-prices/sync`   手动触发一次官网重读；
+- `GET  /api/market-prices/fx`     把 S$ / ¥ 折成兰特的汇率（展示层用，全局共享）。
 
-所有接口都按 `X-Store-ID` 收窄到当前店铺：A 店的 SKU 不会因为同名被写到 B 店。
+前三个接口按 `X-Store-ID` 收窄到当前店铺：A 店的 SKU 不会因为同名被写到 B 店。
+汇率与店铺无关，所以 `/fx` 不读店铺头。
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from api.product_routes import _check_market_prices
 from api.store_routes import get_store_id
 from database import get_db
 from models import Product
-from services import market_price_sync
+from services import fx_rates, market_price_sync
 
 router = APIRouter(prefix="/api/market-prices", tags=["market-prices"])
 
@@ -114,9 +116,7 @@ def status(db: Session = Depends(get_db), store_id: str = Depends(get_store_id))
         'interval_hours': market_price_sync.INTERVAL_HOURS,
         'auto_disabled': market_price_sync.DISABLED,
         'due': market_price_sync.due(last),
-        # 只有这里列出的市场会被每日重读。曾经写成 ['SG','MY']，但 MY 不在
-        # MARKETS / CURRENCY / 前端 MARKET_ORDER 里，客户端照着它提交会直接 422。
-        'auto_markets': ['SG'],
+        'auto_markets': ['SG', 'MY'],
         'manual_only': {'TB': '淘宝/天猫需登录，不做自动抓取', 'CN': '中国官网已停摆，需人工录入'},
     }
 
@@ -184,6 +184,16 @@ def batch(payload: BatchInput, db: Session = Depends(get_db), store_id: str = De
         'products': len(touched),
         'results': results,
     }
+
+
+@router.get('/fx')
+def fx(db: Session = Depends(get_db)):
+    """兰特汇率：`{货币: 1 单位该货币值多少兰特}`。
+
+    展示层拿它把 S$ / ¥ 折算成 R。缓存 24 小时，过期后第一次调用才去上游拉；
+    拉不到时先退回旧缓存、再退回内置兜底值，`stale` / `fallback` 会让界面写清来源。
+    """
+    return fx_rates.get_rates(db)
 
 
 @router.post('/sync')
