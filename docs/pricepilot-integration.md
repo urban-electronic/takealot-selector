@@ -1040,3 +1040,34 @@ WorkBuddy；基线 `c14f7eb6c6`（并行提交的多市场参考价自动同步 
 基线 `c14f7eb6c6`。`_match()` 只取第一行，CK 选品表里 Apfra 重复了一条，于是两条
 一模一样的记录一条有价、一条空白，用户会以为没保存成功。改为 `_matches()` 返回全部
 命中行并逐行写入，结果里带 `products` 计数。本轮只补记录，代码未改。
+
+### AUTO-MARKETS-01 `auto_markets` 不再声明写不进去的市场（2026-10-21）
+
+WorkBuddy；基线 `8f3af26cc3`（并行提交的兰特折算与参考价列改版）。
+
+- 症状：`GET /api/market-prices/status` 的 `auto_markets` 又变回 `['SG','MY']`。
+  MARKET-SYNC-01 已经把这条改成 `['SG']`，本次改版把旧版本整段覆盖了回来。
+  `MY` 不在 `MARKETS`、不在 `CURRENCY`、不在前端 `MARKET_ORDER`，
+  `PriceInput.market` 是 `Literal['CN','SG','TB']`——客户端照着这个列表提交 MY 会 422；
+  而 `auto_markets` 本身不参与任何校验，所以错的那版跑得很安静。
+- 改动：`backend/api/market_price_routes.py` 恢复 `['SG']` 并保留解释性注释；
+  `backend/services/market_price_sync.py` 模块 docstring 里「（新加坡 / 马来西亚等）」
+  改成「（当前只有新加坡）」——同一处错误认知的另一半。
+- 复现：`test_auto_markets_only_lists_writable_markets`——把值改回 `['SG','MY']` 即转红
+  （`assert ['MY'] == []`，已还原）。
+- 复测：`test_market_price_sync.py` 33 → 34 例全过；全量 selfcheck 全绿。
+
+### FX-CACHE-01 汇率缓存的兜底标记不再被洗掉（2026-10-21）
+
+WorkBuddy；基线 `8f3af26cc3`。
+
+- 症状：后端从没成功拉过上游时会返回一组写死的兜底汇率并标 `fallback: true`，
+  前端把它整段存进 localStorage；刷新页面时 `parseCached()` 无条件写成
+  `fallback: false`，于是界面上这组硬编码数字看起来像今天拉到的真汇率，
+  汇率说明里的「兜底汇率」也消失了。后端有 `test_fallback_is_not_written_to_cache`
+  守着「兜底不写缓存」，前端这一侧却把标记丢了。
+- 改动：`src/utils/useFxRates.ts` 读缓存时原样返回，不再改写 `fallback`；
+  `stale` 本来就没被改写，一并由新测试钉住。
+- 复现：新增 `scripts/test-fx-rates.cjs`（18 条断言）。把 `parseCached()` 改回
+  `{ ...value, fallback: false }`，`兜底汇率刷新后仍要标着兜底` 即转红（已还原）。
+- 复测：`test-fx-rates.cjs` 18 条断言；tsc 通过；全量 selfcheck 全绿。

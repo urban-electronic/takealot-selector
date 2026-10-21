@@ -314,6 +314,21 @@ def test_status_counts_coverage_and_stale(tmp_path):
     assert out['due'] is True
 
 
+def test_auto_markets_only_lists_writable_markets(tmp_path):
+    """`auto_markets` 是给客户端看的「哪些市场会自动重读」，照着它提交必须能写进去。
+
+    曾经写成 ['SG','MY']：MY 既不在 MARKETS，也不在 PriceInput.market 的
+    Literal 里，客户端按这个列表提交 MY 会直接 422，而这个字段本身从不参与
+    校验，所以错的那版跑得很安静。
+    """
+    Session = _db(tmp_path, 'auto-markets')
+    out = routes.status(db=Session(), store_id=DEFAULT_STORE_ID)
+    unknown = [code for code in out['auto_markets'] if code not in routes.MARKETS]
+    assert unknown == [], f'auto_markets 里有不可写入的市场：{unknown}'
+    for code in out['auto_markets']:
+        routes.PriceInput(sku='S1', market=code, price=1)  # 不抛异常即可
+
+
 def test_last_run_roundtrip(tmp_path):
     Session = _db(tmp_path, 'last')
     db = Session()

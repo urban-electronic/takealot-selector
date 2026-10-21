@@ -44,7 +44,11 @@ function parseCached(raw: string | null): FxRates | null {
       (cur) => typeof rates[cur] === 'number' && (rates[cur] as number) > 0,
     );
     if (!valid.length) return null;
-    return { ...(value as FxRates), fallback: false };
+    // 原样保留后端写的 `fallback` / `stale`，不要在这里改写成 false。
+    // 缓存里存的可能是「内置兜底常量」（后端从没拉成功过），无条件洗掉标记会让
+    // 刷新后的界面把它当成今天拉到的真汇率——汇率说明里不再出现「兜底汇率」，
+    // 用户看到的是一组看着很新的硬编码数字。这正是要防的静默降级。
+    return value as FxRates;
   } catch {
     return null;
   }

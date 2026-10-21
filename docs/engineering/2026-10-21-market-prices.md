@@ -62,17 +62,24 @@
 - 折算取整到兰特整数：参考价本来就是参考，`R1,282` 与 `R1,282.16` 对决策没有差别，
   后者还会把方框撑宽。
 - 前端 `useFxRates()` 先把 localStorage 里的上次汇率当初始值，再去请求，避免刷新页面时
-  先显示 `S$99.9`、一秒后跳成 `R1,282` 的闪动。
+  先显示 `S$99.9`、一秒后跳成 `R1,282` 的闪动。**缓存里的 `fallback` / `stale` 原样保留**：
+  存进去的可能就是后端那组兜底常量，读回来时洗掉标记，界面就会把硬编码数字当成今天拉到的
+  汇率，说明里也不再出现「兜底汇率」——`scripts/test-fx-rates.cjs` 钉住这一条。
 
 ## 覆盖
 
 - 后端：`backend/tests/test_market_prices.py`（合法/空/坏 JSON/非对象/缺 price/
   字符串 price/bool/负数，以及 schema 层是否真的抛 `ValidationError`）；
   `backend/tests/test_fx_rates.py`（汇率倒置方向、基准货币校验、坏数据、缓存命中与过期、
-  拉失败退回旧缓存 / 兜底常量、兜底值不写缓存）。
+  拉失败退回旧缓存 / 兜底常量、兜底值不写缓存）；
+  `backend/tests/test_market_price_sync.py::test_auto_markets_only_lists_writable_markets`
+  （`status.auto_markets` 里的每个市场都必须能通过 `PriceInput` 校验——这个字段不参与
+  任何校验，写错了会一直很安静）。
 - 前端：`scripts/test-market-prices.cjs`（78 条断言：解析、空值不当 0、数字字符串、
   坏输入、序列化丢空市场、往返一致、币种符号与小数位、只显示采到的市场、兰特折算方向与
-  千分位、缺汇率时退回原币、汇率说明文案）。
+  千分位、缺汇率时退回原币、汇率说明文案）；
+  `scripts/test-fx-rates.cjs`（18 条断言：没有缓存退回兜底、缓存命中、坏 JSON / 没有可用
+  货币时当没缓存、兜底标记与过期标记原样保留、localStorage 读不了时不抛异常）。
 - 版式：`scripts/test-responsive-layout.py` 的 `PRODUCT` fixture 带三个市场
   （四位数人民币 + 带小数的新加坡价，最宽的一档），`test-text-overlap.py` 复用同一份
   fixture，所以列表这一列与详情页卡片在 10 个宽度下都真的被量过。
