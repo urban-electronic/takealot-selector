@@ -150,3 +150,81 @@ export function marketInsights(prices: MarketPrices): { label: string; value: st
   }
   return out;
 }
+
+// ---- 兰特折算 ---------------------------------------------------------------
+//
+// 参考价是三地本币（S$、¥），和 Takealot 的售价不同币种，摆在旁边没法直接比。
+// 用户在 Takealot 卖货、定价用兰特，所以界面上统一折成 R 展示。
+
+export type FxCurrency = 'SGD' | 'CNY';
+
+export interface FxRates {
+  base: string;
+  /** 1 单位该货币值多少兰特 */
+  rates: Partial<Record<FxCurrency, number>>;
+  /** 汇率生效日期 YYYY-MM-DD（上游发布日，不是我们拉取的时刻） */
+  at?: string | null;
+  src?: string;
+  fetched_at?: string | null;
+  /** 缓存超过 24 小时且这次没拉到新的，用的是旧汇率 */
+  stale?: boolean;
+  /** 从没成功拉过，用的是代码里的兜底常量 */
+  fallback?: boolean;
+}
+
+/**
+ * 兜底汇率（2026-10-21 取自 open.er-api.com）。
+ *
+ * 只在后端从没成功拉过、又刚好拉不到时生效。界面必须能算出兰特——
+ * 一列空白比一个「标了来源的旧汇率」更糟，因为前者看起来像「这款没有参考价」。
+ */
+export const FALLBACK_FX: FxRates = {
+  base: 'ZAR',
+  rates: { SGD: 12.8345, CNY: 2.4453 },
+  src: '内置兜底',
+  fallback: true,
+};
+
+export const ZAR_SYMBOL = 'R';
+
+/** 某个价格条目用哪种货币。条目上写了 cur 就以它为准（迁移数据可能有别种货币）。 */
+export function entryCurrency(code: MarketCode, entry: MarketPriceEntry): string {
+  return (entry.cur || MARKET_META[code].cur).toUpperCase();
+}
+
+/** 折算成兰特；没有对应汇率时返回 null（调用方退回显示原币，不猜）。 */
+export function toZar(amount: number, cur: string, fx: FxRates): number | null {
+  const rate = fx.rates[cur as FxCurrency];
+  if (!rate || !Number.isFinite(rate) || rate <= 0) return null;
+  if (!Number.isFinite(amount)) return null;
+  return amount * rate;
+}
+
+/**
+ * 兰特金额文案：取整 + 千分位。
+ *
+ * 取整不保留小数：参考价本来就是「参考」，R1,282 和 R1,282.16 对决策没有差别，
+ * 但后者会让方框变宽、且暗示精度比实际高。
+ */
+export function formatZar(value: number): string {
+  const rounded = Math.round(value);
+  const text = String(Math.abs(rounded)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${rounded < 0 ? '-' : ''}${ZAR_SYMBOL}${text}`;
+}
+
+/** 折算后的价格文案；没有汇率时返回空串，由调用方决定退回原币还是留空。 */
+export function formatZarPrice(code: MarketCode, entry: MarketPriceEntry, fx: FxRates): string {
+  const converted = toZar(entry.price, entryCurrency(code, entry), fx);
+  return converted === null ? '' : formatZar(converted);
+}
+
+/** 汇率说明：`1 SGD=R12.83 · 1 CNY=R2.45 · 2026-10-21`，异常时带上标记。 */
+export function fxCaption(fx: FxRates): string {
+  const parts = (['SGD', 'CNY'] as FxCurrency[])
+    .filter((cur) => fx.rates[cur])
+    .map((cur) => `1 ${cur}=R${Number(fx.rates[cur]).toFixed(2)}`);
+  if (fx.at) parts.push(fx.at);
+  if (fx.fallback) parts.push('兜底汇率');
+  else if (fx.stale) parts.push('汇率未更新');
+  return parts.join(' · ');
+}

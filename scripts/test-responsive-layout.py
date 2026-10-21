@@ -14,9 +14,11 @@ PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳
 # Optional numeric values used by the existing detail view; fixtures are never saved.
 for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny','length_mm','width_mm','height_mm','actual_weight_kg','packaging_cost_per_unit_cny','inbound_listing_fee_cny','outbound_operation_fee_cny','last_mile_delivery_fee_cny','other_fee_cny','fulfillment_fee_zar','success_fee_rate','total_cost_zar','profit_zar','profit_margin']:
     PRODUCT[key] = 0
-# 多市场参考价：列表里是一格并列三个货币标签（190px），详情页是一张表。
+# 多市场参考价：列表里是一格并列三个价格（210px），详情页是一张表。
 # 不给数据时这一列永远只渲染一个「—」，等于从没被量过；这里按四位数价格 + 带小数的
 # 新加坡价给最宽的一档（价格越高标签越宽，四位数是代运营包袋的真实量级）。
+# 价格在列表里会折成兰特（R），四位数人民币折完是五位数（¥1289 → R31,500），
+# 所以这一格比原来的本币写法更宽——列宽就是按这个最坏情况给的。
 PRODUCT['market_prices'] = json.dumps({
     'CN': dict(price=1289, cur='CNY', src='官网', at='2026-10-21'),
     'SG': dict(price=245.9, cur='SGD', src='官网', at='2026-10-21'),
@@ -44,6 +46,9 @@ DATA = {
     '/api/inventory/shipments':[], '/api/inventory/adjustments':[], '/api/activity':[],
     '/api/procurement':[PROCUREMENT], '/api/fee-categories':[], '/api/fee-mapping-rules':[],
     '/api/settings':{'cny_per_zar':'0.41'}, '/api/integrations/takealot-seller/status':{'configured':False},
+    # 参考价列表要把本币折成兰特，页面一挂载就会读这个接口。漏声明会让整个布局测试
+    # 因为「未声明的接口」直接失败，而不是悄悄少测一列。
+    '/api/market-prices/fx':{'base':'ZAR','rates':{'SGD':12.8345,'CNY':2.4453},'at':'2026-10-21','src':'open.er-api.com','fetched_at':'2026-10-21T00:02:32+00:00','stale':False,'fallback':False},
     # 设置页会读本店卖家名（调价判断 Buybox 持位的依据），漏声明就会 404 后静默降级。
     '/api/integrations/takealot-seller/identity':{'name':'','source':'','candidates':[]},
     '/api/packing/products':[PACK], '/api/packing/sync-from-products':{'ok':True,'total_products':1,'skipped_no_sku':0,'duplicate_sku':0},

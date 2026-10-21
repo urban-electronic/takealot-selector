@@ -22,7 +22,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -116,7 +116,7 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   check(!detail.includes('三个市场都要手工录入'), 'SG 已改为自动同步，不能再写「三个市场都要手工录入」');
   check(!detail.includes('新加坡官网价取自官网商品页'),
     '不得再写「取自官网商品页」：那是人工抄价的口径，现在由服务端读取');
-  check(detail.includes('不与人民币直接比价'), 'SGD 不能与人民币直接比，文案要写明');
+  check(detail.includes('折成兰特'), '详情页要说明参考价会折成兰特，否则用户不知道为什么显示 R');
 }
 
 // ---- 自动同步的边界：只碰官网来源，不碰淘宝 ---------------------------------
@@ -169,6 +169,46 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   check(!list.includes('等待自动同步'), '不能再画「等待自动同步」占位');
   check(!list.includes('未录入（天猫/京东到手价）'), '不能再画「未录入（天猫/京东到手价）」占位');
   check(!list.includes('未录入（天猫/京东原价）'), '不能再画「未录入（天猫/京东原价）」占位');
+}
+
+// ---- 兰特折算：三地本币折成 R，才能和 Takealot 售价直接比 -------------------
+// 折算方向最容易写反：上游给的是「1 ZAR = x 外币」，这里要的是「1 外币 = x ZAR」。
+// 用真实汇率（2026-10-21：1 SGD=R12.8345、1 CNY=R2.4453）钉住几个具体数字，
+// 一旦有人把乘除写反，这几条会立刻红。
+{
+  const fx = { base: 'ZAR', rates: { SGD: 12.8345, CNY: 2.4453 }, at: '2026-10-21' };
+
+  check(formatZarPrice('SG', { price: 99.9, cur: 'SGD' }, fx) === 'R1,282', 'S$99.9 → R1,282');
+  check(formatZarPrice('CN', { price: 569, cur: 'CNY' }, fx) === 'R1,391', '¥569 → R1,391');
+  check(formatZarPrice('TB', { price: 479, cur: 'CNY' }, fx) === 'R1,171', '¥479 → R1,171');
+
+  check(Math.abs(toZar(100, 'SGD', fx) - 1283.45) < 1e-9, '1 SGD 折 12.8345 兰特（不是倒数）');
+  check(formatZar(1234567) === 'R1,234,567', '兰特要带千分位');
+  check(formatZar(0) === 'R0', '0 也要出文案（后端已挡住非正数，这里是最后一道）');
+  check(formatZar(1282.5) === 'R1,283', '四舍五入到整数');
+
+  check(toZar(100, 'SGD', { base: 'ZAR', rates: {} }) === null, '没有汇率时返回 null，不能当 0 算');
+  check(formatZarPrice('SG', { price: 99.9, cur: 'SGD' }, { base: 'ZAR', rates: { CNY: 2.4453 } }) === '',
+    '缺 SGD 汇率时返回空串，由调用方退回原币');
+  check(toZar(Number.NaN, 'SGD', fx) === null, '价格是 NaN 时不给结果');
+
+  // 条目上写了 cur 就以它为准：迁移数据里可能有非默认币种的价格
+  check(formatZarPrice('CN', { price: 99.9, cur: 'SGD' }, fx) === 'R1,282',
+    'entry.cur 优先于市场默认币种');
+
+  check(fxCaption(fx) === '1 SGD=R12.83 · 1 CNY=R2.45 · 2026-10-21', '汇率说明要写清比值和日期');
+  check(fxCaption({ ...fx, stale: true }).includes('汇率未更新'), '过期汇率要在说明里标出来');
+  check(fxCaption({ ...fx, fallback: true }).includes('兜底汇率'), '兜底汇率要标明来源不可靠');
+  check(FALLBACK_FX.rates.SGD > 0 && FALLBACK_FX.rates.CNY > 0, '兜底汇率必须可用，否则整列空白');
+}
+
+// ---- 列表和详情页都得真的用上折算，不能只存在于工具函数 ---------------------
+{
+  const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
+  check(list.includes('formatZarPrice('), '列表单元格要用折算后的兰特');
+  check(list.includes('fxCaption(fx)'), '列表要把汇率写出来，否则用户无法核对折算结果');
+  const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
+  check(detail.includes('formatZarPrice('), '详情页也要显示兰特');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);
