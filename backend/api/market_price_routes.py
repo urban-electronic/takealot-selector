@@ -39,6 +39,13 @@ class PriceInput(BaseModel):
     src: str = '手工'
     url: Optional[str] = None
     n: Optional[int] = Field(default=None, ge=0)
+    at: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    """报价本身发生的日期，不是录入日期。
+
+    这个字段不是装饰：淘宝/天猫/京东的价格抓不到，只能人工照商品页抄，
+    抄来的可能是三个月前的爆料价。写成「今天录入」会把它伪装成实时价，
+    所以调用方给什么日期就存什么日期，没给才用今天。
+    """
     sku: Optional[str] = None
     product_id: Optional[str] = None
 
@@ -132,7 +139,7 @@ def batch(payload: BatchInput, db: Session = Depends(get_db), store_id: str = De
                 'price': round(float(item.price), 2),
                 'cur': (item.cur or CURRENCY[item.market]).upper(),
                 'src': item.src or '手工',
-                'at': market_price_sync._today(),
+                'at': item.at or market_price_sync._today(),
                 'checked_at': market_price_sync._now_iso(),
             })
             if item.url:
