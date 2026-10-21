@@ -6,7 +6,7 @@ import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAs
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, marketInsights, parseMarketPrices } from '../utils/marketPrice';
+import { MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, marketInsights, parseMarketPrices, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
@@ -908,8 +908,14 @@ export default function ProductList() {
         );
       case 'market_prices': {
         const prices = parseMarketPrices(p.market_prices);
-        // 三个市场固定占位，缺的那个显示灰色「—」而不是整格消失：
-        // 只有把「哪一路没数据」摆出来，用户才知道该去补哪一格。
+        // 一个方框，只装采到的市场（见 visibleMarkets）：新加坡官网价是唯一由服务端
+        // 自动重读的权威值，放前面加粗；国内原价 / 到手价是人工录入的参考值，
+        // 跟在后面用次要色。采不到的市场不占位。
+        const available = visibleMarkets(prices);
+        if (!available.length) return <span style={{ color: 'var(--color-text-secondary)' }}>—</span>;
+        const [lead, ...rest] = available;
+        const leadEntry = prices[lead]!;
+        const tag = (code: MarketCode) => (code === 'CN' ? '原' : code === 'TB' ? '到手' : '');
         return (
           <span
             onMouseEnter={(e) => {
@@ -917,26 +923,28 @@ export default function ProductList() {
               setMarketTip({ product: p, x: rect.left, y: rect.bottom + 6 });
             }}
             onMouseLeave={() => setMarketTip(null)}
-            style={{ display: 'inline-flex', gap: 4, alignItems: 'center', whiteSpace: 'nowrap' }}
+            style={{
+              display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap',
+              padding: '1px 7px', borderRadius: 4,
+              border: '0.5px solid var(--color-border)', background: 'var(--surface-muted)',
+              opacity: leadEntry.stale ? 0.6 : 1,
+            }}
           >
-            {MARKET_ORDER.map((code) => {
-              const entry = prices[code];
-              return (
-                <span
-                  key={code}
-                  title={entry ? `${MARKET_META[code].label} ${formatMarketPrice(code, entry)}${entry.at ? ` · ${entry.at}` : ''}${entry.stale ? '（数据已过期）' : ''}` : `${MARKET_META[code].label}：未采集`}
-                  style={{
-                    padding: '1px 6px', borderRadius: 4, fontSize: 12, whiteSpace: 'nowrap',
-                    border: entry ? '0.5px solid var(--color-border)' : '0.5px dashed var(--color-border)',
-                    background: 'var(--surface-muted)',
-                    color: entry ? 'var(--color-text)' : 'var(--color-text-secondary)',
-                    opacity: entry && entry.stale ? 0.55 : 1,
-                  }}
-                >
-                  {MARKET_META[code].short} {entry ? formatMarketPrice(code, entry) : '—'}
-                </span>
-              );
-            })}
+            <span style={{ fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+              {formatMarketPrice(lead, leadEntry)}
+            </span>
+            {rest.length > 0 && (
+              <span aria-hidden="true" style={{ width: 1, height: 11, background: 'var(--color-border)' }} />
+            )}
+            {rest.map((code) => (
+              <span
+                key={code}
+                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}
+              >
+                {tag(code)}
+                {formatMarketPrice(code, prices[code]!)}
+              </span>
+            ))}
           </span>
         );
       }
@@ -1472,7 +1480,8 @@ export default function ProductList() {
       </div>}
       {marketTip && (() => {
         const prices = parseMarketPrices(marketTip.product.market_prices);
-        const codes = MARKET_ORDER;
+        // 与列表单元格同一口径：只列采到的市场，采不到的不占行。
+        const codes = visibleMarkets(prices);
         const insights = marketInsights(prices);
         return (
           <div
@@ -1495,35 +1504,44 @@ export default function ProductList() {
             <div style={{ fontWeight: 500, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {marketTip.product.product_name || '(无标题)'}
             </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}>
-                  <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>市场</th>
-                  <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>价格</th>
-                  <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>来源 / 日期</th>
-                </tr>
-              </thead>
-              <tbody>
-                {codes.map((code) => (
-                  <tr key={code}>
-                    <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)' }}>{MARKET_META[code].label}</td>
-                    <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums' }}>
-                      {prices[code] ? formatMarketPrice(code, prices[code]!) : <span style={{ color: 'var(--color-text-secondary)' }}>未采集</span>}
-                    </td>
-                    <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
-                      {prices[code]
-                        ? <>
-                            {prices[code]!.src || '手工'}
-                            {prices[code]!.n ? ` · ${prices[code]!.n} 条` : ''}
-                            {prices[code]!.at ? ` · ${prices[code]!.at}` : ''}
-                            {prices[code]!.stale ? ' · 已过期' : ''}
-                          </>
-                        : (code === 'TB' ? '未录入（天猫/京东到手价）' : code === 'CN' ? '未录入（天猫/京东原价）' : '等待自动同步')}
-                    </td>
+            {codes.length === 0 ? (
+              <div style={{ color: 'var(--color-text-secondary)' }}>
+                还没有采集到价格。新加坡官网价由服务端每天自动重读；国内原价 / 到手价在「参考价」里人工录入。
+              </div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}>
+                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>市场</th>
+                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>价格</th>
+                    <th style={{ textAlign: 'left', padding: '2px 0', fontWeight: 400 }}>来源 / 日期</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {codes.map((code) => {
+                    const entry = prices[code]!;
+                    return (
+                      <tr key={code}>
+                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)' }}>
+                          {MARKET_META[code].label}
+                          {/* 只有真被服务端重读过才标「自动」：历史行是人工抄的官网价，没有 checked_at */}
+                          {entry.checked_at ? ' · 自动' : ''}
+                        </td>
+                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+                          {formatMarketPrice(code, entry)}
+                        </td>
+                        <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                          {entry.src || '手工'}
+                          {entry.n ? ` · ${entry.n} 条` : ''}
+                          {entry.at ? ` · ${entry.at}` : ''}
+                          {entry.stale ? ' · 已过期' : ''}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
             {insights.length > 0 && (
               <div style={{ marginTop: 8, paddingTop: 7, borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
                 {insights.map((it) => (

@@ -22,7 +22,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -141,6 +141,34 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
   check(list.includes('formatSyncTime(mpStatus.last_sync?.at)'), '列表页「上次同步」必须走 formatSyncTime');
   check(!list.includes("String((mpStatus.last_sync as any)?.at"), '不许再直接 String() 原始 ISO 串');
+}
+
+// ---- 展示：只装采到的市场，采不到的不占位 -------------------------------
+// 14 款里目前只有 9 款能采到国内价（淘宝/天猫要登录态、中国官网已停摆）。
+// 如果三格都画出来，剩下 5 款就是两格灰占位——用户会以为该去填，
+// 而填了也改不了「抓不到」这件事。所以采不到的直接不出现。
+{
+  const full = visibleMarkets({ CN: { price: 699 }, SG: { price: 89.9 }, TB: { price: 639 } });
+  check(full.join(',') === 'SG,CN,TB', '三个都有时新加坡官网价打头（唯一自动重读的权威值）');
+
+  const sgOnly = visibleMarkets({ SG: { price: 89.9 } });
+  check(sgOnly.join(',') === 'SG', '只有官网价时只出官网价，不留国内两格占位');
+
+  const noSg = visibleMarkets({ CN: { price: 699 }, TB: { price: 639 } });
+  check(noSg.join(',') === 'CN,TB', '官网价缺失时国内两项照样按原序显示');
+
+  check(visibleMarkets({}).length === 0, '一个都没采到时不返回任何市场（整格留空）');
+  check(visibleMarkets(parseMarketPrices('{"SG":{"price":null}}')).length === 0,
+    'price=null 的条目不算采到（不能变成 S$0）');
+}
+
+// ---- 展示口径要在列表里真的用上，不能只存在于工具函数 ---------------------
+{
+  const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
+  check(list.includes('visibleMarkets(prices)'), '列表单元格与悬停卡都要走 visibleMarkets');
+  check(!list.includes('等待自动同步'), '不能再画「等待自动同步」占位');
+  check(!list.includes('未录入（天猫/京东到手价）'), '不能再画「未录入（天猫/京东到手价）」占位');
+  check(!list.includes('未录入（天猫/京东原价）'), '不能再画「未录入（天猫/京东原价）」占位');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);
