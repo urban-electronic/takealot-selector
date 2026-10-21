@@ -35,7 +35,9 @@ function parseCached(raw: string | null): FxRates | null {
       (cur) => typeof rates[cur] === 'number' && (rates[cur] as number) > 0,
     );
     if (!valid.length) return null;
-    return { ...(value as FxRates), fallback: false };
+    const stamp = Date.parse(value.fetched_at || '');
+    return { ...(value as FxRates), stale: Boolean(value.stale) ||
+      !Number.isFinite(stamp) || Date.now() - stamp >= 24 * 60 * 60 * 1000 };
   } catch {
     return null;
   }
