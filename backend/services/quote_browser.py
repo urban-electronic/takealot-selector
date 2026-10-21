@@ -134,9 +134,10 @@ async def _launch(profile, display, args):
             env={**os.environ, **({'DISPLAY': display} if display else {})},
             locale='en-ZA', timezone_id='Africa/Johannesburg',
             viewport={'width': 1366, 'height': 768})
-    except Exception:
+    except BaseException:
         # 启动失败要把 playwright 驱动收掉，否则每失败一次就漏一个 node 进程。
-        await playwright.stop()
+        # 超时取消同样必须收尾；CancelledError 不属于 Exception。
+        await _bounded(playwright.stop(), '停止启动未完成的 Playwright 驱动')
         raise
     return playwright, context
 
