@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timedelta, timezone
 
 # 折算目标货币。基准用 ZAR（Takealot 的结算货币）。
@@ -78,7 +79,7 @@ def parse_rates(payload) -> dict:
             value = float(raw)
         except (TypeError, ValueError):
             raise ValueError(f'{cur} 汇率不是数字：{raw!r}') from None
-        if value != value or value <= 0:  # NaN / 0 / 负数都算坏数据
+        if not math.isfinite(value) or value <= 0:
             raise ValueError(f'{cur} 汇率非法：{raw!r}')
         out[cur] = round(1 / value, 4)
     return out
