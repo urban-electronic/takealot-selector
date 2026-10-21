@@ -54,3 +54,25 @@ def test_apply_stale_preview_store_scope_and_cost_preservation(monkeypatch):
         assert p.actual_sale_price_zar == 200 and p.purchase_cost_cny == 40
         with pytest.raises(HTTPException):
             seller_assist(AssistRequest(ids=['p']), SimpleNamespace(url=SimpleNamespace(path='/preview')), db, 'other-store')
+
+
+def test_unreadable_offers_report_the_cause(monkeypatch):
+    """核对本店资料失败时必须带归因（SELLER-ASSIST-REASON-01）。
+
+    旧实现是一句无条件的「卖家资料暂时无法读取，请稍后重试」：密钥失效、限流、
+    网络不通、代码报错四种情况长得一模一样，用户只能反复点同一个按钮。
+    """
+    import services.takealot_seller_api as service
+
+    def boom(key):
+        raise ValueError('卖家接口暂时不可用（HTTP 429，上游限流，稍后自动重试），已暂停请求，请稍后再试')
+
+    monkeypatch.setattr(service, 'configured_key', lambda db: 'test')
+    monkeypatch.setattr(service, '_load_offers', boom)
+    engine = create_engine('sqlite://'); Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)() as db:
+        db.add(Product(id='p', store_id='default-store', sku='sku1')); db.commit()
+        with pytest.raises(HTTPException) as exc:
+            seller_assist(AssistRequest(ids=['p']), SimpleNamespace(url=SimpleNamespace(path='/preview')), db, 'default-store')
+    assert exc.value.status_code == 503
+    assert 'HTTP 429' in exc.value.detail and '限流' in exc.value.detail

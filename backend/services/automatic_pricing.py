@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import IntegrityError
 import httpx
 from models import Product, SystemSettings, DEFAULT_STORE_ID
-from services.takealot_seller_api import configured_key
+from services.takealot_seller_api import configured_key, seller_api_reason
 
 PREFIX = '_pricing_rule:'
 _stop = threading.Event()
@@ -417,18 +417,6 @@ async def collect(product, offer, seller_name=None):
             return snapshot
         finally:
             if page is not None: await page.close()
-
-def seller_api_reason(status):
-    """把卖家接口的失败归到一个用户能行动的原因上（DIAG-OFFER-01）。
-
-    401/403 是密钥，429 是限流，5xx 是上游故障——原来三者都是一句
-    「卖家报价读取失败」，用户只能反复点重试，也不知道该去改密钥还是等。
-    这里只带状态码和类别：不透出响应正文（正文里可能有账号信息）。
-    """
-    if status in (401, 403): return f'HTTP {status}，卖家接口密钥无效或无权限'
-    if status == 429: return 'HTTP 429，上游限流，稍后自动重试'
-    if 500 <= status < 600: return f'HTTP {status}，上游服务异常'
-    return f'HTTP {status}'
 
 def official_offer(client, key, offer_id):
     response = client.get(f'https://seller-api.takealot.com/v2/offers/offer/ID{offer_id}', headers={'Authorization': f'Key {key}'})

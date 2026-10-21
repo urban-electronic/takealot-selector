@@ -1123,3 +1123,26 @@ WorkBuddy；基线 `85b255e269`。
   把 `skipped.push(...)` 去掉（退回静默丢弃）即转红（已还原）。
 - 复测：`test-market-prices.cjs` 78 → 89 条断言；tsc（`noUnusedLocals`）通过；
   全量 selfcheck 全绿。
+
+### SELLER-REASON-01 卖家接口读不到时，密钥坏了和限流不再说同一句话（2026-10-21）
+
+WorkBuddy；基线 `a0c8a92c87`。
+
+- 症状：`_load_offers()` 对**任何**非 200 都抛同一句「卖家接口暂时不可用，已暂停请求，
+  请稍后再试」。密钥被撤销（401）的人会一直等下去，因为重试永远不会好；更糟的是
+  冷却期那句把它整个盖掉——连「密钥无效」都看不到。同一句话还从三个出口露给用户：
+  `/api/products/scrape-takealot` 的降级警告、`/api/products/seller-assist/*` 的 503
+  （这一条更彻底，连异常类型都不留）、调价列表的「上次结果」。
+- 改动：①`seller_api_reason()` 从 `automatic_pricing` 挪到 `takealot_seller_api`
+  （它描述的就是这个模块返回的状态码），文案一字未改，`automatic_pricing` 改为导入，
+  避免两份定义各自漂移；②新增 `_unavailable_reason(status)`：401/403 收尾写「请先检查
+  卖家 API 密钥」，429/5xx 收尾写「请稍后再试」——密钥坏了劝人等、上游限流劝人改配置，
+  都是把人往错的方向推；③失败原因存进 `state['last_error']`，冷却期内复用它（成功一次
+  即清除），不再让「请稍后再试」覆盖真实原因；④`seller_assist` 的 503 与
+  `scrape-takealot` 的卖家降级警告改用 `_read_reason(error)` 带归因。
+- 复现：`test_seller_api.py` 新增 2 例——401 文案含 `HTTP 401` 和「密钥」且**不含**
+  「稍后再试」，冷却期第二次报同一句且只发 1 次请求；429 含「限流」且不含「密钥」。
+  `test_seller_assist.py` 新增 1 例——`_load_offers` 抛 429 时 503 detail 含 `HTTP 429`
+  和「限流」。把两处修复撤回 → 三条断言分别报
+  `assert ('HTTP 401' in '卖家接口暂时不可用，已暂停请求，请稍后再试')`（已还原）。
+- 复测：后端 496 passed / 1 skipped；全量 selfcheck 全绿。

@@ -305,8 +305,11 @@ def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(g
         raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
     try:
         offers = _load_offers(key)
-    except Exception:
-        raise HTTPException(503, '卖家资料暂时无法读取，请稍后重试')
+    except Exception as error:
+        # 原来这里只回一句「暂时无法读取」：密钥失效、被限流、网络不通、代码报错
+        # 四种情况长得一模一样，用户只能反复点「核对本店资料」。同文件里刷新售价
+        # 的两条分支已经带上了 _read_reason，这条补齐（SELLER-ASSIST-REASON-01）。
+        raise HTTPException(503, f'卖家资料暂时无法读取（{_read_reason(error)}），请稍后重试')
     ids = set(data.ids)
     products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False, Product.id.in_(ids)).all()
     if len(products) != len(ids):
@@ -618,7 +621,7 @@ def _read_reason(error: BaseException) -> str:
     if any(key in text for key in ('暂停请求', '格式异常', '超出本次读取上限')):
         return text
     # 卖家接口的提示同样是「原因 + 建议」（含 HTTP 状态码，见
-    # automatic_pricing.seller_api_reason），不能退化成「内部错误 ValueError」。
+    # takealot_seller_api.seller_api_reason），不能退化成「内部错误 ValueError」。
     if text.startswith(('卖家接口', '卖家报价')):
         return text
     try:

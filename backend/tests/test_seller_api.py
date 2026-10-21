@@ -68,6 +68,42 @@ def test_rate_limit_cooldown_has_no_immediate_retry():
     assert len(calls) == 1
 
 
+def test_key_failure_says_check_the_key_and_survives_cooldown():
+    """401 不能写成「稍后再试」，冷却期内也要保留这个原因（SELLER-REASON-01）。
+
+    旧实现里 401/429/5xx 共用一句「暂时不可用，已暂停请求，请稍后再试」，
+    密钥坏了的人会一直等；而且冷却期那句话把原因整个盖掉，用户永远看不到
+    「密钥无效」——他只会以为上游挂了。
+    """
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(401)
+    original = httpx.Client
+    with patch.object(seller.httpx, 'Client', side_effect=lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+        with pytest.raises(ValueError) as first:
+            seller._load_offers(KEY)
+        with pytest.raises(ValueError) as second:
+            seller._load_offers(KEY)   # 冷却期内：不发第二次请求，但原因要一致
+    message = str(first.value)
+    assert 'HTTP 401' in message and '密钥' in message
+    assert '稍后再试' not in message
+    assert str(second.value) == message
+    assert len(calls) == 1
+
+
+def test_rate_limit_is_reported_as_throttling_not_as_a_key_problem():
+    def respond(request):
+        return httpx.Response(429)
+    original = httpx.Client
+    with patch.object(seller.httpx, 'Client', side_effect=lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+        with pytest.raises(ValueError) as exc:
+            seller._load_offers(KEY)
+    message = str(exc.value)
+    assert 'HTTP 429' in message and '限流' in message
+    assert '密钥' not in message
+
+
 def test_secret_encrypted_hidden_immutable_and_requires_auth():
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)

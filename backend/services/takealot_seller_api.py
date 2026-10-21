@@ -40,6 +40,32 @@ def configured_key(db):
         return ''
 
 
+def seller_api_reason(status):
+    """把卖家接口的失败归到一个用户能行动的原因上（DIAG-OFFER-01）。
+
+    401/403 是密钥，429 是限流，5xx 是上游故障——原来三者都是一句
+    「卖家报价读取失败」，用户只能反复点重试，也不知道该去改密钥还是等。
+    这里只带状态码和类别：不透出响应正文（正文里可能有账号信息）。
+    """
+    if status in (401, 403): return f'HTTP {status}，卖家接口密钥无效或无权限'
+    if status == 429: return 'HTTP 429，上游限流，稍后自动重试'
+    if 500 <= status < 600: return f'HTTP {status}，上游服务异常'
+    return f'HTTP {status}'
+
+
+def _unavailable_reason(status):
+    """`_load_offers` 失败与冷却期共用的一句文案（SELLER-REASON-01）。
+
+    401/403 是密钥问题，收尾说「请稍后再试」等于劝用户白等——密钥坏了等多久
+    都不会好；429/5xx 是上游问题，收尾说「检查密钥」又让人去改一个没坏的配置。
+    所以状态码归因之后，下一步动作必须按类别分开写。
+    """
+    reason = seller_api_reason(status)
+    if status in (401, 403):
+        return f'卖家接口暂时不可用（{reason}），已暂停请求，请先检查卖家 API 密钥'
+    return f'卖家接口暂时不可用（{reason}），已暂停请求，请稍后再试'
+
+
 def _load_offers(key):
     """At most five pages per refresh; serialized and cached for 30 minutes."""
     digest = hashlib.sha256(key.encode()).hexdigest()
@@ -49,7 +75,9 @@ def _load_offers(key):
         if now < state['expires']:
             return state['rows']
         if now < state['retry']:
-            raise ValueError('卖家接口暂时不可用，已暂停请求，请稍后再试')
+            # 冷却期内要沿用上一次的真实原因：否则 401（密钥坏了）在 5 分钟冷却里
+            # 又被改写成「暂时不可用，请稍后再试」，用户永远看不到该改密钥。
+            raise ValueError(state.get('last_error') or '卖家接口暂时不可用，已暂停请求，请稍后再试')
         # Failure cooldown starts before network access: no automatic repeated retries.
         state['retry'] = now + 300
         rows = []
@@ -65,7 +93,8 @@ def _load_offers(key):
                 if response.status_code != 200:
                     if response.status_code == 429:
                         state['retry'] = time.monotonic() + 1800
-                    raise ValueError('卖家接口暂时不可用，已暂停请求，请稍后再试')
+                    state['last_error'] = _unavailable_reason(response.status_code)
+                    raise ValueError(state['last_error'])
                 payload = response.json()
                 if not isinstance(payload.get('items'), list):
                     raise ValueError('卖家接口资料格式异常')
@@ -76,6 +105,7 @@ def _load_offers(key):
             if token:
                 raise ValueError('卖家商品数量超出本次读取上限，请联系管理员')
         state.update(rows=rows, expires=time.monotonic() + 1800, retry=0)
+        state.pop('last_error', None)   # 成功一次就清掉，别让旧原因留在下次冷却里
         return rows
 
 

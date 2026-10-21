@@ -40,8 +40,12 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db), re
         if key:
             try:
                 result = await asyncio.to_thread(seller_product, url, key)
-            except Exception:
-                seller_warning = '卖家 API 暂时不可用，已暂停重复请求；改用现有资料来源。'
+            except Exception as error:
+                # 这句会直接出现在商品页的警告里。原来不分成因：密钥无效（401）和
+                # 限流（429）都是「暂时不可用，已暂停重复请求」，用户不知道该改
+                # 密钥还是等一会儿（SELLER-WARN-REASON-01）。
+                from api.product_routes import _read_reason
+                seller_warning = f'卖家 API 读取失败，改用现有资料来源：{_read_reason(error)}'
     if result is None:
         try:
             result = await scrape_product(url)

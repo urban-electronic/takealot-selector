@@ -83,6 +83,9 @@ except Exception:
 新增 `_read_reason(error)`，只做**归因**，不透出路径/密钥/异常正文：
 
 - `_load_offers` 已写好的中文原因（限流冷却、格式异常、超出读取上限）原样透出；
+  2026-10-21 起这些原因前面带上了状态码归因（`HTTP 401，卖家接口密钥无效或无权限` /
+  `HTTP 429，上游限流`），冷却期内也沿用上一次的真实原因，不再统一改写成
+  「请稍后再试」（SELLER-REASON-01）；
 - `httpx` 的 `ConnectError` → 「连不上上游接口（网络不可达或 DNS 失败）」；
 - `HTTPStatusError` → 「上游接口返回 HTTP 4xx/5xx」；
 - `ModuleNotFoundError` → 「运行环境缺少抓取组件（部署问题，不是商品问题）」；
