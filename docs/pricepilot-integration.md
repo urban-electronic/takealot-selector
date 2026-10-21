@@ -1155,11 +1155,11 @@ WorkBuddy；基线 `fcba9ad87c`。
   （默认 `datetime.utcnow`），Pydantic 序列化成 `2026-10-21T12:00:00`——**不带时区标记**。
   前端 `new Date(...).toLocaleString('zh-CN')` 按**本地时间**解析这种串，于是
   东八区浏览器把 UTC 12:00 显示成 12:00（实际 20:00），「创建时间 / 更新时间」与
-  库存调整时间全天早 8 小时；UTC 16:00 之后创建的记录连日期都是前一天。
+  库存页操作日志的时间全天早 8 小时；UTC 16:00 之后创建的记录连日期都是前一天。
 - 改动：`src/utils/datetime.ts` 新增 `parseServerTime()`（没有 `Z` / `±hh:mm` 的一律
   当 UTC，纯日期补 `T00:00:00Z`，空格分隔先换 `T`；解析不了返回 `null` 不抛）与
   `beijingDateTime()`（固定 `Asia/Shanghai`，坏值走调用方占位符）。
-  `ProductDetail.tsx`（创建/更新时间）与 `Inventory.tsx`（调整时间）改用它。
+  `ProductDetail.tsx`（创建/更新时间）与 `Inventory.tsx`（操作日志时间列）改用它。
   显示格式沿用 `toLocaleString('zh-CN')`，只有小时数被修正，版式不变。
 - 复现：新增 `scripts/test-datetime.cjs`（28 条）——naive / `Z` / `+00:00` / `+08:00` /
   空格分隔 / 纯日期必须指向同一时刻或按标记解析；坏输入返回 `null`；
