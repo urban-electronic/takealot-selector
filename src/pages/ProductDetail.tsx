@@ -7,7 +7,7 @@ import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { useFeeCategories } from '../utils/useFeeCategories';
-import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { toNumber } from '../utils/number';
@@ -397,10 +397,11 @@ export default function ProductDetail() {
       <div className="card">
         <div className="card-title">多市场参考价</div>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
-          只作定价参考，不参与利润计算。三个市场都是本币（S$ / ¥），下面另起一列按当日汇率折成兰特（R），
+          只作定价参考，不参与利润计算。三个市场都是本币（S$ / ¥），下面另起一列按下列汇率折成兰特（R），
           方便和 Takealot 售价直接比。新加坡官网价由服务端每天自动重读一次；
           国内原价与到手价需要人工录入——中国官网（charleskeith.cn）已停摆，淘宝/天猫要登录态，都不做自动抓取。
         </p>
+        <p style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>{fxCaption(fx)}</p>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>

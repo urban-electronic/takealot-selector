@@ -97,4 +97,10 @@ for (const bad of ['not json', '[]', 'null', '{"rates":null}', '{"rates":{}}',
   throwOnRead = false;
 }
 
+
+// Offline cache age must be evaluated again on reload, not frozen at fetch time.
+for (const fetched_at of [new Date(Date.now() - 48 * 3600000).toISOString(), 'invalid', undefined]) {
+  store.set(CACHE_KEY, JSON.stringify({ base: 'ZAR', rates: { SGD: 12.8 }, stale: false, fetched_at }));
+  check(currentFxRates(FALLBACK).stale === true, 'expired or unknown cache age is marked stale');
+}
 console.log(`test-fx-rates: ${checks} checks passed`);

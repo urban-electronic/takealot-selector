@@ -95,7 +95,7 @@ def test_rejects_missing_currency():
         fx_rates.parse_rates({**UPSTREAM, 'rates': {'ZAR': 1, 'SGD': 0.077915}})
 
 
-@pytest.mark.parametrize('bad', [0, -1, 'abc', None, True])
+@pytest.mark.parametrize('bad', [0, -1, 'abc', None, True, float('inf'), float('-inf'), float('nan')])
 def test_rejects_bad_rate(bad):
     with pytest.raises(ValueError):
         fx_rates.parse_rates({**UPSTREAM, 'rates': {'ZAR': 1, 'SGD': bad, 'CNY': 0.408948}})
