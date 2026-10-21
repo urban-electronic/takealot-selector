@@ -186,9 +186,9 @@ def test_batch_matches_sku_with_colour_suffix():
         def query(self, *a, **k):
             return _Q()
 
-    product = routes._match(_Db(), DEFAULT_STORE_ID, routes.PriceInput(
+    products = routes._matches(_Db(), DEFAULT_STORE_ID, routes.PriceInput(
         sku='CK2-90151648-1_STO.GR', market='TB', price=1))
-    assert product is not None and product.id == 'p1'
+    assert len(products) == 1 and products[0].id == 'p1'
 
 
 def test_batch_rejects_price_for_missing_product(tmp_path):
@@ -227,6 +227,28 @@ def test_batch_rejects_malformed_date():
 
     with pytest.raises(ValidationError):
         routes.PriceInput(sku='S1', market='CN', price=1, at='2026/08/13')
+
+
+def test_batch_writes_every_row_sharing_the_sku(tmp_path):
+    """同一个 SKU 可能有两行（CK 选品表里 Apfra 就重复了一条），价格必须两行都写，
+    否则列表里两条一模一样的记录一条有价一条空白，用户会以为没保存成功。"""
+    Session = _db(tmp_path, 'dup')
+    db = Session()
+    for pid in ('p1', 'p2'):
+        db.add(Product(id=pid, store_id=DEFAULT_STORE_ID, sku='CK2-90151648-1',
+                       product_name='Apfra', market_prices=''))
+    db.commit()
+    db.close()
+
+    out = routes.batch(routes.BatchInput(items=[
+        routes.PriceInput(sku='CK2-90151648-1', market='CN', price=569)]),
+        db=Session(), store_id=DEFAULT_STORE_ID)
+    assert out['results'][0]['products'] == 2 and out['products'] == 2
+
+    db = Session()
+    rows = db.query(Product).all()
+    assert all(json.loads(r.market_prices)['CN']['price'] == 569.0 for r in rows)
+    db.close()
 
 
 def test_batch_none_price_clears_the_market(tmp_path):

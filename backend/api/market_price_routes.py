@@ -62,24 +62,29 @@ def _load(raw: str | None) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def _match(db: Session, store_id: str, item: PriceInput):
-    """按 product_id 或 SKU 找产品。
+def _matches(db: Session, store_id: str, item: PriceInput) -> list[Product]:
+    """按 product_id 或 SKU 找产品，返回**全部**命中行。
+
+    为什么返回列表：同一个 SKU 可能有多行（CK 选品表里 Apfra 就重复了一条），
+    只写第一行的话，列表里两条一模一样的记录会一条有价、一条空白，用户会以为没保存。
 
     SKU 允许「主货号前缀」匹配：库里存 `CK2-90151648-1`，用户手上是带配色的
     `CK2-90151648-1_STO.GR`，精确匹配会漏掉——但只在唯一命中时才认，
     撞上多个候选宁可报错也不猜。
     """
     if item.product_id:
-        return db.query(Product).filter(Product.id == item.product_id, Product.store_id == store_id).first()
+        hit = db.query(Product).filter(Product.id == item.product_id,
+                                       Product.store_id == store_id).first()
+        return [hit] if hit else []
     sku = (item.sku or '').strip()
     if not sku:
-        return None
-    hit = db.query(Product).filter(Product.store_id == store_id, Product.sku == sku).first()
-    if hit:
-        return hit
+        return []
+    hits = db.query(Product).filter(Product.store_id == store_id, Product.sku == sku).all()
+    if hits:
+        return hits
     candidates = db.query(Product).filter(
         Product.store_id == store_id, Product.sku.like(f'{sku}\\_%', escape='\\')).all()
-    return candidates[0] if len(candidates) == 1 else None
+    return candidates if len(candidates) == 1 else []
 
 
 @router.get('/status')
@@ -124,43 +129,51 @@ def batch(payload: BatchInput, db: Session = Depends(get_db), store_id: str = De
     results = []
     touched: dict[str, Product] = {}
     for item in payload.items:
-        product = _match(db, store_id, item)
-        if not product:
+        products = _matches(db, store_id, item)
+        if not products:
             results.append({'sku': item.sku, 'product_id': item.product_id, 'market': item.market,
                             'status': 'not_found'})
             continue
-        prices = _load(product.market_prices)
-        if item.price is None:
-            prices.pop(item.market, None)
-            outcome = 'cleared'
-        else:
-            entry = dict(prices.get(item.market) or {})
-            entry.update({
-                'price': round(float(item.price), 2),
-                'cur': (item.cur or CURRENCY[item.market]).upper(),
-                'src': item.src or '手工',
-                'at': item.at or market_price_sync._today(),
-                'checked_at': market_price_sync._now_iso(),
-            })
-            if item.url:
-                entry['url'] = item.url.strip()
-            if item.n is not None:
-                entry['n'] = item.n
-            entry.pop('stale', None)
-            entry.pop('miss', None)
-            prices[item.market] = entry
-            outcome = 'updated'
-        raw = json.dumps(prices, ensure_ascii=False, sort_keys=True) if prices else ''
-        try:
-            _check_market_prices(raw)  # 与单条 PATCH 走同一套校验，坏数据不进库
-        except ValueError as exc:
-            results.append({'sku': item.sku, 'product_id': item.product_id, 'market': item.market,
-                            'status': 'invalid', 'error': str(exc)})
+        written = 0
+        outcome = 'updated'
+        last_price = None
+        for product in products:
+            prices = _load(product.market_prices)
+            if item.price is None:
+                prices.pop(item.market, None)
+                outcome = 'cleared'
+            else:
+                entry = dict(prices.get(item.market) or {})
+                entry.update({
+                    'price': round(float(item.price), 2),
+                    'cur': (item.cur or CURRENCY[item.market]).upper(),
+                    'src': item.src or '手工',
+                    'at': item.at or market_price_sync._today(),
+                    'checked_at': market_price_sync._now_iso(),
+                })
+                if item.url:
+                    entry['url'] = item.url.strip()
+                if item.n is not None:
+                    entry['n'] = item.n
+                entry.pop('stale', None)
+                entry.pop('miss', None)
+                prices[item.market] = entry
+            raw = json.dumps(prices, ensure_ascii=False, sort_keys=True) if prices else ''
+            try:
+                _check_market_prices(raw)  # 与单条 PATCH 走同一套校验，坏数据不进库
+            except ValueError as exc:
+                results.append({'sku': item.sku, 'product_id': item.product_id, 'market': item.market,
+                                'status': 'invalid', 'error': str(exc)})
+                written = -1
+                break
+            product.market_prices = raw
+            touched[product.id] = product
+            written += 1
+            last_price = prices.get(item.market, {}).get('price')
+        if written < 0:
             continue
-        product.market_prices = raw
-        touched[product.id] = product
-        results.append({'sku': product.sku, 'product_id': product.id, 'market': item.market,
-                        'status': outcome, 'price': prices.get(item.market, {}).get('price')})
+        results.append({'sku': products[0].sku, 'product_id': products[0].id, 'market': item.market,
+                        'status': outcome, 'price': last_price, 'products': written})
 
     db.commit()
     return {
