@@ -9,7 +9,7 @@
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -94,7 +94,14 @@ def _calc_unit_price(quantity: int, total_amount: float) -> float:
 
 
 def _now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """服务端当前时间，按北京时间（业务时区）落库。
+
+    `recorded_at` 是给用户看的「采购日期」，前端直接取前 10 位当日期显示。
+    原来用 `datetime.now()`：容器时区是 UTC，于是北京时间 00:00–08:00 采购的记录
+    会被写成前一天，账期和库存对账都跟着错位一天（与 `todayLocal()` 修的是同一个坑）。
+    这里固定用 UTC+8，不依赖容器 TZ 配置。
+    """
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # --- Routes ---

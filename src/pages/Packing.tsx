@@ -20,6 +20,7 @@ import {
 } from '../remoteApi';
 import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
 import { safeSetItem } from '../utils/storage';
+import { todayLocal } from '../utils/datetime';
 import { CATALOG_CHANGED } from '../utils/catalogEvents';
 
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
@@ -85,10 +86,10 @@ function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallba
   return <img className="packing-img" src={src} alt={alt || filename} loading="lazy" onError={() => setState('failed')} />;
 }
 
-const todayStr = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
+// 装箱日期/文件名里的日期一律走业务时区（Asia/Shanghai），不要用浏览器本地时区。
+// 这里原来有一份自己的 `todayStr()`（getFullYear/getMonth/getDate），在非东八区
+// 的机器上会与采购/库存页的默认日期差一天，同一个装箱单两个日期。
+const todayStr = () => todayLocal();
 
 const hasChinese = (text: string) => /[\u3400-\u9fff]/.test(text);
 

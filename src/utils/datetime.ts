@@ -11,6 +11,41 @@
 
 const BUSINESS_TIME_ZONE = 'Asia/Shanghai';
 
+/**
+ * 解析后端返回的时间串。
+ *
+ * 后端的 `created_at` / `updated_at` 是 SQLAlchemy 的 `DateTime`（naive UTC，
+ * 默认值 `datetime.utcnow`），经 Pydantic 序列化后是 `2026-10-21T12:00:00`——
+ * **不带时区标记**。JS 的 `new Date()` 对这种串按「本地时间」解析，于是同一个
+ * 时间戳在东八区浏览器里显示成 12:00，实际是 20:00，整整早 8 小时。
+ *
+ * 约定：没有时区标记的一律当 UTC（全库没有 naive 本地时间，唯一的
+ * `datetime.now()` 只用来拼单号）；带 `Z` 或 `±hh:mm` 的按它自己解析。
+ * 解析不了返回 null，由调用方决定显示什么，不抛异常。
+ */
+export function parseServerTime(value: unknown): Date | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text) return null;
+  // 纯日期（YYYY-MM-DD）不能直接补 Z，否则会变成非法串；按 UTC 零点算。
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
+    ? `${text}T00:00:00Z`
+    : text.replace(' ', 'T');
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const stamp = new Date(hasZone ? normalized : `${normalized}Z`);
+  return Number.isNaN(stamp.getTime()) ? null : stamp;
+}
+
+/**
+ * 后端时间 → 业务时区（Asia/Shanghai）下的可读时间，不跟随运行机器的时区。
+ * 空值/坏值返回 `empty`，让调用方保留自己的占位符。
+ */
+export function beijingDateTime(value: unknown, empty = '-'): string {
+  const stamp = parseServerTime(value);
+  if (!stamp) return empty;
+  return stamp.toLocaleString('zh-CN', { timeZone: BUSINESS_TIME_ZONE });
+}
+
 /** 返回业务时区下的 YYYY-MM-DD，可直接用于 <input type="date"> 的 value。 */
 export function todayLocal(now: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-US', {

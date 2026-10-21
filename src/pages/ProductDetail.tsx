@@ -10,6 +10,7 @@ import { useFeeCategories } from '../utils/useFeeCategories';
 import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
+import { beijingDateTime } from '../utils/datetime';
 import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
@@ -768,8 +769,8 @@ export default function ProductDetail() {
         <table>
           <tbody>
             <tr><td style={{ fontWeight: 600, width: 140 }}>使用汇率</td><td>{product.exchange_rate_used}</td></tr>
-            <tr><td style={{ fontWeight: 600 }}>创建时间</td><td>{product.created_at ? new Date(product.created_at).toLocaleString('zh-CN') : '-'}</td></tr>
-            <tr><td style={{ fontWeight: 600 }}>更新时间</td><td>{product.updated_at ? new Date(product.updated_at).toLocaleString('zh-CN') : '-'}</td></tr>
+            <tr><td style={{ fontWeight: 600 }}>创建时间</td><td>{beijingDateTime(product.created_at)}</td></tr>
+            <tr><td style={{ fontWeight: 600 }}>更新时间</td><td>{beijingDateTime(product.updated_at)}</td></tr>
             <tr><td style={{ fontWeight: 600 }}>备注</td><td>
               {editMode ? (
                 <textarea value={editData.note || ''} onChange={(e) => updateField('note', e.target.value)} rows={3} style={{ width: '100%', maxWidth: 400 }} />

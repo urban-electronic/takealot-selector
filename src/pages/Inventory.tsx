@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createInventoryAdjustment, exportInboundTemplate, getImageUrl, getInventory, getInventoryAdjustments, getOperationLogs, getShipments, getStoreStorageKey, reverseInventoryAdjustment, voidShipment } from '../remoteApi';
 import type { InventoryAdjustment, InventoryRow, OperationLog, ShipmentRecord } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { todayLocal } from '../utils/datetime';
+import { beijingDateTime, todayLocal } from '../utils/datetime';
 import { applySettled, failureSummary } from '../utils/settle';
 
 import ShipmentReconciliation from '../operations/ShipmentReconciliation';
@@ -188,7 +188,7 @@ export default function Inventory() {
       {tab === 'activity' && <div className="inventory-table-wrap"><table className="inventory-table">
         <thead><tr><th>时间</th><th>类型</th><th>操作</th><th>内容</th></tr></thead>
         <tbody>{activity.map(row => <tr key={row.id}>
-          <td>{row.created_at ? new Date(row.created_at).toLocaleString('zh-CN') : '-'}</td>
+          <td>{beijingDateTime(row.created_at)}</td>
           <td>{row.entity_type === 'inventory' ? '库存' : row.entity_type === 'shipment' ? '发货' : row.entity_type}</td>
           <td>{row.action === 'adjust' ? '调整' : row.action === 'reverse' ? '撤销' : row.action === 'void' ? '撤回' : row.action}</td>
           <td>{row.summary}</td>

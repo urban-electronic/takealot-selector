@@ -1146,3 +1146,57 @@ WorkBuddy；基线 `a0c8a92c87`。
   和「限流」。把两处修复撤回 → 三条断言分别报
   `assert ('HTTP 401' in '卖家接口暂时不可用，已暂停请求，请稍后再试')`（已还原）。
 - 复测：后端 496 passed / 1 skipped；全量 selfcheck 全绿。
+
+### TIME-UTC-01 产品详情与库存调整的时间不再早 8 小时（2026-10-21）
+
+WorkBuddy；基线 `fcba9ad87c`。
+
+- 症状：后端的 `created_at` / `updated_at` 是 SQLAlchemy 的 naive `DateTime`
+  （默认 `datetime.utcnow`），Pydantic 序列化成 `2026-10-21T12:00:00`——**不带时区标记**。
+  前端 `new Date(...).toLocaleString('zh-CN')` 按**本地时间**解析这种串，于是
+  东八区浏览器把 UTC 12:00 显示成 12:00（实际 20:00），「创建时间 / 更新时间」与
+  库存调整时间全天早 8 小时；UTC 16:00 之后创建的记录连日期都是前一天。
+- 改动：`src/utils/datetime.ts` 新增 `parseServerTime()`（没有 `Z` / `±hh:mm` 的一律
+  当 UTC，纯日期补 `T00:00:00Z`，空格分隔先换 `T`；解析不了返回 `null` 不抛）与
+  `beijingDateTime()`（固定 `Asia/Shanghai`，坏值走调用方占位符）。
+  `ProductDetail.tsx`（创建/更新时间）与 `Inventory.tsx`（调整时间）改用它。
+  显示格式沿用 `toLocaleString('zh-CN')`，只有小时数被修正，版式不变。
+- 复现：新增 `scripts/test-datetime.cjs`（28 条）——naive / `Z` / `+00:00` / `+08:00` /
+  空格分隔 / 纯日期必须指向同一时刻或按标记解析；坏输入返回 `null`；
+  naive UTC 12:00 必须显示 `20:00` 且**不含** `12:00`；UTC 20:00 必须进位到次日 `04:00`；
+  另加源码断言（这两页不许出现不给 `timeZone` 的 `toLocaleString('zh-CN')`）。
+  把 `ProductDetail` 的创建时间改回旧写法即转红（已还原）。
+- 复测：`test-datetime.cjs` 28 条断言；tsc（`noUnusedLocals`）通过；全量 selfcheck
+  32 步中 31 步绿（pytest 步是本机 safe-delete 守卫拦 pytest 清临时目录的环境性假红，
+  同命令单独跑 498 passed / 1 skipped / exit 0）。
+
+### PROC-TIME-01 采购记录的采购日期按北京时间落库（2026-10-21）
+
+WorkBuddy；基线 `fcba9ad87c`。
+
+- 症状：`procurement_routes._now_str()` 用 `datetime.now()`——容器时区是 UTC，
+  而 `recorded_at` 是给用户看的「采购日期」（前端 `Procurement.tsx` 与
+  `PipelinePlan.tsx` 都取 `.slice(0, 10)`，库存对账的 `start_date` 也拿它做字符串比较）。
+  北京时间 00:00–08:00 创建的采购记录被写成前一天，账期整体错位一天——正是
+  `todayLocal()` 当初修掉的那个坑，从服务端又漏了回来。
+- 改动：`_now_str()` 改成 `datetime.now(timezone(timedelta(hours=8)))`，显式按 UTC+8
+  生成，不依赖容器 TZ 配置。落库格式（`YYYY-MM-DD HH:MM:SS`）未变，历史行不受影响。
+- 复现：新增 `backend/tests/test_procurement_recorded_at.py` 2 例——①`_now_str()` 与
+  UTC+8 的偏差 < 60 秒，且函数体里不许出现裸 `datetime.now()`（开发机本身是东八区，
+  只靠时间差抓不到，所以同时钉实现）；②走 `create_procurement_record` 建一条记录，
+  `recorded_at[:10]` 必须等于北京时间当天，列表接口原样带出。把 `_now_str()` 改回
+  `datetime.now()` → 第一例转红（已还原）。
+- 复测：后端 498 passed / 1 skipped（新增 2 例）。
+
+### PACK-DATE-01 装箱单日期与其它页共用同一份业务日期（2026-10-21）
+
+WorkBuddy；基线 `fcba9ad87c`。
+
+- 症状：`src/pages/Packing.tsx` 有一份自己的 `todayStr()`（`getFullYear/getMonth/getDate`），
+  取的是**浏览器本地时区**；采购、库存、补货三个页面都走 `todayLocal()`（Asia/Shanghai）。
+  非东八区的机器上，同一个装箱单的日期与其它页差一天，文件名也会跟着错。
+- 改动：`todayStr()` 改为 `todayLocal()` 的别名（保留调用点不动），删掉私有实现；
+  业务日期恢复「只有一份实现」。
+- 复现：`test-datetime.cjs` 加源码断言——`Packing.tsx` 不许出现
+  `getFullYear()/getMonth()/getDate()`，且必须从 `utils/datetime` 导入。把私有实现放回去即转红（已还原）。
+- 复测：`test-datetime.cjs` 28 条断言；`test-packing-display.cjs` 通过；全量 selfcheck 同上。
