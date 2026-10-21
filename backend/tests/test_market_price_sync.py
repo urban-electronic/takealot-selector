@@ -198,6 +198,37 @@ def test_batch_rejects_price_for_missing_product(tmp_path):
     assert out['saved'] == 0 and out['results'][0]['status'] == 'not_found'
 
 
+def test_batch_keeps_the_source_date_not_the_entry_date(tmp_path):
+    """抄来的报价可能是一个月前的，`at` 必须记报价日期，否则会被当成实时价。"""
+    Session = _db(tmp_path, 'at')
+    _seed(Session, DEFAULT_STORE_ID, 'S1', {})
+    routes.batch(routes.BatchInput(items=[
+        routes.PriceInput(sku='S1', market='TB', price=639, src='天猫到手价', at='2026-08-13')]),
+        db=Session(), store_id=DEFAULT_STORE_ID)
+    db = Session()
+    entry = json.loads(db.query(Product).first().market_prices)['TB']
+    db.close()
+    assert entry['at'] == '2026-08-13'
+    assert entry['checked_at'].startswith('20')       # 录入时刻单独记
+
+
+def test_batch_defaults_to_today_when_no_date_given(tmp_path):
+    Session = _db(tmp_path, 'at2')
+    _seed(Session, DEFAULT_STORE_ID, 'S1', {})
+    routes.batch(routes.BatchInput(items=[
+        routes.PriceInput(sku='S1', market='CN', price=699)]), db=Session(), store_id=DEFAULT_STORE_ID)
+    db = Session()
+    assert json.loads(db.query(Product).first().market_prices)['CN']['at'] == sync._today()
+    db.close()
+
+
+def test_batch_rejects_malformed_date():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        routes.PriceInput(sku='S1', market='CN', price=1, at='2026/08/13')
+
+
 def test_batch_none_price_clears_the_market(tmp_path):
     Session = _db(tmp_path, 'clear')
     _seed(Session, DEFAULT_STORE_ID, 'S1', {'TB': {'price': 268, 'src': '淘宝均价'},
