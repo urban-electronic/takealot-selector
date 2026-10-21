@@ -56,6 +56,36 @@ def _process_count():
         return None
 
 
+def _process_table():
+    """按进程名归类，并数出僵尸进程。
+
+    为什么要分名字：2026-10-21 观测到 pids 从 2 涨到 277 而 Python 线程数一直
+    只有 11~12 —— 漏的不是线程，是**子进程**。只有看清是 chromium / node / Xvfb
+    里的哪一个在堆积，才能判断是浏览器没关掉，还是关掉了但没人回收（僵尸）。
+    """
+    names = {}
+    zombies = 0
+    try:
+        entries = [e for e in os.listdir("/proc") if e.isdigit()]
+    except OSError:
+        return {}, 0
+    for entry in entries:
+        comm = _read(f"/proc/{entry}/comm") or "?"
+        names[comm] = names.get(comm, 0) + 1
+        stat = _read(f"/proc/{entry}/stat")
+        if not stat:
+            continue
+        # comm 里可能带空格和括号，所以从最后一个 ')' 之后切，第一段就是状态字母。
+        try:
+            state = stat.rsplit(")", 1)[1].split()[0]
+        except IndexError:
+            continue
+        if state == "Z":
+            zombies += 1
+    top = dict(sorted(names.items(), key=lambda kv: -kv[1])[:8])
+    return top, zombies
+
+
 def _rlimit():
     try:
         import resource
@@ -74,6 +104,7 @@ def snapshot():
         key = thread.name.split("_")[0]
         by_name[key] = by_name.get(key, 0) + 1
     pids_current, pids_max = _cgroup_pids()
+    processes_by_name, zombies = _process_table()
     data = {
         "threads": len(threads),
         "threads_by_name": dict(sorted(by_name.items(), key=lambda kv: -kv[1])),
@@ -81,6 +112,8 @@ def snapshot():
         "pids_current": pids_current,
         "pids_max": pids_max,
         "process_count": _process_count(),
+        "processes_by_name": processes_by_name,
+        "zombies": zombies,
         "pid": os.getpid(),
         "ts": time.time(),
     }
@@ -93,7 +126,8 @@ def format_snapshot(data=None):
     data = data or snapshot()
     return (
         f"threads={data['threads']} pids={data['pids_current']}/{data['pids_max']} "
-        f"proc={data['process_count']} top={list(data['threads_by_name'].items())[:4]}"
+        f"proc={data['process_count']} zombies={data['zombies']} "
+        f"top={list(data['processes_by_name'].items())[:4]}"
     )
 
 
