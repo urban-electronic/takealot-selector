@@ -64,11 +64,10 @@ export default function App() {
     getStores().then(rows => {
       setStores(rows);
       setStoreError('');
-      const activeRows = rows.filter(row => row.status === 'active');
-      if (activeRows.length && !activeRows.some(row => row.id === activeStore)) {
-        setActiveStore(activeRows[0].id);
-        setActiveStoreId(activeRows[0].id);
-      } else if (activeStore==='default-store' && activeStore===getActiveStoreId() && !collectionRequested.current.has(activeStore)) {
+      // 当前店铺可能刚被暂停或已从列表移除。不要静默切到第一家运营店：
+      // storeOptions 会保留并标注实际生效的 X-Store-ID，让用户明确选择后再切换。
+      // 自动跳店会让随后所有请求落到另一家店，尤其会污染装箱/库存操作。
+      if (activeStore==='default-store' && activeStore===getActiveStoreId() && !collectionRequested.current.has(activeStore)) {
         collectionRequested.current.add(activeStore);
         setOpenCollection('正在提交本次 Buybox 采集…');
         void collectOnAppOpen().then(result=>setOpenCollection(result.queued
