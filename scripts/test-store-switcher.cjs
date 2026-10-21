@@ -23,6 +23,7 @@ mod._compile(
   file,
 );
 const { storeOptions, storeLoadNotice } = mod.exports;
+const appSource = fs.readFileSync(path.resolve(__dirname, '../src/App.tsx'), 'utf8');
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -87,5 +88,13 @@ const store = (id, name, status = 'active') => ({
   check(notice.includes('切换店铺') && notice.includes('自动采集'), '要说清哪些动作没发生');
   check(storeLoadNotice('', '自营店铺').includes('原因未知'), '原因为空也要有交代');
 }
+
+// ---- 页面不能在列表返回后静默跳到第一家运营店 -------------------------------
+// helper 已经保证当前店铺（暂停/未知）会留在下拉里；App 如果仍覆盖 activeStore，
+// 屏幕和请求会一起悄悄切到别店，用户可能在不知情时操作另一店的装箱与库存。
+check(!appSource.includes('setActiveStore(activeRows[0].id)'),
+  '当前店铺暂停或缺失时不得自动切到第一家运营店，必须由用户明确选择');
+check(!appSource.includes('setActiveStoreId(activeRows[0].id)'),
+  '不得静默改写 localStorage 中实际生效的店铺 id');
 
 console.log(`test-store-switcher: ${checks} 条断言通过`);
