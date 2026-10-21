@@ -22,7 +22,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, marketInsights, MARKET_ORDER } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, marketInsights, MARKET_ORDER, MARKET_META } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -83,7 +83,16 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
 {
   check(formatMarketPrice('CN', { price: 1289 }) === '¥1289', '整数不带小数位');
   check(formatMarketPrice('SG', { price: 245.9 }) === 'S$245.9', '新加坡用 S$，且不拖尾零');
-  check(formatMarketPrice('TB', { price: 899 }) === '¥899', '淘宝均价用 ¥');
+  check(formatMarketPrice('TB', { price: 899 }) === '¥899', '到手价用 ¥');
+}
+
+// ---- 标签：CN/TB 都是「国内」，不能写成「中国官网 / 淘宝均价」 -------------
+// 中国官网已停摆，实际数据来自天猫、京东；标签写「官网」会让人以为有官方权威价。
+{
+  check(MARKET_META.CN.label === '国内原价', 'CN 标签是「国内原价」');
+  check(MARKET_META.TB.label === '国内到手价', 'TB 标签是「国内到手价」');
+  check(MARKET_META.TB.short === '到手', 'TB 的列内缩写是「到手」，不能是「淘」（数据含京东）');
+  check(MARKET_META.SG.label === '新加坡官网', 'SG 仍是唯一有官网权威价的市场');
 }
 
 // ---- 比价结论：只在同币种两项都有时给，除零不给 -----------------------------
@@ -103,7 +112,7 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
 {
   const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
   check(detail.includes('新加坡官网价由服务端每天自动重读'), '详情页要说明 SG 是自动重读');
-  check(detail.includes('中国官网与淘宝需要手工录入'), '详情页要说明 CN/TB 需要手工录入');
+  check(detail.includes('国内原价与到手价需要人工录入'), '详情页要说明 CN/TB 需要人工录入');
   check(!detail.includes('三个市场都要手工录入'), 'SG 已改为自动同步，不能再写「三个市场都要手工录入」');
   check(!detail.includes('新加坡官网价取自官网商品页'),
     '不得再写「取自官网商品页」：那是人工抄价的口径，现在由服务端读取');

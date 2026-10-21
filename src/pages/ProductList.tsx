@@ -1146,8 +1146,9 @@ export default function ProductList() {
           <div className="seller-assist-header"><strong>多市场参考价</strong><button className="btn btn-outline btn-sm" onClick={() => setMpPanel(null)}>关闭 ×</button></div>
           <div className="seller-assist-body">
             <p style={{ marginTop: 0 }}>
-              新加坡官网价由服务端每天自动重读一次（改价、下架都会跟着变）；中国官网与淘宝只能人工录入——
-              中国官网（charleskeith.cn）已停摆，在售商品只剩十几个旧款，淘宝/天猫需要登录态，都不做自动抓取。
+              新加坡官网价由服务端每天自动重读一次（改价、下架都会跟着变）。国内原价和到手价只能人工录入——
+              中国官网（charleskeith.cn）已停摆，淘宝/天猫要登录态，京东搜索也会 302，都不做自动抓取；
+              数值可以照天猫、京东的商品页抄，<strong>来源和日期会一并显示</strong>，不会被当成实时价。
             </p>
             {mpStatus && (
               <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10, fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
@@ -1162,7 +1163,7 @@ export default function ProductList() {
             {mpMessage && <div role="status" className="product-task-banner">{mpMessage}</div>}
             <div className="seller-assist-table-scroll" role="region" aria-label="参考价明细" tabIndex={0}>
               <table style={{ width: '100%' }}>
-                <thead><tr><th>产品</th><th>中国官网 ¥</th><th>淘宝 ¥</th><th>新加坡官网 S$（自动）</th></tr></thead>
+                <thead><tr><th>产品</th><th>国内原价 ¥</th><th>国内到手价 ¥</th><th>新加坡官网 S$（自动）</th></tr></thead>
                 <tbody>
                   {products.map((p) => {
                     const prices = parseMarketPrices(p.market_prices);
@@ -1517,7 +1518,7 @@ export default function ProductList() {
                             {prices[code]!.at ? ` · ${prices[code]!.at}` : ''}
                             {prices[code]!.stale ? ' · 已过期' : ''}
                           </>
-                        : (code === 'TB' ? '淘宝需登录，手工录入' : code === 'CN' ? '中国官网已停摆，手工录入' : '等待自动同步')}
+                        : (code === 'TB' ? '未录入（天猫/京东到手价）' : code === 'CN' ? '未录入（天猫/京东原价）' : '等待自动同步')}
                     </td>
                   </tr>
                 ))}
