@@ -18,6 +18,7 @@ from migrate import migrate_from_dump
 from api import operations_routes
 from api import pricing_routes, buybox_routes, collector_routes, cloud_browser_routes
 from api import diag_routes
+from api import market_price_routes
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -134,6 +135,7 @@ app.include_router(collector_routes.router)
 app.include_router(cloud_browser_routes.router)
 app.include_router(packing_routes.ui_router)
 app.include_router(diag_routes.router)
+app.include_router(market_price_routes.router)
 
 
 # 默认费率表
@@ -601,6 +603,10 @@ def start_operations_sync():
     start_pricing()
     from services.buybox_monitor import start_worker as start_monitor
     start_monitor()
+    # 参考价每天重读一次官网。用户电脑不常开，所以调度必须在服务端，
+    # 不能指望本地脚本或 GitHub Actions（仓库里的定时 workflow 已被删除）。
+    from services.market_price_sync import start_worker as start_market_price
+    start_market_price()
 
 
 @app.on_event('shutdown')
@@ -611,6 +617,8 @@ def stop_operations_sync():
     stop_pricing()
     from services.buybox_monitor import stop_worker as stop_monitor
     stop_monitor()
+    from services.market_price_sync import stop_worker as stop_market_price
+    stop_market_price()
 
 
 @app.on_event('shutdown')

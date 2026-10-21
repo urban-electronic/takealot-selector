@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, type SellerAssistResult } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
@@ -172,6 +172,12 @@ export default function ProductList() {
   const [contextProduct, setContextProduct] = useState<{ id: string; x: number; y: number } | null>(null);
   // 参考价悬停卡：坐标用 fixed 定位，避免被表格滚动容器裁掉
   const [marketTip, setMarketTip] = useState<{ product: Product; x: number; y: number } | null>(null);
+  // 参考价批量录入面板。淘宝/中国官网都抓不到，14 个 SKU 一个个点进详情页太慢，
+  // 这里一次贴完；SG 是后端自动同步的，面板里只读。
+  const [mpPanel, setMpPanel] = useState<{ draft: Record<string, { CN: string; TB: string }> } | null>(null);
+  const [mpStatus, setMpStatus] = useState<MarketPriceStatus | null>(null);
+  const [mpBusy, setMpBusy] = useState(false);
+  const [mpMessage, setMpMessage] = useState('');
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(() => {
     try {
       const saved = JSON.parse(readStoreStorage(LS_SELECTED_SKUS_KEY) || '[]');
@@ -542,6 +548,74 @@ export default function ProductList() {
     }
   };
 
+  const openMarketPanel = async () => {
+    const draft: Record<string, { CN: string; TB: string }> = {};
+    products.forEach((p) => {
+      const prices = parseMarketPrices(p.market_prices);
+      draft[p.id] = {
+        CN: prices.CN ? String(prices.CN.price) : '',
+        TB: prices.TB ? String(prices.TB.price) : '',
+      };
+    });
+    setMpPanel({ draft });
+    setMpMessage('');
+    setMpStatus(null);
+    try {
+      setMpStatus(await getMarketPriceStatus());
+    } catch (e: any) {
+      setMpMessage(e.message || '读取同步状态失败');
+    }
+  };
+
+  const saveMarketPanel = async () => {
+    if (!mpPanel) return;
+    const items = [] as Array<{ product_id: string; market: 'CN' | 'TB'; price: number | null }>;
+    products.forEach((p) => {
+      const prices = parseMarketPrices(p.market_prices);
+      const draft = mpPanel.draft[p.id] || { CN: '', TB: '' };
+      (['CN', 'TB'] as const).forEach((market) => {
+        const before = prices[market] ? String(prices[market]!.price) : '';
+        const now = (draft[market] || '').trim();
+        if (now === before) return;
+        if (now === '') {
+          if (before) items.push({ product_id: p.id, market, price: null });
+          return;
+        }
+        const value = Number(now);
+        if (!Number.isFinite(value) || value <= 0) return;
+        items.push({ product_id: p.id, market, price: value });
+      });
+    });
+    if (!items.length) {
+      setMpMessage('没有需要保存的改动');
+      return;
+    }
+    setMpBusy(true);
+    try {
+      const result = await saveMarketPrices(items);
+      setMpMessage(`已保存 ${result.saved} 条`);
+      setMpPanel(null);
+      fetchProducts();
+      notifyCatalogChanged(['market_prices']);
+    } catch (e: any) {
+      setMpMessage(e.message || '保存失败');
+    } finally {
+      setMpBusy(false);
+    }
+  };
+
+  const runMarketSync = async () => {
+    setMpBusy(true);
+    try {
+      const result = await syncMarketPrices();
+      setMpMessage(result.message || '已开始重读官网价');
+    } catch (e: any) {
+      setMpMessage(e.message || '触发同步失败');
+    } finally {
+      setMpBusy(false);
+    }
+  };
+
   const handleRefetchMissingImages = async () => {
     // 缺图行之外，还要包含「与主变体同图」的分支：它们当初就是被抓成主图的那张，
     // 不重新抓一次永远换不成自己的变体图。
@@ -834,8 +908,8 @@ export default function ProductList() {
         );
       case 'market_prices': {
         const prices = parseMarketPrices(p.market_prices);
-        const codes = MARKET_ORDER.filter((code) => prices[code]);
-        if (!codes.length) return <span style={{ color: 'var(--color-text-secondary)' }}>—</span>;
+        // 三个市场固定占位，缺的那个显示灰色「—」而不是整格消失：
+        // 只有把「哪一路没数据」摆出来，用户才知道该去补哪一格。
         return (
           <span
             onMouseEnter={(e) => {
@@ -845,19 +919,24 @@ export default function ProductList() {
             onMouseLeave={() => setMarketTip(null)}
             style={{ display: 'inline-flex', gap: 4, alignItems: 'center', whiteSpace: 'nowrap' }}
           >
-            {codes.map((code) => (
-              <span
-                key={code}
-                style={{
-                  padding: '1px 6px', borderRadius: 4, fontSize: 12, whiteSpace: 'nowrap',
-                  border: '0.5px solid var(--color-border)',
-                  background: 'var(--surface-muted)',
-                  color: 'var(--color-text)',
-                }}
-              >
-                {MARKET_META[code].short} {formatMarketPrice(code, prices[code]!)}
-              </span>
-            ))}
+            {MARKET_ORDER.map((code) => {
+              const entry = prices[code];
+              return (
+                <span
+                  key={code}
+                  title={entry ? `${MARKET_META[code].label} ${formatMarketPrice(code, entry)}${entry.at ? ` · ${entry.at}` : ''}${entry.stale ? '（数据已过期）' : ''}` : `${MARKET_META[code].label}：未采集`}
+                  style={{
+                    padding: '1px 6px', borderRadius: 4, fontSize: 12, whiteSpace: 'nowrap',
+                    border: entry ? '0.5px solid var(--color-border)' : '0.5px dashed var(--color-border)',
+                    background: 'var(--surface-muted)',
+                    color: entry ? 'var(--color-text)' : 'var(--color-text-secondary)',
+                    opacity: entry && entry.stale ? 0.55 : 1,
+                  }}
+                >
+                  {MARKET_META[code].short} {entry ? formatMarketPrice(code, entry) : '—'}
+                </span>
+              );
+            })}
           </span>
         );
       }
@@ -1031,6 +1110,7 @@ export default function ProductList() {
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入中国官网价 / 淘宝价；新加坡官网价由后端每天自动重读">参考价</button>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
 
@@ -1057,6 +1137,68 @@ export default function ProductList() {
             <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>确认仅补空白资料 ({assist.fillable})</button>
             <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新核对</button>
             <button className="btn btn-outline" onClick={() => setAssist(null)}>关闭</button>
+          </div>
+        </div>
+      </div>}
+
+      {mpPanel && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="多市场参考价" onClick={e => { if (e.target === e.currentTarget) setMpPanel(null); }}>
+        <div className="seller-assist-dialog">
+          <div className="seller-assist-header"><strong>多市场参考价</strong><button className="btn btn-outline btn-sm" onClick={() => setMpPanel(null)}>关闭 ×</button></div>
+          <div className="seller-assist-body">
+            <p style={{ marginTop: 0 }}>
+              新加坡官网价由服务端每天自动重读一次（改价、下架都会跟着变）；中国官网与淘宝只能人工录入——
+              中国官网（charleskeith.cn）已停摆，在售商品只剩十几个旧款，淘宝/天猫需要登录态，都不做自动抓取。
+            </p>
+            {mpStatus && (
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10, fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
+                <span>已录价产品 {mpStatus.products_with_price}/{mpStatus.products}</span>
+                {MARKET_ORDER.map((code) => (
+                  <span key={code}>{MARKET_META[code].label} {mpStatus.coverage[code]?.filled ?? 0}{mpStatus.coverage[code]?.stale ? `（${mpStatus.coverage[code].stale} 条过期）` : ''}</span>
+                ))}
+                <span>上次同步 {String((mpStatus.last_sync as any)?.at || '尚未运行')}</span>
+                <button className="btn btn-outline btn-sm" disabled={mpBusy} onClick={runMarketSync}>立即重读官网价</button>
+              </div>
+            )}
+            {mpMessage && <div role="status" className="product-task-banner">{mpMessage}</div>}
+            <div className="seller-assist-table-scroll" role="region" aria-label="参考价明细" tabIndex={0}>
+              <table style={{ width: '100%' }}>
+                <thead><tr><th>产品</th><th>中国官网 ¥</th><th>淘宝 ¥</th><th>新加坡官网 S$（自动）</th></tr></thead>
+                <tbody>
+                  {products.map((p) => {
+                    const prices = parseMarketPrices(p.market_prices);
+                    const draft = mpPanel.draft[p.id] || { CN: '', TB: '' };
+                    return (
+                      <tr key={p.id}>
+                        <td>#{p.product_no ?? ''} {p.product_name || p.sku || '(无标题)'}<br /><span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>{p.sku}</span></td>
+                        {(['CN', 'TB'] as const).map((market) => (
+                          <td key={market}>
+                            <input
+                              aria-label={`${MARKET_META[market].label}价格：${p.sku || p.product_name}`}
+                              inputMode="decimal"
+                              value={draft[market]}
+                              placeholder="未录入"
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                setMpPanel((prev) => prev ? { draft: { ...prev.draft, [p.id]: { ...(prev.draft[p.id] || { CN: '', TB: '' }), [market]: value } } } : prev);
+                              }}
+                              style={{ width: 96 }}
+                            />
+                          </td>
+                        ))}
+                        <td style={{ fontVariantNumeric: 'tabular-nums', color: prices.SG ? 'var(--color-text)' : 'var(--color-text-secondary)' }}>
+                          {prices.SG ? formatMarketPrice('SG', prices.SG) : '未采集'}
+                          {prices.SG?.at ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}> · {prices.SG.at}</span> : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="seller-assist-footer">
+            <button className="btn btn-primary" disabled={mpBusy} onClick={saveMarketPanel}>{mpBusy ? '保存中…' : '保存参考价'}</button>
+            <button className="btn btn-outline" onClick={() => setMpPanel(null)}>关闭</button>
           </div>
         </div>
       </div>}
@@ -1329,7 +1471,7 @@ export default function ProductList() {
       </div>}
       {marketTip && (() => {
         const prices = parseMarketPrices(marketTip.product.market_prices);
-        const codes = MARKET_ORDER.filter((code) => prices[code]);
+        const codes = MARKET_ORDER;
         const insights = marketInsights(prices);
         return (
           <div
@@ -1365,12 +1507,17 @@ export default function ProductList() {
                   <tr key={code}>
                     <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)' }}>{MARKET_META[code].label}</td>
                     <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', fontVariantNumeric: 'tabular-nums' }}>
-                      {formatMarketPrice(code, prices[code]!)}
+                      {prices[code] ? formatMarketPrice(code, prices[code]!) : <span style={{ color: 'var(--color-text-secondary)' }}>未采集</span>}
                     </td>
                     <td style={{ padding: '4px 0', borderTop: '0.5px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
-                      {prices[code]!.src || '手工'}
-                      {prices[code]!.n ? ` · ${prices[code]!.n} 条` : ''}
-                      {prices[code]!.at ? ` · ${prices[code]!.at}` : ''}
+                      {prices[code]
+                        ? <>
+                            {prices[code]!.src || '手工'}
+                            {prices[code]!.n ? ` · ${prices[code]!.n} 条` : ''}
+                            {prices[code]!.at ? ` · ${prices[code]!.at}` : ''}
+                            {prices[code]!.stale ? ' · 已过期' : ''}
+                          </>
+                        : (code === 'TB' ? '淘宝需登录，手工录入' : code === 'CN' ? '中国官网已停摆，手工录入' : '等待自动同步')}
                     </td>
                   </tr>
                 ))}

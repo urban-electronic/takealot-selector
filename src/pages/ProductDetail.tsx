@@ -393,7 +393,8 @@ export default function ProductDetail() {
       <div className="card">
         <div className="card-title">多市场参考价</div>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
-          只作定价参考，不参与利润计算。三个市场都要手工录入（新加坡官网价可从官网商品页抄，但那是 SGD，不与人民币直接比价）。
+          只作定价参考，不参与利润计算。新加坡官网价由服务端每天自动重读一次（SGD，不与人民币直接比价）；
+          中国官网与淘宝需要手工录入——中国官网（charleskeith.cn）已停摆，淘宝/天猫要登录态，都不做自动抓取。
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
@@ -408,7 +409,10 @@ export default function ProductDetail() {
               const entry = mpDraft[code];
               return (
                 <tr key={code}>
-                  <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)' }}>{MARKET_META[code].label}</td>
+                  <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)' }}>
+                    {MARKET_META[code].label}
+                    {entry?.src === '官网自动' ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}> · 自动</span> : null}
+                  </td>
                   <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)' }}>
                     {editMode ? (
                       <input
@@ -447,6 +451,7 @@ export default function ProductDetail() {
                       <>
                         {entry?.n ? `${entry.n} 条样本` : ''}
                         {entry?.at ? `${entry.n ? ' · ' : ''}${entry.at}` : ''}
+                        {entry?.stale ? ' · 已过期（最近一次没读到）' : ''}
                         {!entry?.n && !entry?.at ? '—' : ''}
                       </>
                     )}

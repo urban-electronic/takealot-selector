@@ -96,15 +96,26 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
     '只有 SGD 与 CNY 时不比（不引入汇率假设）');
 }
 
-// ---- 文案：不能让人以为新加坡价是系统自己去官网抓的 -----------------------
-// 三个市场全是手工录入，代码里没有任何官网抓取（按红线也不做）。
-// 旧文案写「新加坡官网价取自官网商品页」，读起来像自动读取，会让人以为填不填都行。
+// ---- 文案：谁自动、谁手工，必须和代码实际行为一致 -------------------------
+// 现在只有官网直营市场（SG/MY）由后端每天重读；中国官网已停摆、淘宝/天猫要登录态，
+// 两者都不做自动抓取。文案写成「都会自动」会让用户等着一个永远不来的数，
+// 写成「全手工」又会让用户白填一遍 SG。
 {
   const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
-  check(detail.includes('三个市场都要手工录入'), '详情页必须说清三个市场都是手工录入');
+  check(detail.includes('新加坡官网价由服务端每天自动重读'), '详情页要说明 SG 是自动重读');
+  check(detail.includes('中国官网与淘宝需要手工录入'), '详情页要说明 CN/TB 需要手工录入');
+  check(!detail.includes('三个市场都要手工录入'), 'SG 已改为自动同步，不能再写「三个市场都要手工录入」');
   check(!detail.includes('新加坡官网价取自官网商品页'),
-    '不得再写「取自官网商品页」：系统不会自动读取，三个市场都是手输');
+    '不得再写「取自官网商品页」：那是人工抄价的口径，现在由服务端读取');
   check(detail.includes('不与人民币直接比价'), 'SGD 不能与人民币直接比，文案要写明');
+}
+
+// ---- 自动同步的边界：只碰官网来源，不碰淘宝 ---------------------------------
+{
+  const sync = fs.readFileSync(path.resolve(__dirname, '../backend/services/market_price_sync.py'), 'utf8');
+  check(sync.includes('AUTO_SOURCES'), '同步服务要显式声明哪些来源可自动更新');
+  check(sync.includes('手工'), '手工录入的价格必须被排除在自动更新之外');
+  check(sync.includes('不做平台反爬对抗'), '淘宝/天猫不做自动抓取，代码里要有明确说明');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);
