@@ -394,7 +394,7 @@ export default function ProductDetail() {
         <div className="card-title">多市场参考价</div>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
           只作定价参考，不参与利润计算。新加坡官网价由服务端每天自动重读一次（SGD，不与人民币直接比价）；
-          中国官网与淘宝需要手工录入——中国官网（charleskeith.cn）已停摆，淘宝/天猫要登录态，都不做自动抓取。
+          国内原价与到手价需要人工录入——中国官网（charleskeith.cn）已停摆，淘宝/天猫要登录态，都不做自动抓取。
         </p>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>

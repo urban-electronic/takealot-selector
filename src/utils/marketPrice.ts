@@ -10,12 +10,12 @@ export type MarketCode = 'CN' | 'SG' | 'TB';
 export interface MarketPriceEntry {
   price: number;
   cur?: string;
-  /** 官网 / 官网自动 / 淘宝均价 / 手工 */
+  /** 官网自动 / 天猫原价 / 天猫到手价 / 京东到手价 / 手工 */
   src?: string;
   /** 采集日期 YYYY-MM-DD */
   at?: string;
   url?: string;
-  /** 淘宝均价的样本条数 */
+  /** 到手价的样本条数（同款不同配色/店铺各算一条） */
   n?: number;
   /** 最近一次自动重读的时间（ISO 8601）；手工条目没有这个字段 */
   checked_at?: string;
@@ -31,10 +31,15 @@ export type MarketPrices = Partial<Record<MarketCode, MarketPriceEntry>>;
 
 export const MARKET_ORDER: MarketCode[] = ['CN', 'SG', 'TB'];
 
+/**
+ * CN / TB 两路都指向「国内零售」：CN 是原价（吊牌/划线价），TB 是到手价（实付）。
+ * 代码里的 CN/TB 只是历史键名——中国官网 charleskeith.cn 已停摆，实际数据来自
+ * 天猫、京东的公开报价，所以标签必须写「国内」，不能写「官网」。
+ */
 export const MARKET_META: Record<MarketCode, { label: string; short: string; symbol: string; cur: string }> = {
-  CN: { label: '中国官网', short: 'CN', symbol: '¥', cur: 'CNY' },
+  CN: { label: '国内原价', short: 'CN', symbol: '¥', cur: 'CNY' },
   SG: { label: '新加坡官网', short: 'SG', symbol: 'S$', cur: 'SGD' },
-  TB: { label: '淘宝均价', short: '淘', symbol: '¥', cur: 'CNY' },
+  TB: { label: '国内到手价', short: '到手', symbol: '¥', cur: 'CNY' },
 };
 
 /** 把「像价格的值」归一成数字；null / 空串 / 布尔 / NaN / 负数一律当没有数据。
@@ -97,7 +102,7 @@ export function today(): string {
 
 /**
  * 比价结论：只用同币种能直接比的两项，避免引入汇率假设。
- *  - 淘宝 / 中国官网：渠道折扣深度，越大说明淘宝越贵
+ *  - 到手价 / 原价：国内折扣深度，90% 表示实付是吊牌的九折
  * （新加坡价是 SGD，跟人民币不能直接比，不在这里出结论，只在上面的明细里展示。）
  */
 export function marketInsights(prices: MarketPrices): { label: string; value: string }[] {
@@ -106,7 +111,7 @@ export function marketInsights(prices: MarketPrices): { label: string; value: st
   const tb = prices.TB?.price;
   if (cn && tb && cn > 0) {
     const ratio = Math.round((tb / cn) * 100);
-    out.push({ label: '淘宝 / 中国官网', value: `${ratio}%` });
+    out.push({ label: '到手价 / 原价', value: `${ratio}%` });
   }
   return out;
 }
