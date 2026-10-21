@@ -297,7 +297,17 @@ async def image_proxy(
         if not any(hmac.compare_digest(candidate, expected) for candidate in supplied):
             raise HTTPException(status_code=401, detail="无效或缺失 API Key")
     safe_url = _validate_image_url(url)
-    content, content_type = await _service.fetch(safe_url)
+    try:
+        content, content_type = await _service.fetch(safe_url)
+    except (RuntimeError, OSError) as exc:
+        # 2026-10-21：容器线程被采集任务耗光后，anyio 解析 DNS 要起线程却起不来，
+        # 抛的是 `RuntimeError: can't start new thread`。这类错误不是「图片没了」，
+        # 而是「本机暂时发不出请求」，必须如实报 502，前端才会走直连兜底；
+        # 原来冒泡成 500，前端只能显示破图，也看不出该重试还是该等。
+        raise HTTPException(
+            status_code=502,
+            detail="图片服务暂时不可用（本机资源不足），请稍后重试",
+        ) from exc
     return Response(
         content=content,
         media_type=content_type,

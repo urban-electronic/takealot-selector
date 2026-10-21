@@ -25,7 +25,7 @@ THROTTLED_CODES = ('site_challenge', 'rate_limited', 'http_forbidden')
 # 放开；这时候如果按指数退避，第 5 次就排到 80 分钟后、第 7 次封顶 6 小时——
 # 浏览器明明恢复了，这一行还在睡。界面文案写的是「等下一轮自动重试」，
 # 所以退避必须真的按用户间隔走。
-TRANSIENT_CODES = THROTTLED_CODES + ('collector_unavailable', 'collector_busy')
+TRANSIENT_CODES = THROTTLED_CODES + ('collector_unavailable', 'collector_busy', 'collect_timeout')
 _stop = threading.Event()
 _thread = None
 _supervisor = None
@@ -45,6 +45,15 @@ COLLECT_RETRY_DELAY = 5.0
 # 界面上永远是「运行中」——2026-10-20 线上就是这么停采 17 分钟的。
 # 到点就放弃这一个任务并如实记账，让循环继续转、让自愈能跑起来。
 JOB_TIMEOUT = 240
+# 单次采集在**协程内部**的硬上限。这是 JOB_TIMEOUT 治不了的那半个问题：
+# 看门狗只能 `future.cancel()`，而 ThreadPoolExecutor 里已经跑起来的任务取消不了，
+# 线程会带着 Playwright 的 node 驱动 + Chromium 一起挂在那里，`_lock` 也不释放。
+# 2026-10-21 线上就是这样把线程耗光的——`/api/image-proxy` 全线 500
+# （RuntimeError: can't start new thread），而内存只用了 0.9G/8G。
+# 现在把上限下沉到协程里：到点由 asyncio 取消 collect()，quote_context 的
+# finally 正常跑完（关页面、关浏览器、放锁），线程干干净净回到池子里。
+# 必须比 JOB_TIMEOUT 小，否则看门狗先动手，又回到取消不了线程的老路。
+COLLECT_TIMEOUT = JOB_TIMEOUT - 60
 
 
 def normalize_interval_minutes(value, default_minutes=5):
@@ -107,16 +116,44 @@ def _should_retry_collect(snapshot):
     return str(snapshot.get('error') or '') in _RETRYABLE_ERRORS
 
 
+class CollectTimeout(RuntimeError):
+    """单次采集在自己的硬上限内没返回，已就地取消并释放浏览器。
+
+    与 collector_busy 区分：busy 是「别人占着浏览器」，这条是「自己卡住了」。
+    两者的共同点是都不该在同轮里重试——重试只会再卡一次。
+    """
+
+
+async def _collect_once(product, own, seller_name):
+    """跑一次采集，并给它一个能被真正取消的上限。
+
+    `asyncio.wait_for` 超时会 cancel 内层协程，`collect()` 的 `async with
+    quote_context()` 因此走正常退出路径：关页面 → 关 context → 停 Playwright →
+    放 _lock。这正是「放弃任务」原来缺的那一步——线程池的 future.cancel()
+    对已经在跑的线程无效，只能把协程取消掉才收得回资源。
+    """
+    try:
+        return await asyncio.wait_for(
+            collect(product, own, seller_name), timeout=COLLECT_TIMEOUT)
+    except asyncio.TimeoutError as exc:
+        raise CollectTimeout(
+            f'采集超过 {COLLECT_TIMEOUT} 秒未返回，已取消并释放浏览器') from exc
+
+
 def _collect_with_retry(product, own, result, seller_name=None):
     """采一次；遇到可自愈的失败就在同一轮里再试，最多 COLLECT_ATTEMPTS 次。
 
     只对「页面没渲染完 / 浏览器抖了一下」重试。配置错误、商品下架、变体确认
     不了这些重试也不会变好，立刻抛出，由调用方按原逻辑记录。
+    超时也不重试：能卡满 COLLECT_TIMEOUT 的任务，再给一次机会只会再卡一遍，
+    而每卡一次都要多占一个浏览器进程。
     """
     last = None
     for attempt in range(1, COLLECT_ATTEMPTS + 1):
         try:
-            snapshot = asyncio.run(collect(product, own, seller_name))
+            snapshot = asyncio.run(_collect_once(product, own, seller_name))
+        except CollectTimeout:
+            raise
         except Exception:
             if attempt >= COLLECT_ATTEMPTS:
                 raise
@@ -230,11 +267,15 @@ def process(row_id):
             # 而实际重试只会继续等同一把锁。
             from services.quote_browser import CollectorBusy
             busy = isinstance(error, CollectorBusy)
-            code = result.get('error_code') if finished else ('collector_busy' if busy else 'collector_unavailable')
+            # 自己卡住了：浏览器已经就地取消并释放，这条要如实写 collect_timeout，
+            # 而不是混成 collector_unavailable（那会让人去查「采集器是不是没起来」）。
+            timed_out = isinstance(error, CollectTimeout)
+            code = result.get('error_code') if finished else (
+                'collect_timeout' if timed_out else ('collector_busy' if busy else 'collector_unavailable'))
             if not finished:
                 result['diagnostics'] = {'stage': stage, 'failure': type(error).__name__}
             result.update(status='error', error_stage=stage, error_code=code or ('seller_read_failed' if stage=='seller_api' else type(error).__name__),
-                          error=str(error) if (finished or busy) else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
+                          error=str(error) if (finished or busy or timed_out) else '采集器不可用（浏览器或接口未就绪）；未改价', failures=config.get('failures',0)+1)
         finally:
             result.update(request_once=False, last_attempt_at=datetime.now(timezone.utc).isoformat(),last_attempt_source='cloud_browser')
             delay=interval_seconds(config.get('interval_minutes'))
@@ -444,12 +485,6 @@ def _record_cycle(db, jobs, paused_by):
         value.update(alive_at=time.time(), cycles=int(value.get('cycles',0))+1,
                      last_cycle_at=datetime.now(timezone.utc).isoformat(),
                      last_jobs=jobs, paused_by=paused_by)
-        # 新的一轮已经开起来了，上一轮「放弃过卡死任务」就不再是本次卡死的证据。
-        # 原来这两个字段只写不清：只要出过一次超时，stuck_jobs 就永久 >0，之后
-        # 任何一次慢轮次（排期排不下、不是故障）都会被界面加上一句「卡住的采集
-        # 任务已被放弃」——而那一轮可能一个任务都没超时。历史现场不等于当前状态。
-        value.pop('stuck_at', None)
-        value.pop('stuck_jobs', None)
         if row: row.value=json.dumps(value,ensure_ascii=False)
         else: db.add(SystemSettings(key=WORKER_STATE,value=json.dumps(value,ensure_ascii=False)))
         db.commit()

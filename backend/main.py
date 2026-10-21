@@ -17,6 +17,7 @@ from api import product_routes, scraper_routes, category_routes, settings_routes
 from migrate import migrate_from_dump
 from api import operations_routes
 from api import pricing_routes, buybox_routes, collector_routes, cloud_browser_routes
+from api import diag_routes
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -132,6 +133,7 @@ app.include_router(buybox_routes.router)
 app.include_router(collector_routes.router)
 app.include_router(cloud_browser_routes.router)
 app.include_router(packing_routes.ui_router)
+app.include_router(diag_routes.router)
 
 
 # 默认费率表
@@ -177,6 +179,12 @@ def startup():
     _init_default_data()
     _backfill_offer_catalog()
     _repair_product_metadata()
+    # 线程/进程用量定期落日志。2026-10-21 线程耗尽导致图片全线 500 时，
+    # 系统里没有任何地方能看到这个数字，只能靠重启试探；有了这行日志，
+    # 「一开始就高」和「跑着跑着涨上去」能当场分清。
+    from services import runtime_health
+    runtime_health.start_watchdog()
+    print(f"[startup] 运行时基线 {runtime_health.format_snapshot()}", flush=True)
 
 
 def _backfill_offer_catalog():
