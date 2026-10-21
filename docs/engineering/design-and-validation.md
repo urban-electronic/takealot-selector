@@ -91,6 +91,15 @@ permissions. This workflow never requests or transfers credentials.
 - Inventory and overseas transit must agree after an authorized correction. Read
   existing records first, guard against duplicates/concurrent changes and read
   back the result. Do not create purchases or arrivals to make totals look right.
+- A failure must name its cause, not just its category: invalid key, rate limit,
+  upstream 5xx and network loss lead to different operator actions. Collapsing
+  them into one "temporarily unavailable" leaves retry as the only possible
+  response (DIAG-OFFER-01). Status codes are not secrets; response bodies and
+  paths are.
+- Never fabricate a default entity to fill a failed read. Requests still carry the
+  real store id from storage, so a placeholder row in the switcher makes the
+  header name one store while every request goes to another (STORE-SWITCH-01).
+  Show the entity actually in use, mark its state, and say what did not happen.
 
 ## Validate only what the change affects
 

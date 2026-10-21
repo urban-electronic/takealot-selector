@@ -906,3 +906,46 @@ WorkBuddy；基线 `790f1244a3`。
 - 复现：把 `exportPacking` 的 `/api/packing/export` 改成 `/api/packing/export-v2`，
   报 `remoteApi.ts:459: POST /api/packing/export-v2 没有对应路由`（已还原）。
 - 复测：`test-api-contract` 12 → 17 条断言（91 路由 / 64 request 调用 / 5 直接 fetch）。
+
+### DIAG-OFFER-01 卖家接口读取失败要说出是哪一种（2026-10-21）
+
+WorkBuddy；基线 `71104506a2`。
+
+- 症状：`official_offer()` 把非 200 一律抛成「卖家报价读取失败，暂停本轮调价」。
+  密钥被撤销（401）、被限流（429）、上游 5xx、被网关拦成 HTML，在调价列表的
+  「上次结果」和「核对平台现价」的 503 里长得一模一样，用户能做的只有反复点重试。
+  `reconcile()` 更彻底：`except Exception: raise HTTPException(503, '平台现价暂时
+  无法读取…')`，连异常类型都不留，`_read_reason()` 那套归因（本店报价、官网资料
+  两个接口已经在用）没接到这条路径上。
+- 改动：新增 `seller_api_reason(status)`——401/403 说密钥、429 说限流、5xx 说上游
+  异常，只带状态码和类别，不带响应正文（正文可能含账号信息）；200 但不是 JSON
+  单独报「可能被网关拦截」，不再冒成 `JSONDecodeError`。`_read_reason()` 增加
+  「卖家接口/卖家报价」开头的提示直通（否则退化成「内部错误 ValueError」，等于
+  什么也没说）。`reconcile()` 的 503 改成 `平台现价暂时无法读取：<归因>；仍保持
+  暂停，不重复提交`。
+- 复现：`test_pricing_routes.py` 新增 3 例——四种状态码各自的文案且不含
+  `Authorization`/`Key `；非 JSON 响应；`reconcile` 在 401 与 `ConnectError` 两种
+  失败下 detail 含原因、不含 `/private/path`、且规则行一字未改。把 `_read_reason`
+  的直通去掉 → `assert 'HTTP 401' in detail` 报
+  `平台现价暂时无法读取：内部错误 ValueError；仍保持暂停，不重复提交`（已还原）。
+- 复测：后端 425 passed / 1 skipped。
+
+### STORE-SWITCH-01 页头店铺下拉不再伪造「自营店铺」（2026-10-21）
+
+WorkBuddy；基线 `71104506a2`。
+
+- 症状：`App.tsx` 在 `/api/stores` 读失败时 `setStores([{ id:'default-store',
+  name:'自营店铺', … }])`，凭空造一条店铺顶上。可每个请求带的 `X-Store-ID` 仍是
+  localStorage 里那个：界面显示「自营店铺」，实际请求发的是另一个店；当前店铺不在
+  选项里时浏览器还把 select 显示成空白。同一条兜底也盖住了「当前店铺刚在店铺管理页
+  被暂停」的情况——下拉里没有它了，请求却还带着它。
+- 改动：新增 `src/utils/storeSelection.ts`。`storeOptions()` 只列运营中的店铺，但
+  **当前店铺永远保留**：还在库里就标「（已暂停）」，读不到列表就标「（未在店铺列表
+  中）」，并在 `select` 上禁用切换；首次加载（还没返回）不加这些后缀，避免一进页面
+  就显示吓人的状态。`storeLoadNotice()` 生成页头提示：原因 + 「当前按哪个店继续」+
+  「切换店铺不可用、打开应用自动采集本次未提交」，带「重新读取」。读失败不再静默，
+  也不再影响店铺列表之外的任何请求。
+- 复现：`scripts/test-store-switcher.cjs` 23 条断言（正常列表 / 当前店铺被暂停 /
+  读失败 / 读失败且当前是自营店 / 加载中 / 不认识的 id / 提示文案）。把 unknown 分支
+  改回伪造 `default-store` → `当前店铺 id 不能被换掉` 转红（已还原）。
+- 复测：tsc 通过；全量 selfcheck 全绿（新套件自动纳入）。

@@ -418,10 +418,27 @@ async def collect(product, offer, seller_name=None):
         finally:
             if page is not None: await page.close()
 
+def seller_api_reason(status):
+    """把卖家接口的失败归到一个用户能行动的原因上（DIAG-OFFER-01）。
+
+    401/403 是密钥，429 是限流，5xx 是上游故障——原来三者都是一句
+    「卖家报价读取失败」，用户只能反复点重试，也不知道该去改密钥还是等。
+    这里只带状态码和类别：不透出响应正文（正文里可能有账号信息）。
+    """
+    if status in (401, 403): return f'HTTP {status}，卖家接口密钥无效或无权限'
+    if status == 429: return 'HTTP 429，上游限流，稍后自动重试'
+    if 500 <= status < 600: return f'HTTP {status}，上游服务异常'
+    return f'HTTP {status}'
+
 def official_offer(client, key, offer_id):
     response = client.get(f'https://seller-api.takealot.com/v2/offers/offer/ID{offer_id}', headers={'Authorization': f'Key {key}'})
-    if response.status_code != 200: raise ValueError('卖家报价读取失败，暂停本轮调价')
-    payload = response.json()
+    if response.status_code != 200:
+        raise ValueError(f'卖家接口读取报价失败（{seller_api_reason(response.status_code)}）')
+    try:
+        payload = response.json()
+    except ValueError:
+        # 200 但不是 JSON：多半是被网关/登录页拦了，别让它冒成 JSONDecodeError。
+        raise ValueError('卖家接口返回的不是 JSON（可能被网关拦截）')
     data = payload.get('offer', payload) if isinstance(payload, dict) else None
     if not isinstance(data, dict) or str(data.get('offer_id')) != str(offer_id): raise ValueError('卖家商品身份核对失败')
     for field in ['selling_price', 'stock_at_takealot_total']:

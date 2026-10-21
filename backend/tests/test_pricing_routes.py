@@ -174,3 +174,76 @@ def test_new_rule_still_gets_every_default(monkeypatch):
         assert value['max_drop_pct'] == 15 and value['lead_amount'] == 1
         assert value['cooldown_minutes'] == 10 and value['max_daily_changes'] == 10
         assert value['strategy'] == 'takealot_buybox' and value['use_system_min'] is True
+
+
+class _SellerResponse:
+    def __init__(self, status, body=None, raw=None):
+        self.status_code = status
+        self._body = body
+        self._raw = raw
+    def json(self):
+        if self._raw is not None: raise ValueError('Expecting value')
+        return self._body
+
+
+class _SellerClient:
+    def __init__(self, response): self._response = response
+    def get(self, *args, **kwargs): return self._response
+
+
+def test_seller_api_failures_say_which_one_it_is():
+    """密钥失效 / 限流 / 上游 5xx 不能长得一模一样（DIAG-OFFER-01）。
+
+    原来 401、429、500 都是「卖家报价读取失败，暂停本轮调价」——用户没法判断
+    该去改密钥还是等一会儿，只能反复点重试。状态码不是秘密，可以带出来。
+    """
+    from services.automatic_pricing import official_offer
+    cases = {
+        401: ('HTTP 401', '密钥'),
+        403: ('HTTP 403', '密钥'),
+        429: ('HTTP 429', '限流'),
+        503: ('HTTP 503', '上游服务异常'),
+    }
+    for status, (code, hint) in cases.items():
+        with pytest.raises(ValueError) as error:
+            official_offer(_SellerClient(_SellerResponse(status)), 'key', 'one')
+        message = str(error.value)
+        assert code in message and hint in message, (status, message)
+        assert 'Authorization' not in message and 'Key ' not in message
+
+def test_seller_api_non_json_body_is_not_a_json_decode_error():
+    from services.automatic_pricing import official_offer
+    with pytest.raises(ValueError) as error:
+        official_offer(_SellerClient(_SellerResponse(200, raw=b'<html>login</html>')), 'key', 'one')
+    assert 'JSON' in str(error.value)
+
+def test_reconcile_keeps_the_reason_and_leaks_nothing(monkeypatch):
+    """核对失败要能归因，同时不许把路径/密钥带出来。"""
+    import httpx as _httpx
+    from services import automatic_pricing
+    monkeypatch.setattr(routes, 'configured_key', lambda db: 'test')
+    monkeypatch.setattr(_httpx, 'Client', lambda **kwargs: type('Client', (), {
+        '__enter__': lambda self: self, '__exit__': lambda self, *args: None})())
+    key = PREFIX + DEFAULT_STORE_ID + ':one:one'
+    with database() as db:
+        original = {'product_id': 'one', 'offer_id': 'one', 'sku': 'one', 'enabled': False, 'write_pending': True, 'revision': 3}
+        db.add(SystemSettings(key=key, value=json.dumps(original))); db.commit()
+        def refused(client, key, offer_id):
+            raise ValueError('卖家接口读取报价失败（HTTP 401，卖家接口密钥无效或无权限）')
+        monkeypatch.setattr(automatic_pricing, 'official_offer', refused)
+        with pytest.raises(HTTPException) as error:
+            routes.reconcile('one', 'one', db, DEFAULT_STORE_ID)
+        assert error.value.status_code == 503
+        detail = error.value.detail
+        assert 'HTTP 401' in detail and '密钥' in detail, detail
+        # 归因失败时退回「内部错误 ValueError」，等于什么也没说
+        assert '内部错误' not in detail
+        assert json.loads(db.query(SystemSettings).filter_by(key=key).first().value) == original
+
+        def network(client, key, offer_id):
+            raise _httpx.ConnectError('dial tcp: connect to /private/path failed')
+        monkeypatch.setattr(automatic_pricing, 'official_offer', network)
+        with pytest.raises(HTTPException) as error:
+            routes.reconcile('one', 'one', db, DEFAULT_STORE_ID)
+        detail = error.value.detail
+        assert '连不上上游接口' in detail and '/private/path' not in detail, detail

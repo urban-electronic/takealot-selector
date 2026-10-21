@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-do
 import { DataSourceProvider } from './DataSourceContext';
 import ApiKeyGate from './ApiKeyGate';
 import { collectOnAppOpen, getActiveStoreId, getStores, setActiveStoreId } from './remoteApi';
+import { storeLoadNotice, storeOptions } from './utils/storeSelection';
 import type { Store } from './types';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -49,15 +50,20 @@ function WorldClocks() {
 
 export default function App() {
   const [stores, setStores] = useState<Store[]>([]);
+  const [storeError, setStoreError] = useState('');
   const [activeStore, setActiveStore] = useState(getActiveStoreId());
   const [managementOpen, setManagementOpen] = useState(false);
   const managementMenuRef = useRef<HTMLDivElement>(null);
   const collectionRequested = useRef(new Set<string>());
   const [openCollection,setOpenCollection] = useState('');
 
-  useEffect(() => {
+  // 店铺列表读失败时**不能**伪造一条「自营店铺」顶上：那不是真实存在的店铺，
+  // 而请求仍然带着原来的 X-Store-ID 出去，界面显示 A、实际发的是 B。
+  // 现在保留当前店铺（标注状态）+ 页头说明，并提供重新读取（STORE-SWITCH-01）。
+  const loadStores = () => {
     getStores().then(rows => {
       setStores(rows);
+      setStoreError('');
       const activeRows = rows.filter(row => row.status === 'active');
       if (activeRows.length && !activeRows.some(row => row.id === activeStore)) {
         setActiveStore(activeRows[0].id);
@@ -70,8 +76,17 @@ export default function App() {
           : '本次没有新增采集任务；已暂停、已排队及冷却中的SKU不会重复提交。'))
           .catch(e=>setOpenCollection(`本次采集未提交：${(e as Error).message}`));
       }
-    }).catch(() => setStores([{ id: 'default-store', name: '自营店铺', platform: 'Takealot', status: 'active', owner_name: '', sync_method: 'manual', sync_interval_minutes: 60, external_store_ref: '', allow_negative_inventory_shipments: true, last_synced_at: null }]));
-  }, [activeStore]);
+    }).catch((e: unknown) => {
+      setStores([]);
+      setStoreError(e instanceof Error ? e.message : String(e));
+    });
+  };
+
+  useEffect(() => { loadStores(); }, [activeStore]);
+
+  const options = storeOptions(stores, activeStore, Boolean(storeError));
+  const currentOption = options.find(option => option.id === activeStore) || options[options.length - 1];
+  const switcherLocked = options.length < 2 && options.every(option => option.state === 'unknown');
 
   // 打开应用时提交的那一轮采集，结果提示原来会一直挂着——它每次打开都出现一次，
   // 常驻就等于页头永远多一行字。成功的提示 6 秒后自己走；失败的要留着等人处理。
@@ -128,8 +143,8 @@ export default function App() {
           <WorldClocks />
           <div className="store-switcher">
           <span>店铺</span>
-          <select value={activeStore} onChange={event => switchStore(event.target.value)}>
-            {(stores.filter(store => store.status === 'active').length ? stores.filter(store => store.status === 'active') : [{ id: 'default-store', name: '自营店铺' } as Store]).map(store => <option key={store.id} value={store.id}>{store.name}</option>)}
+          <select value={activeStore} disabled={switcherLocked} onChange={event => switchStore(event.target.value)}>
+            {options.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
           </select>
           </div>
           <NavLink to="/create" className="header-create-button">＋ 新建产品</NavLink>
@@ -160,6 +175,11 @@ export default function App() {
       </header>
 
       <main className="container" key={activeStore}>
+        {storeError&&<div className="operations-note is-dismissible" role="alert">
+          {storeLoadNotice(storeError, currentOption?.label || activeStore)}
+          <button type="button" className="note-dismiss" onClick={()=>loadStores()}>重新读取</button>
+          <button type="button" className="note-dismiss" aria-label="关闭这条提示" onClick={()=>setStoreError('')}>×</button>
+        </div>}
         {activeStore==='default-store'&&openCollection&&<div className="operations-note is-dismissible" role="status">{openCollection} <NavLink to="/auto-pricing">查看采集</NavLink><button type="button" className="note-dismiss" aria-label="关闭这条提示" onClick={()=>setOpenCollection('')}>×</button></div>}
         <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>

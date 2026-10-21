@@ -226,7 +226,11 @@ def reconcile(product_id: str, offer_id: str, db: Session = Depends(get_db), sto
     if not key: raise HTTPException(400, '卖家接口未配置')
     try:
         with httpx.Client(timeout=25, follow_redirects=False) as client: actual = official_offer(client, key, offer_id)
-    except Exception: raise HTTPException(503, '平台现价暂时无法读取，继续暂停，不重复提交')
+    except Exception as error:
+        # 密钥失效、限流、网络不通、上游 5xx 原来都是同一句「暂时无法读取」，
+        # 用户只能反复点重试。归因后至少能判断是去改密钥还是等（DIAG-OFFER-01）。
+        from api.product_routes import _read_reason
+        raise HTTPException(503, f'平台现价暂时无法读取：{_read_reason(error)}；仍保持暂停，不重复提交')
     if actual.get('sku') != value.get('sku'):
         raise HTTPException(409, '卖家SKU身份已变化，继续暂停；请重新同步并核对绑定')
     value.update(current_price=actual['selling_price'], stock=actual['stock_at_takealot_total'],

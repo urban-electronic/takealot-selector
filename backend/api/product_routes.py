@@ -617,6 +617,10 @@ def _read_reason(error: BaseException) -> str:
     # _load_offers 自己写的中文提示已经是「原因 + 建议」，直接用。
     if any(key in text for key in ('暂停请求', '格式异常', '超出本次读取上限')):
         return text
+    # 卖家接口的提示同样是「原因 + 建议」（含 HTTP 状态码，见
+    # automatic_pricing.seller_api_reason），不能退化成「内部错误 ValueError」。
+    if text.startswith(('卖家接口', '卖家报价')):
+        return text
     try:
         import httpx
     except ImportError:  # pragma: no cover - httpx 是硬依赖
