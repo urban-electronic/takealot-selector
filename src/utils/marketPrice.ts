@@ -32,6 +32,22 @@ export type MarketPrices = Partial<Record<MarketCode, MarketPriceEntry>>;
 export const MARKET_ORDER: MarketCode[] = ['CN', 'SG', 'TB'];
 
 /**
+ * 展示顺序，和上面的存储顺序不同：新加坡官网价打头。
+ * 它是唯一由服务端每天自动重读的值，不需要人工维护；国内原价 / 到手价靠人工录入，
+ * 只在采到时跟在后面当次要信息。
+ */
+export const DISPLAY_ORDER: MarketCode[] = ['SG', 'CN', 'TB'];
+
+/**
+ * 界面上该出现哪几个市场：只留采到的。
+ * 采不到的直接不出现——留个「未录入」占位只会让人以为那格该去填，
+ * 而淘宝/中国官网这两路本来就抓不到，填不填都改不了它。
+ */
+export function visibleMarkets(prices: MarketPrices): MarketCode[] {
+  return DISPLAY_ORDER.filter((code) => prices[code]);
+}
+
+/**
  * CN / TB 两路都指向「国内零售」：CN 是原价（吊牌/划线价），TB 是到手价（实付）。
  * 代码里的 CN/TB 只是历史键名——中国官网 charleskeith.cn 已停摆，实际数据来自
  * 天猫、京东的公开报价，所以标签必须写「国内」，不能写「官网」。
