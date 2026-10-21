@@ -8,6 +8,8 @@
 import asyncio
 import threading
 import time
+import types
+import sys
 
 import pytest
 from fastapi import FastAPI
@@ -15,6 +17,34 @@ from fastapi.testclient import TestClient
 
 from api import diag_routes, image_proxy
 from services import buybox_monitor, quote_browser, runtime_health
+
+
+def test_cancelled_browser_launch_stops_driver(monkeypatch):
+    stopped = []
+
+    class Chromium:
+        async def launch_persistent_context(self, **kwargs):
+            raise asyncio.CancelledError()
+
+    class Driver:
+        chromium = Chromium()
+
+        async def stop(self):
+            stopped.append(True)
+
+    class Starter:
+        async def start(self):
+            return Driver()
+
+    monkeypatch.setitem(sys.modules, 'playwright.async_api',
+                        types.SimpleNamespace(async_playwright=Starter))
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await quote_browser._launch('/unused', None, [])
+
+    asyncio.run(scenario())
+    assert stopped == [True]
 
 
 def test_collect_timeout_cancels_coroutine_and_releases_lock(monkeypatch):
