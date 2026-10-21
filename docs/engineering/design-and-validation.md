@@ -161,6 +161,17 @@ deployed, real business acceptance. For session-only acceptance, hand off the
 specific steps once to WorkBuddy and review its redacted evidence. No evidence
 means unverified. No new input means no repeated report, full suite or installation.
 
+A unit test must not depend on the outside world. `test_scraper_fallback.py` patched
+only the HTTP layer while the fallback chain continues into a real browser: on a
+machine with Chromium the test opened the live product page, got a real price, and
+went down a different branch, so it failed; on a CI runner whose datacenter IP is
+blocked by the site it passed — the same assertion, opposite result, decided by the
+network. That green is worse than a red, because it certifies a code path that was
+never exercised. Patch every stage the function can reach (here
+`_try_scrape_with_browser`), keep the assertions unchanged, and treat "this test
+takes tens of seconds" as a symptom: a unit test that waits on the internet is a
+test whose precondition was never stated.
+
 ## Sources and scope
 
 Reviewed on 2026-10-17; the repeated anthropics link is one source. Versions below

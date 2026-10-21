@@ -949,3 +949,58 @@ WorkBuddy；基线 `71104506a2`。
   读失败 / 读失败且当前是自营店 / 加载中 / 不认识的 id / 提示文案）。把 unknown 分支
   改回伪造 `default-store` → `当前店铺 id 不能被换掉` 转红（已还原）。
 - 复测：tsc 通过；全量 selfcheck 全绿（新套件自动纳入）。
+
+### STORE-SWITCH-02 当前店铺被暂停后不再静默跳店（2026-10-21）
+
+基线 `cff1ad684d`。该行为改变来自并行提交（#161，`chore: sync local tree to
+remote cff1ad684d`），原提交只带代码与断言、没有文档记录，这里补记。
+
+- 症状：STORE-SWITCH-01 让下拉保留「当前店铺（已暂停）」，但 `App.tsx` 的
+  `loadStores()` 里还留着 `if (activeRows.length && !activeRows.some(...))` 分支，
+  会把 `activeStore` / localStorage 一起改成第一家运营店。也就是说：用户在店铺管理
+  页把正在用的店停用后，下一次打开应用界面和请求一起悄悄换到另一个店，用户在不知情
+  的状态下继续装箱、改库存、看行情。
+- 改动：删掉该分支，只保留「默认店铺首次打开时提交一轮 Buybox 采集」那条；当前店铺
+  暂停或缺失时由 `storeOptions()` 保留下拉选项并标注，等用户明确选择再切。
+- 复现：`scripts/test-store-switcher.cjs` 增加 2 条源码级断言（`App.tsx` 不得出现
+  `setActiveStore(activeRows[0].id)` / `setActiveStoreId(activeRows[0].id)`）。把分支
+  加回去即转红。
+- 复测：全量 selfcheck 全绿。
+
+### TEST-SCRAPER-HERMETIC-01 采集回落用例不再连线上站点（2026-10-21）
+
+WorkBuddy；基线 `cff1ad684d`。
+
+- 症状：`backend/tests/test_scraper_fallback.py` 的三个用例只 patch 了
+  `_scrape_with_curl_cffi`，没挡渲染器。在装了 Chromium 的机器上（本机 venv、以及
+  装了浏览器的后端 job）`scrape_product()` 会真的打开 takealot 商品页，拿到
+  R699 和主图后走 `finish_official()`：`data_source` 变成 `takealot`、`warnings`
+  为空，三个用例全红（本机 47 秒跑完 17 例，就是在等真网络）。反过来，CI 里数据中心
+  IP 被 Cloudflare 挡住时同一个用例又「绿」——那次通过是网络凑巧，不是断言成立，
+  属于最坏的一种假通过。
+- 改动：新增 `_blocked_browser()`，把 `_try_scrape_with_browser` 一起挡掉；三个用例
+  的断言一条没动、没删、没放宽。`test_partial_real_product_does_not_require_price_or_playwright`
+  的名字要的是「只有部分字段也照样成功并给出缺项提示」，不是「本机没装 Playwright」，
+  所以用显式桩表达前提比依赖环境更准确。
+- 复现：不挡渲染器时本机稳定三红；挡掉后 17 passed / 1.1 秒（原 47 秒）。
+- 复测：后端全量 425 passed / 1 skipped。
+
+### CREATE-SILENT-READ-01 新建产品页两处辅助读失败要说出来（2026-10-21）
+
+WorkBuddy；基线 `cff1ad684d`。
+
+- 症状：`ProductCreate.tsx` 有两处 `.catch(() => {})`。
+  ① `/api/fee-mapping-rules` 读失败时，页面导入后不再按 Takealot 分类路径自动匹配
+  Fee 品类，「系统推荐」直接写「无推荐」——和「规则里确实没有匹配项」长得一模一样，
+  而页面导入正是靠这一步省掉手选品类的；
+  ② `/api/products` 读失败时「沿用上一件成本」按钮整块消失，用户看到的是「这个页面
+  没有这个功能」，不是「这次没读到」，只能把成本、尺寸、重量全部重填。
+  这与 FEE-CATEGORY-LOAD-01 修的是同一类问题（同一份数据在不同页面给出两种结论）。
+- 改动：两处改为落成可见提示（`feeMatchError` / `costSourceError`），费率那条明确写
+  「『无推荐』不代表分类路径不匹配」；自动翻译保持静默——中文品名是选填项，译不出来
+  用户自己填，弹提示只是噪音。
+- 复现：`scripts/test-fee-categories.cjs` 增加 4 条源码级断言（除 `translateProductName`
+  外不许再有 `.catch(() => {})`，且两个错误状态与那句说明必须在）。把费率那条改回
+  `.catch(() => {})` 即转红（已还原）。
+- 复测：tsc（`noUnusedLocals`）通过；`test-fee-categories` 14 → 18 条断言；全量
+  selfcheck 全绿。

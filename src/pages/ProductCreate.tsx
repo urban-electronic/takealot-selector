@@ -68,6 +68,10 @@ export default function ProductCreate() {
   const [linkStatus, setLinkStatus] = useState('未购买');
   const [lastCostProduct, setLastCostProduct] = useState<Product | null>(null);
   const [costCopyNotice, setCostCopyNotice] = useState('');
+  // 两处「辅助能力」的读失败以前都是 `.catch(() => {})`：按钮直接不出现、
+  // 「系统推荐」直接写「无推荐」，用户分不清「本来就没有」和「这次没读到」。
+  const [costSourceError, setCostSourceError] = useState('');
+  const [feeMatchError, setFeeMatchError] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -83,7 +87,9 @@ export default function ProductCreate() {
         );
         if (active) setLastCostProduct(source || null);
       })
-      .catch(() => {});
+      // 「沿用上一件成本」靠这条列表找源商品。读失败时按钮会整块消失，
+      // 用户只看到少了那个按钮，不知道是自己没建过商品还是这次没读到。
+      .catch((e: unknown) => { if (active) setCostSourceError(e instanceof Error ? e.message : String(e)); });
     return () => { active = false; };
   }, []);
 
@@ -93,13 +99,16 @@ export default function ProductCreate() {
 
   const applyImportedResult = (result: ScrapeResult) => {
       setUrl(result.normalized_url); setScrapeResult(result);
-      setError(''); setSku(''); setFeeCategory(''); setFeeConfirmed(false); setChineseName('');
+      setError(''); setSku(''); setFeeCategory(''); setFeeConfirmed(false); setChineseName(''); setFeeMatchError('');
       setProductName(result.product_name || ''); setProductImage(result.product_image_url || '');
       setSalePrice(result.actual_sale_price_zar !== null ? String(result.actual_sale_price_zar) : '');
       api.getFeeMappingRules().then(rules => {
         const match = rules.filter(rule => rule.active && rule.takealot_category_pattern && result.takealot_category_path?.toLowerCase().includes(rule.takealot_category_pattern.toLowerCase())).sort((a, b) => b.priority - a.priority)[0];
         if (match) { setFeeCategory(match.fee_category); setScrapeResult(prev => prev ? { ...prev, recommended_fee_category: match.fee_category, fee_category_confidence: 'high', fee_match_reason: `官网页面分类匹配：${match.takealot_category_pattern}` } : prev); }
-      }).catch(() => {});
+      })
+        // 映射规则读不到时「系统推荐」会写「无推荐」，和「规则里确实没有匹配项」长得一样。
+        // 页面导入本来就是这个流程的卖点，读失败必须说明，否则用户会以为分类路径没匹配上。
+        .catch((e: unknown) => setFeeMatchError(e instanceof Error ? e.message : String(e)));
       if (result.product_name) api.translateProductName(result.product_name).then(res => { if (res.chinese_name) setChineseName(res.chinese_name); }).catch(() => {});
   };
 
@@ -319,6 +328,11 @@ export default function ProductCreate() {
             系统推荐: <strong>{scrapeResult.recommended_fee_category || '无推荐'}</strong>
             {scrapeResult.fee_match_reason && ` (${scrapeResult.fee_match_reason})`}
           </div>
+          {feeMatchError && (
+            <div className="alert alert-warning" role="status">
+              Fee 映射规则读取失败（{feeMatchError}），这次没有自动匹配品类——「无推荐」不代表分类路径不匹配，请手动选择。
+            </div>
+          )}
           {feeCategoryState.error && (
             <div className="alert alert-error" role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>{feeCategoryState.error}</span>
@@ -363,8 +377,12 @@ export default function ProductCreate() {
           <div className="card-title create-step-title"><span>04</span><div><strong>填写采购与物流</strong><small>补充成本、尺寸和运输方式</small></div>
             {lastCostProduct && <button type="button" className="btn btn-outline btn-sm cost-copy-button" onClick={applyLastProductCosts}>沿用上一件成本</button>}
           </div>
+          {costSourceError && (
+            <p className="cost-copy-notice" role="status">
+              已有商品列表读取失败（{costSourceError}），这次无法「沿用上一件成本」，请手动填写成本与尺寸。
+            </p>
+          )}
           {costCopyNotice && <p className="cost-copy-notice" role="status">{costCopyNotice}</p>}
-
           <div className="section">
             <div className="section-title">采购信息</div>
             <div className="form-row">

@@ -129,6 +129,26 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0))
     unmount();
   }
 
+  // ---- 6) 新建产品页里另外两条「读失败」也不许静默 ---------------------------
+  // 同一个页面上还有两处辅助能力靠接口读结果：
+  //   ① /api/fee-mapping-rules —— 页面导入后按分类路径自动匹配 Fee 品类；
+  //   ② /api/products           —— 找「上一件商品」以便沿用成本。
+  // 两处原来都是 `.catch(() => {})`：前者让「系统推荐」写「无推荐」（和「规则里没有
+  // 匹配项」长得一模一样），后者让按钮整块消失（用户以为没建过商品）。这里做源码级
+  // 守卫：只允许「读失败 → 置提示状态」，不允许吞掉。
+  {
+    const page = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductCreate.tsx'), 'utf8');
+    // 唯一允许静默的是自动翻译：中文品名是选填项，译不出来用户自己填，弹提示反而是噪音。
+    const silent = page.split('\n')
+      .filter(line => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+      .filter(line => line.includes('.catch(() => {})'));
+    check(silent.every(line => line.includes('translateProductName')),
+      `新建产品页不许再有静默吞掉的读失败（除自动翻译）：${silent.join(' | ')}`);
+    check(page.includes('setFeeMatchError('), '费率映射规则读失败必须落成可见提示');
+    check(page.includes('setCostSourceError('), '已有商品列表读失败必须落成可见提示');
+    check(page.includes('不代表分类路径不匹配'), '「无推荐」要说明它不是「分类不匹配」的结论');
+  }
+
   console.log(`test-fee-categories: ${checks} checks passed`);
 })().catch((error) => {
   console.error(error);

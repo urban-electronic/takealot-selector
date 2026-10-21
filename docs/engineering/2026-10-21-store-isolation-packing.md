@@ -58,6 +58,16 @@
 `/api/stores` 默认**仍返回全部**：店铺管理页（`Stores.tsx`）要能看到停用店铺并重新启用，
 不能默认过滤。
 
+### 当前店铺失效时不许自动跳店
+
+「只列 `active`」还不够：当前生效的店铺（`localStorage` 里那个，每个请求带的
+`X-Store-ID`）可能刚被停用或已从列表删除。这时既不能把它从下拉里拿掉（浏览器会把
+`select` 显示成空白，而请求仍带着它），也不能自动切到第一家运营店——后者更糟，
+界面和请求一起换店，用户会在不知情时对另一家店装箱、改库存。现在的做法是保留当前
+店铺并标注「（已暂停）」/「（未在店铺列表中）」，由用户明确选择后再切。
+`scripts/test-store-switcher.cjs` 对 `App.tsx` 做源码级断言，防止
+`setActiveStore(activeRows[0].id)` 这类自动跳店再被加回来。
+
 ## 验证
 
 `backend/tests/test_store_isolation_packing.py`：

@@ -13,8 +13,18 @@ from api import scraper_routes as routes
 URL = 'https://www.takealot.com/zenty-electronic-high-voltage-mouse-trap-electric-rodent-zapper/PLID103613893'
 
 
+def _blocked_browser():
+    """浏览器阶段也失败。这三个用例要证明的是「官网所有抓取步骤都失败后回落到卖家表」，
+    必须把渲染器一起挡掉：只 patch curl_cffi 时，装了 Chromium 的机器会真的打开线上
+    商品页拿到价格，于是 data_source='takealot'、warnings 为空，用例红；
+    而 CI 里数据中心 IP 被 Cloudflare 挡住时同一个用例又「绿」——那是网络凑巧，不是断言成立。"""
+    async def rendered(*args, **kwargs):
+        return None, 'blocked'
+    return patch.object(scraper, '_try_scrape_with_browser', rendered)
+
+
 def test_blocked_product_uses_exact_seller_catalog_without_fake_price():
-    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=(None, 'curl_cffi HTTP 403')):
+    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=(None, 'curl_cffi HTTP 403')), _blocked_browser():
         result = asyncio.run(scraper.scrape_product(URL))
     assert result['data_source'] == 'offer_catalog'
     assert result['product_name'] == 'Zenty Electronic High-Voltage Mouse Trap, Electric Rodent Zapper'
@@ -29,13 +39,15 @@ def test_blocked_product_uses_exact_seller_catalog_without_fake_price():
 def test_site_shell_is_not_a_success():
     assert not scraper._has_product_data({'product_name': "Takealot.com: Online Shopping | SA's leading online store"})
     assert not scraper._has_product_data({'product_name': None})
-    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=({'product_name': 'Takealot.com: Online Shopping'}, '')):
+    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=({'product_name': 'Takealot.com: Online Shopping'}, '')), _blocked_browser():
         result = asyncio.run(scraper.scrape_product(URL))
     assert result['data_source'] == 'offer_catalog'
 
 
 def test_partial_real_product_does_not_require_price_or_playwright():
-    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=({'product_name': 'Actual product', 'actual_sale_price_zar': None}, '')):
+    # 用 _blocked_browser 而不是依赖「本机没装 Playwright」：装了浏览器时它会真的去抓线上页
+    # 把价格补齐，warnings 就空了。要证明的是「只有部分字段也照样成功并给出缺项提示」。
+    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=({'product_name': 'Actual product', 'actual_sale_price_zar': None}, '')), _blocked_browser():
         result = asyncio.run(scraper.scrape_product(URL))
     assert result['success']
     assert result['data_source'] == 'takealot'
