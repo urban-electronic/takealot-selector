@@ -22,7 +22,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX, buildMarketBatch, describeSkipped } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -209,6 +209,44 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   check(list.includes('fxCaption(fx)'), '列表要把汇率写出来，否则用户无法核对折算结果');
   const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
   check(detail.includes('formatZarPrice('), '详情页也要显示兰特');
+}
+
+// ---- 批量录入：无效行要交回去点名，不能静默丢掉 ---------------------------
+// 输入框是自由文本（inputMode="decimal"，不是 type="number"），0 / -5 / abc
+// 都能留在框里。旧写法直接 return 掉这些行，然后提示「已保存 N 条」或
+// 「没有需要保存的改动」——用户明明改过，界面却说没改。
+{
+  const rows = [
+    { id: 'p1', sku: 'CK2-901', market_prices: JSON.stringify({ CN: { price: 469 }, TB: { price: 268 } }) },
+    { id: 'p2', sku: 'CK2-902', market_prices: '' },
+  ];
+  const draft = {
+    p1: { CN: '469', TB: '299' },      // CN 没改、TB 改成 299
+    p2: { CN: '0', TB: 'abc' },        // 两个都无效
+  };
+  const { items, skipped } = buildMarketBatch(rows, draft);
+  check(items.length === 1 && items[0].market === 'TB' && items[0].price === 299, '只有真改过的有效行进 payload');
+  check(skipped.length === 2, '无效行必须交回去（0 和 abc 各一条）');
+  check(skipped.every((row) => row.label === 'CK2-902'), '提示里要点名是哪个 SKU');
+  check(skipped[0].market === 'CN' && skipped[0].value === '0', '记录原样输入，便于用户对照');
+
+  // 清空 = 删除该市场；本来就没有值的空串不算改动
+  const cleared = buildMarketBatch(rows, { p1: { CN: '', TB: '' }, p2: { CN: '', TB: '' } });
+  check(cleared.items.length === 2 && cleared.items.every((it) => it.price === null), '清空已有价格要发 price:null');
+  check(cleared.skipped.length === 0, '清空不是无效输入');
+
+  // 提示文案：最多点 3 个名字，其余折成「等 N 行」
+  const many = Array.from({ length: 5 }, (_, i) => ({ label: `SKU-${i}`, market: 'CN', value: '0' }));
+  check(describeSkipped(many) === 'SKU-0 国内原价、SKU-1 国内原价、SKU-2 国内原价 等 5 行',
+    '无效行提示只点前三个 + 总数');
+  check(describeSkipped([]) === '', '没有无效行时不给提示');
+
+  // 面板必须用这个函数，而不是自己再写一套「无效就跳过」
+  const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
+  check(list.includes('buildMarketBatch('), '批量保存要用 buildMarketBatch 组装');
+  check(list.includes('describeSkipped('), '无效行要在提示里点名');
+  check(!/if \(!Number\.isFinite\(value\) \|\| value <= 0\) return;/.test(list),
+    '不许再出现「无效就静默 return」的写法');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);

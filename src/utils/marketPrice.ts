@@ -228,3 +228,78 @@ export function fxCaption(fx: FxRates): string {
   else if (fx.stale) parts.push('汇率未更新');
   return parts.join(' · ');
 }
+
+// ---- 批量录入 ---------------------------------------------------------------
+
+/** 批量录入面板能改的两个市场：新加坡官网价是服务端自动重读的，不在这里改。 */
+export type ManualMarket = 'CN' | 'TB';
+
+export interface MarketBatchItem {
+  product_id: string;
+  market: ManualMarket;
+  /** `null` = 清空该市场 */
+  price: number | null;
+}
+
+export interface MarketBatchSkipped {
+  /** 产品标识（SKU 优先），用于提示里点名 */
+  label: string;
+  market: ManualMarket;
+  /** 用户原样输入的内容 */
+  value: string;
+}
+
+interface BatchRow {
+  id: string;
+  sku?: string | null;
+  product_name?: string | null;
+  market_prices?: string | null;
+}
+
+/**
+ * 把面板里的输入整理成 `/api/market-prices/batch` 的 items，并**把无效行交回去**。
+ *
+ * 为什么不是「无效就跳过」：输入框是自由文本（`inputMode="decimal"`，不是
+ * `type="number"`），敲进 `0`、`-5`、`abc` 都能留在框里。旧写法直接 `return`
+ * 掉这些行，然后提示「已保存 N 条」或「没有需要保存的改动」——用户明明改过，
+ * 界面却说没改，改的那一行既没保存也没有任何解释。
+ *
+ * 规则和展示层一致：空串 = 删除该市场（有旧值时才发 `price: null`），
+ * 非空必须是有限正数。
+ */
+export function buildMarketBatch(
+  rows: BatchRow[],
+  draft: Record<string, { CN: string; TB: string }>,
+): { items: MarketBatchItem[]; skipped: MarketBatchSkipped[] } {
+  const items: MarketBatchItem[] = [];
+  const skipped: MarketBatchSkipped[] = [];
+  for (const row of rows) {
+    const prices = parseMarketPrices(row.market_prices);
+    const cells = draft[row.id] || { CN: '', TB: '' };
+    const label = row.sku || row.product_name || row.id;
+    for (const market of ['CN', 'TB'] as ManualMarket[]) {
+      const before = prices[market] ? String(prices[market]!.price) : '';
+      const now = (cells[market] || '').trim();
+      if (now === before) continue;
+      if (now === '') {
+        if (before) items.push({ product_id: row.id, market, price: null });
+        continue;
+      }
+      const value = Number(now);
+      if (!Number.isFinite(value) || value <= 0) {
+        skipped.push({ label, market, value: now });
+        continue;
+      }
+      items.push({ product_id: row.id, market, price: value });
+    }
+  }
+  return { items, skipped };
+}
+
+/** 无效行的提示文案：`SKU-A 国内原价、SKU-B 国内到手价 等 5 行`。 */
+export function describeSkipped(skipped: MarketBatchSkipped[], limit = 3): string {
+  if (!skipped.length) return '';
+  const named = skipped.slice(0, limit).map((row) => `${row.label} ${MARKET_META[row.market].label}`);
+  const rest = skipped.length > limit ? ` 等 ${skipped.length} 行` : '';
+  return `${named.join('、')}${rest}`;
+}

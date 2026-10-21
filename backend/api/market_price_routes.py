@@ -201,9 +201,17 @@ def fx(db: Session = Depends(get_db)):
 
 @router.post('/sync')
 def sync_now(store_id: str = Depends(get_store_id)):
-    """手动触发一次官网重读。同步在后台线程跑，接口立刻返回，避免前端等一分钟超时。"""
+    """手动触发一次官网重读。同步在后台线程跑，接口立刻返回，避免前端等一分钟超时。
+
+    已经有一轮在跑时不启动第二个：`run_once` 拿不到锁会直接返回 `skipped`，
+    所以那种情况下回「已开始」是句假话（用户等一分钟、刷新状态发现没变，
+    只会以为按钮坏了）。这里如实回 `started: false` + 原因。
+    """
     if market_price_sync.DISABLED:
         raise HTTPException(status_code=400, detail='自动同步已被 MARKET_PRICE_SYNC_DISABLED 关闭')
+    if market_price_sync.is_running():
+        return {'started': False, 'store_id': store_id,
+                'message': '已有一轮同步在进行，本次未启动；稍后刷新可看上次同步时间'}
     thread = threading.Thread(target=market_price_sync.run_once, kwargs={'store_id': store_id},
                               daemon=True, name='market-price-manual')
     thread.start()

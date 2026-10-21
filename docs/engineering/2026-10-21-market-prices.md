@@ -62,9 +62,17 @@
 - 折算取整到兰特整数：参考价本来就是参考，`R1,282` 与 `R1,282.16` 对决策没有差别，
   后者还会把方框撑宽。
 - 前端 `useFxRates()` 先把 localStorage 里的上次汇率当初始值，再去请求，避免刷新页面时
-  先显示 `S$99.9`、一秒后跳成 `R1,282` 的闪动。**缓存里的 `fallback` / `stale` 原样保留**：
+  先显示 `S$99.9`、一秒后跳成 `R1,282` 的闪动。**缓存里的 `fallback` 原样保留**：
   存进去的可能就是后端那组兜底常量，读回来时洗掉标记，界面就会把硬编码数字当成今天拉到的
   汇率，说明里也不再出现「兜底汇率」——`scripts/test-fx-rates.cjs` 钉住这一条。
+- `stale` 不存死，读缓存时按年龄重算：`fetched_at` 缺失/非法、或距今 ≥ 24 小时
+  （与后端 `TTL_HOURS` 同一口径）一律标 `stale`。写进 localStorage 的那份 `stale`
+  是「写入那一刻」的判断，浏览器开着放一天不会自己变，读回来时若照抄就会把隔夜的旧汇率
+  当成新的。
+- 批量录入的组装在 `buildMarketBatch()`：面板输入是自由文本（`inputMode="decimal"`，
+  不是 `type="number"`），`0` / `-5` / `abc` 都能留在框里。无效行不再静默跳过，
+  而是连同 SKU 一起交回给调用方点名（`describeSkipped()`），有无效行时面板不关闭，
+  让人改完再存——旧写法直接 `return` 掉，然后提示「已保存 N 条」或「没有需要保存的改动」。
 
 ## 覆盖
 
@@ -75,17 +83,27 @@
   `backend/tests/test_market_price_sync.py::test_auto_markets_only_lists_writable_markets`
   （`status.auto_markets` 里的每个市场都必须能通过 `PriceInput` 校验——这个字段不参与
   任何校验，写错了会一直很安静）。
-- 前端：`scripts/test-market-prices.cjs`（78 条断言：解析、空值不当 0、数字字符串、
+- 前端：`scripts/test-market-prices.cjs`（89 条断言：解析、空值不当 0、数字字符串、
   坏输入、序列化丢空市场、往返一致、币种符号与小数位、只显示采到的市场、兰特折算方向与
-  千分位、缺汇率时退回原币、汇率说明文案）；
-  `scripts/test-fx-rates.cjs`（18 条断言：没有缓存退回兜底、缓存命中、坏 JSON / 没有可用
-  货币时当没缓存、兜底标记与过期标记原样保留、localStorage 读不了时不抛异常）。
+  千分位、缺汇率时退回原币、汇率说明文案、批量录入只发真改过的行 / 无效行点名 / 清空发
+  `price:null`）；
+  `scripts/test-fx-rates.cjs`（21 条断言：没有缓存退回兜底、缓存命中、坏 JSON / 没有可用
+  货币时当没缓存、兜底标记与过期标记原样保留、过期与时间戳非法时按年龄重算 `stale`、
+  localStorage 读不了时不抛异常）。
 - 版式：`scripts/test-responsive-layout.py` 的 `PRODUCT` fixture 带三个市场
   （四位数人民币 + 带小数的新加坡价，最宽的一档），`test-text-overlap.py` 复用同一份
   fixture，所以列表这一列与详情页卡片在 10 个宽度下都真的被量过。
   此前 fixture 不带 `market_prices`，这一列永远只渲染「—」，等于从没被量过。
   fixture 里的 `/api/market-prices/fx` 必须声明：页面一挂载就会读汇率，
   漏了会让整个布局测试以「未声明接口」失败，而不是悄悄少测一列。
+
+## 手动触发
+
+`POST /api/market-prices/sync` 起一个后台线程跑 `run_once()` 后立刻返回，前端不用等一分钟。
+`run_once()` 是进程内串行的：拿不到 `_state_lock` 就直接返回 `{'skipped': ...}`，什么都不做。
+所以接口在起线程前先问 `market_price_sync.is_running()`，已经有一轮在跑时回
+`started: false` + 原因，而不是回「已开始重读官网价」——后者会让用户等一分钟、刷新状态，
+发现 `last_sync` 一点没动，只能以为按钮坏了。
 
 ## 不做的事
 

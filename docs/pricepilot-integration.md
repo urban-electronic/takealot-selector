@@ -1071,3 +1071,55 @@ WorkBuddy；基线 `8f3af26cc3`。
 - 复现：新增 `scripts/test-fx-rates.cjs`（18 条断言）。把 `parseCached()` 改回
   `{ ...value, fallback: false }`，`兜底汇率刷新后仍要标着兜底` 即转红（已还原）。
 - 复测：`test-fx-rates.cjs` 18 条断言；tsc 通过；全量 selfcheck 全绿。
+
+### FX-CACHE-02 汇率缓存的「过期」按年龄重算，不再沿用写入那一刻的判断（2026-10-21）
+
+并行提交 `85b255e269`（WorkBuddy 会话之外的改动）；基线 `8f3af26cc3`。本轮只补记录，
+代码未改。
+
+- 症状：`parseCached()` 把 localStorage 里那份 `stale` 原样返回。这个值是**写入那一刻**
+  的判断，浏览器开着放一天不会自己变，读回来时照抄就把隔夜的旧汇率当成今天的。
+- 改动：`useFxRates.parseCached()` 用 `fetched_at` 重新算一遍——时间戳缺失/非法、
+  或距今 ≥ 24 小时（与后端 `TTL_HOURS` 同一口径）一律标 `stale`；`fallback` 仍然原样保留
+  （那是「这组数字来自内置常量」，与年龄无关，FX-CACHE-01 的结论不受影响）。
+- 复测：`scripts/test-fx-rates.cjs` 18 → 21 条断言（48 小时前、`'invalid'`、缺失
+  `fetched_at` 三种都要标过期）。`docs/engineering/2026-10-21-market-prices.md` 里
+  「`fallback` / `stale` 原样保留」那句已按新行为改写——它描述的是旧实现。
+
+### SYNC-BUSY-01 「立即重读官网价」在已有一轮在跑时不再谎称已开始（2026-10-21）
+
+WorkBuddy；基线 `85b255e269`。
+
+- 症状：`POST /api/market-prices/sync` 无条件回 `started: true` +
+  「已开始重读官网价，约 1 分钟出结果」。但 `run_once()` 是进程内串行的：拿不到
+  `_state_lock` 就返回 `{'skipped': ...}`，什么都不做。定时同步（每 30 分钟 tick，
+  一轮要读几十个官网页面）跑着的时候点按钮，就是「等一分钟 → 刷新状态 → `last_sync`
+  一点没动」，用户只能以为按钮坏了。
+- 改动：`market_price_sync.is_running()` 暴露锁状态；路由在起线程前先问一句，
+  已在跑时回 `started: false` + 「已有一轮同步在进行，本次未启动」。
+  前端 `runMarketSync()` 本来就显示后端给的 `message`，不需要改。
+- 复现：`test_sync_now_reports_busy_instead_of_starting_a_second_run`——占住
+  `_state_lock` 后调路由，断言 `started is False`、提示含「已有一轮同步」、且**没有**起线程。
+  把守卫去掉（`is_running()` 短路）即转红（已还原）。
+- 复测：`test_market_price_sync.py` 34 → 35 例；全量 selfcheck 全绿。
+
+### BATCH-INVALID-01 批量录入的无效价格不再被静默丢掉（2026-10-21）
+
+WorkBuddy；基线 `85b255e269`。
+
+- 症状：参考价面板的输入框是自由文本（`inputMode="decimal"`，不是 `type="number"`），
+  `0` / `-5` / `abc` 都能留在框里。`saveMarketPanel()` 对
+  `!Number.isFinite(value) || value <= 0` 直接 `return`，然后提示「已保存 N 条」
+  （N 不含它）或「没有需要保存的改动」——用户明明改过，界面却说没改，改的那一行既没保存
+  也没有任何解释。
+- 改动：组装逻辑抽成 `src/utils/marketPrice.ts` 的 `buildMarketBatch()`，返回
+  `{ items, skipped }`；`describeSkipped()` 生成「SKU 市场名」点名文案（最多点 3 个 +
+  「等 N 行」）。`ProductList.saveMarketPanel()` 有无效行时**不关闭面板**，提示
+  「已保存 N 条；<点名> 价格无效（需大于 0）未保存」，让人改完再存。保存规则未变
+  （空串 = 删除该市场、只发真改过的行）。
+- 复现：`test-market-prices.cjs` 新增一组断言——`buildMarketBatch()` 只发改过的有效行、
+  `0`/`abc` 进 `skipped` 且带 SKU、清空发 `price: null`、`describeSkipped()` 的点名格式；
+  另加两条源码断言（面板必须用 `buildMarketBatch` / 不许再出现「无效就静默 return」）。
+  把 `skipped.push(...)` 去掉（退回静默丢弃）即转红（已还原）。
+- 复测：`test-market-prices.cjs` 78 → 89 条断言；tsc（`noUnusedLocals`）通过；
+  全量 selfcheck 全绿。

@@ -314,6 +314,17 @@ def last_run(db=None) -> dict:
             session.close()
 
 
+def is_running() -> bool:
+    """当前是否已有一轮同步在跑（定时线程或上一次手动触发）。
+
+    `run_once` 是进程内串行的：拿不到锁就直接返回 `{'skipped': ...}`，什么都不做。
+    调用方（`POST /api/market-prices/sync`）必须先问这一句，否则会对着一个
+    已经知道跑不起来的请求回「已开始重读官网价」——用户等一分钟、刷新状态，
+    发现 `last_sync` 没变，只能怀疑按钮坏了。
+    """
+    return _state_lock.locked()
+
+
 def due(last: dict) -> bool:
     """距上次同步是否已经超过 INTERVAL_HOURS。没有历史记录就算到期。"""
     at = (last or {}).get('at')

@@ -6,7 +6,7 @@ import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAs
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
@@ -573,34 +573,25 @@ export default function ProductList() {
 
   const saveMarketPanel = async () => {
     if (!mpPanel) return;
-    const items = [] as Array<{ product_id: string; market: 'CN' | 'TB'; price: number | null }>;
-    products.forEach((p) => {
-      const prices = parseMarketPrices(p.market_prices);
-      const draft = mpPanel.draft[p.id] || { CN: '', TB: '' };
-      (['CN', 'TB'] as const).forEach((market) => {
-        const before = prices[market] ? String(prices[market]!.price) : '';
-        const now = (draft[market] || '').trim();
-        if (now === before) return;
-        if (now === '') {
-          if (before) items.push({ product_id: p.id, market, price: null });
-          return;
-        }
-        const value = Number(now);
-        if (!Number.isFinite(value) || value <= 0) return;
-        items.push({ product_id: p.id, market, price: value });
-      });
-    });
+    // 无效行（0 / 负数 / 非数字）不静默丢弃：交回去点名，面板保持打开让人改。
+    const { items, skipped } = buildMarketBatch(products, mpPanel.draft);
     if (!items.length) {
-      setMpMessage('没有需要保存的改动');
+      setMpMessage(skipped.length
+        ? `价格必须大于 0，${describeSkipped(skipped)} 未保存`
+        : '没有需要保存的改动');
       return;
     }
     setMpBusy(true);
     try {
       const result = await saveMarketPrices(items);
-      setMpMessage(`已保存 ${result.saved} 条`);
-      setMpPanel(null);
       fetchProducts();
       notifyCatalogChanged(['market_prices']);
+      if (skipped.length) {
+        setMpMessage(`已保存 ${result.saved} 条；${describeSkipped(skipped)} 价格无效（需大于 0）未保存`);
+      } else {
+        setMpPanel(null);
+        setMpMessage(`已保存 ${result.saved} 条`);
+      }
     } catch (e: any) {
       setMpMessage(e.message || '保存失败');
     } finally {

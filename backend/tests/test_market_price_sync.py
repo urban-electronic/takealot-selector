@@ -359,6 +359,27 @@ def test_sync_preserves_manual_edit_during_fetch(tmp_path, monkeypatch):
     assert stats['conflicts'] == 1 and stats['updated'] == 0
 
 
+def test_sync_now_reports_busy_instead_of_starting_a_second_run(monkeypatch):
+    """有一轮在跑时「立即重读」必须如实回 started=False。
+
+    `run_once` 拿不到锁就直接返回 `skipped`，而接口原来无条件回
+    「已开始重读官网价，约 1 分钟出结果」——用户等一分钟、刷新状态，
+    发现 `last_sync` 一点没动，只能以为按钮坏了。锁被占住时不许再起线程。
+    """
+    started = []
+    monkeypatch.setattr(sync, 'run_once', lambda **kw: started.append(kw))
+    assert sync.is_running() is False
+    assert sync._state_lock.acquire(blocking=False)
+    try:
+        out = routes.sync_now(store_id=DEFAULT_STORE_ID)
+    finally:
+        sync._state_lock.release()
+    assert out['started'] is False
+    assert '已有一轮同步' in out['message']
+    assert started == [], '已经知道跑不起来，还是起了后台线程'
+    assert sync.is_running() is False
+
+
 def test_sync_writes_unchanged_version_only_in_selected_store(tmp_path, monkeypatch):
     Session = _db(tmp_path, 'no-conflict')
     old = {'SG': {'price': 99, 'src': '官网', 'url': 'https://www.charleskeith.com/sg/fixture.html'}}
