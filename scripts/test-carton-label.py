@@ -13,7 +13,9 @@
      但「共 N 箱」仍是整票总数；
   6) 重印不能重排 —— 从记录里挑第 3、4 箱重印，箱唛上必须还是
      「第 3 箱 / 共 5 箱」「第 4 箱 / 共 5 箱」，不能变成「第 1 箱 / 共 2 箱」，
-     否则同一箱会印出两个箱号。
+     否则同一箱会印出两个箱号；
+  7) 没展开就导出时，箱是后端自动展开的、草稿已清空、「打印箱唛」是灰的，
+     提示条必须给出「去印箱唛」直达入口，否则用户以为印不了。
 
 窄屏 320px 不许横向溢出（逐箱面板有「箱号/备注/第几箱」一行）。
 """
@@ -243,6 +245,41 @@ def run():
             "() => { const el = document.querySelector('.packing-carton-card'); return el ? el.scrollWidth - el.clientWidth : -1 }")
         check(overflow == 0, f'320px 下逐箱面板横向溢出 {overflow}px')
 
+        # 8) 没展开就导出：后端会自动展开箱，前端草稿已清空，
+        #    「打印箱唛」是灰的 —— 必须给一个「去印箱唛」的直达入口，否则用户以为印不了
+        page.set_viewport_size({'width': 1440, 'height': 1000})
+        # 前面第 2 步故意留了「箱内 20 / 装箱单 15」的不一致，导出会被闸拦住；
+        # 这里清掉草稿重来，模拟「新开一票、什么都没展开就直接导出」
+        page.evaluate("() => localStorage.clear()")
+        page.reload(wait_until='networkidle')
+        page.wait_for_timeout(700)
+        boxes = page.locator('.packing-table-scroll input[type=checkbox]')
+        boxes.nth(0).check()
+        boxes.nth(1).check()
+        page.wait_for_timeout(300)
+        first = page.locator('.packing-selected-item').nth(0)
+        first.locator('input[type=number]').nth(0).fill('2')
+        first.locator('input[type=number]').nth(1).fill('10')
+        second = page.locator('.packing-selected-item').nth(1)
+        second.locator('input[type=number]').nth(0).fill('3')
+        second.locator('input[type=number]').nth(1).fill('5')
+        page.wait_for_timeout(200)
+        # 刻意不点「按 SKU 展开」，直接导出
+        page.locator('.packing-export-btn').first.click()
+        page.wait_for_timeout(1500)
+        success = page.locator('.alert-success')
+        check(success.count() >= 1, '导出后应有成功提示')
+        if success.count():
+            txt = success.first.inner_text()
+            check('自动展开 5 箱' in txt, f'提示要说明已自动展开 5 箱，实得 {txt!r}')
+            btn = success.first.get_by_role('button', name='去印箱唛')
+            check(btn.count() == 1, '导出后要给「去印箱唛」直达按钮')
+            if btn.count():
+                btn.click()
+                page.wait_for_timeout(800)
+                check(page.locator('.carton-query-row').count() == 5,
+                      f'点「去印箱唛」应打开查箱子并列出 5 箱，实得 {page.locator(".carton-query-row").count()}')
+
         browser.close()
 
     # PDF 页数与尺寸（Chromium 会把 100mm 舍入成 100.2mm，容差 1mm）
@@ -266,7 +303,7 @@ def run():
     except ImportError:
         pass
 
-    report = {'checked': 7, 'failures': failures, 'page_errors': page_errors}
+    report = {'checked': 8, 'failures': failures, 'page_errors': page_errors}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return failures, page_errors
 

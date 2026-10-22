@@ -156,6 +156,9 @@ export default function Packing() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
+  // 提示条上的直达按钮。带 `for` 是为了自动过期：别处 setMsg 换了文案，按钮就自己消失，
+  // 不然会留下一个指向旧动作的按钮。
+  const [msgAction, setMsgAction] = useState<{ for: string; label: string; onClick: () => void } | null>(null);
   const [catalogStats, setCatalogStats] = useState<{ total: number; noSku: number; duplicates: number } | null>(null);
 
   // 产品库筛选
@@ -712,7 +715,19 @@ export default function Packing() {
       setSearchParams(sp, { replace: true });
       await loadProducts();
       setExportForm(prev => ({ ...prev, record_shipment: false }));
-      setMsg(exportForm.record_shipment ? '导出成功，已登记发货并扣库存' : '导出成功，装箱单已留档，库存未变化，可在 ERP 模板窗口继续套入');
+      // 没展开逐箱清单就导出时，箱子是后端按「一箱一个 SKU」自动展开的，
+      // 前端手里没有，草稿又被清空了 —— 「打印箱唛」按钮是灰的，用户会以为印不了。
+      // 这里直接把去查/印的入口给出来。
+      const autoExpanded = !payload.cartons;
+      const expandedCount = rows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0);
+      const okMsg = exportForm.record_shipment
+        ? '导出成功，已登记发货并扣库存'
+        : '导出成功，装箱单已留档，库存未变化，可在 ERP 模板窗口继续套入';
+      const fullMsg = autoExpanded ? `${okMsg}；逐箱清单已按「一箱一个 SKU」自动展开 ${expandedCount} 箱` : okMsg;
+      setMsg(fullMsg);
+      setMsgAction(autoExpanded
+        ? { for: fullMsg, label: '去印箱唛', onClick: () => { setMsgAction(null); openCartonQuery(); } }
+        : null);
     } catch (e: any) {
       setError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
@@ -859,7 +874,16 @@ export default function Packing() {
       </div>
 
       {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
-      {msg && <div className="alert alert-success" style={{ marginBottom: 12 }}>{msg}</div>}
+      {msg && (
+        <div className="alert alert-success" style={{ marginBottom: 12 }}>
+          {msg}
+          {msgAction && msgAction.for === msg && (
+            <button className="btn btn-sm btn-primary" style={{ marginLeft: 12 }} onClick={msgAction.onClick}>
+              {msgAction.label}
+            </button>
+          )}
+        </div>
+      )}
       {catalogStats && (catalogStats.noSku > 0 || catalogStats.duplicates > 0) && (
         <div className="alert" style={{ marginBottom: 12, borderLeft: '4px solid var(--color-warning)', background: 'var(--surface-warning)' }}>
           已同步全部可用 SKU；另有 {catalogStats.noSku} 条产品缺少 SKU
