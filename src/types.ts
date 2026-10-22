@@ -201,6 +201,8 @@ export interface PackingExportPayload {
   mark: string;
   shipping: string;
   address: string;
+  /** OMS 入库单号。唛头留空时用它，保证「客户唛头」和「箱唛」同一套编号 */
+  inbound_no?: string;
   items: PackingExportLine[];
   draft_key?: string;
   /** 不传时后端按「一箱一个 SKU」自动展开；混装必须传 */

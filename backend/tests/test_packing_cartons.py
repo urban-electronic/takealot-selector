@@ -5,8 +5,8 @@
 
 钉死这几件事：
   1) 不传逐箱清单时，按「一箱一个 SKU」自动展开成 C01..Cn；
-  2) 混装时以传上来的为准，一箱多行 SKU；
-  3) 箱内合计对不上装箱单 → 400，且不产生半票货；
+  2) 混装时以传上来的为准，一箱多行 SKU，件数以箱子为准（箱数×每箱件数算不出混装总数）；
+  3) 箱里有本单外的 SKU、留空箱、勾了却一箱没装 → 400，且不产生半票货；
   4) 查询能按日期看当天箱、按 SKU 反查在哪几箱（仍带整票总箱数）；
   5) 店铺隔离：另一个店铺查不到。
 """
@@ -120,19 +120,49 @@ def test_mixed_carton_keeps_manual_layout():
         engine.dispose()
 
 
-def test_carton_total_must_match_packing_list():
-    """箱内合计比装箱单少 → 400，且不能留下半票货。"""
+def test_carton_quantities_win_over_carton_count():
+    """混装：2 箱分别 20 / 15 件，共 35 件 —— 以逐箱清单为准，不能被「箱数×每箱件数」卡死。
+
+    「箱数 × 每箱件数」凑不出 35（2 × 17.5），所以它不能当校验标准，只能当
+    「一箱一个 SKU」时的快捷写法。以前这里要求两边相等，结果混装票根本导不出去。
+    """
     from api import packing_routes as routes
     engine, db = _db()
     try:
         resp = _export(
             routes, db,
-            items=[{'sku': '1111111111116', 'cartons': '2', 'count': '10'}],
+            items=[{'sku': '1111111111116', 'cartons': '1', 'count': '35'}],
+            cartons=[
+                {'box_no': 'INH1501522-001', 'items': [{'sku': '1111111111116', 'quantity': '20'}]},
+                {'box_no': 'INH1501522-002', 'items': [{'sku': '1111111111116', 'quantity': '15'}]},
+            ],
+            record_shipment=True,
+        )
+        assert resp.status_code == 200
+        line = db.query(ShipmentLine).one()
+        assert line.total_quantity == 35   # 库存按真装的件数核减
+        assert line.cartons == 2           # 箱数按逐箱清单数，不是用户填的那个 1
+        assert db.query(ShipmentCarton).count() == 2
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_sku_not_packed_into_any_carton_rejected():
+    """勾了产品却一箱都没装 → 400，别等箱子封上才发现少装。"""
+    from api import packing_routes as routes
+    engine, db = _db()
+    try:
+        resp = _export(
+            routes, db,
+            items=[
+                {'sku': '1111111111116', 'cartons': '1', 'count': '10'},
+                {'sku': '2222222222222', 'cartons': '1', 'count': '5'},
+            ],
             cartons=[{'box_no': 'C01', 'items': [{'sku': '1111111111116', 'quantity': '10'}]}],
         )
         assert resp.status_code == 400
-        body = resp.body.decode()
-        assert '逐箱合计 10 件' in body and '20 件' in body
+        assert '还没装进任何一箱' in resp.body.decode()
         assert db.query(Shipment).count() == 0
         assert db.query(ShipmentCarton).count() == 0
     finally:

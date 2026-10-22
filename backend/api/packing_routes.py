@@ -131,9 +131,14 @@ class CartonIn(BaseModel):
 class ExportIn(BaseModel):
     record_shipment: bool = False
     date: str = ''
-    mark: str = 'KPLDJ'
+    # 唛头留空时用 inbound_no，再没有才退回 KPLDJ。默认值不能直接写 KPLDJ：
+    # 那样「留空」和「明确要 KPLDJ」就分不出来了，用户填的入库单号也就永远用不上。
+    mark: str = ''
     shipping: str = '空'
     address: str = '找客服提供'
+    # OMS 入库单号。装箱单模板里「客户唛头」和 A 列「箱唛」应当同一套编号，
+    # 前端把入库单号一填，箱唛是 INH1501522-001、唛头是 INH1501522，两张纸能对上。
+    inbound_no: str = ''
     items: List[ExportLine] = []
     draft_key: str = ''
     # 逐箱清单：不传时按「一箱一个 SKU」自动展开，传了就以传的为准（混装必须传）
@@ -498,20 +503,25 @@ def _auto_cartons(items):
 
 
 def _normalize_cartons(raw_cartons, items):
-    """校验并规整逐箱清单；返回 (箱列表, 错误信息)。
+    """校验并规整逐箱清单；返回 (箱列表, 每个 SKU 的真实件数, 错误信息)。
 
-    逐箱清单和装箱单必须是**同一票货**：每个 SKU 的箱内件数合计要等于
-    `箱数 × 每箱件数`，否则就是「箱子里写 10 件、账上扣了 12 件」，对不上账
-    比没有记录更糟。前端在提交前会先算一遍并提示差额，这里是最后一道闸。
+    **有逐箱清单就以它为准**：每个 SKU 在箱内的件数合计，才是这一票真正装走的数量。
+    「箱数 × 每箱件数」只是一箱一个 SKU 时的快捷写法 —— 混装时它算不出总数
+    （2 箱分别装 20 / 15 件，箱数 × 每箱件数凑不出 35），拿它当标准就永远对不上，
+    混装票根本导不出来。所以这里只校验「箱里的 SKU 都在本单内」「每个 SKU 至少
+    装进一箱」，数量以箱子为准。
+
+    没传逐箱清单时才按「一箱一个 SKU」展开，件数 = 箱数 × 每箱件数。
     """
-    expected = {}
     names = {}
-    for p, cartons, count in items:
-        expected[p['sku']] = expected.get(p['sku'], 0) + int(cartons) * int(count)
+    for p, _cartons, _count in items:
         names[p['sku']] = (p.get('name_zh', ''), p.get('name_en', ''))
 
     if not raw_cartons:
-        return _auto_cartons(items), ''
+        totals = {}
+        for p, cartons, count in items:
+            totals[p['sku']] = totals.get(p['sku'], 0) + int(cartons) * int(count)
+        return _auto_cartons(items), totals, ''
 
     cartons_out = []
     counted = {}
@@ -522,32 +532,54 @@ def _normalize_cartons(raw_cartons, items):
             sku = (item.sku or '').strip()
             if not sku:
                 continue
-            if sku not in expected:
-                return None, f'第 {idx} 箱里有不在本次装箱单中的 SKU：{sku}'
+            if sku not in names:
+                return None, None, f'第 {idx} 箱里有不在本次装箱单中的 SKU：{sku}'
             try:
                 qty = int(str(item.quantity).strip())
             except (TypeError, ValueError):
-                return None, f'第 {idx} 箱的 {sku} 数量不是整数'
+                return None, None, f'第 {idx} 箱的 {sku} 数量不是整数'
             if qty < 1:
-                return None, f'第 {idx} 箱的 {sku} 数量必须 ≥1'
+                return None, None, f'第 {idx} 箱的 {sku} 数量必须 ≥1'
             counted[sku] = counted.get(sku, 0) + qty
             rows.append({'sku': sku, 'quantity': qty})
         if not rows:
-            return None, f'第 {idx} 箱没有装任何产品，请删除空箱或补上明细'
+            return None, None, f'第 {idx} 箱没有装任何产品，请删除空箱或补上明细'
         cartons_out.append({'box_no': box_no, 'note': (carton.note or '').strip(), 'items': rows})
 
     if not cartons_out:
-        return None, '逐箱清单为空，请至少保留 1 箱'
+        return None, None, '逐箱清单为空，请至少保留 1 箱'
 
-    for sku, want in expected.items():
-        got = counted.get(sku, 0)
-        if got != want:
-            label = names.get(sku, ('', ''))[0] or sku
-            return None, f'{label}（{sku}）逐箱合计 {got} 件，与装箱单的 {want} 件不一致'
-    for sku in counted:
-        if sku not in expected:
-            return None, f'逐箱清单里的 {sku} 不在本次装箱单中'
-    return cartons_out, ''
+    # 勾了产品却一箱都没装 —— 这才是真错（箱子封上了才发现少装，只能补发）
+    for sku in names:
+        if sku not in counted:
+            label = names[sku][0] or sku
+            return None, None, f'{label}（{sku}）还没装进任何一箱'
+    return cartons_out, counted, ''
+
+
+def _sku_box_counts(cartons):
+    """每个 SKU 装进了几箱 —— ShipmentLine 的「箱数」列就用这个。"""
+    boxes = {}
+    for carton in cartons:
+        for item in carton['items']:
+            boxes[item['sku']] = boxes.get(item['sku'], 0) + 1
+    return boxes
+
+
+def _line_quantities(items, shipped, boxes):
+    """[(产品, 箱数, 每箱件数, 总件数), ...]，总件数以逐箱清单为准。
+
+    混装时「每箱件数」没有意义（同一 SKU 各箱数量不同），这里取向上取整只作展示，
+    真正参与库存核减的是 total_quantity。
+    """
+    out = []
+    for p, cartons, count in items:
+        sku = p['sku']
+        total = int(shipped.get(sku, 0))
+        box_count = int(boxes.get(sku, 0)) or int(cartons)
+        per_carton = -(-total // box_count) if box_count else int(count)
+        out.append((p, box_count, max(1, per_carton), total))
+    return out
 
 
 def _write_cartons(db: Session, shipment: Shipment, store_id: str, cartons, items):
@@ -804,6 +836,10 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         date = dt.date.fromisoformat(data.date.strip())
     except ValueError:
         return fail(400, '请填写 YYYY-MM-DD 格式的有效日期')
+    # 唛头的三层兜底：手填 > OMS 入库单号 > KPLDJ。
+    # 中间那层是关键 —— 装箱单模板里「客户唛头」和 A 列「箱唛」是同一套编号，
+    # 用户只填一次入库单号，两处就自动一致，不用记着再抄一遍。
+    mark = data.mark.strip() or data.inbound_no.strip() or 'KPLDJ'
     items = []
     existing_shipment = None
     if data.draft_key.strip():
@@ -823,15 +859,19 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         count = line.count.strip()
         if not cartons.isdecimal() or not count.isdecimal() or int(cartons) < 1 or int(count) < 1:
             return fail(400, '箱数和每箱件数须为正整数')
-        total_quantity = int(cartons) * int(count)
-        requested_by_sku[p.sku] = requested_by_sku.get(p.sku, 0) + total_quantity
         row = public(p)
         row['box_no'] = line.box_no.strip()
         items.append((row, cartons, count))
-    # 逐箱清单先校验：箱内件数合计对不上装箱单就直接拒，不生成半票货。
-    cartons_plan, cartons_error = _normalize_cartons(data.cartons, items)
+    # 逐箱清单先校验：箱里的 SKU 必须都在本单内、每个 SKU 至少装进一箱。
+    cartons_plan, shipped_by_sku, cartons_error = _normalize_cartons(data.cartons, items)
     if cartons_error:
         return fail(400, cartons_error)
+    # 数量一律以逐箱清单为准。混装时「箱数 × 每箱件数」凑不出真实总数，
+    # 拿它去核库存会把「箱里装了 35 件、账上扣 34 件」的错记下来。
+    boxes_by_sku = _sku_box_counts(cartons_plan)
+    line_plan = _line_quantities(items, shipped_by_sku, boxes_by_sku)
+    for _p, _boxes, _per, _total in line_plan:
+        requested_by_sku[_p['sku']] = requested_by_sku.get(_p['sku'], 0) + _total
     db.commit()
     if data.record_shipment and not existing_shipment:
         for sku, requested in requested_by_sku.items():
@@ -844,7 +884,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             # 装箱单也按箱展开：A 列（箱唛）写箱唛号，物流按「箱唛 + 箱数」认箱。
             # 没填入库单号时箱号是 C01、C02，同样能对上逐箱清单。
             px.generate(
-                items, date.isoformat(), data.mark, data.shipping, data.address, output,
+                items, date.isoformat(), mark, data.shipping, data.address, output,
                 boxes=[(c['box_no'], [(it['sku'], it['quantity']) for it in c['items']]) for c in cartons_plan],
             )
             content = output.read_bytes()
@@ -861,14 +901,14 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             draft_key=data.draft_key.strip() or str(uuid.uuid4()),
             shipment_no=f'PK-{date.strftime("%Y%m%d")}-{day_count + 1:03d}',
             shipment_date=date.isoformat(),
-            mark=data.mark,
+            mark=mark,
             shipping=data.shipping,
             address=data.address,
             status=expected_status,
         )
         db.add(shipment)
         db.flush()
-        for p, cartons, count in items:
+        for p, box_count, per_carton, total in line_plan:
             db.add(ShipmentLine(
                 id=str(uuid.uuid4()),
                 shipment_id=shipment.id,
@@ -876,16 +916,16 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 name_zh=p.get('name_zh', ''),
                 name_en=p.get('name_en', ''),
                 image_file=p.get('image_file', ''),
-                cartons=int(cartons),
-                count_per_carton=int(count),
-                total_quantity=int(cartons) * int(count),
+                cartons=box_count,
+                count_per_carton=per_carton,
+                total_quantity=total,
             ))
         # 逐箱清单：一箱一条，箱唛就按这个印「第几箱 / 共几箱」
         _write_cartons(db, shipment, store_id, cartons_plan, items)
         record_operation(db, store_id, "shipment", shipment.id, "confirm" if data.record_shipment else "export", f'{"确认发货单" if data.record_shipment else "导出装箱单"} {shipment.shipment_no}', {
             "shipment_date": shipment.shipment_date,
             "sku_count": len(items),
-            "total_quantity": sum(int(cartons) * int(count) for _, cartons, count in items),
+            "total_quantity": sum(row[3] for row in line_plan),
             "carton_count": len(cartons_plan),
             "inventory_deducted": data.record_shipment,
         })
@@ -896,8 +936,8 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         stored = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == existing_shipment.id).all()
         stored_totals = {l.sku: l.total_quantity for l in stored}
         new_totals = {}
-        for p, cartons, count in items:
-            new_totals[p['sku']] = new_totals.get(p['sku'], 0) + int(cartons) * int(count)
+        for _p, _boxes, _per, _total in line_plan:
+            new_totals[_p['sku']] = new_totals.get(_p['sku'], 0) + _total
         if existing_shipment.status == 'confirmed' and stored_totals != new_totals:
             return fail(409, '这张装箱单已确认发货（库存已扣减），不能改数量；要改请先作废再重开')
         dropped = [l for l in stored if l.sku not in new_totals]
@@ -909,7 +949,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 return fail(409, '该发货单的明细已被库存分摊引用，不能删除；请作废后重新开单')
             for line in dropped:
                 db.delete(line)
-        for p, cartons, count in items:
+        for p, box_count, per_carton, total in line_plan:
             line = next((l for l in stored if l.sku == p['sku']), None)
             if line is None:
                 db.add(ShipmentLine(
@@ -919,14 +959,14 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                     name_zh=p.get('name_zh', ''),
                     name_en=p.get('name_en', ''),
                     image_file=p.get('image_file', ''),
-                    cartons=int(cartons),
-                    count_per_carton=int(count),
-                    total_quantity=int(cartons) * int(count),
+                    cartons=box_count,
+                    count_per_carton=per_carton,
+                    total_quantity=total,
                 ))
             else:
-                line.cartons = int(cartons)
-                line.count_per_carton = int(count)
-                line.total_quantity = int(cartons) * int(count)
+                line.cartons = box_count
+                line.count_per_carton = per_carton
+                line.total_quantity = total
         _replace_cartons(db, existing_shipment, store_id, cartons_plan, items)
         db.commit()
     return Response(

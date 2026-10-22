@@ -170,11 +170,12 @@ const root = createRoot(host);
   check(host.querySelector('.packing-export-card').textContent.includes('将导出 1 行'),
     'the export hint counts the rows that will actually be exported');
 
-  // 按 SKU 展开：箱内数量必须是默认件数，不能是空（空会印成「×0」）
-  const expandBtn = [...host.querySelectorAll('.packing-carton-actions button')].find(b => b.textContent.includes('按 SKU 展开'));
-  await act(async () => { expandBtn.click(); });
-  await act(async () => { await Promise.resolve(); });
-  check(host.querySelectorAll('.packing-carton-item').length === 1, 'expanding one carton of one SKU yields one carton');
+  // 逐箱清单：箱内数量必须是默认件数，不能是空（空会印成「×0」）。
+  // 以前要先点「按 SKU 展开」——那个按钮已经删掉了：勾选之后箱子就按
+  // 「箱数 × 每箱件数」自动长出来，展开完再手录一遍数量是重复劳动。
+  // 所以这里不再点任何按钮，直接看自动生成的结果。
+  check(host.querySelectorAll('.packing-carton-item').length === 1,
+    `selecting one SKU must auto-generate exactly one carton, got ${host.querySelectorAll('.packing-carton-item').length}`);
   const qtyInput = host.querySelector('.packing-carton-line input[type=number]');
   check(qtyInput && qtyInput.value === '12',
     `the carton line must carry the default pieces (12), got ${qtyInput && qtyInput.value}`);
@@ -202,8 +203,28 @@ const root = createRoot(host);
 
   // 导出 payload：默认值必须原样进 items 与 cartons（后端拿它生成装箱单与箱唛）
   const exportBtn = host.querySelector('.packing-export-btn');
+
+  // 运输方式必选：头程印错一行，货代就可能按错的渠道走。空着点导出必须被拦住，
+  // 不能悄悄默认一个值印在单子上。
+  await act(async () => { exportBtn.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(exported.length === 0, `export must be blocked without a shipping method, got ${exported.length} call(s)`);
+  const blocked = host.querySelector('.alert-error');
+  check(blocked && blocked.textContent.includes('运输方式'),
+    `the blocked export must say why, got ${blocked && blocked.textContent}`);
+
+  // 模板 G2 是「头程（空/海）」，只能是下拉里的两项之一，不能再是自由文本。
+  const shippingSelect = host.querySelector('.packing-export-grid select');
+  check(!!shippingSelect, 'the shipping method is a dropdown, not a free-text field');
+  check([...shippingSelect.options].map(o => o.value).filter(Boolean).join(',') === '空运,海运',
+    `the dropdown offers 空运/海运 only, got ${[...shippingSelect.options].map(o => o.value).join(',')}`);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, 'value').set.call(shippingSelect, '海运');
+    shippingSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+
   await act(async () => { exportBtn.click(); await Promise.resolve(); await Promise.resolve(); });
   check(exported.length === 1, `export must be called once, got ${exported.length}`);
+  check(exported[0].shipping === '海运', `the chosen shipping method must reach the backend, got ${exported[0].shipping}`);
   const payload = exported[0] || {};
   check(JSON.stringify(payload.items) === JSON.stringify([{ sku: '114', cartons: '1', count: '12' }]),
     `export items must carry cartons=1 / count=12, got ${JSON.stringify(payload.items)}`);

@@ -256,3 +256,27 @@ def test_packing_list_without_cartons_keeps_sku_aggregate(tmp_path):
     assert read('A4') == 'CK-01'         # 没有箱号时退回唛头
     assert read('D4') == '3'
     assert read('E4') == '10'
+
+
+def test_mark_falls_back_to_inbound_no_then_kpl_dj(db):
+    """唛头留空就用 OMS 入库单号，都没有才退回 KPLDJ。
+
+    装箱单模板里「客户唛头」（B2）和 A 列「箱唛」是同一套编号：用户只填一次
+    入库单号，两处就该自动一致，不用记着再抄一遍。手填的唛头优先级最高。
+    """
+    seen = []
+
+    def stub(items, date, mark, shipping, address, output, boxes=None):
+        seen.append(mark)
+        output.write_bytes(b'packing-workbook')
+
+    def payload(draft, **extra):
+        return routes.ExportIn(date='2026-10-15', draft_key=draft, shipping='海运',
+                               items=[routes.ExportLine(sku='sku-a', cartons='1', count='10')], **extra)
+
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=stub):
+        assert routes.export_excel(payload('m-inbound', inbound_no='INH1501522'), db, 'default-store').status_code == 200
+        assert routes.export_excel(payload('m-none'), db, 'default-store').status_code == 200
+        assert routes.export_excel(payload('m-manual', inbound_no='INH1501522', mark='CK-01'), db, 'default-store').status_code == 200
+    assert seen == ['INH1501522', 'KPLDJ', 'CK-01']
+    assert [s.mark for s in db.query(Shipment).order_by(Shipment.draft_key).all()] == ['INH1501522', 'CK-01', 'KPLDJ']
