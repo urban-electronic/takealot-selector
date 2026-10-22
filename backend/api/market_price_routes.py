@@ -35,8 +35,15 @@ CURRENCY = {'CN': 'CNY', 'SG': 'SGD', 'TB': 'CNY'}
 
 class PriceInput(BaseModel):
     market: Literal['CN', 'SG', 'TB']
-    price: Optional[float] = Field(default=None, ge=0)
-    """None 表示清除该市场（录错了要能删掉，而不是只能改成 0）。"""
+    price: Optional[float] = Field(default=None, gt=0)
+    """None 表示清除该市场（录错了要能删掉，而不是只能改成 0）。
+
+    0 和负数在这里就挡掉（HTTP 侧 422），不接受：全系统另外四处——`/status` 的
+    真值判断、自动同步的 `_to_price()`、前端 `parseMarketPrices()` 与
+    `buildMarketBatch()`——都把 0 当「这个市场没填」。写进去只会在库里留一条
+    谁都看不见的条目：接口回 `saved: 1`，界面上既没有价格也不计入覆盖率，
+    下次想清掉还得再猜一次。要清就用 None。
+    """
     cur: Optional[str] = None
     src: str = '手工'
     url: Optional[str] = None

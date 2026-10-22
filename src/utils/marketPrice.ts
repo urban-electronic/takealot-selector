@@ -118,6 +118,21 @@ export function serializeMarketPrices(prices: MarketPrices): string {
   return Object.keys(out).length ? JSON.stringify(out) : '';
 }
 
+/**
+ * 「已过期」标记：自动同步连续 `STALE_AFTER` 次没读到，价格还是旧的。
+ *
+ * 只有后端会打这个标（`market_price_sync.apply_fetch`），前端只负责显示。
+ * 收在一个函数里，是因为它曾经在四个界面上有三种写法：列表悬停卡写「· 已过期」、
+ * 详情页写「· 已过期（最近一次没读到）」、批量录入面板**一个字都不写**——
+ * 面板正是用户决定「填多少」的地方，旁边那个 S$115 其实是一周前的旧价，
+ * 却和刚自动同步成功的值长得一模一样。
+ *
+ * 文案统一用短的「· 已过期」：长句留给详情页那张有整列空位的表。
+ */
+export function staleNote(entry?: MarketPriceEntry | null): string {
+  return entry?.stale ? ' · 已过期' : '';
+}
+
 export function formatMarketPrice(code: MarketCode, entry: MarketPriceEntry): string {
   const value = Number(entry.price);
   const text = Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');

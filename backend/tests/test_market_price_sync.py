@@ -289,12 +289,19 @@ def test_batch_none_price_clears_the_market(tmp_path):
     assert 'TB' not in left and left['SG']['price'] == 115
 
 
-def test_batch_rejects_negative_price():
-    """负数在入参层就被拦下（HTTP 侧是 422），不进库、不落成「¥-1」这种脏数据。"""
+@pytest.mark.parametrize('price', [-1, 0])
+def test_batch_rejects_non_positive_price(price):
+    """负数与 0 都在入参层被拦下（HTTP 侧是 422），不进库。
+
+    负数会落成「¥-1」这种脏数据；0 更隐蔽——`/status` 用真值判「填没填」、
+    自动同步的 `_to_price()` 丢 `<= 0`、前端解析也把 0 当没数据，于是写进去的
+    条目谁都看不见：接口回 `saved: 1`，界面上既没有价格也不计入覆盖率。
+    清空该市场用 `price=None`。
+    """
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        routes.PriceInput(sku='S1', market='TB', price=-1)
+        routes.PriceInput(sku='S1', market='TB', price=price)
 
 
 # ---- 覆盖率 -------------------------------------------------------------
