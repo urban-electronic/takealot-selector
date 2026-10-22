@@ -336,13 +336,31 @@ def test_auto_markets_only_lists_writable_markets(tmp_path):
         routes.PriceInput(sku='S1', market=code, price=1)  # 不抛异常即可
 
 
-def test_last_run_roundtrip(tmp_path):
+def test_last_run_roundtrip(tmp_path, monkeypatch):
+    # Keep the persistence and interval assertion independent of the runner date.
+    stamp = datetime(2026, 10, 21, 20, tzinfo=timezone.utc)
+
+    class Clock(datetime):
+        current = stamp
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
+
+    monkeypatch.setattr(sync, 'datetime', Clock)
+    monkeypatch.setattr(sync, 'INTERVAL_HOURS', 24)
     Session = _db(tmp_path, 'last')
-    db = Session()
-    sync._save_state(db, SystemSettings, {'at': '2026-10-21T20:00:00+00:00', 'updated': 3})
-    db.close()
-    assert sync.last_run(Session())['updated'] == 3
-    assert sync.due(sync.last_run(Session())) is False
+    expected = {'at': stamp.isoformat(), 'updated': 3}
+    with Session() as db:
+        sync._save_state(db, SystemSettings, expected)
+    with Session() as db:
+        restored = sync.last_run(db)
+    assert restored == expected
+    assert sync.due(restored) is False
+    Clock.current = stamp + timedelta(hours=24) - timedelta(microseconds=1)
+    assert sync.due(restored) is False
+    Clock.current = stamp + timedelta(hours=24)
+    assert sync.due(restored) is True
 
 
 def test_sync_preserves_manual_edit_during_fetch(tmp_path, monkeypatch):
