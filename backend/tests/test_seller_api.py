@@ -138,11 +138,13 @@ def test_seller_source_short_circuits_browser_and_other_store_is_excluded():
     request.headers = {'X-Store-Id': 'default-store'}
     result = {'normalized_url': URL, 'product_name': 'Actual product', 'success': True, 'data_source': 'seller_api'}
     fee = {'fee_category': None, 'confidence': 'low'}
-    with patch.object(scraper_routes, 'configured_key', return_value=KEY), patch.object(scraper_routes, 'seller_product', return_value=result) as get, patch.object(scraper_routes, 'scrape_product') as browser, patch.object(scraper_routes, 'match_fee_category', return_value=fee):
+    with patch.object(scraper_routes, 'configured_key', return_value=KEY), patch.object(scraper_routes, 'seller_product', return_value=result) as get, patch.object(scraper_routes, 'scrape_product') as browser, patch.object(scraper_routes, 'match_fee_category', return_value=fee), patch.object(scraper_routes, '_scrape_with_curl_cffi', return_value=(None, None)) as image_fallback:
         r = asyncio.run(scraper_routes.scrape_takealot(scraper_routes.ScrapeRequest(url=URL), db=MagicMock(), request=request))
         assert r['data_source'] == 'seller_api'
         browser.assert_not_called()
+        image_fallback.assert_called_once_with(URL, URL)
         request.headers = {'X-Store-Id': 'another-store'}
         browser.return_value = result
         asyncio.run(scraper_routes.scrape_takealot(scraper_routes.ScrapeRequest(url=URL), db=MagicMock(), request=request))
         assert get.call_count == 1
+        assert image_fallback.call_count == 1
