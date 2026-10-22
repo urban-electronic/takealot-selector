@@ -947,8 +947,13 @@ def download_labels(data: LabelsRequest, db: Session = Depends(get_db), store_id
                     items.extend(variant_items(p, data.copies))
                     break
 
+    # 「产品查不到」与「产品在、但没有 SKU」是两回事：前者是选错了对象（已删除、
+    # 或不属于当前店铺），后者是数据缺字段。混成一句「都没有 SKU」会让人去补 SKU，
+    # 而真正该做的是刷新列表、重新勾选。
     if not products:
-        raise HTTPException(status_code=404, detail="选中的产品都没有 SKU，生成不了条码")
+        raise HTTPException(status_code=404, detail="没有找到对应的产品（可能已被删除，或不属于当前店铺）")
+    if not items:
+        raise HTTPException(status_code=400, detail="选中的产品没有可用的 SKU（SKU 为空或已被修改）")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)

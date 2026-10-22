@@ -10,6 +10,7 @@ import io
 import zipfile
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -119,9 +120,25 @@ def test_sheet_mode_is_still_a4(Session):
 def test_no_sku_product_is_rejected(Session):
     """没有 SKU 的产品直接报错，不返回空 PDF。"""
     pid = _seed(Session, '')
-    with pytest.raises(Exception) as err:
+    with pytest.raises(HTTPException) as err:
         download_labels(LabelsRequest(product_ids=[pid]), db=Session(), store_id=DEFAULT_STORE_ID)
-    assert '400' in str(err.value) or '没有' in str(err.value)
+    assert err.value.status_code == 400
+    assert '没有可用的 SKU' in err.value.detail
+
+
+def test_missing_product_is_not_reported_as_missing_sku(Session):
+    """产品查不到 ≠ 产品没有 SKU。
+
+    列表页勾选会持久化在 localStorage 里，产品被删掉之后再点「下载标签」，
+    原来一律回「选中的产品都没有 SKU」——指向的是「去补 SKU」，而真正该做的是
+    刷新列表重新勾。两句必须分开。
+    """
+    _seed(Session, SKU_A)
+    with pytest.raises(HTTPException) as err:
+        download_labels(LabelsRequest(product_ids=['p-deleted']), db=Session(), store_id=DEFAULT_STORE_ID)
+    assert err.value.status_code == 404
+    assert '没有找到对应的产品' in err.value.detail
+    assert 'SKU' not in err.value.detail
 
 
 def test_other_store_cannot_download(Session):

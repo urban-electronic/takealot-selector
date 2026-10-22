@@ -11,6 +11,7 @@ import { useFxRates } from '../utils/useFxRates';
 import { beijingClock } from '../utils/datetime';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
+import { isEan13 } from '../utils/ean';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
@@ -206,6 +207,10 @@ export default function ProductList() {
   // 「生成成功、但跳过了几个」不是错误，不该占用页面顶部那条红色告警：
   // `error` 同时是加载失败的位置，红字会让人以为整页没读到。
   const [labelNote, setLabelNote] = useState('');
+  // 按钮上写「能真正出标签的数量」，不是勾选总数：不是合法 EAN-13 的 SKU 会被
+  // 跳过（见 utils/ean.ts 的说明），写总数的话「勾 3 个只下到 1 张」看起来像文件
+  // 丢了。详情页的 labelCount 就是这么算的，两页口径必须一致。
+  const labelCount = Array.from(selectedSkus).filter(isEan13).length;
 
   // 每个 SKU 一个独立 PDF（页面 40×30），多选打包成 zip。
   // 浏览器里直接出（src/utils/labelPdf.ts），不依赖后端部署；条码不合法的 SKU 跳过。
@@ -1402,15 +1407,17 @@ export default function ProductList() {
 
         <button
           className="btn btn-outline btn-sm"
-          disabled={selectedSkus.size === 0 || labelLoading}
+          disabled={labelCount === 0 || labelLoading}
           title={
             selectedSkus.size === 0
               ? '请先勾选产品（需要 13 位条码才能生成 EAN-13 标签）'
-              : `为选中的 ${selectedSkus.size} 个 SKU 各生成一个 40×30mm 的标签 PDF（多选会打包成 zip），标签打印机直接打`
+              : labelCount === 0
+                ? `勾选的 ${selectedSkus.size} 个 SKU 都不是合法 EAN-13 条码，生成不了标签`
+                : `为选中的 ${labelCount} 个 SKU 各生成一个 40×30mm 的标签 PDF（多选会打包成 zip），标签打印机直接打`
           }
           onClick={downloadLabels}
         >
-          {labelLoading ? '生成中…' : `下载标签${selectedSkus.size > 0 ? ` (${selectedSkus.size})` : ''}`}
+          {labelLoading ? '生成中…' : `下载标签${labelCount > 0 ? ` (${labelCount})` : ''}`}
         </button>
 
         <button

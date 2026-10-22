@@ -1,8 +1,8 @@
 # 产品标签 PDF（EAN-13）：两份生成器、同一套版式
 
 日期：2026-10-22
-基线：`d4101cabf3`（功能由并行提交带入，本文件补上它缺失的设计说明；同日后端又加了
-一份浏览器内生成器，见下）
+基线：`d4101cabf3`（功能由并行提交带入，本文件补上它缺失的设计说明；同日又加了一份
+浏览器内生成器 `src/utils/labelPdf.ts`，见下）
 
 ## 为什么要两份生成器
 
@@ -68,12 +68,43 @@ A4 拼版（浏览器版只出单个 40×30 的 PDF/zip）。
 印出来却带省略号。40×30 的标签内容宽只有 34.3mm、8pt，长名字很容易正好占满 3 行。
 两边都改成用 `dropped` 标记区分「被截断」与「刚好填满」。
 
+## 并行重写丢掉的三样东西（LABEL-WRAP-GUARD-01 / LABEL-COUNT-01 / LABEL-404-01）
+
+2026-10-22 晚的并行提交把后端标签测试改成用 `tests/pdfmeta.py` 量页面尺寸（去掉
+pymupdf 运行依赖，这一步是对的），但整文件重写时漏掉了两条折行用例；同一轮里前端
+按钮的数量口径与 404 归因也没跟上。三处都在下面补回。
+
+### LABEL-WRAP-GUARD-01 折行用例被整文件重写冲掉
+
+`test_wrap_keeps_full_last_line` / `test_wrap_marks_dropped_words` 在重写后消失，
+`_wrap` 也不再被 import——实现里的 `dropped` 判据于是没有后端用例守着（前端
+`test-label-pdf.cjs` 那条「7 个词放得下，不许丢词」只覆盖 `wrapName()`）。原样补回，
+断言一字未改。
+
+### LABEL-COUNT-01 列表页按钮的数字改成「真正能出标签的数量」
+
+按钮原来写 `selectedSkus.size`（勾选总数，含不合法的 SKU），而 `utils/ean.ts` 的头注释
+明说「前端先筛一遍是为了按钮上能显示真实数量」；详情页的 `labelCount` 一直是合法数。
+勾 3 个只有 1 个合法时，按钮写「(3)」、实际下到 1 张，看着像文件丢了。改成
+`Array.from(selectedSkus).filter(isEan13).length`，一个都不合法时禁用并在 title 里说明。
+
+### LABEL-404-01 「产品查不到」不再报成「产品没有 SKU」
+
+`download_labels` 在 `products` 为空时一律回「选中的产品都没有 SKU，生成不了条码」。
+可列表页的勾选是持久化在 localStorage 里的，产品被删掉之后再点下载走的就是这条路：
+提示让人去补 SKU，实际该做的是刷新列表重新勾。拆成 404「没有找到对应的产品（可能已被
+删除，或不属于当前店铺）」与 400「选中的产品没有可用的 SKU（SKU 为空或已被修改）」；
+顺带修掉 `items` 为空时 400 文案拼出空括号（「没有可生成的标签（）」）的问题。
+
 ## 验证
 
-- `backend/tests/test_label_pdf.py` 25 例（含 2 例折行边界）、`test_label_routes.py` 9 例
+- `backend/tests/test_label_pdf.py` 25 例（含 2 例折行边界）、`test_label_routes.py` 10 例
 - `scripts/test-label-pdf.cjs`：前端生成器（EAN 编码结构、页面尺寸、copies、跳过、
   确定性、折行不丢词）
 - `scripts/test-label-ean.cjs`：三份 EAN 实现的判据一致 + 详情页/列表页的错误与跳过口径
+  + 列表页按钮数量按合法 EAN-13 计（41 条检查）
 - 反向探针：折行改回「凑满 3 行就截」→ `test_wrap_keeps_full_last_line`（pytest）与
   `test-label-pdf.cjs`「7 个词放得下，不许丢词」双红；详情页改回 `setError`、
-  列表页跳过改回 `setError` → `test-label-ean.cjs` 各自转红（均已还原）
+  列表页跳过改回 `setError` → `test-label-ean.cjs` 各自转红；按钮数字改回
+  `selectedSkus.size` → `test-label-ean.cjs` 转红；404 文案改回「都没有 SKU」→
+  `test_missing_product_is_not_reported_as_missing_sku` 转红（均已还原）

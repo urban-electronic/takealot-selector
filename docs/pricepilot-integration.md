@@ -1481,3 +1481,45 @@ WorkBuddy；基线 `d4101cabf3`。
   `test_wrap_keeps_full_last_line` 同时转红（均已还原）。
 - 复测：`test-label-pdf.cjs` 117 → 126 条检查、`test_label_pdf.py` 25 例；后端全量
   533 passed / 1 skipped；全量 selfcheck 35 步。
+
+### LABEL-WRAP-GUARD-01 折行用例在并行重写里被冲掉，原样补回（2026-10-22）
+
+WorkBuddy；基线 `579a03621d`。
+
+- 症状：并行提交把 `backend/tests/test_label_pdf.py` 整文件重写（改用 `tests/pdfmeta.py`
+  量页面、去掉 pymupdf 运行依赖，这步本身是对的），但 `test_wrap_keeps_full_last_line`
+  与 `test_wrap_marks_dropped_words` 两条一起消失了，`_wrap` 也不再被 import。
+  `_wrap()` 里的 `dropped` 判据于是没有后端用例守着（前端 `test-label-pdf.cjs` 那条只覆盖
+  `wrapName()`），而本文件与 engineering 文档还在引用这两条用例。
+- 改动：两条用例与 `_filled_line()` 原样补回，断言一字未改。
+- 复现：把 `_wrap()` 的判据改回 `if len(lines) >= max_lines`，
+  `test_wrap_keeps_full_last_line` 转红（已还原）。
+- 复测：`test_label_pdf.py` 23 → 25 例。
+
+### LABEL-COUNT-01 列表页「下载标签」按钮的数字改成真正能出标签的数量（2026-10-22）
+
+WorkBuddy；基线 `579a03621d`。
+
+- 症状：按钮写 `selectedSkus.size`（勾选总数），而 `src/utils/ean.ts` 的头注释明说
+  「前端先筛一遍是为了按钮上能显示真实数量——否则后端跳过几个，用户以为出错了」；
+  详情页的 `labelCount` 一直是合法数。勾 3 个只有 1 个合法时按钮写「(3)」、实际下到
+  1 张，看着像文件丢了。
+- 改动：`const labelCount = Array.from(selectedSkus).filter(isEan13).length`，按钮文案与
+  `disabled` 都改用它；一个都不合法时在 title 里说明「都不是合法 EAN-13 条码」。
+- 复现：把按钮数字改回 `selectedSkus.size`，`test-label-ean.cjs` 报
+  「按钮上的数字必须是合法 EAN-13 的数量」（已还原）。
+- 复测：`test-label-ean.cjs` 37 → 41 条检查。
+
+### LABEL-404-01 「产品查不到」不再报成「产品没有 SKU」（2026-10-22）
+
+WorkBuddy；基线 `579a03621d`。
+
+- 症状：`download_labels` 在 `products` 为空时一律回「选中的产品都没有 SKU，生成不了
+  条码」。列表页的勾选持久化在 localStorage 里，产品被删掉之后再点下载走的就是这条路：
+  提示让人去补 SKU，实际该做的是刷新列表重新勾。另外 `items` 为空时 400 文案会拼出空
+  括号（「没有可生成的标签（）」）。
+- 改动：拆成 404「没有找到对应的产品（可能已被删除，或不属于当前店铺）」与
+  400「选中的产品没有可用的 SKU（SKU 为空或已被修改）」，后者在进 `generate_*` 之前就拦。
+- 复现：404 文案改回旧句，`test_missing_product_is_not_reported_as_missing_sku` 转红
+  （已还原）。
+- 复测：`test_label_routes.py` 9 → 10 例。

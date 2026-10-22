@@ -1,6 +1,6 @@
 // 产品标签（EAN-13）的口径守卫：不启浏览器，直接编译 TS。
 //
-// 钉死的四件事：
+// 钉死的五件事：
 //   1) 三份 EAN-13 实现必须同一套判据：后端 services/label_pdf.py、详情页计数用的
 //      src/utils/ean.ts、真正出标签的 src/utils/labelPdf.ts。改了其中一份的权重或长度，
 //      按钮上写的「N 个 SKU」和实际下载到的文件数就会对不上。
@@ -8,6 +8,7 @@
 //      （`if (error) return …`），编辑中的草稿一起丢——生成失败是可重试的小事。
 //   3) 列表页「生成成功但跳过几个」不是错误，不能占用页面顶部那条红色告警。
 //   4) 折行的省略号规则（只在真丢词时出现）两边一致，见 test-label-pdf.cjs / pytest。
+//   5) 列表页按钮上的数量 = 真正能出标签的数量（合法 EAN-13），不是勾选总数。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -82,5 +83,17 @@ const skipBlock = skipIdx >= 0 ? listBody.slice(skipIdx, listBody.indexOf('\n   
 check(skipBlock.includes('setLabelNote('), '被跳过的 SKU 必须提示（否则用户以为标签丢了）');
 check(!skipBlock.includes('setError('), '「已生成 N 张、跳过 M 个」不许走 setError（那是一条加载失败的红色告警）');
 check(/\{labelNote && /.test(list), 'labelNote 必须渲染出来');
+
+// ---- 5. 列表页按钮上的数量 = 真正能出标签的数量 -----------------------------
+// `utils/ean.ts` 的头注释写着「前端先筛一遍是为了按钮上能显示真实数量——否则后端
+// 跳过几个，用户以为出错了」，但列表页按钮原来写的是 `selectedSkus.size`（含不合法的），
+// 勾 3 个只下到 1 张，看着就像文件丢了。详情页的 `labelCount` 一直是合法数，两页必须一致。
+const btnStart = list.indexOf('disabled={labelCount === 0');
+check(btnStart >= 0, '列表页标签按钮必须按合法数量决定禁用（labelCount === 0）');
+const labelBtn = btnStart >= 0 ? list.slice(btnStart, list.indexOf('</button>', btnStart)) : '';
+check(labelBtn.includes('下载标签${labelCount > 0'), '按钮上的数字必须是合法 EAN-13 的数量');
+check(labelBtn.includes('都不是合法 EAN-13 条码'), '一个都不合法时要说明原因，不能让按钮静默失效');
+check(/const labelCount = Array\.from\(selectedSkus\)\.filter\(isEan13\)\.length/.test(list),
+  '列表页的 labelCount 必须复用 utils/ean 的 isEan13（别自己再写一份判据）');
 
 console.log(`test-label-ean.cjs: ${checks} 项检查通过`);
