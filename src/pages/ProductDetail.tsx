@@ -115,6 +115,11 @@ export default function ProductDetail() {
   const handleSave = async () => {
     if (!id) return;
     setSaveError('');
+    const invalidMarkets = MARKET_ORDER.filter(marketInputInvalid);
+    if (invalidMarkets.length) {
+      setSaveError(`${invalidMarkets.map(code => MARKET_META[code].label).join('、')}价格需大于 0，请修正或清空后保存`);
+      return;
+    }
     try {
       // 手动覆盖字段：空字符串转为 null
       const manualFields = [
@@ -487,7 +492,7 @@ export default function ProductDetail() {
                         />
                         {marketInputInvalid(code) && (
                           <div style={{ fontSize: 11.5, color: 'var(--color-danger)' }}>
-                            价格需大于 0，不会保存
+                            价格需大于 0，请修正或清空后保存
                           </div>
                         )}
                       </div>

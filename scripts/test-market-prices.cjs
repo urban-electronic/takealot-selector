@@ -381,3 +381,38 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);
+
+// Execute the actual detail handlers with isolated state and a mock write API.
+(async () => {
+  const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
+  const save = detail.slice(detail.indexOf('  const handleSave ='), detail.indexOf('  /** 取消编辑'));
+  const price = detail.slice(detail.indexOf('  const setMarketPrice ='), detail.indexOf('  /** 价格框里该显示什么'));
+  const invalid = detail.slice(detail.indexOf('  const marketInputInvalid ='), detail.indexOf('  /** 淘宝均价'));
+  const code = ts.transpileModule(save + price + invalid + '\nglobalThis.handlers = { handleSave, setMarketPrice };',
+    { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
+  for (const [raw, expectedWrites] of [['0', 0], ['-1', 0], ['Infinity', 0], ['', 1], ['0.5', 1], ['150', 1]]) {
+    const original = { CN: { price: 100, cur: 'CNY' } };
+    let writes = 0;
+    let payload;
+    let error = '';
+    const ctx = {
+      id: 'fixture', product: {}, mpDraft: original, mpText: {}, editData: {},
+      MARKET_ORDER, MARKET_META, Number, serializeMarketPrices, manualPriceEntry,
+      setSaveError: value => { error = value; },
+      setMpText: fn => { ctx.mpText = fn(ctx.mpText); },
+      setMpDraft: value => { ctx.mpDraft = value; },
+      updateField: (key, value) => { ctx.editData[key] = value; },
+      api: { updateProduct: async (_id, value) => { writes++; payload = value; return value; } },
+      setProduct() {}, resetDraft() {}, setEditMode() {}, notifyCatalogChanged() {},
+      searchParams: { get: () => null }, navigate() {},
+    };
+    require('node:vm').runInNewContext(code, ctx);
+    ctx.handlers.setMarketPrice('CN', raw);
+    await ctx.handlers.handleSave();
+    check(writes === expectedWrites, `输入 ${JSON.stringify(raw)} 后保存：预期 ${expectedWrites} 次写入，实际 ${writes}`);
+    if (!expectedWrites) check(error.includes('价格'), '无效价格必须提示修正，不能静默清空原价');
+    if (raw === '') check(payload.market_prices === '', '显式清空仍可保存');
+    if (raw === '0.5') check(JSON.parse(payload.market_prices).CN.price === 0.5, '小数原样保存，不变成 5');
+  }
+  console.log('detail price save: 11 isolated checks passed');
+})().catch(error => { console.error(error); process.exitCode = 1; });
