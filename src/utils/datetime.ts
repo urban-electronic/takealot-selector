@@ -46,6 +46,25 @@ export function beijingDateTime(value: unknown, empty = '-'): string {
   return stamp.toLocaleString('zh-CN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
+/**
+ * 业务时区下的「时:分」，给「刚刚几点更新的」这类短标签用。
+ *
+ * 不要用 `new Date().toLocaleTimeString()`：它取的是**运行机器的时区**。
+ * 开发机正好是 UTC+8，所以本地看永远正常；换到 UTC 的机器上同一个动作会写
+ * 「已更新 · 03:00」而北京时间是 11:00，而全站其它时间列都按北京时间显示，
+ * 两处对不上就会被当成「刷新记录错乱了」。空值/坏值返回 `empty`。
+ */
+export function beijingClock(value: unknown = new Date(), empty = '-'): string {
+  const stamp = value instanceof Date ? value : parseServerTime(value);
+  if (!stamp || Number.isNaN(stamp.getTime())) return empty;
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: BUSINESS_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(stamp);
+}
+
 /** 返回业务时区下的 YYYY-MM-DD，可直接用于 <input type="date"> 的 value。 */
 export function todayLocal(now: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-US', {

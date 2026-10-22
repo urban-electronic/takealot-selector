@@ -23,11 +23,19 @@
    `market_prices` 归在 `metadata_fields` 里：只改参考价时既不触发利润重算，
    也不会清掉 `manual_*` 人工成本覆盖（那条清空逻辑只对非 metadata 字段生效）。
 2. **展示**：`parseMarketPrices()` 把「像价格的值」归一成数字；`null`、空串、布尔、
-   `NaN`、负数一律当**没有这个市场**，而不是 0。
+   `NaN`、负数、**0** 一律当**没有这个市场**，而不是 0。
    为什么展示层还要守一遍：`Number(null)` 与 `Number('')` 都是 0，旧写法会把
    「没填」渲染成「¥0」——一个看起来像真价格的假价格，比空着更容易误导定价。
    后端写入虽有校验，但 `/api/migrate` 是整行搬运、不过 Pydantic，桌面版导出的
    历史行可能带 null 或数字字符串，所以这条边界不能只靠后端。
+   为什么 0 也算没有：参考价不可能是 0，而系统里另外三处早就这么认了——
+   `/api/market-prices/status` 用 `entry.get('price')` 的真值判「填没填」、
+   自动同步的 `_to_price()` 丢弃 `<= 0`、批量录入的 `buildMarketBatch()` 把 0 判无效。
+   只有 `toPrice()` 与详情页输入框还收 0，于是同一个字段「列表显示 ¥0、覆盖率算未填」，
+   批量面板还会因为它和草稿一致而清除不掉（MARKET-ZERO-01）。
+   详情页的价格框因此改为「原文草稿 + 行内提示」：敲 `0`、`0.`、`-1`、`abc` 都不会被
+   当成价格写进草稿（否则 `0.5` 的第一个字符就会把输入框清空，最后存成 5），
+   原文留在框里并提示「价格需大于 0，不会保存」——与批量录入「无效行点名」同一口径。
 3. **回写**：`serializeMarketPrices()` 同样丢掉没有有效价格的市场——后端每个市场都
    要求数值 `price`，把「只有 cur 没有 price」的条目塞进 PATCH 会被 400 掉，
    整次保存失败。全部市场都空时返回空串，即清空该字段。
@@ -94,12 +102,13 @@
   `backend/tests/test_market_price_sync.py::test_auto_markets_only_lists_writable_markets`
   （`status.auto_markets` 里的每个市场都必须能通过 `PriceInput` 校验——这个字段不参与
   任何校验，写错了会一直很安静）。
-- 前端：`scripts/test-market-prices.cjs`（110 条断言：解析、空值不当 0、数字字符串、
-  坏输入、序列化丢空市场、往返一致、币种符号与小数位、符号跟 `cur` 走（USD 不许冒用 S$）、
+- 前端：`scripts/test-market-prices.cjs`（124 条断言：解析、空值与 0 不当价格、数字字符串、
+  坏输入、序列化丢空市场 / 丢 0、往返一致、币种符号与小数位、符号跟 `cur` 走（USD 不许冒用 S$）、
   只显示采到的市场、兰特折算方向与千分位、缺汇率时退回原币、汇率说明文案、
   批量录入只发真改过的行 / 无效行点名 / 清空发 `price:null`、
   手工改价按北京时间记日期并清掉 stale/miss/last_error）；
-  `scripts/test-datetime.cjs`（30 条断言，含「扫整个 `src/` 不许自己拼本地日期」）；
+  `scripts/test-datetime.cjs`（36 条断言，含「扫整个 `src/` 不许自己拼本地日期」
+  与「`toLocale*String` 必须显式给 `timeZone`」两道源码守卫，以及 `beijingClock()`）；
   `scripts/test-fx-rates.cjs`（21 条断言：没有缓存退回兜底、缓存命中、坏 JSON / 没有可用
   货币时当没缓存、兜底标记与过期标记原样保留、过期与时间戳非法时按年龄重算 `stale`、
   localStorage 读不了时不抛异常）。

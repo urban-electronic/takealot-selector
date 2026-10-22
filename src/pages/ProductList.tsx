@@ -8,6 +8,7 @@ import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LIN
 import { ProductImage } from '../utils/imageFallback';
 import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
+import { beijingClock } from '../utils/datetime';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
@@ -513,7 +514,7 @@ export default function ProductList() {
     setRefreshingIds((prev) => new Set(prev).add(id));
     try {
       const result: Record<string, any> = await api.refreshPrice(id, dataSource === 'remote' ? source : 'official');
-      setRefreshMessages(prev => ({ ...prev, [id]: `${result.data_source === 'seller_api' ? '本店报价' : '官网售价'}已更新 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}${(result.warnings || []).length ? '；' + result.warnings.join('；') : ''}` }));
+      setRefreshMessages(prev => ({ ...prev, [id]: `${result.data_source === 'seller_api' ? '本店报价' : '官网售价'}已更新 · ${beijingClock()}${(result.warnings || []).length ? '；' + result.warnings.join('；') : ''}` }));
       refreshTimers.current[id] = window.setTimeout(() => setRefreshMessages(prev => prev[id]?.includes('已更新') ? { ...prev, [id]: '' } : prev), 6000);
       setProducts((prev) =>
         prev.map((p) => {

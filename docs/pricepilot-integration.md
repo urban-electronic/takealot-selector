@@ -1299,3 +1299,41 @@ WorkBuddy；基线 `ecc9db7d34`。
 - 复现：断言 title 不许再出现「批量录入中国官网价」、必须写「批量录入国内原价 / 到手价」。
   改回旧文案即转红（已还原）。
 - 复测：同上。
+
+### MARKET-ZERO-01 参考价「0」不再被当成价格（2026-10-22）
+
+WorkBuddy；基线 `5aa7464abf`。
+
+- 症状：同一个字段在不同地方对 0 的判据相反。`/api/market-prices/status` 用
+  `entry.get('price')` 的真值判「填没填」、自动同步的 `_to_price()` 丢弃 `<= 0`、
+  批量录入的 `buildMarketBatch()` 把 0 判无效；但 `toPrice()` 收 `>= 0`、详情页输入框
+  `min="0"` 且只在 `value < 0` 时才清空。于是在详情页敲 0 会存进一条 `price: 0`：
+  列表显示「¥0」「R0」、悬停卡也算得出「R0」，覆盖率却把这行算成「未填」；
+  批量面板读到草稿 `0` 与库里 `0` 相同，判「没有改动」，这一格再也清不掉。
+- 改动：`toPrice()` 只认正数（0 与负数、null、空串同档），解析和序列化都丢掉 0；
+  详情页价格框改成「原文草稿 + 行内提示」——`setMarketPrice()` 遇 0/负数/非数字
+  先把草稿里该市场删掉（保存时不会带上），原文留在框里并提示「价格需大于 0，不会保存」。
+  原文草稿是必需的：受控输入直接绑 `entry.price` 时，敲 `0.5` 的第一个字符 `0` 会
+  把草稿清掉、输入框随之清空，最后存进去的是 5——那比原来的 bug 更难发现。
+- 复现：`test-market-prices.cjs` 的空值组加 `0` 与 `'0'`，另加 3 条 payload 断言
+  （0 不许写进 payload、同批次的正常价格照常写入、只剩 0 时整段返回空串）。
+  把 `toPrice()` 改回 `>= 0` 即报「price=0 必须当成没数据，不能渲染成 ¥0」（已还原）。
+- 复测：`test-market-prices.cjs` 119 → 124 条断言；tsc（`noUnusedLocals`）通过；
+  全量 selfcheck 33 步全绿。
+
+### TIME-GUARD-01 时区守卫真的开始查 `toLocale*` 了（2026-10-22）
+
+WorkBuddy；基线 `5aa7464abf`。
+
+- 症状：`scripts/test-datetime.cjs` 头注释写着「不许再出现 `toLocaleString('zh-CN')`
+  但不给 `timeZone` 的写法」，但守卫只查 `getFullYear()/getMonth()/getDate()`，
+  于是 `ProductList` 的「已更新 · HH:MM」用 `new Date().toLocaleTimeString('zh-CN', …)`
+  取**运行机器的时区**照样能过。开发机是 UTC+8 看不出来，换到 UTC 机器上同一个刷新动作
+  写「已更新 · 03:00」而北京时间是 11:00，与全站其它时间列对不上，会被当成「刷新记录错乱」。
+- 改动：守卫补一条源码检查——除 `utils/datetime.ts` 自己的 Intl 失败兜底外，`src/` 里每个
+  `toLocale(Date|Time)?String(` 都必须在同一处给出 `timeZone`；同时新增
+  `datetime.beijingClock()`（Asia/Shanghai 的「时:分」），列表页改用它。
+- 复现：把列表页那行改回 `new Date().toLocaleTimeString(...)`，守卫报
+  「时间文案必须显式指定 timeZone（或走 utils/datetime）」并列出该行（已还原）。
+- 复测：`test-datetime.cjs` 30 → 36 条断言（含 `beijingClock` 的跨日换算、naive 串、
+  空值与坏值）；tsc 通过；全量 selfcheck 33 步全绿。

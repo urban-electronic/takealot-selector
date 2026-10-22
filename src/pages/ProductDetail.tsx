@@ -33,6 +33,10 @@ export default function ProductDetail() {
   const [editData, setEditData] = useState<Partial<Product>>({});
   // 多市场参考价：草稿态便于逐格编辑，保存时序列化回 editData.market_prices
   const [mpDraft, setMpDraft] = useState<MarketPrices>({});
+  // 参考价输入框里的**原文**。价格框是受控的，如果直接把 `entry.price` 当 value，
+  // 敲「0.5」时第一个字符 `0` 就会被当成价格 0 处理（见 setMarketPrice），
+  // 输入框立刻被清空，最后存进去的是 5。原文留在这里，中间态就不会被吞掉。
+  const [mpText, setMpText] = useState<Partial<Record<MarketCode, string>>>({});
   // 兰特汇率：三个市场各自的本币，折成 R 才能和 Takealot 售价直接比
   const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
   const [copiedSku, setCopiedSku] = useState(false);
@@ -56,6 +60,7 @@ export default function ProductDetail() {
    */
   const resetDraft = (p: Product) => {
     setMpDraft(parseMarketPrices(p.market_prices));
+    setMpText({});
     setEditData({
       product_name: p.product_name || '',
       takealot_url: p.takealot_url || '',
@@ -183,17 +188,38 @@ export default function ProductDetail() {
 
   /** 改一个市场的参考价：清空即删除该市场；写入时自动补币种、来源和日期 */
   const setMarketPrice = (code: MarketCode, raw: string) => {
+    setMpText((prev) => ({ ...prev, [code]: raw }));
     const next: MarketPrices = { ...mpDraft };
-    const value = raw.trim() === '' ? NaN : Number(raw);
-    if (!Number.isFinite(value) || value < 0) {
+    const text = raw.trim();
+    if (text === '') {
       delete next[code];
     } else {
-      // 日期用业务时区、并清掉上一次自动同步留下的 stale/miss —— 两条口径
-      // 都在 manualPriceEntry() 里，与 /api/market-prices/batch 保持一致。
-      next[code] = manualPriceEntry(next[code], code, value);
+      const value = Number(text);
+      if (!Number.isFinite(value) || value <= 0) {
+        // 0 / 负数 / 非数字还不是价格：草稿里先清掉，保存时不会带上这个市场。
+        // 只把原文留在框里并给行内提示——不能一边显示 0、一边把旧价存进去，
+        // 那正是这个功能反复要修的那类「看起来改了、其实没改」。
+        delete next[code];
+      } else {
+        // 日期用业务时区、并清掉上一次自动同步留下的 stale/miss —— 两条口径
+        // 都在 manualPriceEntry() 里，与 /api/market-prices/batch 保持一致。
+        next[code] = manualPriceEntry(next[code], code, value);
+      }
     }
     setMpDraft(next);
     updateField('market_prices', serializeMarketPrices(next));
+  };
+
+  /** 价格框里该显示什么：用户正在敲的原文优先，否则回落到已提交的价格。 */
+  const marketInputValue = (code: MarketCode) =>
+    mpText[code] ?? (mpDraft[code] ? String(mpDraft[code].price) : '');
+
+  /** 框里的值还不是合法价格（非空、但不是大于 0 的有限数）。 */
+  const marketInputInvalid = (code: MarketCode) => {
+    const text = (mpText[code] ?? '').trim();
+    if (text === '') return false;
+    const value = Number(text);
+    return !Number.isFinite(value) || value <= 0;
   };
 
   /** 淘宝均价的样本条数 */
@@ -450,14 +476,21 @@ export default function ProductDetail() {
                   </td>
                   <td style={{ padding: '6px 0', borderTop: '0.5px solid var(--color-border)' }}>
                     {editMode ? (
-                      <input
-                        type="number" step="0.01" min="0"
-                        aria-label={`${MARKET_META[code].label}价格`}
-                        value={entry?.price ?? ''}
-                        onChange={(e) => setMarketPrice(code, e.target.value)}
-                        style={{ width: 110 }}
-                        placeholder={MARKET_META[code].cur}
-                      />
+                      <div>
+                        <input
+                          type="number" step="0.01" min="0.01"
+                          aria-label={`${MARKET_META[code].label}价格`}
+                          value={marketInputValue(code)}
+                          onChange={(e) => setMarketPrice(code, e.target.value)}
+                          style={{ width: 110 }}
+                          placeholder={MARKET_META[code].cur}
+                        />
+                        {marketInputInvalid(code) && (
+                          <div style={{ fontSize: 11.5, color: 'var(--color-danger)' }}>
+                            价格需大于 0，不会保存
+                          </div>
+                        )}
+                      </div>
                     ) : entry ? (
                       <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatMarketPrice(code, entry)}</span>
                     ) : (

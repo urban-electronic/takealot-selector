@@ -133,4 +133,49 @@ check(todayLocal(new Date('2026-10-21T20:00:00Z')) === '2026-10-22',
     'marketPrice 的采集日期必须来自 utils/datetime 的 todayLocal()');
 }
 
+// ---- 7) 全 src 扫一遍：toLocale* 必须显式给 timeZone -------------------------
+// 这个文件的头注释一直写着「不许出现 toLocaleString('zh-CN') 但不给 timeZone」，
+// 但守卫只查了 getFullYear/getMonth/getDate，于是 ProductList 的
+// 「已更新 · HH:MM」用 toLocaleTimeString 取**运行机器的时区**照样能过：
+// 开发机是 UTC+8 看不出来，换到 UTC 机器上同一个动作写 03:00 而北京时间 11:00。
+// 这里把口径补成真正的检查：除 datetime.ts 自己的兜底实现外，每个
+// toLocale(Date|Time)?String 调用都必须在同一处给出 timeZone。
+{
+  const root = path.resolve(__dirname, '../src');
+  const exempt = path.join('utils', 'datetime.ts');
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+      if (path.relative(root, full) === exempt) continue;
+      const lines = fs.readFileSync(full, 'utf8').split('\n')
+        .filter(line => !line.trim().startsWith('//') && !line.trim().startsWith('*'));
+      for (const line of lines) {
+        if (!/\.toLocale(?:Date|Time)?String\(/.test(line)) continue;
+        if (/timeZone\s*:/.test(line)) continue;
+        offenders.push(`${path.relative(root, full)}: ${line.trim()}`);
+      }
+    }
+  };
+  walk(root);
+  check(offenders.length === 0,
+    `时间文案必须显式指定 timeZone（或走 utils/datetime）：${offenders.join(' | ')}`);
+}
+
+// ---- 8) beijingClock：短标签也只按北京时间，不跟随机器时区 --------------------
+{
+  const { beijingClock } = mod.exports;
+  // 2026-10-21T20:30:00Z → 北京时间 04:30（次日）；UTC 机器上直接 toLocale 会写 20:30
+  check(beijingClock(new Date('2026-10-21T20:30:00Z')) === '04:30',
+    `UTC 20:30 的北京时间应为 04:30，实际 ${beijingClock(new Date('2026-10-21T20:30:00Z'))}`);
+  check(beijingClock(new Date('2026-10-21T01:05:00Z')) === '09:05',
+    `UTC 01:05 的北京时间应为 09:05，实际 ${beijingClock(new Date('2026-10-21T01:05:00Z'))}`);
+  check(beijingClock('2026-10-21T20:30:00') === '04:30',
+    'naive 串要当 UTC 再换算（与 parseServerTime 同口径）');
+  check(beijingClock('') === '-', '空值返回占位符，不返回 NaN:NaN');
+  check(beijingClock(null) === '-', '坏值返回占位符');
+}
+
 console.log(`test-datetime: ${checks} checks passed`);

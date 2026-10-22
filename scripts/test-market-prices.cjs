@@ -55,15 +55,26 @@ const check = (value, message) => { assert.ok(value, message); checks++; };
 }
 
 // ---- 空值：没有数据 ≠ 价格 0 ----------------------------------------------
-for (const bad of [null, '', '   ', 'abc', true, false, [], {}]) {
+// 0 也在这一组：参考价不可能是 0（没有商品白送），而 /status 用真值判「填没填」、
+// 自动同步的 _to_price() 丢弃 <=0、批量录入把 0 判无效——三处都不认 0，
+// 只有详情页输入框和这里还收，于是同一个字段会「列表显示 ¥0、覆盖率算未填」。
+for (const bad of [null, '', '   ', 'abc', true, false, [], {}, 0, '0']) {
   const prices = parseMarketPrices(JSON.stringify({ CN: { price: bad, cur: 'CNY' } }));
   check(!prices.CN, `price=${JSON.stringify(bad)} 必须当成没数据，不能渲染成 ¥0`);
 }
 
-// ---- 负数同样不接受（后端 gt=0 的护栏，前端不该先显示一个负数价格） --------
+// ---- 负数同样不接受（参考价只可能是正数） ----------------------------------
 {
   const prices = parseMarketPrices(JSON.stringify({ CN: { price: -1 } }));
   check(!prices.CN, '负数价格应当被丢掉');
+}
+
+// ---- 0 不许被写进 payload：后端会存下来，覆盖率却当成「没填」 ---------------
+{
+  const payload = serializeMarketPrices({ CN: { price: 0, cur: 'CNY' }, TB: { price: 899 } });
+  check(JSON.parse(payload).CN === undefined, '价格为 0 的市场不得写进 payload');
+  check(JSON.parse(payload).TB.price === 899, '同批次的正常价格照常写入');
+  check(serializeMarketPrices({ CN: { price: 0 } }) === '', '只剩 0 时整段返回空串（等于清空该字段）');
 }
 
 // ---- 数字字符串接受（迁移行可能把数字写成字符串） ---------------------------

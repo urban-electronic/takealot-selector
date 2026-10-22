@@ -19,7 +19,8 @@ export interface MarketPriceEntry {
   url?: string;
   /** 到手价的样本条数（同款不同配色/店铺各算一条） */
   n?: number;
-  /** 最近一次自动重读的时间（ISO 8601）；手工条目没有这个字段 */
+  /** 最近一次重读/录入的时间（ISO 8601）。自动同步与 `/batch` 都会写；
+   *  详情页手工录入不写（那里记的是 `at` 业务日期）。 */
   checked_at?: string;
   /** 连续抓取失败次数，成功一次即清零 */
   miss?: number;
@@ -64,18 +65,25 @@ export const MARKET_META: Record<MarketCode, { label: string; short: string; cur
   TB: { label: '国内到手价', short: '到手', cur: 'CNY' },
 };
 
-/** 把「像价格的值」归一成数字；null / 空串 / 布尔 / NaN / 负数一律当没有数据。
+/** 把「像价格的值」归一成数字；null / 空串 / 布尔 / NaN / 负数 / 0 一律当没有数据。
  *
  * 为什么不用 `Number(x)` 直接判：`Number(null)` 和 `Number('')` 都是 0，
  * 于是「这个市场没填」会被渲染成「¥0」——一个看起来像真价格的假价格。
  * 后端写入时有校验，但 /api/migrate 是整行搬运、不过 Pydantic，
  * 桌面版导出的历史行可能带 null 或字符串，所以展示边界要自己守。
+ *
+ * 为什么 0 也算没有数据：参考价不可能是 0（没有商品白送），而系统里
+ * 另外三处早就这么认了——`/api/market-prices/status` 用 `entry.get('price')`
+ * 的真值判「填没填」，自动同步的 `_to_price()` 直接丢弃 `<= 0`，
+ * 批量录入的 `buildMarketBatch()` 也把 `0` 判为无效。只有这里和详情页的
+ * 输入框还收 0，于是同一个字段在列表里显示「¥0」「R0」、在覆盖率里算「未填」，
+ * 批量面板还会因为它和草稿一致而清除不掉。
  */
 function toPrice(raw: unknown): number | null {
-  if (typeof raw === 'number') return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? raw : null;
   if (typeof raw === 'string' && raw.trim() !== '') {
     const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : null;
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
   return null;
 }
