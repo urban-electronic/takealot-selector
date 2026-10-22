@@ -36,7 +36,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX, buildMarketBatch, describeSkipped, manualPriceEntry, symbolFor } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX, buildMarketBatch, describeSkipped, manualPriceEntry, symbolFor, staleNote } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -353,6 +353,26 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
   check(!/title="批量录入中国官网价/.test(list), '「参考价」按钮不许再写「中国官网价」（官网已停摆）');
   check(/title="批量录入国内原价 \/ 到手价/.test(list), '「参考价」按钮按表头口径写「国内原价 / 到手价」');
+}
+
+// ---- 「已过期」标记：一处定义，每个展示面都得挂上 ---------------------------
+// 自动同步连续 3 次没读到时后端打 `stale`，价格保留但已经旧了。这个标记原来在
+// 三个界面上有两种写法、还有一处根本不写：批量录入面板（只读的新加坡价那一列）
+// 把一周前的 S$115 显示得和刚同步成功的一模一样，而用户正是照着它决定国内价填多少。
+// 列表方框又只在**打头那个市场**过期时才整格变淡，于是「SG 新的、到手价过期」看不出来。
+{
+  check(staleNote({ price: 115, stale: true }) === ' · 已过期', '过期条目要带标记');
+  check(staleNote({ price: 115 }) === '', '没过期不带标记');
+  check(staleNote({ price: 115, miss: 2 }) === '', '失败两次还不算过期（阈值由后端 STALE_AFTER 决定）');
+  check(staleNote(undefined) === '', '没有条目时不带标记');
+  check(staleNote(null) === '', 'null 也不带标记');
+
+  const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
+  check(list.includes('staleNote(prices.SG)'), '批量录入面板的新加坡价也要标「已过期」');
+  check(/opacity: prices\[code\]!\.stale \? 0\.6 : 1/.test(list),
+    '列表方框按单个市场弱化，不能只看打头那个（否则非打头市场过期完全看不出来）');
+  check(!/entry\.stale \? ' · 已过期' : ''/.test(list), '悬停卡不许再自己拼一份标记文案');
+  check(!/opacity: leadEntry\.stale \? 0\.6 : 1,/.test(list), '整格弱化的旧写法必须去掉');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);

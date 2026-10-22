@@ -6,7 +6,7 @@ import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAs
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
-import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, staleNote, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { beijingClock } from '../utils/datetime';
 import { skuVariants, variantLabels } from '../utils/variants';
@@ -177,6 +177,17 @@ export default function ProductList() {
   // 参考价批量录入面板。淘宝/中国官网都抓不到，14 个 SKU 一个个点进详情页太慢，
   // 这里一次贴完；SG 是后端自动同步的，面板里只读。
   const [mpPanel, setMpPanel] = useState<{ draft: Record<string, { CN: string; TB: string }> } | null>(null);
+  // 面板声明了 aria-modal="true"，就要像「核对本店资料」那个弹窗一样能被 Esc 关掉、
+  // 且关掉之前背后不滚动。原来只有点「关闭 ×」或点遮罩两条路：键盘用户按 Esc 没反应，
+  // 窄屏上手指划的其实是背后那张产品表（弹窗本身没锁滚动）。
+  useEffect(() => {
+    if (!mpPanel) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setMpPanel(null); };
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', close);
+    return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', close); };
+  }, [mpPanel]);
   const [mpStatus, setMpStatus] = useState<MarketPriceStatus | null>(null);
   const [mpBusy, setMpBusy] = useState(false);
   const [mpMessage, setMpMessage] = useState('');
@@ -927,10 +938,11 @@ export default function ProductList() {
               display: 'inline-flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap',
               padding: '1px 7px', borderRadius: 4,
               border: '0.5px solid var(--color-border)', background: 'var(--surface-muted)',
-              opacity: leadEntry.stale ? 0.6 : 1,
             }}
           >
-            <span style={{ fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+            {/* 弱化按**单个市场**判，不按整格：原来只有打头的那个市场过期时整格才变淡，
+                于是「新加坡价是新的、国内到手价是两周前且已过期」这行看起来完全正常。 */}
+            <span style={{ fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums', opacity: leadEntry.stale ? 0.6 : 1 }}>
               {money(lead)}
             </span>
             {rest.length > 0 && (
@@ -939,7 +951,7 @@ export default function ProductList() {
             {rest.map((code) => (
               <span
                 key={code}
-                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}
+                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums', opacity: prices[code]!.stale ? 0.6 : 1 }}
               >
                 {tag(code)}
                 {money(code)}
@@ -1205,9 +1217,12 @@ export default function ProductList() {
                             </td>
                           );
                         })}
-                        <td style={{ fontVariantNumeric: 'tabular-nums', color: prices.SG ? 'var(--color-text)' : 'var(--color-text-secondary)' }}>
+                        <td style={{ fontVariantNumeric: 'tabular-nums', color: prices.SG ? 'var(--color-text)' : 'var(--color-text-secondary)', opacity: prices.SG?.stale ? 0.6 : 1 }}>
                           {prices.SG ? formatMarketPrice('SG', prices.SG) : '未采集'}
                           {prices.SG?.at ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}> · {prices.SG.at}</span> : null}
+                          {/* 这一列只读，但用户是照着它决定国内价填多少的：旧价不标出来，
+                              就会拿一个两周前的 S$ 去算加价率。 */}
+                          {staleNote(prices.SG) ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>{staleNote(prices.SG)}</span> : null}
                           {prices.SG && formatZarPrice('SG', prices.SG, fx) ? (
                             <div style={{ color: 'var(--color-text-secondary)', fontSize: 11.5 }}>≈ {formatZarPrice('SG', prices.SG, fx)}</div>
                           ) : null}
@@ -1554,7 +1569,7 @@ export default function ProductList() {
                           {entry.src || '手工'}
                           {entry.n ? ` · ${entry.n} 条` : ''}
                           {entry.at ? ` · ${entry.at}` : ''}
-                          {entry.stale ? ' · 已过期' : ''}
+                          {staleNote(entry)}
                         </td>
                       </tr>
                     );

@@ -40,10 +40,13 @@ def _check_market_prices(raw: Optional[str]) -> Optional[str]:
         if not isinstance(item, dict):
             raise ValueError(f"market_prices.{code} 必须是对象")
         price = item.get("price")
+        # 这里只挡「不是数值」，0 放行——`/api/migrate` 整行搬运的历史行里可能有
+        # `price: 0`，而 `POST /api/market-prices/batch` 会把**整个** map 重校验一遍
+        # （写 TB 时连 CN 一起验）。改成 `<= 0` 会让一条历史 0 把无关市场的写入也挡死。
+        # 新写入的 0 由 `market_price_routes.PriceInput` 挡（`gt=0`），那才是入口。
         if isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0:
             raise ValueError(f"market_prices.{code}.price 必须是非负数值")
     return raw
-
 
 class ProductCreate(BaseModel):
     takealot_url: Optional[str] = ""

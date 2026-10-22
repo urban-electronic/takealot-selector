@@ -21,7 +21,9 @@ for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny',
 # 所以这一格比原来的本币写法更宽——列宽就是按这个最坏情况给的。
 PRODUCT['market_prices'] = json.dumps({
     'CN': dict(price=1289, cur='CNY', src='官网', at='2026-10-21'),
-    'SG': dict(price=245.9, cur='SGD', src='官网', at='2026-10-21'),
+    # SG 带 stale：它是唯一由服务端每天重读的市场，也只有它会过期。
+    # 不给这一条时「已过期」那段文案在任何宽度、任何页面上都没被渲染过。
+    'SG': dict(price=245.9, cur='SGD', src='官网自动', at='2026-10-21', miss=3, stale=True),
     'TB': dict(price=899, cur='CNY', src='淘宝均价', n=128, at='2026-10-21'),
 }, ensure_ascii=False)
 STORE = dict(id='default-store', name='自营店铺', platform='Takealot', status='active', owner_name='', sync_method='manual', sync_interval_minutes=60, external_store_ref='', allow_negative_inventory_shipments=False, last_synced_at=None)
@@ -49,6 +51,13 @@ DATA = {
     # 参考价列表要把本币折成兰特，页面一挂载就会读这个接口。漏声明会让整个布局测试
     # 因为「未声明的接口」直接失败，而不是悄悄少测一列。
     '/api/market-prices/fx':{'base':'ZAR','rates':{'SGD':12.8345,'CNY':2.4453},'at':'2026-10-21','src':'open.er-api.com','fetched_at':'2026-10-21T00:02:32+00:00','stale':False,'fallback':False},
+    # 「参考价」批量录入面板一打开就读同步状态。漏声明时它 404、面板里只挂一句
+    # 「读取同步状态失败」，覆盖率与上次同步时间在审计里等于从没出现过。
+    '/api/market-prices/status':dict(store_id='default-store', products=1, products_with_price=1,
+        coverage={'CN':{'filled':1,'stale':0},'SG':{'filled':1,'stale':1},'TB':{'filled':1,'stale':0}},
+        last_sync={'at':'2026-10-21T05:12:33+00:00','updated':1}, interval_hours=24, auto_disabled=False,
+        due=False, auto_markets=['SG'],
+        manual_only={'TB':'淘宝/天猫需登录，不做自动抓取','CN':'中国官网已停摆，需人工录入'}),
     # 设置页会读本店卖家名（调价判断 Buybox 持位的依据），漏声明就会 404 后静默降级。
     '/api/integrations/takealot-seller/identity':{'name':'','source':'','candidates':[]},
     '/api/packing/products':[PACK], '/api/packing/sync-from-products':{'ok':True,'total_products':1,'skipped_no_sku':0,'duplicate_sku':0},
@@ -162,6 +171,24 @@ def main():
                     if bounds['y']<0 or bounds['y']+bounds['height']>height: failures.append('replenishment close button unreachable')
                     page.keyboard.press('Escape')
                     if dialog.count():failures.append('replenishment Escape failed')
+                if path=='/products' and (width,height) in ((1280,720),(390,480),(320,568)):
+                    # 「多市场参考价」批量录入面板：一个 aria-modal 弹窗，四列表头 + 两列输入框 +
+                    # 只读的新加坡价（带「已过期」标记）。它是唯一能一次填十几行的入口，
+                    # 却从来没被任何宽度量过——320px 恰恰是它最容易挤爆的一档。
+                    page.get_by_role('button',name='参考价',exact=True).click()
+                    mp=page.get_by_role('dialog',name='多市场参考价',exact=True)
+                    mp.wait_for()
+                    if mp.locator('.seller-assist-body').evaluate('e=>e.scrollWidth>e.clientWidth+1'):failures.append(f'{width}: market price body overflows')
+                    if width<=480 and not mp.get_by_role('region',name='参考价明细').evaluate('e=>e.scrollWidth>e.clientWidth'):failures.append(f'{width}: market price table lacks local scroll')
+                    bounds=mp.bounding_box()
+                    if bounds['x']<0 or bounds['y']<0 or bounds['x']+bounds['width']>width+1 or bounds['y']+bounds['height']>height+1:failures.append(f'{width}: market price dialog outside viewport')
+                    for control in mp.get_by_role('button').all():
+                        b=control.bounding_box()
+                        if b['x']<0 or b['y']<0 or b['x']+b['width']>width+1 or b['y']+b['height']>height+1:failures.append(f'{width}: market price action clipped')
+                    if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: market price dialog causes page overflow')
+                    # 声明了 aria-modal 就得能用 Esc 关掉（和「核对本店资料」同一个口径）。
+                    page.keyboard.press('Escape')
+                    if mp.count():failures.append(f'{width}: market price Escape failed')
                 if path=='/auto-pricing' and (width,height) in ((1280,720),(390,680),(320,568)):
                     # 8 个次要动作收在默认收起的「更多」面板里：不点开就等于没审计过。
                     # 这条折叠的原始动因就是 320px 会溢出，所以必须在这个宽度上真开一次。

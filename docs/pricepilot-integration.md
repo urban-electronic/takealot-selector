@@ -1337,3 +1337,54 @@ WorkBuddy；基线 `5aa7464abf`。
   「时间文案必须显式指定 timeZone（或走 utils/datetime）」并列出该行（已还原）。
 - 复测：`test-datetime.cjs` 30 → 36 条断言（含 `beijingClock` 的跨日换算、naive 串、
   空值与坏值）；tsc 通过；全量 selfcheck 33 步全绿。
+
+### STALE-MARK-01 「已过期」标记在每个展示面上都挂上了（2026-10-22）
+
+WorkBuddy；基线 `f58ff3521d`。
+
+- 症状：`stale` 是后端在自动同步连续 3 次没读到时打的标（价格保留、但已经是旧的）。
+  这个标记在四个展示面里有两种写法、还有一处**根本不写**：列表悬停卡写「· 已过期」、
+  详情页写「· 已过期（最近一次没读到）」、批量录入面板的新加坡价那一列**一个字都不写**。
+  面板正是用户决定「国内价填多少」的地方——旁边那个 S$115 可能是一周前的旧价，
+  却和刚同步成功的值长得一模一样。
+  列表方框的弱化又只看**打头那个市场**（`leadEntry.stale`）：SG 是新的、国内到手价
+  两周前且已过期时，整格看起来完全正常。
+- 改动：`marketPrice.staleNote(entry)` 收敛成唯一文案（`' · 已过期'`）；悬停卡、批量面板
+  都改用它；列表方框的 `opacity` 从「整格按 lead 判」改成按**单个市场**判；
+  详情页保留长文案（那张表有整列空位）。
+- 复现：删掉批量面板那行 `staleNote(prices.SG)`，`test-market-prices.cjs` 报
+  「批量录入面板的新加坡价也要标「已过期」」（已还原）。
+- 复测：`test-market-prices.cjs` 124 → 133 条断言；tsc 通过；全量 selfcheck 33 步。
+
+### MARKET-WRITE-ZERO-01 新写入的参考价不再收 0（2026-10-22）
+
+WorkBuddy；基线 `f58ff3521d`。
+
+- 症状：MARKET-ZERO-01 让四个**读取**端统一认「>0 才算填了」（`/status` 的真值判断、
+  自动同步的 `_to_price()`、前端 `parseMarketPrices()` 与 `buildMarketBatch()`），
+  但**写入**端还留着 `PriceInput.price` 的 `ge=0`。于是 `POST /api/market-prices/batch`
+  带 `price: 0` 会回 `saved: 1`，库里多一条谁都看不见的条目：列表没有价格、
+  覆盖率算「未填」，下次想清掉还得再猜一次。
+- 改动：`PriceInput.price` 改 `gt=0`（HTTP 侧 422），清空该市场只能发 `price: null`。
+  `_check_market_prices()` 保持放行 0——它是**对历史行的容忍**：`/api/migrate` 整行搬运
+  的旧行可能有 `price: 0`，而 `/batch` 写一个市场时会把整段 map 重校验（写 TB 连 CN 一起验），
+  收紧成 `<= 0` 会让一条历史 0 把无关市场的写入也挡死。这条理由写进了代码注释。
+- 复现：把 `gt=0` 改回 `ge=0`，`test_batch_rejects_non_positive_price[0]` 转红（已还原）。
+- 复测：pytest 498 → 499 passed / 1 skipped；全量 selfcheck 33 步。
+
+### AUDIT-MP-PANEL-01 批量录入弹窗第一次被量（2026-10-22）
+
+WorkBuddy；基线 `f58ff3521d`。
+
+- 症状：「多市场参考价」弹窗（`aria-modal="true"`，四列表头 + 两列输入框 + 只读的
+  新加坡价）是唯一能一次填十几行的入口，却从来没被任何宽度量过——它连 fixture 里需要的
+  `/api/market-prices/status` 都没声明，真去点开只会 404 后挂一句「读取同步状态失败」。
+  它也不响应 Esc、不锁背后滚动（同页的「核对本店资料」弹窗两条都有）。
+- 改动：`test-responsive-layout.py` 在 1280 / 390 / 320 三档点开它，量弹窗是否越界、
+  body 是否溢出、窄屏表格是否自己有滚动条、Esc 能否关闭；`DATA` 补
+  `/api/market-prices/status`；`PRODUCT` 的 SG 条目带 `stale`（否则「已过期」文案
+  在任何宽度、任何页面上都不会被渲染）。`ProductList` 的 `mpPanel` 补 Esc 关闭 + 锁定
+  背后滚动，与同页弹窗同一口径。
+- 复现：给弹窗强行加 `minWidth:2000`，审计在 1280/390/320 报 13 条
+  「market price dialog outside viewport / table lacks local scroll / action clipped」（已还原）。
+- 复测：版式审计 99 个面 0 失败、`undeclared_api` 为空；全量 selfcheck 33 步。
