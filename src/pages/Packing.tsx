@@ -139,6 +139,10 @@ type PackingDraft = {
   // 做单那天。装箱单的日期默认取它，而不是「点导出那天」——
   // 今天做的单明天导出，装箱单和单号 PK-YYYYMMDD 都会变成明天，对不上货。
   createdOn: string;
+  // 日期有没有被人手改过。只有手改过才认 exportForm.date：
+  // 老草稿里那个日期是「上一次点导出那天」留下的，直接沿用会让今天做的单
+  // 印成上个月的日子（2026-10-23 实测，草稿里躺着 2026-10-15）。
+  dateTouched: boolean;
 };
 const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -158,9 +162,11 @@ function readPackingDraft(): PackingDraft {
       // 老草稿没有这个字段：只能按「今天」起算，之后一直跟着草稿走。
       createdOn: typeof parsed.createdOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.createdOn)
         ? parsed.createdOn : todayStr(),
+      // 老草稿一律当作「没手改过」—— 它存的日期是上一轮导出的残留，不能信。
+      dateTouched: parsed.dateTouched === true,
     };
   } catch {
-    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], cartonsManual: false, inboundNo: '', createdOn: todayStr() };
+    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], cartonsManual: false, inboundNo: '', createdOn: todayStr(), dateTouched: false };
   }
 }
 
@@ -217,7 +223,10 @@ export default function Packing() {
     const saved = savedDraft.exportForm;
     return {
       ...saved,
-      date: saved.date || savedDraft.createdOn || todayStr(),
+      // 只有「手改过日期」才认草稿里那个日期；否则一律回到做单那天。
+      // 老草稿里的 date 是上次导出留下的（实测躺着一个半月前的日期），
+      // 直接沿用会把今天做的单印成旧日期。
+      date: savedDraft.dateTouched && saved.date ? saved.date : (savedDraft.createdOn || todayStr()),
       mark: saved.mark || savedDraft.inboundNo || '',
       shipping: saved.shipping || '',
       address: saved.address || '',
@@ -225,6 +234,7 @@ export default function Packing() {
     };
   });
   const [createdOn, setCreatedOn] = useState(savedDraft.createdOn);
+  const [dateTouched, setDateTouched] = useState(savedDraft.dateTouched);
   const [draftKey, setDraftKey] = useState(savedDraft.draftKey);
   const [exporting, setExporting] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -351,8 +361,9 @@ export default function Packing() {
       cartonsManual,
       inboundNo,
       createdOn,
+      dateTouched,
     }));
-  }, [selected, lines, exportForm, draftKey, cartons, cartonsManual, inboundNo, createdOn]);
+  }, [selected, lines, exportForm, draftKey, cartons, cartonsManual, inboundNo, createdOn, dateTouched]);
 
   // 老草稿恢复后常见的一种坏状态：逐箱清单里明明有箱子，勾选却丢了 ——
   // 于是下拉全空、导出还会被判「箱里有不在本单的产品」。
@@ -876,7 +887,9 @@ export default function Packing() {
       setCartonsManual(false);
       setDraftKey(newDraftKey());
       // 下一票是新做的单，做单日期要跟着归零，否则会沿用上一票的日期。
+      // dateTouched 也要清掉：上一票手改的日期不该继承给下一票。
       setCreatedOn(todayStr());
+      setDateTouched(false);
       setExportForm(prev => ({ ...prev, date: todayStr() }));
       setImportMissing([]);
       localStorage.removeItem(getStoreStorageKey(PACKING_DRAFT_KEY));
@@ -1445,7 +1458,7 @@ export default function Packing() {
         <div className="packing-export-grid">
           <div>
             <label>日期</label>
-            <input type="date" value={exportForm.date} onChange={e => setExportForm(prev => ({ ...prev, date: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
+            <input type="date" value={exportForm.date} onChange={e => { setDateTouched(true); setExportForm(prev => ({ ...prev, date: e.target.value })); }} style={{ width: '100%', boxSizing: 'border-box' }} />
             <small className="packing-field-hint">默认做单那天（{createdOn}），可改</small>
           </div>
           <div>
