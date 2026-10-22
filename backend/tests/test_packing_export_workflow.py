@@ -258,6 +258,30 @@ def test_packing_list_without_cartons_keeps_sku_aggregate(tmp_path):
     assert read('E4') == '10'
 
 
+def test_mark_falls_back_to_inbound_no_then_kpl_dj(db):
+    """唛头留空就用 OMS 入库单号，都没有才退回 KPLDJ。
+
+    装箱单模板里「客户唛头」（B2）和 A 列「箱唛」是同一套编号：用户只填一次
+    入库单号，两处就该自动一致，不用记着再抄一遍。手填的唛头优先级最高。
+    """
+    seen = []
+
+    def stub(items, date, mark, shipping, address, output, boxes=None):
+        seen.append(mark)
+        output.write_bytes(b'packing-workbook')
+
+    def payload(draft, **extra):
+        return routes.ExportIn(date='2026-10-15', draft_key=draft, shipping='海运',
+                               items=[routes.ExportLine(sku='sku-a', cartons='1', count='10')], **extra)
+
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=stub):
+        assert routes.export_excel(payload('m-inbound', inbound_no='INH1501522'), db, 'default-store').status_code == 200
+        assert routes.export_excel(payload('m-none'), db, 'default-store').status_code == 200
+        assert routes.export_excel(payload('m-manual', inbound_no='INH1501522', mark='CK-01'), db, 'default-store').status_code == 200
+    assert seen == ['INH1501522', 'KPLDJ', 'CK-01']
+    assert [s.mark for s in db.query(Shipment).order_by(Shipment.draft_key).all()] == ['INH1501522', 'CK-01', 'KPLDJ']
+
+
 def test_reexport_updates_metadata_and_date_queries_atomically(db):
     """File, shipment header and carton query must describe the same shipment."""
     from models import ShipmentCarton
@@ -303,6 +327,28 @@ def test_failed_reexport_keeps_previous_header_and_cartons(db):
     with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=ValueError('fixture export failure')):
         assert routes.export_excel(revised, db, 'default-store').status_code == 400
     shipment = db.query(Shipment).one()
-    assert (shipment.shipment_date, shipment.shipping, shipment.mark) == ('2026-10-15', '海', original.mark)
+    assert (shipment.shipment_date, shipment.shipping, shipment.mark) == ('2026-10-15', '海', 'KPLDJ')
     assert routes.list_cartons(date='2026-10-15', db=db, store_id='default-store')['total_cartons'] == 1
     assert inventory_balance_for_sku(db, 'sku-a', 'default-store') == 3
+
+
+@pytest.mark.parametrize('extra,expected_mark', [
+    ({}, 'KPLDJ'), ({'inbound_no': 'INH1501522'}, 'INH1501522'),
+    ({'inbound_no': 'INH1501522', 'mark': ' MANUAL '}, 'MANUAL'),
+])
+def test_reexport_uses_effective_mark_for_snapshot_and_confirmed_retry(db, extra, expected_mark):
+    seen = []
+
+    def generate(items, date, mark, shipping, address, output, boxes=None):
+        seen.append(mark)
+        output.write_bytes(b'fixture-workbook')
+
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=generate):
+        for record in (False, True):
+            data = payload(f'effective-mark-{record}', record=record, sku='sku-b', count='5').model_copy(update=extra)
+            assert routes.export_excel(data, db, 'default-store').status_code == 200
+            assert routes.export_excel(data, db, 'default-store').status_code == 200
+            shipment = db.query(Shipment).filter(Shipment.draft_key == data.draft_key).one()
+            assert shipment.mark == expected_mark
+    assert seen == [expected_mark] * 4
+    assert inventory_balance_for_sku(db, 'sku-b', 'default-store') == 20

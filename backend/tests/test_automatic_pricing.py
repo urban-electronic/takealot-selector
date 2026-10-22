@@ -125,19 +125,16 @@ def test_global_emergency_stop_invalidates_pending_patch(monkeypatch):
     assert rule['revision']==2 and '待核验' in rule['last_result']
 
 
-def test_unwinnable_cheapest_does_not_pin_the_whole_sku():
-    """一个抢不起的低价，不能把旁边打得过的竞品也一起废掉。
-
-    300 → 199 是一次降 34%，现在被单次跌幅护栏拦成分步走——但方向必须
-    朝着 200 那个打得过的竞品，而不是对着 80 认输。
-    """
+def test_unaffordable_fastest_still_allows_a_distinct_best_price_target():
+    """最快配送不可达时仍可评估最低价卡位；不能在同一卡位跳过领跑者。"""
     rule = {**RULE, 'min_price': 100, 'max_price': 500, 'reference_price': 300}
-    snapshot = {'buyboxPrice': 80, 'offers': [offer(80), offer(200)]}
-    assert pricing.decide(300, 5, rule, snapshot)[0] == 255      # 一次降 15%
-    assert pricing.decide(255, 5, rule, snapshot)[0] == 217      # 继续
-    assert pricing.decide(217, 5, rule, snapshot)[0] == 199      # 到位
+    snapshot = {'buyboxPrice': 80, 'offers': [offer(80), offer(200, 'best_price')]}
+    assert pricing.decide(300, 5, rule, snapshot)[0] == 255
+    assert pricing.decide(255, 5, rule, snapshot)[0] == 217
+    assert pricing.decide(217, 5, rule, snapshot)[0] == 199
     plan = pricing.plan(300, 5, rule, snapshot)
-    assert plan['risk'] == 'high' and plan['cheapest'] == 80   # 但如实标记风险
+    assert plan['risk'] == 'high' and plan['cheapest'] == 80
+    assert plan['target_lane'] == 'best_price'
 
 
 def test_hold_regime_raises_toward_next_competitor_not_past_ceiling():
