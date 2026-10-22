@@ -19,7 +19,8 @@
   6) 导出后提示条必须给出「导出 OMS 入仓模板」直达入口，并默认勾上刚导出的那一票；
   7) 逐箱清单的产品下拉永远列得出候选（草稿恢复后勾选丢了也不会变成空下拉）；
   8) 唛头跟着入库单号走 —— 模板里「客户唛头」和 A 列「箱唛」是同一套编号；
-  9) 装箱单日期默认「做单那天」，不是点导出那天。
+  9) 装箱单日期默认「做单那天」，不是点导出那天；老草稿里残留的旧日期不算数，
+     只有**手改过**的日期才跟着草稿走。
 
 窄屏 320px 不许横向溢出（逐箱面板有「箱号/备注/第几箱」一行）。
 """
@@ -100,8 +101,13 @@ def carton_records(sku=''):
 def run():
     failures = []
     page_errors = []
+    # 断言条数自己数，别再手写一个数字 —— 加了两条却忘了改，报告就成了假的。
+    # 名字不能叫 checked：下面「入仓模板弹层」那段有个同名 Locator。
+    assertions = 0
 
     def check(ok, message):
+        nonlocal assertions
+        assertions += 1
         if not ok:
             failures.append(message)
 
@@ -304,9 +310,33 @@ def run():
         mark_value = page.locator('.packing-export-grid input[type=text]').nth(0).input_value()
         check(mark_value == 'INH1501522', f'草稿只有入库单号时唛头应补成它，实得 {mark_value!r}')
 
+        # 9b) 老草稿里躺着的 exportForm.date 是「上一轮点导出那天」的残留，不能沿用。
+        #     2026-10-23 线上实测：草稿里是 2026-10-15，而做单那天是 10-23，
+        #     照搬就会把今天做的单印成上个月的日子。没手改过（dateTouched 缺失）就一律回到做单那天。
+        page.evaluate("""() => {
+          const key = Object.keys(localStorage).find(k => k.includes('packingDraftV1')) || 'packingDraftV1';
+          localStorage.setItem(key, JSON.stringify({
+            selected: [], lines: {}, exportForm: { date: '2026-09-30' }, draftKey: 'draft-old',
+            cartons: [], cartonsManual: false, inboundNo: '', createdOn: '2026-10-01',
+          }));
+        }""")
+        page.reload(wait_until='networkidle')
+        page.wait_for_timeout(700)
+        stale = page.locator('.packing-export-grid input[type=date]').input_value()
+        check(stale == '2026-10-01',
+              f'没手改过日期时不能用草稿里的旧日期，应回落到做单那天 2026-10-01，实得 {stale!r}')
+
+        # 9c) 手改过就要认 —— 否则「今天做的单但要补成昨天的日期」永远改不动。
+        page.locator('.packing-export-grid input[type=date]').fill('2026-10-02')
+        page.wait_for_timeout(500)
+        page.reload(wait_until='networkidle')
+        page.wait_for_timeout(700)
+        kept = page.locator('.packing-export-grid input[type=date]').input_value()
+        check(kept == '2026-10-02', f'手改过的日期刷新后要保持 2026-10-02，实得 {kept!r}')
+
         browser.close()
 
-    report = {'checked': 9, 'failures': failures, 'page_errors': page_errors}
+    report = {'checked': assertions, 'failures': failures, 'page_errors': page_errors}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return failures, page_errors
 
