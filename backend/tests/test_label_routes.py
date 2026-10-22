@@ -9,10 +9,11 @@
 import io
 import zipfile
 
-import pymupdf
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from tests.pdfmeta import page_count, page_sizes
 
 from api.product_routes import LabelsRequest, download_labels
 from database import Base
@@ -43,9 +44,8 @@ def _count(resp):
 
 
 def _page_mm(pdf_bytes):
-    doc = pymupdf.open(stream=pdf_bytes, filetype='pdf')
-    rect = doc[0].rect
-    return round(rect.width / 72 * 25.4, 1), round(rect.height / 72 * 25.4, 1), len(doc)
+    width, height = page_sizes(pdf_bytes)[0]
+    return round(width / 72 * 25.4, 1), round(height / 72 * 25.4, 1), page_count(pdf_bytes)
 
 
 def test_product_id_expands_every_sku(Session):
