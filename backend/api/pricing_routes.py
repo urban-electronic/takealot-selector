@@ -40,11 +40,20 @@ class Rule(BaseModel):
     max_price: Optional[int] = Field(default=None, gt=0, le=1000000)
     strategy: Literal['takealot_buybox', 'follow_lowest'] = 'takealot_buybox'
     lead_amount: int = Field(default=1, ge=1, le=100)
+    # 领先差额按价格缩放的比例（%）。写死 R1 时，R3000 的货只领先 0.03%，
+    # 对手一个 R1 就抹平——这不是竞争，是双方一起替对方做价格发现。
+    # 填 0 退回旧的「永远只领先 lead_amount」。
+    lead_pct: float = Field(default=0.5, ge=0, le=10)
     cooldown_minutes: int = Field(default=10, ge=1, le=1440)
     max_daily_changes: int = Field(default=10, ge=1, le=100)
     # 单次降价上限。涨价这边有步长和累计两道闸，降价原来只有利润底价兜着，
     # 一次读到离谱报价就能把价格砍到地板。默认 15% 只拦事故，不挡正常跟价。
     max_drop_pct: int = Field(default=15, ge=1, le=100)
+    # 价格战熔断：连续跟降 N 次、或累计让利 X% 仍未拿到 Buybox，就停手 H 小时。
+    # 两个条件任一满足即触发；停手期间只观察，持位涨价和缺货试涨照常。
+    war_drop_streak: int = Field(default=4, ge=2, le=50)
+    war_drop_total_pct: int = Field(default=8, ge=1, le=100)
+    war_pause_hours: int = Field(default=6, ge=1, le=168)
     enabled: bool = False
 
 class Item(BaseModel):

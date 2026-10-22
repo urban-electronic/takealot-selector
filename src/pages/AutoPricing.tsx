@@ -464,6 +464,9 @@ export default function AutoPricing() {
                 <span>底价 <b>R {plan.floor??'—'}</b></span>
                 <span>上限 <b>{plan.ceiling==null?'不限':`R ${plan.ceiling}`}</b></span>
                 <span>对手最低 <b>{plan.cheapest==null?'无现货':`R ${plan.cheapest}`}</b></span>
+                {plan.leader_leadtime!=null&&<span>对手时效 <b>{plan.leader_leadtime===0?'当天':`${plan.leader_leadtime} 天`}</b></span>}
+                {plan.lead_amount!=null&&<span>领先差额 <b>R {plan.lead_amount}</b></span>}
+                {plan.war&&<span className="decision-regime is-blind">{plan.war==='open'?'价格战熔断':'熔断观察中'}</span>}
                 {plan.pressure&&plan.pressure!=='unknown'&&<span>库存 <b>{PRESSURE[plan.pressure]||plan.pressure}{plan.cover_days!=null?` · 约 ${Math.round(plan.cover_days)} 天`:''}</b></span>}
                 {plan.outliers>0&&<span>剔除异常报价 <b>{plan.outliers} 个</b></span>}
                 {quota&&<span>今日改价 <b className={quota.used>=quota.cap?'text-warning':''}>{quota.used}/{quota.cap}</b>{quota.used>=quota.cap?' 已用满，明天再动':''}</span>}

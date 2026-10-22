@@ -3,6 +3,7 @@
 import asyncio, math, random, re, time
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 def log(msg): pass
 
@@ -147,6 +148,70 @@ def map_card_stock(text: str | None) -> str:
     if "delivery" in t or "deliver" in t:
         return "in_stock"
     return "out_of_stock"
+
+_MONTHS = {m: i for i, m in enumerate(
+    ('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'), start=1)}
+
+
+def _days_until(day: int, month: str) -> int | None:
+    """「9 月 16 日」是几天之后。跨年（12 月看 1 月）按明年算。"""
+    m = _MONTHS.get((month or '')[:3].lower())
+    if not m:
+        return None
+    today = datetime.now(ZoneInfo('Africa/Johannesburg')).date()
+    try:
+        target = today.replace(month=m, day=day)
+    except ValueError:
+        return None
+    if target < today:
+        try:
+            target = target.replace(year=today.year + 1)
+        except ValueError:
+            return None
+    return max(0, (target - today).days)
+
+
+def parse_leadtime(text: str | None) -> int | None:
+    """从配送文案里读出「几天到」。读不出来就返回 None，不猜。
+
+    这是唯一能拿到的时效证据：卡片上的配送承诺。之前 leadtimeDays 在
+    三个报价类型上全是 None，于是「时效位」和「价格位」在引擎眼里毫无区别
+    ——它会在最快配送卡位上靠降价去抢一个由配送速度决定的展示位。
+
+    只解析明确的送达承诺，区间以截止日为代表值（"2-4 days" → 4）。
+    发货时长、工作日不等于自然日送达天数，未知时保留原文、不推断。
+    """
+    if not text:
+        return None
+    # Dispatch promises and working-day durations cannot be compared with calendar
+    # arrival days without a dispatch date and the destination holiday calendar.
+    arrival = re.search(r'\b(?:get it|delivery|delivered|delivers)\b(?:\s+(?:in|on|by|from|between))?\s+([^.;\n]+)', text.lower())
+    if not arrival:
+        return None
+    t = re.split(r'\bships?\b', arrival.group(1), maxsplit=1)[0]
+    if re.search(r'\b(?:working|business)\s+days?\b', t):
+        return None
+    if 'today' in t:
+        return 0
+    if 'tomorrow' in t:
+        return 1
+    # "delivery in 2-4 days" / "delivers in 3 - 5 working days"
+    m = re.search(r'^(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*(?:working\s+)?days', t)
+    if m:
+        return int(m.group(2))
+    m = re.search(r'^(\d{1,2})\s*(?:working\s+)?days', t)
+    if m:
+        return int(m.group(1))
+    # "delivery 11 sep - 16 sep" / "delivered 11 sep to 16 sep"
+    m = re.search(r'(\d{1,2})\s+([a-z]{3})[a-z]*\s*(?:-|–|to)\s*(\d{1,2})\s+([a-z]{3})', t)
+    if m:
+        return _days_until(int(m.group(3)), m.group(4))
+    # "delivery 11 sep"
+    m = re.search(r'(\d{1,2})\s+([a-z]{3})[a-z]*', t)
+    if m:
+        return _days_until(int(m.group(1)), m.group(2))
+    return None
+
 
 SELECTORS = {
     # buybox 卡**只使用主选择器，不做自动降级**：
@@ -705,6 +770,9 @@ async def scrape_product(page, item: dict) -> dict:
                             "isToday": "get it today" in txt,
                             "isFastest": "fastest delivery" in txt,
                             "isBestPrice": "best price" in txt,
+                            # 卡片上的配送承诺就是时效证据。采在这里，而不是等
+                            # 后端再想办法——后端拿不到这段文案。
+                            "leadtime": parse_leadtime(txt),
                         })
                 except Exception:
                     continue
@@ -731,6 +799,7 @@ async def scrape_product(page, item: dict) -> dict:
                     "deliveryLabel": c["txt"][:120],
                     "isFastest": c.get("isFastest"),
                     "isBestPrice": c.get("isBestPrice"),
+                    "leadtimeDays": c.get("leadtime"),
                 }
 
             fastest_c = _pick("fastest")
@@ -751,6 +820,11 @@ async def scrape_product(page, item: dict) -> dict:
                 "buybox": buybox,
                 "fastest": _card_info(fastest_c),
                 "best_price": _card_info(best_c),
+                # Buybox 主卡自己的时效。价格相等时可能匹配到多张卡，取最短的那个
+                # ——主卡是「最低价现货」，同价里客户会挑最快的。
+                "buyboxLeadtime": min((c["leadtime"] for c in cards
+                                       if abs(c["price"] - buybox) < 0.01 and c.get("leadtime") is not None),
+                                      default=None),
                 "cards": cards,
             }
 
@@ -860,6 +934,8 @@ async def scrape_product(page, item: dict) -> dict:
         result["hasOtherSellers"] = has_other_sellers
         result["buyboxSeller"] = buybox_seller
         result["buyboxType"] = "buybox"
+        buybox_leadtime = stable_round.get("buyboxLeadtime") if stable_round else None
+        result["buyboxLeadtime"] = buybox_leadtime
         if buybox_price is not None:
             result["offers"].append({
                 "seller": buybox_seller or "buybox",
@@ -868,7 +944,7 @@ async def scrape_product(page, item: dict) -> dict:
                 "offerType": "buybox",
                 "isMine": is_mine,
                 "deliveryLabel": stock_text,
-                "leadtimeDays": None,
+                "leadtimeDays": buybox_leadtime,
             })
 
         # 双卡明细上报（offerType=fastest / best_price）：供后端仲裁 holding 与引擎对标
@@ -884,7 +960,7 @@ async def scrape_product(page, item: dict) -> dict:
                 "offerType": "fastest",
                 "isMine": my_price is not None and abs(fastest_info["price"] - my_price) < 0.01,
                 "deliveryLabel": fastest_info["deliveryLabel"],
-                "leadtimeDays": None,
+                "leadtimeDays": fastest_info.get("leadtimeDays"),
             })
         if best_info is not None:
             result["offers"].append({
@@ -894,7 +970,7 @@ async def scrape_product(page, item: dict) -> dict:
                 "offerType": "best_price",
                 "isMine": my_price is not None and abs(best_info["price"] - my_price) < 0.01,
                 "deliveryLabel": best_info["deliveryLabel"],
-                "leadtimeDays": None,
+                "leadtimeDays": best_info.get("leadtimeDays"),
             })
 
         # Other Sellers 竞品（页面存在多个卖家时抓取）

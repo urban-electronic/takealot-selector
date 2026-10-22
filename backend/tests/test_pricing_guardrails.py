@@ -84,7 +84,9 @@ def test_drop_cap_is_configurable():
     snap = {'offers': [offer(1200)]}
     common = dict(velocity=0.5, min_price=800, max_price=5000, reference_price=2000)
     assert plan(2000, 50, snap, **common)['target'] == 1700
-    assert plan(2000, 50, snap, max_drop_pct=50, **common)['target'] == 1199
+    # 放宽护栏后直接贴到竞品下方。R2000 的货领先差额是 0.5% = R10（不再是固定的
+    # R1）——R1 在 R2000 上只有 0.05%，对手一个 R1 就抹平，等于没领先。
+    assert plan(2000, 50, snap, max_drop_pct=50, **common)['target'] == 1190
 
 
 @pytest.mark.parametrize('cap,expected', [(5, 190), (15, 170), (50, 149)])
@@ -98,8 +100,22 @@ def test_drop_cap_never_goes_below_the_floor():
     """护栏价和利润底价取更严的那个，两个都得守。"""
     p = plan(1000, 50, {'offers': [offer(910)]},
              velocity=0.5, min_price=900, max_price=5000, reference_price=1000, max_drop_pct=50)
-    assert p['target'] == 909                       # 比竞品低 1 元，护栏 500 和底价 900 都不生效
+    # 贴到竞品下方 R5（1000 的 0.5%），护栏 500 和底价 900 都不生效。
+    assert p['target'] == 905
     assert p['target'] >= p['floor']
+
+
+def test_lead_amount_scales_with_price():
+    """R150 和 R3000 不能都只领先 R1：后者等于没领先。"""
+    def lead(price, **rule):
+        return pricing.plan(price, 50, {**BASE, **rule},
+                            {'offers': [offer(price)]})['lead_amount']
+    assert lead(150) == 1          # 0.75 → 1，小额商品保持 R1
+    assert lead(1000) == 5
+    assert lead(3000) == 15        # 固定 R1 时这里是 1
+    assert lead(3000, lead_pct=0) == 1        # 显式关掉缩放 = 旧行为
+    assert lead(3000, lead_amount=8) == 15    # lead_amount 是下限，不封顶
+    assert lead(200000) == pricing.LEAD_CAP   # 大额商品不会让到 R1000
 
 
 # ── 报价离群校验 ────────────────────────────────────────────────────────────
