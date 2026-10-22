@@ -16,7 +16,10 @@
      第 6 行起会另起一页，而那一页没有箱号、没有条码，贴到箱上认不出是哪箱；
   5) 事后查箱：按日期查得到当天全部箱，按 SKU 反查只列装了它的箱，
      但「共 N 箱」仍是整票总数；
-  6) 导出后提示条必须给出「导出 OMS 入仓模板」直达入口，并默认勾上刚导出的那一票。
+  6) 导出后提示条必须给出「导出 OMS 入仓模板」直达入口，并默认勾上刚导出的那一票；
+  7) 逐箱清单的产品下拉永远列得出候选（草稿恢复后勾选丢了也不会变成空下拉）；
+  8) 唛头跟着入库单号走 —— 模板里「客户唛头」和 A 列「箱唛」是同一套编号；
+  9) 装箱单日期默认「做单那天」，不是点导出那天。
 
 窄屏 320px 不许横向溢出（逐箱面板有「箱号/备注/第几箱」一行）。
 """
@@ -168,6 +171,10 @@ def run():
         check(box_nos2 == want2, f'填入库单号后箱号应变成 {want2}，实得 {box_nos2}')
         hint = page.locator('.packing-carton-inbound-hint').inner_text()
         check('INH1501522-001' in hint, f'提示要显示箱唛号范围，实得 {hint!r}')
+        # 唛头必须跟着入库单号走：模板里「客户唛头」和 A 列「箱唛」是同一套编号，
+        # 只填一次入库单号，两处就该自动一致。
+        mark_value = page.locator('.packing-export-grid input[type=text]').nth(0).input_value()
+        check(mark_value == 'INH1501522', f'唛头应自动同入库单号，实得 {mark_value!r}')
 
         # 3) 混装：先「手动调整」接管清单，再往第 1 箱多塞一个 SKU ×5。
         #    这时不该再弹「合计对不上」—— 数量以逐箱清单为准，「已选产品」那行跟着汇总。
@@ -176,6 +183,10 @@ def run():
         cartons.nth(0).get_by_role('button', name='这箱再加一个产品').click()
         page.wait_for_timeout(300)
         line = cartons.nth(0).locator('.packing-carton-line').nth(1)
+        # 空行必须列得出候选：下拉只列「已勾选产品」时，草稿恢复后勾选一丢
+        # 就是个空下拉，点开什么都没有，混装根本加不进来。
+        check(line.locator('select option').count() > 1,
+              f'逐箱清单的产品下拉不能是空的，实得 {line.locator("select option").count()} 项')
         line.locator('select').select_option('9902348621873')
         line.locator('input[type=number]').fill('5')
         page.wait_for_timeout(400)
@@ -254,6 +265,9 @@ def run():
         second.locator('input[type=number]').nth(0).fill('3')
         second.locator('input[type=number]').nth(1).fill('5')
         page.wait_for_timeout(200)
+        # 运输方式现在是必选项（模板 G2 是「头程（空/海）」），不选不许导出 ——
+        # 头程印错一行，货代就按错的渠道走。
+        page.locator('.packing-export-grid select').select_option('海运')
         page.locator('.packing-export-btn').first.click()
         page.wait_for_timeout(1500)
         success = page.locator('.alert-success')
@@ -271,9 +285,28 @@ def run():
                 check(checked.count() == 1, f'入仓模板弹层应默认勾上刚导出的那一票，实得 {checked.count()} 个勾选')
                 check(page.get_by_text('PK-20261022-001').count() >= 1, '弹层里应能看到刚导出的装箱单号')
 
+        # 9) 装箱单日期 = **做单那天**，不是点导出那天。
+        #    模拟「10-01 做的单、今天才导出」：草稿里只有 createdOn，没有 exportForm.date。
+        #    同一个草稿里只填了入库单号，唛头也要跟着它 —— 模板里两处是同一套编号。
+        page.evaluate("""() => {
+          // 草稿键是 `packingDraftV1:<店铺ID>`，必须改到同一把键上；
+          // 写到裸键上会被「已存在的店铺键」盖过去，等于没写。
+          const key = Object.keys(localStorage).find(k => k.includes('packingDraftV1')) || 'packingDraftV1';
+          localStorage.setItem(key, JSON.stringify({
+            selected: [], lines: {}, exportForm: {}, draftKey: 'draft-old',
+            cartons: [], cartonsManual: false, inboundNo: 'INH1501522', createdOn: '2026-10-01',
+          }));
+        }""")
+        page.reload(wait_until='networkidle')
+        page.wait_for_timeout(700)
+        date_value = page.locator('.packing-export-grid input[type=date]').input_value()
+        check(date_value == '2026-10-01', f'日期应默认做单那天 2026-10-01，实得 {date_value!r}')
+        mark_value = page.locator('.packing-export-grid input[type=text]').nth(0).input_value()
+        check(mark_value == 'INH1501522', f'草稿只有入库单号时唛头应补成它，实得 {mark_value!r}')
+
         browser.close()
 
-    report = {'checked': 8, 'failures': failures, 'page_errors': page_errors}
+    report = {'checked': 9, 'failures': failures, 'page_errors': page_errors}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return failures, page_errors
 

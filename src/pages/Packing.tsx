@@ -136,6 +136,9 @@ type PackingDraft = {
   // OMS（鲲鹏/JF WMS）的入库单号。箱唛号 = 入库单号 + '-' + 3 位箱序，
   // 与 OMS「入库单管理」里生成的箱唛号一致，两张纸才能贴在同一个箱子上。
   inboundNo: string;
+  // 做单那天。装箱单的日期默认取它，而不是「点导出那天」——
+  // 今天做的单明天导出，装箱单和单号 PK-YYYYMMDD 都会变成明天，对不上货。
+  createdOn: string;
 };
 const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -152,9 +155,12 @@ function readPackingDraft(): PackingDraft {
       // 老草稿没有这个字段：手里已经有逐箱记录，说明是手工录的，按手工模式接着用。
       cartonsManual: typeof parsed.cartonsManual === 'boolean' ? parsed.cartonsManual : savedCartons.length > 0,
       inboundNo: typeof parsed.inboundNo === 'string' ? parsed.inboundNo : '',
+      // 老草稿没有这个字段：只能按「今天」起算，之后一直跟着草稿走。
+      createdOn: typeof parsed.createdOn === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.createdOn)
+        ? parsed.createdOn : todayStr(),
     };
   } catch {
-    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], cartonsManual: false, inboundNo: '' };
+    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], cartonsManual: false, inboundNo: '', createdOn: todayStr() };
   }
 }
 
@@ -204,7 +210,21 @@ export default function Packing() {
   const [cartonQueryError, setCartonQueryError] = useState('');
 
   // 导出设置
-  const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm, record_shipment: false });
+  // 日期默认「做单那天」（草稿建立时定下），不是「点导出那天」：今天做的单明天导出，
+  // 装箱单文件名和单号 PK-YYYYMMDD-001 都会变成明天，跟实际装箱日期对不上。
+  // 唛头默认跟 OMS 入库单号一致，两张纸贴在同一个箱子上才不会互相矛盾。
+  const [exportForm, setExportForm] = useState<PackingExportForm>(() => {
+    const saved = savedDraft.exportForm;
+    return {
+      ...saved,
+      date: saved.date || savedDraft.createdOn || todayStr(),
+      mark: saved.mark || savedDraft.inboundNo || '',
+      shipping: saved.shipping || '',
+      address: saved.address || '',
+      record_shipment: false,
+    };
+  });
+  const [createdOn, setCreatedOn] = useState(savedDraft.createdOn);
   const [draftKey, setDraftKey] = useState(savedDraft.draftKey);
   const [exporting, setExporting] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -330,8 +350,30 @@ export default function Packing() {
       cartons,
       cartonsManual,
       inboundNo,
+      createdOn,
     }));
-  }, [selected, lines, exportForm, draftKey, cartons, cartonsManual, inboundNo]);
+  }, [selected, lines, exportForm, draftKey, cartons, cartonsManual, inboundNo, createdOn]);
+
+  // 老草稿恢复后常见的一种坏状态：逐箱清单里明明有箱子，勾选却丢了 ——
+  // 于是下拉全空、导出还会被判「箱里有不在本单的产品」。
+  // 产品库一到位就把箱子里的 SKU 补回勾选，让逐箱清单反过来成为本单的来源。
+  const cartonBackfillDone = useRef(false);
+  useEffect(() => {
+    if (cartonBackfillDone.current || loading || products.length === 0) return;
+    cartonBackfillDone.current = true;
+    if (!cartonsManual || cartons.length === 0) return;
+    const known = new Set(products.map(p => p.sku));
+    const wanted = cartons
+      .flatMap(c => c.items.map(it => (it.sku || '').trim()))
+      .filter(sku => sku && known.has(sku));
+    if (wanted.length === 0) return;
+    setSelected(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      wanted.forEach(sku => { if (!next.has(sku)) { next.add(sku); changed = true; } });
+      return changed ? next : prev;
+    });
+  }, [loading, products, cartons, cartonsManual]);
 
   // URL import 自动勾选 + 缺失 SKU 提示一键导入
   useEffect(() => {
@@ -514,7 +556,15 @@ export default function Packing() {
 
   // 改了入库单号，手工模式的箱号要跟着改；自动模式的箱号本来就是算出来的，不用动。
   const applyInboundNo = (value: string) => {
+    const previous = inboundNo.trim();
     setInboundNo(value);
+    // 唛头默认就是入库单号（模板里「客户唛头」那一格）。只在「还没填」或
+    // 「还是上一个自动值」时跟随 —— 手改过的唛头不会被悄悄覆盖。
+    setExportForm(prev => {
+      const mark = (prev.mark || '').trim();
+      if (mark && mark !== previous) return prev;
+      return { ...prev, mark: value.trim() };
+    });
     if (!cartonsManual) return;
     const prefix = value.trim();
     setCartons(prev => prev.map((c, i) => ({
@@ -522,6 +572,21 @@ export default function Packing() {
       box_no: prefix ? `${prefix}-${String(i + 1).padStart(3, '0')}` : `C${String(i + 1).padStart(2, '0')}`,
     })));
   };
+
+  // 在逐箱清单里选一个产品 = 把它加进本单。以前下拉只列「已勾选的产品」，
+  // 老草稿恢复后勾选丢了就变成一个空下拉，点开什么都没有、也加不回来。
+  const pickCartonSku = (index: number, itemIndex: number, sku: string) => {
+    patchCartonItem(index, itemIndex, { sku });
+    if (!sku) return;
+    setSelected(prev => (prev.has(sku) ? prev : new Set(prev).add(sku)));
+  };
+
+  // 还没选产品的行才列全产品库（选过之后只列本单的，避免一行一个 400 项的巨长下拉）。
+  // 已经在本单里的排前面，这样「换个 SKU」不用往下翻。
+  const cartonPickerOthers = useMemo(
+    () => products.filter(p => !selected.has(p.sku)),
+    [products, selected],
+  );
 
   const patchCarton = (index: number, patch: Partial<PackingCarton>) => {
     editCartons(prev => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)));
@@ -760,14 +825,21 @@ export default function Packing() {
       setError(`这些产品还没装进任何一箱：${detail}。补上件数，或点「按产品资料重排」重来`);
       return;
     }
+    // 头程印错一行，货代就可能按错的渠道走。宁可多一步，也不默认一个值。
+    if (!exportForm.shipping) {
+      setError('请选择运输方式（空运 / 海运）后再导出');
+      return;
+    }
     setExporting(true);
     setError('');
     try {
       const payload: PackingExportPayload = {
         date: exportForm.date,
-        mark: exportForm.mark,
+        // 唛头留空就用 OMS 入库单号，与 A 列箱唛同一套编号；都没有才由后端退回 KPLDJ。
+        mark: exportForm.mark.trim() || inboundNo.trim(),
         shipping: exportForm.shipping,
         address: exportForm.address,
+        inbound_no: inboundNo.trim(),
         draft_key: draftKey,
         record_shipment: exportForm.record_shipment === true,
         items: rows.map(p => {
@@ -803,6 +875,9 @@ export default function Packing() {
       setCartons([]);
       setCartonsManual(false);
       setDraftKey(newDraftKey());
+      // 下一票是新做的单，做单日期要跟着归零，否则会沿用上一票的日期。
+      setCreatedOn(todayStr());
+      setExportForm(prev => ({ ...prev, date: todayStr() }));
       setImportMissing([]);
       localStorage.removeItem(getStoreStorageKey(PACKING_DRAFT_KEY));
       localStorage.removeItem(getStoreStorageKey(PRODUCT_SELECTED_SKUS_KEY));
@@ -1314,11 +1389,23 @@ export default function Packing() {
                 )}
                 {c.items.map((it, j) => (
                   <div className="packing-carton-line" key={j}>
-                    <select value={it.sku} disabled={!cartonsManual} onChange={e => patchCartonItem(i, j, { sku: e.target.value })}>
+                    <select value={it.sku} disabled={!cartonsManual} onChange={e => pickCartonSku(i, j, e.target.value)}>
                       <option value="">选择产品…</option>
-                      {selectedRows.map(p => (
-                        <option key={p.sku} value={p.sku}>{p.name_zh || p.name_en || p.sku}</option>
-                      ))}
+                      {selectedRows.length > 0 && (
+                        <optgroup label="本次装箱单">
+                          {selectedRows.map(p => (
+                            <option key={p.sku} value={p.sku}>{p.name_zh || p.name_en || p.sku} · {p.sku}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {/* 选过之后就不再列全库：一行一个 400 项的巨长下拉，翻起来比重新选还慢。 */}
+                      {!it.sku && cartonPickerOthers.length > 0 && (
+                        <optgroup label={`产品库其他（${cartonPickerOthers.length}）`}>
+                          {cartonPickerOthers.map(p => (
+                            <option key={p.sku} value={p.sku}>{p.name_zh || p.name_en || p.sku} · {p.sku}</option>
+                          ))}
+                        </optgroup>
+                      )}
                     </select>
                     <input
                       type="number"
@@ -1359,14 +1446,36 @@ export default function Packing() {
           <div>
             <label>日期</label>
             <input type="date" value={exportForm.date} onChange={e => setExportForm(prev => ({ ...prev, date: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
+            <small className="packing-field-hint">默认做单那天（{createdOn}），可改</small>
           </div>
           <div>
             <label>运输方式</label>
-            <input type="text" placeholder="如：快递 / 空运 / 海运" value={exportForm.shipping} onChange={e => setExportForm(prev => ({ ...prev, shipping: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
+            {/* 装箱单模板 G2 是「头程（空/海）」，只能填这两类。以前是自由文本，
+                手滑写个「快递」就印在单子上，头程渠道和实际走法对不上。 */}
+            <select value={exportForm.shipping} onChange={e => setExportForm(prev => ({ ...prev, shipping: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }}>
+              <option value="">请选择</option>
+              <option value="空运">空运</option>
+              <option value="海运">海运</option>
+              {/* 老草稿里存过别的写法（「空」「海」「快递」）就原样留着，别在打开页面时悄悄改掉 */}
+              {exportForm.shipping && !['空运', '海运'].includes(exportForm.shipping) && (
+                <option value={exportForm.shipping}>{exportForm.shipping}（历史值）</option>
+              )}
+            </select>
           </div>
           <div>
             <label>唛头</label>
-            <input type="text" value={exportForm.mark} onChange={e => setExportForm(prev => ({ ...prev, mark: e.target.value }))} style={{ width: '100%', boxSizing: 'border-box' }} />
+            <input
+              type="text"
+              placeholder={inboundNo.trim() || '默认同 OMS 入库单号'}
+              value={exportForm.mark}
+              onChange={e => setExportForm(prev => ({ ...prev, mark: e.target.value }))}
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+            <small className="packing-field-hint">
+              {exportForm.mark.trim()
+                ? '填了入库单号会自动同步，手改后就不再跟随'
+                : '留空 = 用 OMS 入库单号，与箱唛号同一套编号'}
+            </small>
           </div>
           <div>
             <label>收货地址</label>

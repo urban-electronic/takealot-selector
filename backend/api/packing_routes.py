@@ -131,9 +131,14 @@ class CartonIn(BaseModel):
 class ExportIn(BaseModel):
     record_shipment: bool = False
     date: str = ''
-    mark: str = 'KPLDJ'
+    # 唛头留空时用 inbound_no，再没有才退回 KPLDJ。默认值不能直接写 KPLDJ：
+    # 那样「留空」和「明确要 KPLDJ」就分不出来了，用户填的入库单号也就永远用不上。
+    mark: str = ''
     shipping: str = '空'
     address: str = '找客服提供'
+    # OMS 入库单号。装箱单模板里「客户唛头」和 A 列「箱唛」应当同一套编号，
+    # 前端把入库单号一填，箱唛是 INH1501522-001、唛头是 INH1501522，两张纸能对上。
+    inbound_no: str = ''
     items: List[ExportLine] = []
     draft_key: str = ''
     # 逐箱清单：不传时按「一箱一个 SKU」自动展开，传了就以传的为准（混装必须传）
@@ -831,6 +836,10 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         date = dt.date.fromisoformat(data.date.strip())
     except ValueError:
         return fail(400, '请填写 YYYY-MM-DD 格式的有效日期')
+    # 唛头的三层兜底：手填 > OMS 入库单号 > KPLDJ。
+    # 中间那层是关键 —— 装箱单模板里「客户唛头」和 A 列「箱唛」是同一套编号，
+    # 用户只填一次入库单号，两处就自动一致，不用记着再抄一遍。
+    mark = data.mark.strip() or data.inbound_no.strip() or 'KPLDJ'
     items = []
     existing_shipment = None
     if data.draft_key.strip():
@@ -875,7 +884,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             # 装箱单也按箱展开：A 列（箱唛）写箱唛号，物流按「箱唛 + 箱数」认箱。
             # 没填入库单号时箱号是 C01、C02，同样能对上逐箱清单。
             px.generate(
-                items, date.isoformat(), data.mark, data.shipping, data.address, output,
+                items, date.isoformat(), mark, data.shipping, data.address, output,
                 boxes=[(c['box_no'], [(it['sku'], it['quantity']) for it in c['items']]) for c in cartons_plan],
             )
             content = output.read_bytes()
@@ -892,7 +901,7 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
             draft_key=data.draft_key.strip() or str(uuid.uuid4()),
             shipment_no=f'PK-{date.strftime("%Y%m%d")}-{day_count + 1:03d}',
             shipment_date=date.isoformat(),
-            mark=data.mark,
+            mark=mark,
             shipping=data.shipping,
             address=data.address,
             status=expected_status,
