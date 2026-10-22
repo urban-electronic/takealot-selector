@@ -89,26 +89,34 @@ def _latin1(text):
 
 
 def _wrap(text, size, max_width, max_lines=3):
+    """按宽度折行，真的放不下才加省略号。
+
+    早先的版本只要凑满 max_lines 就在最后一行补 "..."，于是「正好折成 3 行、
+    第三行又刚好填满」的产品名会被截掉最后一个词——名字本来完整，印出来却带省略号。
+    这里用 dropped 标记区分「被截断」和「刚好填满」。
+    """
     words = _latin1(text).split()
     lines, cur = [], ''
+    dropped = False
     for word in words:
         trial = (cur + ' ' + word).strip()
         if stringWidth(trial, FONT, size) <= max_width:
             cur = trial
-        else:
-            if cur:
-                lines.append(cur)
-            cur = word
+            continue
+        if cur:
+            lines.append(cur)
+            cur = ''
         if len(lines) == max_lines:
+            dropped = True
             break
+        cur = word
     if cur and len(lines) < max_lines:
         lines.append(cur)
-    if len(lines) == max_lines:
+    if dropped and lines:
         last = lines[-1]
         while stringWidth(last + '...', FONT, size) > max_width and len(last) > 1:
             last = last[:-1]
-        if last != lines[-1]:
-            lines[-1] = last + '...'
+        lines[-1] = last + '...'
     return lines
 
 

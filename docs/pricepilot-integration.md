@@ -1353,6 +1353,7 @@ Codex；基线 `f58ff3521dc6`，接续 WorkBuddy 的 MARKET-ZERO-01。
   原有 124 条、datetime 36 条及 tsc --noEmit 通过。
 - 状态：代码与隔离测试完成；PR Check、部署和真实会话验收各自以当前 PR 证据为准。
   未使用业务数据或执行真实价格写入。
+
 ### STALE-MARK-01 「已过期」标记在每个展示面上都挂上了（2026-10-22）
 
 WorkBuddy；基线 `f58ff3521d`。
@@ -1425,3 +1426,58 @@ WorkBuddy；基线 `98876342a8`。
   `scripts/test-contrast-audit.py` 退出 1，`/products` 三档各报 2 处低对比（已还原）。
 - 复测：对比度审计 33/33 面 0 处低对比（停用控件文字 69 处单列）；版式审计 99 个面
   0 失败（加长后的单元格未越界）；`test-market-prices` 133 → 135 断言。
+
+### PRODUCT-LABEL-01 产品标签 PDF 上线但零文档（2026-10-22，补记）
+
+并行提交（远端 `d4101cabf3`）；自检时发现功能已合并、`docs/` 一个字都没有。
+
+- 功能：一个 SKU 一张 40×30mm 标签（页面即标签，标签打印机直接打；多 SKU 打包成 zip），
+  版式对齐官方 product_labels.pdf（Helvetica 8pt、名字 3 行、EAN-13 横排、1-6-6 分组
+  数字、条码左侧 M/P）。只有 13 位合法 EAN-13 的 SKU 才会画——印出来扫不出的标签是废纸。
+  后端 `POST /api/products/labels` 另有 `mode=sheet` 的 A4 拼版（40×30 每页 45 张）。
+- 同日后端之外又多了一份浏览器内生成器 `src/utils/labelPdf.ts`（零依赖手写 PDF+ZIP），
+  网页上的「下载标签」走它，理由是 Railway 部署长期不跟上、标签不该卡在部署上。
+- 补的文档：新增 `docs/engineering/2026-10-22-product-labels.md`——版式常量表、两份
+  生成器必须逐字对齐的参数、30×40 会把条宽压到 0.258mm（低于 EAN-13 的 0.264mm 下限）
+  的取舍、多规格 SKU 的拆分与匹配。
+
+### LABEL-ERR-01 生成标签失败不再把详情页整页替换（2026-10-22）
+
+WorkBuddy；基线 `d4101cabf3`。
+
+- 症状：详情页「下载标签」的失败分支写的是 `setError(...)`。`error` 是「加载失败」状态，
+  渲染时整页被换成一行红字（`if (error) return …`），于是生成失败之后，用户正在编辑的
+  整张表单连同草稿一起消失——与 DETAIL-SAVE-ERR-01 同一类错，只是换了入口。
+- 改动：新增 `labelError` 状态，渲染成页面顶部一条行内提示；失败可重试，草稿不动。
+- 复现：把 `setLabelError` 改回 `setError`，`test-label-ean.cjs` 报
+  「详情页生成失败不许写 error（会整页替换、草稿丢失）」（已还原）。
+- 复测：`test-label-ean.cjs` 37 条检查通过；全量 selfcheck 35 步。
+
+### LABEL-SKIP-01 跳过几个 SKU 要说出来，而且不能报成错误（2026-10-22）
+
+WorkBuddy；基线 `d4101cabf3`。
+
+- 症状：勾 5 个 SKU、其中 2 个不是合法 EAN-13 时只会出 3 张标签。第一版界面一个字都
+  不说，用户以为标签丢了；补上提示后又被写进 `setError`——那是页面顶部「加载失败」的
+  红色告警，把一次成功的下载报成错误。
+- 改动：走独立的 `labelNote`（信息条）：「已生成 3 张标签；另有 2 个 SKU 不是合法
+  EAN-13，已跳过」；一个都不合法才走错误提示（那确实什么都没生成）。
+- 复现：把该分支的 `setLabelNote` 改回 `setError`，`test-label-ean.cjs` 报
+  「被跳过的 SKU 必须提示」（已还原）。
+- 复测：`test-label-ean.cjs` 37 条检查通过（含「三份 EAN 实现判据一致」的守卫：
+  后端 `is_ean13`、`utils/ean.ts`、`utils/labelPdf.ts`）。
+
+### LABEL-WRAP-01 折行只在真的丢词时加省略号（2026-10-22）
+
+WorkBuddy；基线 `d4101cabf3`。
+
+- 症状：`wrapName()`（`src/utils/labelPdf.ts`，网页实际用的那份）与 `_wrap()`
+  （`backend/services/label_pdf.py`）原来的判据是「凑满 3 行就在末行补 `...`」，于是
+  「正好折成 3 行、第三行又刚好填满」的产品名会被截掉最后一个词——名字本来完整，印出来
+  却带省略号。40×30 标签的内容宽只有 34.3mm、8pt，长名字很容易正好占满 3 行。
+- 改动：两边都用 `dropped` 标记区分「被截断」与「刚好填满」，只有真丢词才截末行补省略号。
+- 复现：把判据改回 `if (lines.length === maxLines)`，
+  `test-label-pdf.cjs` 报「7 个词放得下，不许丢词」（实得 `MMMM...`）、
+  `test_wrap_keeps_full_last_line` 同时转红（均已还原）。
+- 复测：`test-label-pdf.cjs` 117 → 126 条检查、`test_label_pdf.py` 25 例；后端全量
+  533 passed / 1 skipped；全量 selfcheck 35 步。

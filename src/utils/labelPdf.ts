@@ -90,26 +90,34 @@ function asciiOnly(text: string): string {
 }
 
 function wrapName(name: string, size: number, maxWidth: number, maxLines: number): string[] {
+  // 只有真的把词丢掉时才补省略号。原来的判据是「凑满 maxLines 就截末行加 ...」，
+  // 于是「正好折成 3 行、第三行又刚好填满」的产品名会被截掉最后一个词——名字本来
+  // 完整，印出来却带省略号。40×30 的标签内容宽只有 34.3mm、8pt，长名字很容易占满 3 行。
   const words = asciiOnly(name).split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let cur = '';
+  let dropped = false;
   for (const word of words) {
     const trial = cur ? `${cur} ${word}` : word;
     if (textWidth(trial, size) <= maxWidth) {
       cur = trial;
-    } else {
-      if (cur) lines.push(cur);
-      cur = word;
+      continue;
     }
-    if (lines.length === maxLines) break;
+    if (cur) lines.push(cur);
+    cur = '';
+    if (lines.length === maxLines) {
+      dropped = true;
+      break;
+    }
+    cur = word;
   }
   if (cur && lines.length < maxLines) lines.push(cur);
-  if (lines.length === maxLines) {
+  if (dropped && lines.length) {
     let last = lines[lines.length - 1];
     while (textWidth(`${last}...`, size) > maxWidth && last.length > 1) {
       last = last.slice(0, -1);
     }
-    if (last !== lines[lines.length - 1]) lines[lines.length - 1] = `${last}...`;
+    lines[lines.length - 1] = `${last}...`;
   }
   return lines;
 }

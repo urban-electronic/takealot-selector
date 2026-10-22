@@ -5,9 +5,12 @@ from pathlib import Path
 import pymupdf
 import pytest
 from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 from services.label_pdf import (
+    FONT,
     LABEL_SIZES,
+    _wrap,
     barcode_width_mm,
     generate_label_files,
     generate_labels,
@@ -146,3 +149,34 @@ def test_single_files_are_40x30(tmp_path):
         w, h, pages = _page_size(f)
         # pt -> mm 有浮点误差（40mm 算出来 39.99999），按 0.1mm 容差比
         assert (round(w, 1), round(h, 1), pages) == (40.0, 30.0, 1)
+
+
+def _filled_line(size, width):
+    """往一行里反复塞同一个词直到再塞就超宽，用来构造「刚好填满」的样本。"""
+    line = 'X'
+    while stringWidth(line + ' X', FONT, size) <= width:
+        line += ' X'
+    return line
+
+
+def test_wrap_keeps_full_last_line():
+    """正好折成 3 行、第三行刚好填满时不许加省略号。
+
+    早先的实现只要凑满 3 行就无条件在末行补 "..."，于是产品名明明完整、印出来却
+    被截掉最后一个词——40x30 的标签上 34.3mm 宽、8pt 字号，长名字很容易正好占满 3 行。
+    """
+    size, width = 8.0, 60.0
+    line = _filled_line(size, width)
+    lines = _wrap(' '.join([line] * 3), size, width, 3)
+    assert lines == [line, line, line]
+    assert not lines[-1].endswith('...')
+
+
+def test_wrap_marks_dropped_words():
+    """真的放不下、有词被丢掉时，末行必须以省略号结尾（不能假装印全了）。"""
+    size, width = 8.0, 60.0
+    line = _filled_line(size, width)
+    lines = _wrap(' '.join([line] * 4), size, width, 3)
+    assert len(lines) == 3
+    assert lines[-1].endswith('...')
+    assert all(stringWidth(text, FONT, size) <= width for text in lines)

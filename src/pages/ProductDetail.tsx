@@ -53,12 +53,19 @@ export default function ProductDetail() {
 
   // 产品标签：每个 SKU 一个独立 PDF（页面就是 40×30mm，标签打印机直接打）
   const [labelLoading, setLabelLoading] = useState(false);
+  /**
+   * 生成标签失败单独一个状态。写进 `error` 会和加载失败混在一起：那个状态渲染时
+   * 整页被换成一行红字（见下方 `if (error) return`），编辑中的草稿一起丢——
+   * 生成失败是可重试的小事，不该把页面清空。
+   */
+  const [labelError, setLabelError] = useState('');
   const labelVariants = product ? skuVariants(product.sku) : [];
   const labelCount = labelVariants.filter(isEan13).length;
 
   const downloadLabels = () => {
     if (!product || labelLoading || !labelCount) return;
     setLabelLoading(true);
+    setLabelError('');
     try {
       // 浏览器里直接出 PDF（src/utils/labelPdf.ts），不走后端：
       // 标签是打印前必须拿到手的东西，不该被后端部署卡住。
@@ -67,12 +74,12 @@ export default function ProductDetail() {
         { size: '40x30' },
       );
       if (!bundle.count) {
-        setError('这些 SKU 都没有合法的 EAN-13 条码，生成不了标签');
+        setLabelError('这些 SKU 都没有合法的 EAN-13 条码，生成不了标签');
         return;
       }
       saveLabelBundle(bundle);
     } catch (e) {
-      setError(e instanceof Error ? e.message : '生成产品标签失败');
+      setLabelError(e instanceof Error ? e.message : '生成产品标签失败');
     } finally {
       setLabelLoading(false);
     }
@@ -280,6 +287,7 @@ export default function ProductDetail() {
   return (
     <div className="product-detail-page">
       {saveError && <div role="alert" className="alert alert-error">{saveError}</div>}
+      {labelError && <div role="alert" className="alert alert-error">{labelError}</div>}
       <div className="page-heading">
         <div>
           <a href="#" onClick={(e) => { e.preventDefault(); navigate(-1); }} style={{ fontSize: 13, color: 'var(--color-primary)', textDecoration: 'none' }}>&larr; 返回列表</a>

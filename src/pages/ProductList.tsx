@@ -202,8 +202,10 @@ export default function ProductList() {
     } catch { return new Set(); }
   });
 
-  // 在产品库和装箱单之间切换时保留本次勾选，成功导出装箱单后由装箱单页清除。
   const [labelLoading, setLabelLoading] = useState(false);
+  // 「生成成功、但跳过了几个」不是错误，不该占用页面顶部那条红色告警：
+  // `error` 同时是加载失败的位置，红字会让人以为整页没读到。
+  const [labelNote, setLabelNote] = useState('');
 
   // 每个 SKU 一个独立 PDF（页面 40×30），多选打包成 zip。
   // 浏览器里直接出（src/utils/labelPdf.ts），不依赖后端部署；条码不合法的 SKU 跳过。
@@ -212,6 +214,7 @@ export default function ProductList() {
     if (!skus.length || labelLoading) return;
     setLabelLoading(true);
     setError('');
+    setLabelNote('');
     try {
       // 勾选里只有 SKU，产品名要从列表里按 SKU 反查（多规格产品一个品对应多个 SKU）
       const nameBySku = new Map<string, string>();
@@ -229,7 +232,9 @@ export default function ProductList() {
       }
       saveLabelBundle(bundle);
       if (bundle.skipped.length) {
-        setError(`${bundle.skipped.length} 个 SKU 不是合法 EAN-13 已跳过，其余 ${bundle.count} 张已生成`);
+        setLabelNote(
+          `已生成 ${bundle.count} 张标签；另有 ${bundle.skipped.length} 个 SKU 不是合法 EAN-13，已跳过`,
+        );
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成产品标签失败');
@@ -238,6 +243,7 @@ export default function ProductList() {
     }
   };
 
+  // 在产品库和装箱单之间切换时保留本次勾选，成功导出装箱单后由装箱单页清除。
   useEffect(() => {
     // 每次勾选都会写；配额满时若抛出会让整个列表崩掉
     safeSetItem(getStoreStorageKey(LS_SELECTED_SKUS_KEY), JSON.stringify(Array.from(selectedSkus)));
@@ -1421,6 +1427,7 @@ export default function ProductList() {
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
+      {labelNote && <div className="alert alert-info">{labelNote}</div>}
 
       {loading ? (
         <div className="loading">加载中...</div>

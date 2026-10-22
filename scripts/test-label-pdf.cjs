@@ -122,6 +122,42 @@ check(DEFAULT_LABEL_SIZE === '40x30', '默认必须是 40x30（30 宽会把条�
   check(cnText.startsWith('%PDF-'), '中文产品名也要能生成');
   check(!/[^\x00-\x7f]/.test(cnText), '中文要被替换掉，不能写进 PDF 文本流');
 
+  // ---- 9) 折行：名字放得下就不许丢词，真丢词时才必须标省略号 ----
+  // 产品名行是 PDF 里最前面的几个 Tj（之后才是 1-6-6 的数字分组和 M/P）。
+  const nameLines = (name) => {
+    const text = Buffer.from(buildLabelPdf(name, SKU)).toString('latin1');
+    const out = [];
+    for (const m of text.matchAll(/\(([^()]*)\) Tj/g)) {
+      if (/^\d+$/.test(m[1])) break;
+      out.push(m[1]);
+    }
+    return out;
+  };
+  const rep = (n) => Array.from({ length: n }, () => 'MMMM').join(' ');
+  // 先量出「一行能放几个词」，再由它推出 3 行能放几个——不写死字宽表
+  let perLine = 0;
+  for (let n = 1; n <= 40; n += 1) {
+    const lines = nameLines(rep(n));
+    if (lines.length === 1) perLine = n;
+    else break;
+  }
+  check(perLine >= 2, `单行至少要放得下 2 个词，实得 ${perLine}`);
+  const capacity = perLine * 3;
+  for (let n = 1; n <= 40; n += 1) {
+    const name = rep(n);
+    const lines = nameLines(name);
+    check(lines.length > 0 && lines.length <= 3, `${n} 个词最多折 3 行`);
+    const last = lines[lines.length - 1];
+    if (n <= capacity) {
+      // 全部放得下：一个词都不许丢，末行也不许带省略号。
+      // 旧实现「凑满 3 行就截末行」正是在这里出错（n 正好等于 3 行容量时）。
+      check(lines.join(' ') === name, `${n} 个词放得下，不许丢词（实得 ${JSON.stringify(lines)}）`);
+      check(!last.endsWith('...'), `${n} 个词放得下，末行不许加省略号（实得 ${last}）`);
+    } else {
+      check(last.endsWith('...'), `${n} 个词放不下，末行必须标省略号（实得 ${last}）`);
+    }
+  }
+
   console.log(`test-label-pdf: ${checks} checks passed`);
 })().catch((e) => {
   console.error(e);
