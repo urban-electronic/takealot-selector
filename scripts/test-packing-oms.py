@@ -6,16 +6,17 @@
 
 这条用例钉死「串起来」的那几处：
 
-  1) 「按 SKU 展开」把「2 箱 × 10 件 + 3 箱 × 5 件」展开成 5 箱，每箱数量对；
+  1) 只填「箱数 × 每箱件数」，逐箱清单**自动**长出来（2 箱 × 10 件 + 3 箱 × 5 件 = 5 箱），
+     不用点按钮，也不用把同一份数量再抄一遍；自动模式下逐箱清单是只读的；
   2) 填 OMS 入库单号后，箱号变成 OMS 的箱唛号（INH1501522-001），
      这是我们的记录和 OMS 打的箱唛唯一能对上的凭据；
-  3) 混装多塞一个 SKU 后，合计对不上要当场警告（箱子里写 20、装箱单 15）；
+  3) 混装：点「手动调整」接管清单，往第 1 箱多塞一个 SKU 后，
+     「已选产品」那行自动变成「4 箱 · 20 件」，**不再弹「合计对不上」**；
   4) 一箱超过 5 个 SKU 要标出来 —— OMS 箱唛一张只放得下 5 行，
      第 6 行起会另起一页，而那一页没有箱号、没有条码，贴到箱上认不出是哪箱；
   5) 事后查箱：按日期查得到当天全部箱，按 SKU 反查只列装了它的箱，
      但「共 N 箱」仍是整票总数；
-  6) 没展开就导出时，箱是后端自动展开的、草稿已清空，
-     提示条必须给出「导出 OMS 入仓模板」直达入口，并默认勾上刚导出的那一票。
+  6) 导出后提示条必须给出「导出 OMS 入仓模板」直达入口，并默认勾上刚导出的那一票。
 
 窄屏 320px 不许横向溢出（逐箱面板有「箱号/备注/第几箱」一行）。
 """
@@ -144,18 +145,19 @@ def run():
         second.locator('input[type=number]').nth(1).fill('5')
         page.wait_for_timeout(200)
 
-        # 1) 按 SKU 展开
-        page.get_by_role('button', name='按 SKU 展开').click()
-        page.wait_for_timeout(400)
+        # 1) 只填箱数 × 每箱件数：逐箱清单自动长出来，不用点按钮、不用再抄一遍
         cartons = page.locator('.packing-carton-item')
-        check(cartons.count() == 5, f'按 SKU 展开应得 5 箱（2+3），实得 {cartons.count()}')
-        check(page.locator('.packing-carton-warn').count() == 0, '刚展开时合计应该是对的，不该出现警告')
+        check(cartons.count() == 5, f'填完箱数应自动生成 5 箱（2+3），实得 {cartons.count()}')
+        check(page.locator('.packing-carton-warn').count() == 0, '刚填完不该出现警告')
         check(page.locator('.packing-carton-total').inner_text().startswith('5 箱'),
               f'标题应显示 5 箱，实得 {page.locator(".packing-carton-total").inner_text()}')
         box_nos = [cartons.nth(i).locator('input').nth(0).input_value() for i in range(cartons.count())]
         check(box_nos == ['C01', 'C02', 'C03', 'C04', 'C05'], f'箱号应自动编号 C01..C05，实得 {box_nos}')
         seq_text = cartons.nth(2).locator('.packing-carton-seq').inner_text()
         check('第 3 箱' in seq_text and '共 5 箱' in seq_text, f'序号应显示「第 3 箱 / 共 5 箱」，实得 {seq_text}')
+        # 自动模式下逐箱清单只读 —— 同一份数量只留一个录入处，两边都能改就必然打架
+        check(cartons.nth(0).locator('input').nth(0).is_disabled(), '自动模式下箱号应是只读的')
+        check(cartons.nth(0).locator('.packing-carton-line input').first.is_disabled(), '自动模式下件数应是只读的')
 
         # 2) 填 OMS 入库单号：箱号必须自动变成 OMS 的箱唛号（INH1501522-001），
         #    这是我们的记录和 OMS 打的箱唛唯一能对上的凭据
@@ -167,18 +169,20 @@ def run():
         hint = page.locator('.packing-carton-inbound-hint').inner_text()
         check('INH1501522-001' in hint, f'提示要显示箱唛号范围，实得 {hint!r}')
 
-        # 3) 混装：第 1 箱再塞一个 SKU ×5 → 该 SKU 箱内 20 / 装箱单 15
+        # 3) 混装：先「手动调整」接管清单，再往第 1 箱多塞一个 SKU ×5。
+        #    这时不该再弹「合计对不上」—— 数量以逐箱清单为准，「已选产品」那行跟着汇总。
+        page.get_by_role('button', name='手动调整（混装 / 拆箱）').click()
+        page.wait_for_timeout(300)
         cartons.nth(0).get_by_role('button', name='这箱再加一个产品').click()
         page.wait_for_timeout(300)
         line = cartons.nth(0).locator('.packing-carton-line').nth(1)
         line.locator('select').select_option('9902348621873')
         line.locator('input[type=number]').fill('5')
         page.wait_for_timeout(400)
-        warn = page.locator('.packing-carton-warn')
-        check(warn.count() == 1, '混装多塞之后必须出现合计警告')
-        if warn.count():
-            text = warn.inner_text()
-            check('20' in text and '15' in text, f'警告要写出「箱内 20 / 装箱单 15」，实得 {text}')
+        check(page.locator('.packing-carton-warn').count() == 0, '混装后不该再出现「合计对不上」的警告')
+        second_item = page.locator('.packing-selected-item').nth(1)
+        check('4 箱' in second_item.inner_text() and '20 件' in second_item.inner_text(),
+              f'第二个产品应汇总成「4 箱 · 20 件」（C03/C04/C05 各 5 + 第 1 箱 5），实得 {second_item.inner_text()!r}')
 
         # 4) 一箱塞到 6 个 SKU：必须出现「超出箱唛 5 行」的提示。
         #    OMS 箱唛第 6 行起另起一页，那页没有箱号也没有条码，贴到箱上认不出是哪箱。
@@ -235,8 +239,7 @@ def run():
         # 8) 没展开就导出：后端会自动展开箱，前端草稿已清空 ——
         #    提示条必须给「导出 OMS 入仓模板」直达入口，并默认勾上刚导出的那一票
         page.set_viewport_size({'width': 1440, 'height': 1000})
-        # 前面第 3 步故意留了「箱内 20 / 装箱单 15」的不一致，导出会被闸拦住；
-        # 这里清掉草稿重来，模拟「新开一票、什么都没展开就直接导出」
+        # 清掉草稿重来，模拟「新开一票、填完箱数直接导出」
         page.evaluate("() => localStorage.clear()")
         page.reload(wait_until='networkidle')
         page.wait_for_timeout(700)
@@ -251,14 +254,13 @@ def run():
         second.locator('input[type=number]').nth(0).fill('3')
         second.locator('input[type=number]').nth(1).fill('5')
         page.wait_for_timeout(200)
-        # 刻意不点「按 SKU 展开」，直接导出
         page.locator('.packing-export-btn').first.click()
         page.wait_for_timeout(1500)
         success = page.locator('.alert-success')
         check(success.count() >= 1, '导出后应有成功提示')
         if success.count():
             txt = success.first.inner_text()
-            check('自动展开 5 箱' in txt, f'提示要说明已自动展开 5 箱，实得 {txt!r}')
+            check('自动生成 5 箱' in txt, f'提示要说明逐箱清单已自动生成 5 箱，实得 {txt!r}')
             btn = success.first.get_by_role('button', name='导出 OMS 入仓模板')
             check(btn.count() == 1, '导出后要给「导出 OMS 入仓模板」直达按钮')
             if btn.count():

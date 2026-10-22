@@ -129,6 +129,10 @@ type PackingDraft = {
   exportForm: Partial<PackingExportForm>;
   draftKey: string;
   cartons: PackingCarton[];
+  // 逐箱清单是「自动生成」还是「手工调整过」。
+  // false（默认）= 上方箱数 × 每箱件数就是唯一录入处，箱子由它实时生成；
+  // true = 有人动过逐箱清单（混装、拆箱），从此以逐箱清单为准，上方只显示汇总。
+  cartonsManual: boolean;
   // OMS（鲲鹏/JF WMS）的入库单号。箱唛号 = 入库单号 + '-' + 3 位箱序，
   // 与 OMS「入库单管理」里生成的箱唛号一致，两张纸才能贴在同一个箱子上。
   inboundNo: string;
@@ -138,16 +142,19 @@ const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now
 function readPackingDraft(): PackingDraft {
   try {
     const parsed = JSON.parse(readStoreStorage(PACKING_DRAFT_KEY) || '{}');
+    const savedCartons: PackingCarton[] = Array.isArray(parsed.cartons) ? parsed.cartons : [];
     return {
       selected: Array.isArray(parsed.selected) ? parsed.selected.filter((v: unknown): v is string => typeof v === 'string') : [],
       lines: parsed.lines && typeof parsed.lines === 'object' ? parsed.lines as PackingLines : {},
       exportForm: parsed.exportForm && typeof parsed.exportForm === 'object' ? parsed.exportForm as Partial<PackingExportForm> : {},
       draftKey: typeof parsed.draftKey === 'string' && parsed.draftKey ? parsed.draftKey : newDraftKey(),
-      cartons: Array.isArray(parsed.cartons) ? parsed.cartons as PackingCarton[] : [],
+      cartons: savedCartons,
+      // 老草稿没有这个字段：手里已经有逐箱记录，说明是手工录的，按手工模式接着用。
+      cartonsManual: typeof parsed.cartonsManual === 'boolean' ? parsed.cartonsManual : savedCartons.length > 0,
       inboundNo: typeof parsed.inboundNo === 'string' ? parsed.inboundNo : '',
     };
   } catch {
-    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], inboundNo: '' };
+    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], cartonsManual: false, inboundNo: '' };
   }
 }
 
@@ -179,6 +186,9 @@ export default function Packing() {
   const [lines, setLines] = useState<PackingLines>(() => savedDraft.lines);
   // 逐箱清单：一箱一条。箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录。
   const [cartons, setCartons] = useState<PackingCarton[]>(() => savedDraft.cartons);
+  // 手工模式：false 时箱子由「箱数 × 每箱件数」实时生成，逐箱清单只读；
+  // 一旦动过逐箱清单就转 true，此后以逐箱清单为准，上方只显示汇总。
+  const [cartonsManual, setCartonsManual] = useState(savedDraft.cartonsManual);
   // OMS 入库单号（如 INH1501522）。填了它，箱号就是 OMS 的箱唛号 INH1501522-001，
   // 与 OMS「入库单管理」打印的箱唛逐箱对应；不填就还是 C01、C02。
   const [inboundNo, setInboundNo] = useState(savedDraft.inboundNo);
@@ -318,9 +328,10 @@ export default function Packing() {
       exportForm,
       draftKey,
       cartons,
+      cartonsManual,
       inboundNo,
     }));
-  }, [selected, lines, exportForm, draftKey, cartons, inboundNo]);
+  }, [selected, lines, exportForm, draftKey, cartons, cartonsManual, inboundNo]);
 
   // URL import 自动勾选 + 缺失 SKU 提示一键导入
   useEffect(() => {
@@ -459,36 +470,52 @@ export default function Packing() {
     return p.default_count || 0; // 留空按产品库的默认件数（输入框 placeholder 写的就是它）
   };
 
-  // 「一箱一个 SKU」是常态：按箱数自动展开成 C01..Cn，不用手填一遍。
-  // 混装（一箱多 SKU）只能人工加箱、逐行选 SKU 填数量。
-  const expandCartons = () => {
+  // 「一箱一个 SKU」是常态：箱子由上面填的箱数 × 每箱件数**实时算出来**，不用手填一遍。
+  // 以前这里是个「按 SKU 展开」按钮，展开完还得再手录一遍逐箱清单 ——
+  // 同一份数量存两处，改一边另一边就悄悄过期，混装时更是根本对不上（2 箱 20+15 件
+  // 凑不出「箱数 × 每箱件数」）。现在只留一个录入处，逐箱清单是它的视图。
+  const autoCartons = useMemo<PackingCarton[]>(() => {
     const next: PackingCarton[] = [];
     selectedRows.forEach(p => {
-      const cartonsCount = lineCartons(p);
-      const perCount = lineCount(p);
+      const boxes = lineCartons(p);
+      const per = lineCount(p);
       // 导不出去的行不展开：否则箱里写着这个 SKU、导出却把整行跳过，后端只能报
       // 「第 N 箱里有不在本次装箱单中的 SKU」——用户看着明明勾了，却被告知不在单里。
-      if (cartonsCount < 1 || perCount < 1) return;
-      for (let i = 0; i < cartonsCount; i += 1) {
-        next.push({ box_no: boxNoFor(next.length), note: '', items: [{ sku: p.sku, quantity: String(perCount) }] });
+      if (boxes < 1 || per < 1) return;
+      for (let i = 0; i < boxes; i += 1) {
+        next.push({ box_no: boxNoFor(next.length), note: '', items: [{ sku: p.sku, quantity: String(per) }] });
       }
     });
-    if (!next.length) {
-      // 空列表会把已有的逐箱记录清掉，得说清为什么没展开
-      setError('请先填好箱数和每箱件数（≥1）再按 SKU 展开');
+    return next;
+  }, [selectedRows, lines, inboundNo]);
+
+  // 真正拿去导出、算合计的那一份：手工模式用逐箱清单，否则用自动生成的。
+  const planCartons = cartonsManual ? cartons : autoCartons;
+
+  // 第一次动逐箱清单时，先把自动生成的那份落成真数据再改，否则一动手就全没了。
+  const editCartons = (fn: (prev: PackingCarton[]) => PackingCarton[]) => {
+    if (!cartonsManual) {
+      setCartonsManual(true);
+      setCartons(fn(autoCartons));
       return;
     }
-    setError('');
-    setCartons(next);
+    setCartons(prev => fn(prev));
+  };
+
+  // 回到「按箱数 × 每箱件数自动生成」：混装拆过以后想重来，不用一箱箱删。
+  const rebuildCartons = () => {
+    setCartonsManual(false);
+    setCartons([]);
   };
 
   const addCarton = () => {
-    setCartons(prev => [...prev, { box_no: boxNoFor(prev.length), note: '', items: [{ sku: '', quantity: '' }] }]);
+    editCartons(prev => [...prev, { box_no: boxNoFor(prev.length), note: '', items: [{ sku: '', quantity: '' }] }]);
   };
 
-  // 改了入库单号，已有箱的箱号要跟着改（否则填完单号还得手动逐箱改一遍）
+  // 改了入库单号，手工模式的箱号要跟着改；自动模式的箱号本来就是算出来的，不用动。
   const applyInboundNo = (value: string) => {
     setInboundNo(value);
+    if (!cartonsManual) return;
     const prefix = value.trim();
     setCartons(prev => prev.map((c, i) => ({
       ...c,
@@ -497,50 +524,61 @@ export default function Packing() {
   };
 
   const patchCarton = (index: number, patch: Partial<PackingCarton>) => {
-    setCartons(prev => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)));
+    editCartons(prev => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)));
   };
 
   const removeCarton = (index: number) => {
-    setCartons(prev => prev.filter((_, i) => i !== index));
+    editCartons(prev => prev.filter((_, i) => i !== index));
   };
 
   const patchCartonItem = (index: number, itemIndex: number, patch: Partial<PackingCarton['items'][number]>) => {
-    setCartons(prev => prev.map((c, i) => (i === index
+    editCartons(prev => prev.map((c, i) => (i === index
       ? { ...c, items: c.items.map((it, j) => (j === itemIndex ? { ...it, ...patch } : it)) }
       : c)));
   };
 
   const addCartonItem = (index: number) => {
-    setCartons(prev => prev.map((c, i) => (i === index ? { ...c, items: [...c.items, { sku: '', quantity: '' }] } : c)));
+    editCartons(prev => prev.map((c, i) => (i === index ? { ...c, items: [...c.items, { sku: '', quantity: '' }] } : c)));
   };
 
   const removeCartonItem = (index: number, itemIndex: number) => {
-    setCartons(prev => prev.map((c, i) => (i === index
+    editCartons(prev => prev.map((c, i) => (i === index
       ? { ...c, items: c.items.filter((_, j) => j !== itemIndex) }
       : c)));
   };
 
-  // 箱内合计 vs 装箱单合计：对不上就是「箱子里写 10 件、账上扣 12 件」，
-  // 比没有记录更糟。这里实时算出来给用户看，导出前还会再拦一次。
-  const cartonTotals = useMemo(() => {
-    const got: Record<string, number> = {};
-    cartons.forEach(c => c.items.forEach(it => {
-      const sku = (it.sku || '').trim();
-      if (!sku) return;
-      got[sku] = (got[sku] || 0) + (parseInt(it.quantity || '0', 10) || 0);
-    }));
-    const want: Record<string, number> = {};
-    selectedRows.forEach(p => {
-      want[p.sku] = lineCartons(p) * lineCount(p);
-    });
-    const skus = Array.from(new Set([...Object.keys(got), ...Object.keys(want)]));
-    return skus.map(sku => ({ sku, got: got[sku] || 0, want: want[sku] || 0 }));
-  }, [cartons, selectedRows, lines]);
-
-  const cartonMismatch = cartonTotals.filter(row => row.got !== row.want);
   const cartonPieces = (c: PackingCarton) =>
     c.items.reduce((s, it) => s + (parseInt(it.quantity || '0', 10) || 0), 0);
-  const cartonTotalPieces = cartons.reduce((sum, c) => sum + cartonPieces(c), 0);
+  const cartonTotalPieces = planCartons.reduce((sum, c) => sum + cartonPieces(c), 0);
+
+  // 某个 SKU 实际装了几箱、共几件 —— 手工模式下「已选产品」那行显示的就是这个。
+  const skuBoxSummary = (sku: string) => {
+    let boxes = 0;
+    let pieces = 0;
+    planCartons.forEach(c => {
+      const row = c.items.find(it => (it.sku || '').trim() === sku);
+      if (!row) return;
+      boxes += 1;
+      pieces += parseInt(row.quantity || '0', 10) || 0;
+    });
+    return { boxes, pieces };
+  };
+
+  // 逐箱清单和已选产品必须一一对上：勾了却没装进任何一箱（漏装）、
+  // 或箱里塞了本单外的 SKU。箱子封上以后才发现，就只能补发了。
+  const cartonCoverage = useMemo(() => {
+    const packed: Record<string, number> = {};
+    planCartons.forEach(c => c.items.forEach(it => {
+      const sku = (it.sku || '').trim();
+      if (!sku) return;
+      packed[sku] = (packed[sku] || 0) + (parseInt(it.quantity || '0', 10) || 0);
+    }));
+    const wanted = new Set(selectedRows.map(p => p.sku));
+    return {
+      unpacked: selectedRows.filter(p => !packed[p.sku]),
+      extra: Object.keys(packed).filter(sku => !wanted.has(sku)),
+    };
+  }, [planCartons, selectedRows]);
 
   // ---- 事后查箱 ----
   const cartonKey = (r: PackingCartonRecord) => `${r.shipment_id}#${r.seq}`;
@@ -583,19 +621,18 @@ export default function Packing() {
     return Array.from(map.values());
   }, [cartonQueryRows]);
 
-  const totalCartons = useMemo(
-    () => selectedRows.reduce((sum, p) => sum + lineCartons(p), 0),
-    [selectedRows, lines],
-  );
-  const totalCount = useMemo(
-    () => selectedRows.reduce((sum, p) => sum + lineCount(p) * lineCartons(p), 0),
-    [selectedRows, lines],
-  );
+  // 箱数/件数一律以 planCartons 为准：自动模式下它就是「箱数 × 每箱件数」算出来的，
+  // 手工模式下它就是逐箱清单本身，两个口径不会各说一套。
+  const totalCartons = planCartons.length;
+  const totalCount = cartonTotalPieces;
   // 「将导出 N 行」与实际导出必须是同一批：导不出去的行在这里就排掉，
   // 免得界面上写 3 行、文件里只有 2 行。
+  // 手工模式下箱数/每箱件数不参与计算，判据换成「有没有装进箱子」。
   const exportableRows = useMemo(
-    () => selectedRows.filter(p => lineCartons(p) >= 1 && lineCount(p) >= 1),
-    [selectedRows, lines],
+    () => (cartonsManual
+      ? selectedRows.filter(p => skuBoxSummary(p.sku).pieces >= 1)
+      : selectedRows.filter(p => lineCartons(p) >= 1 && lineCount(p) >= 1)),
+    [selectedRows, lines, cartonsManual, planCartons],
   );
 
   // 一键导入（URL import 缺失的 SKU）
@@ -706,22 +743,22 @@ export default function Packing() {
   const handleExport = async () => {
     const rows = exportableRows;
     if (rows.length === 0) {
-      setError('请至少勾选 1 个产品，并填写有效的箱数和每箱件数（≥1）后再导出');
+      setError(cartonsManual
+        ? '勾选的产品还没装进任何一箱，请先在逐箱清单里补上件数'
+        : '请至少勾选 1 个产品，并填写有效的箱数和每箱件数（≥1）后再导出');
       return;
     }
     if (selectedRows.length !== rows.length) {
-      setError('部分勾选产品箱数/每箱件数无效（需 ≥1 的正整数），已自动跳过这些行');
+      setError(cartonsManual
+        ? '部分勾选产品还没装进任何一箱，已自动跳过这些行'
+        : '部分勾选产品箱数/每箱件数无效（需 ≥1 的正整数），已自动跳过这些行');
     }
-    // 逐箱清单和装箱单必须是同一票货：合计对不上就不让导，否则箱唛会印错。
-    if (cartons.length) {
-      const bad = cartonTotals.filter(row => row.got !== row.want);
-      if (bad.length) {
-        const detail = bad.slice(0, 3)
-          .map(row => `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} 件 / 装箱单 ${row.want} 件`)
-          .join('；');
-        setError(`逐箱合计与装箱单不一致：${detail}。请先调整逐箱清单，或点「按 SKU 展开」重来`);
-        return;
-      }
+    // 勾了却一箱没装 = 箱子封上才发现少装，只能补发；导出前必须拦住。
+    if (cartonCoverage.unpacked.length) {
+      const detail = cartonCoverage.unpacked.slice(0, 3)
+        .map(p => p.name_zh || p.sku).join('；');
+      setError(`这些产品还没装进任何一箱：${detail}。补上件数，或点「按产品资料重排」重来`);
+      return;
     }
     setExporting(true);
     setError('');
@@ -733,14 +770,19 @@ export default function Packing() {
         address: exportForm.address,
         draft_key: draftKey,
         record_shipment: exportForm.record_shipment === true,
-        items: rows.map(p => ({
-          sku: p.sku,
-          cartons: String(lineCartons(p)),
-          count: String(lineCount(p)),
-        })),
-        // 没填逐箱清单就不传，后端按「一箱一个 SKU」自动展开
-        cartons: cartons.length
-          ? cartons.map(c => ({
+        items: rows.map(p => {
+          if (!cartonsManual) {
+            return { sku: p.sku, cartons: String(lineCartons(p)), count: String(lineCount(p)) };
+          }
+          // 手工模式：箱数按实际装了几箱，每箱件数只是展示用的均值 ——
+          // 后端以逐箱清单为准算总件数，混装（同一 SKU 各箱数量不同）也不会被卡。
+          const { boxes, pieces } = skuBoxSummary(p.sku);
+          const boxCount = Math.max(1, boxes);
+          return { sku: p.sku, cartons: String(boxCount), count: String(Math.max(1, Math.ceil(pieces / boxCount))) };
+        }),
+        // 逐箱清单一律传上去：自动模式下它带着箱唛号，装箱单 A 列才和 OMS 的箱唛对得上。
+        cartons: planCartons.length
+          ? planCartons.map(c => ({
             box_no: c.box_no,
             note: c.note,
             items: c.items.filter(it => (it.sku || '').trim()).map(it => ({ sku: it.sku.trim(), quantity: it.quantity || '1' })),
@@ -759,6 +801,7 @@ export default function Packing() {
       setSelected(new Set());
       setLines({});
       setCartons([]);
+      setCartonsManual(false);
       setDraftKey(newDraftKey());
       setImportMissing([]);
       localStorage.removeItem(getStoreStorageKey(PACKING_DRAFT_KEY));
@@ -768,15 +811,13 @@ export default function Packing() {
       setSearchParams(sp, { replace: true });
       await loadProducts();
       setExportForm(prev => ({ ...prev, record_shipment: false }));
-      // 没展开逐箱清单就导出时，箱子是后端按「一箱一个 SKU」自动展开的，
-      // 前端手里没有，草稿又被清空了 —— 这时候最容易漏掉「去 OMS 建入库单」这一步。
+      // 导完草稿就清空了，最容易漏掉「去 OMS 建入库单」这一步。
       // 直接把入口给出来，并默认勾上刚导出的这一票。
-      const autoExpanded = !payload.cartons;
-      const expandedCount = rows.reduce((sum, p) => sum + lineCartons(p), 0);
+      const boxNote = cartonsManual ? '' : `（按「一箱一个 SKU」自动生成 ${planCartons.length} 箱）`;
       const okMsg = exportForm.record_shipment
         ? '导出成功，已登记发货并扣库存'
         : '导出成功，装箱单已留档，库存未变化';
-      const fullMsg = autoExpanded ? `${okMsg}；逐箱清单已按「一箱一个 SKU」自动展开 ${expandedCount} 箱` : okMsg;
+      const fullMsg = `${okMsg}${boxNote}`;
       setMsg(fullMsg);
       setMsgAction({
         for: fullMsg,
@@ -1140,8 +1181,9 @@ export default function Packing() {
         ) : (
           <div className="packing-selected-scroll">
                 {selectedRows.map(p => {
-                  const cartons = lineCartons(p);
+                  const boxCount = lineCartons(p);
                   const perCount = lineCount(p);
+                  const derived = cartonsManual ? skuBoxSummary(p.sku) : null;
                   return (
                     <div className="packing-selected-item" key={p.sku}>
                       <div className="packing-selected-item-head">
@@ -1153,26 +1195,36 @@ export default function Packing() {
                         </div>
                         <button className="packing-remove-btn" onClick={() => toggleSelect(p.sku)} title="从本次装箱单移除">×</button>
                       </div>
-                      <div className="packing-selected-controls">
-                        <label>箱数
-                        <input
-                          type="number"
-                          min={1}
-                          value={lines[p.sku]?.cartons ?? '1'}
-                          onChange={e => setLine(p.sku, 'cartons', e.target.value)}
-                        />
-                        </label>
-                        <label>每箱件数
-                        <input
-                          type="number"
-                          min={1}
-                          placeholder={p.default_count ? `默认 ${p.default_count}` : '每箱件数'}
-                          value={lines[p.sku]?.count ?? ''}
-                          onChange={e => setLine(p.sku, 'count', e.target.value)}
-                        />
-                        </label>
-                        <div className="packing-line-total"><span>小计</span><strong>{perCount * cartons} 件</strong></div>
-                      </div>
+                      {/* 手工调整过逐箱清单以后，这两格就不该再让人填了 ——
+                          同一份数量只留一个录入处，不然改了一边另一边就悄悄过期。 */}
+                      {derived ? (
+                        <div className="packing-line-derived">
+                          <span>已装进</span>
+                          <strong>{derived.boxes} 箱 · {derived.pieces} 件</strong>
+                          <small>由逐箱清单汇总</small>
+                        </div>
+                      ) : (
+                        <div className="packing-selected-controls">
+                          <label>箱数
+                          <input
+                            type="number"
+                            min={1}
+                            value={lines[p.sku]?.cartons ?? '1'}
+                            onChange={e => setLine(p.sku, 'cartons', e.target.value)}
+                          />
+                          </label>
+                          <label>每箱件数
+                          <input
+                            type="number"
+                            min={1}
+                            placeholder={p.default_count ? `默认 ${p.default_count}` : '每箱件数'}
+                            value={lines[p.sku]?.count ?? ''}
+                            onChange={e => setLine(p.sku, 'count', e.target.value)}
+                          />
+                          </label>
+                          <div className="packing-line-total"><span>小计</span><strong>{perCount * boxCount} 件</strong></div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1181,15 +1233,20 @@ export default function Packing() {
       </div>
 
       {/* 逐箱清单：箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录 */}
+      {/* 逐箱清单：箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录。
+          默认不录入 —— 上面填完箱数 × 每箱件数，这里就自动长出来。 */}
       <div className="card packing-carton-card">
         <div className="packing-carton-head">
           <h3 style={{ margin: 0 }}>逐箱清单</h3>
-          <span className="packing-carton-total">{cartons.length} 箱 · {cartonTotalPieces} 件</span>
+          <span className="packing-carton-total">
+            {planCartons.length} 箱 · {cartonTotalPieces} 件{cartonsManual ? ' · 手动' : ' · 自动'}
+          </span>
         </div>
         <small className="packing-carton-hint">
-          箱子封上就分不出哪箱是什么了，这里记下「第几箱装了什么」。
-          一箱一个 SKU 点「按 SKU 展开」就行；混装就新建一箱、逐行加产品。
-          这份清单会原样变成 OMS 入库单：导出装箱单后点「导出 OMS 入仓模板」，
+          {cartonsManual
+            ? '已按手工调整的清单为准。要回到「箱数 × 每箱件数」自动生成，点「按产品资料重排」。'
+            : '不用填。上面填完「箱数 × 每箱件数」，这里会自动长出箱子；要混装或拆箱再点「手动调整」。'}
+          {' '}这份清单会原样变成 OMS 入库单：导出装箱单后点「导出 OMS 入仓模板」，
           在 OMS 里导入就能建入库单、打箱唛，不用再手录一遍 SKU。
         </small>
         {/* 箱唛号 = 入库单号 + 3 位箱序，与 OMS「入库单管理」里打印的箱唛逐箱对应。
@@ -1206,33 +1263,46 @@ export default function Packing() {
           </label>
           <span className="packing-carton-inbound-hint">
             {inboundNo.trim()
-              ? `箱唛号：${inboundNo.trim()}-001 … ${inboundNo.trim()}-${String(Math.max(cartons.length, 1)).padStart(3, '0')}`
+              ? `箱唛号：${inboundNo.trim()}-001 … ${inboundNo.trim()}-${String(Math.max(planCartons.length, 1)).padStart(3, '0')}`
               : '填上后箱号自动变成 OMS 的箱唛号，贴在箱子上能和 OMS 的箱唛对上'}
           </span>
         </div>
         <div className="packing-carton-actions">
-          <button className="btn btn-outline btn-sm" onClick={expandCartons} disabled={!selectedRows.length} title="按已选产品的箱数×每箱件数，展开成 C01、C02…">
-            按 SKU 展开
-          </button>
-          <button className="btn btn-outline btn-sm" onClick={addCarton}>+ 新建一箱</button>
+          {cartonsManual ? (
+            <>
+              <button className="btn btn-outline btn-sm" onClick={addCarton}>+ 新建一箱</button>
+              <button className="btn btn-outline btn-sm" onClick={rebuildCartons} title="丢掉手工调整，回到「箱数 × 每箱件数」自动生成">
+                按产品资料重排
+              </button>
+            </>
+          ) : (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => { setCartons(autoCartons); setCartonsManual(true); }}
+              disabled={!selectedRows.length}
+              title="接管这份自动生成的清单，之后可以拆箱、一箱装多个产品"
+            >
+              手动调整（混装 / 拆箱）
+            </button>
+          )}
         </div>
-        {cartons.length === 0 ? (
+        {planCartons.length === 0 ? (
           <div className="packing-carton-empty">
-            还没有逐箱记录。导出时留空的话，会按「一箱一个 SKU」自动生成，事后也能查。
+            还没有箱子。选好产品、填上箱数和每箱件数，这里会按「一箱一个 SKU」自动长出来。
           </div>
         ) : (
           <div className="packing-carton-list">
-            {cartons.map((c, i) => (
+            {planCartons.map((c, i) => (
               <div className="packing-carton-item" key={i}>
                 <div className="packing-carton-row">
                   <label>箱号
-                    <input value={c.box_no} onChange={e => patchCarton(i, { box_no: e.target.value })} />
+                    <input value={c.box_no} disabled={!cartonsManual} onChange={e => patchCarton(i, { box_no: e.target.value })} />
                   </label>
                   <label>备注
-                    <input value={c.note} onChange={e => patchCarton(i, { note: e.target.value })} placeholder="如：大箱 / 易碎" />
+                    <input value={c.note} disabled={!cartonsManual} onChange={e => patchCarton(i, { note: e.target.value })} placeholder="如：大箱 / 易碎" />
                   </label>
-                  <span className="packing-carton-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
-                  <button className="packing-remove-btn" onClick={() => removeCarton(i)} title="删除这一箱">×</button>
+                  <span className="packing-carton-seq">第 {i + 1} 箱 / 共 {planCartons.length} 箱</span>
+                  {cartonsManual && <button className="packing-remove-btn" onClick={() => removeCarton(i)} title="删除这一箱">×</button>}
                 </div>
                 {/* OMS 的箱唛一张只放得下 5 行 SKU，第 6 行起会另起一页且那页没有箱号。
                     装的时候就提示，别等打印出来才发现有一页认不出是哪箱。
@@ -1244,7 +1314,7 @@ export default function Packing() {
                 )}
                 {c.items.map((it, j) => (
                   <div className="packing-carton-line" key={j}>
-                    <select value={it.sku} onChange={e => patchCartonItem(i, j, { sku: e.target.value })}>
+                    <select value={it.sku} disabled={!cartonsManual} onChange={e => patchCartonItem(i, j, { sku: e.target.value })}>
                       <option value="">选择产品…</option>
                       {selectedRows.map(p => (
                         <option key={p.sku} value={p.sku}>{p.name_zh || p.name_en || p.sku}</option>
@@ -1255,22 +1325,29 @@ export default function Packing() {
                       min={1}
                       placeholder="数量"
                       value={it.quantity}
+                      disabled={!cartonsManual}
                       onChange={e => patchCartonItem(i, j, { quantity: e.target.value })}
                     />
-                    <button className="packing-remove-btn" onClick={() => removeCartonItem(i, j)} title="移除这一行">×</button>
+                    {cartonsManual && <button className="packing-remove-btn" onClick={() => removeCartonItem(i, j)} title="移除这一行">×</button>}
                   </div>
                 ))}
-                <button className="btn btn-outline btn-sm" onClick={() => addCartonItem(i)}>+ 这箱再加一个产品</button>
+                {cartonsManual && (
+                  <button className="btn btn-outline btn-sm" onClick={() => addCartonItem(i)}>+ 这箱再加一个产品</button>
+                )}
               </div>
             ))}
           </div>
         )}
-        {cartonMismatch.length > 0 && (
+        {cartonTotalPieces > 0 && cartonCoverage.unpacked.length > 0 && (
           <div className="packing-carton-warn" role="status">
-            合计对不上：{cartonMismatch.slice(0, 4).map(row => (
-              `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} 件 / 装箱单 ${row.want} 件`
-            )).join('；')}
-            {cartonMismatch.length > 4 ? ` 等 ${cartonMismatch.length} 项` : ''}
+            还没装进任何一箱：{cartonCoverage.unpacked.slice(0, 4).map(p => p.name_zh || p.sku).join('；')}
+            {cartonCoverage.unpacked.length > 4 ? ` 等 ${cartonCoverage.unpacked.length} 项` : ''}
+          </div>
+        )}
+        {cartonCoverage.extra.length > 0 && (
+          <div className="packing-carton-warn" role="status">
+            箱里有不在本次装箱单的产品：{cartonCoverage.extra.slice(0, 4).join('；')}
+            {cartonCoverage.extra.length > 4 ? ` 等 ${cartonCoverage.extra.length} 项` : ''}
           </div>
         )}
       </div>

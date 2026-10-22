@@ -1086,6 +1086,31 @@ button {
   font-size: 13px;
 }
 
+/* 手工调整过逐箱清单后，上面这两格不再录入，只显示「装进几箱、共几件」。
+   同一份数量只留一个录入处 —— 两边都能改，一改就有一边悄悄过期。 */
+.packing-line-derived {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--surface-subtle, #f4f6fa);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.packing-line-derived strong {
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.packing-line-derived small {
+  margin-left: auto;
+  color: var(--text-subtle);
+}
+
 .packing-selected-table {
   min-width: 680px;
   font-size: 13px;
