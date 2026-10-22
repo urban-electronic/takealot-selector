@@ -30,8 +30,11 @@ from pathlib import Path
 from urllib.request import ProxyHandler, build_opener
 
 ROOT = Path(__file__).resolve().parent.parent
-# 故意不复用 5173：那是 test-responsive-layout.py 的端口，也是 `npm run dev`
-# 的默认端口。撞上了就会连到别人起的服务上，测出来的东西不是这份代码。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _audit_server import free_port  # noqa: E402  （必须先插 sys.path）
+
+# 端口不再写死（原来固定 5199，本机同时有两份工作副本跑 selfcheck 时会互相探到对方的
+# 服务、再被对方的 teardown 杀掉，表现为随机 ERR_CONNECTION_REFUSED）。main() 里现挑。
 PORT = 5199
 BASE = f'http://127.0.0.1:{PORT}'
 WIDTHS = [1920, 1440, 1280, 1024, 900, 768, 640, 480, 390, 320]
@@ -180,8 +183,12 @@ def main():
     DATA, PAGES = load_fixture()
 
     from playwright.sync_api import sync_playwright
+    # 端口现挑 + --strictPort：抢不到就直接失败，不会静默换端口去测别人的构建。
+    global PORT, BASE
+    PORT = free_port()
+    BASE = f'http://127.0.0.1:{PORT}'
     server = subprocess.Popen(
-        ['node', 'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', str(PORT)],
+        ['node', 'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', str(PORT), '--strictPort'],
         cwd=str(ROOT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     problems, report, surfaces = [], [], 0
     # 未声明的接口请求要记账。以前这里直接 404 掉就算了，页面会静默降级成
