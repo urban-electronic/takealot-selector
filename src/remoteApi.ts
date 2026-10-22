@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -541,6 +541,21 @@ export const exportPacking = async (payload: PackingExportPayload): Promise<Blob
     throw new Error(detail);
   }
   return await res.blob();
+};
+
+/**
+ * 逐箱清单查询：某天装了哪些箱，或反查某个 SKU 在哪几箱。
+ * 箱子封上以后外观一样，「哪箱装了什么」只能查这里。
+ */
+export const getPackingCartons = (
+  params: { date?: string; sku?: string; limit?: number } = {},
+): Promise<{ date: string; total_cartons: number; cartons: PackingCartonRecord[] }> => {
+  const q = new URLSearchParams();
+  if (params.date) q.set('date', params.date);
+  if (params.sku) q.set('sku', params.sku);
+  if (params.limit) q.set('limit', String(params.limit));
+  const qs = q.toString();
+  return request(`/api/packing/cartons${qs ? `?${qs}` : ''}`);
 };
 
 /** 装箱单图片访问（img 标签无法带 X-API-Key header，改用 fetch blob） */

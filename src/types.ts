@@ -178,6 +178,23 @@ export interface PackingExportLine {
   count: string;
 }
 
+/**
+ * 逐箱清单：一箱一条，回答「第几箱装了什么」。
+ *
+ * 装箱单（`PackingExportLine`）是按 SKU 汇总的，箱子封上以后外观一样，
+ * 靠它查不出「第 3 箱里是什么」。混装时一箱会有多行 items。
+ */
+export interface PackingCartonItem {
+  sku: string;
+  quantity: string;
+}
+
+export interface PackingCarton {
+  box_no: string;
+  note: string;
+  items: PackingCartonItem[];
+}
+
 export interface PackingExportPayload {
   record_shipment?: boolean;
   date: string;
@@ -186,6 +203,21 @@ export interface PackingExportPayload {
   address: string;
   items: PackingExportLine[];
   draft_key?: string;
+  /** 不传时后端按「一箱一个 SKU」自动展开；混装必须传 */
+  cartons?: PackingCarton[];
+}
+
+/** 查询回来的逐箱记录（含发货单号与「共几箱」） */
+export interface PackingCartonRecord {
+  shipment_id: string;
+  shipment_no: string;
+  shipment_date: string;
+  mark: string;
+  seq: number;
+  total: number;
+  box_no: string;
+  note: string;
+  items: { sku: string; name_zh: string; name_en: string; quantity: number }[];
 }
 
 export interface InventoryRow {

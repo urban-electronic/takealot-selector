@@ -2626,3 +2626,349 @@ table tbody tr:hover { background: #f8fafc; }
   font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .api-key-gate-row button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---- 逐箱清单（Packing）：箱子封上以后，「第几箱装了什么」只能靠这份记录 ---- */
+.packing-carton-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.packing-carton-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.packing-carton-total {
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.packing-carton-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+}
+
+.packing-carton-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.packing-carton-empty {
+  padding: 14px;
+  border: 1px dashed var(--border-subtle, #d7dce4);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+}
+
+.packing-carton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.packing-carton-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle, #e3e7ee);
+  border-radius: 10px;
+  background: var(--surface-sunken, #fafbfd);
+}
+
+.packing-carton-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.packing-carton-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
+.packing-carton-row input {
+  height: 30px;
+  width: 96px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle, #d7dce4);
+  border-radius: 6px;
+  font-size: var(--fs-body);
+}
+
+.packing-carton-seq {
+  margin-left: auto;
+  padding-bottom: 8px;
+  font-size: var(--fs-caption);
+  color: var(--text-subtle);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.packing-carton-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.packing-carton-line select {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle, #d7dce4);
+  border-radius: 6px;
+  font-size: var(--fs-body);
+  background: #fff;
+}
+
+.packing-carton-line input {
+  width: 76px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle, #d7dce4);
+  border-radius: 6px;
+  font-size: var(--fs-body);
+}
+
+.packing-carton-warn {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff8db;
+  color: var(--warning-strong, #8a5900);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+}
+
+/* ---- 箱唛（打印用）：100×70mm 热敏标签，一张一页 ---- */
+.carton-print-overlay {
+  position: fixed;
+  inset: 0;
+  /* 1200 是项目里模态层的约定值；顶部导航是 100，给 60 会被它盖住，工具栏按钮点不到 */
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  background: rgba(20, 22, 26, 0.72);
+  overflow: auto;
+  padding: 20px;
+  gap: 14px;
+}
+
+.carton-print-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--text-body);
+}
+
+.carton-print-toolbar small {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.carton-print-toolbar > div {
+  margin-left: auto;
+}
+
+.carton-print-sheet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-content: flex-start;
+}
+
+.carton-label {
+  width: 100mm;
+  height: 70mm;
+  box-sizing: border-box;
+  padding: 5mm;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5mm;
+  background: #fff;
+  color: #000;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.carton-label-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4mm;
+  padding-bottom: 1.2mm;
+  border-bottom: 0.6mm solid #000;
+}
+
+.carton-label-no {
+  font-size: 15pt;
+  font-weight: 800;
+  letter-spacing: 0.4pt;
+}
+
+.carton-label-seq {
+  font-size: 10pt;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.carton-label-meta {
+  display: flex;
+  gap: 3mm;
+  font-size: 8pt;
+  color: #333;
+}
+
+.carton-label-note {
+  margin-left: auto;
+  font-weight: 700;
+}
+
+.carton-label-items {
+  flex: 1;
+  /* min-height:0 让明细区在内容过多时收缩，否则会把底部的「共 N 件」挤出纸外 */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1mm;
+  overflow: hidden;
+}
+
+.carton-label-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3mm;
+  padding-bottom: 0.8mm;
+  border-bottom: 0.2mm dashed #bbb;
+}
+
+.carton-label-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.carton-label-text strong {
+  font-size: 9.5pt;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.carton-label-text small {
+  font-size: 7pt;
+  color: #555;
+  font-variant-numeric: tabular-nums;
+}
+
+.carton-label-qty {
+  font-size: 13pt;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.carton-label-foot {
+  padding-top: 1mm;
+  border-top: 0.3mm solid #000;
+  font-size: 8pt;
+  text-align: right;
+}
+
+@media print {
+  @page {
+    size: 100mm 70mm;
+    margin: 0;
+  }
+
+  /* 只留箱唛。这里必须 display:none 而不是 visibility:hidden ——
+     后者保留布局高度，应用那一长条会跟着分页，5 张箱唛能印出 14 页。
+     箱唛用 portal 挂在 body 上，所以隐藏 #root 不会连它一起藏掉。 */
+  body > *:not(.carton-print-overlay) {
+    display: none !important;
+  }
+
+  .carton-print-overlay {
+    position: static;
+    inset: auto;
+    padding: 0;
+    background: #fff;
+    display: block;
+    overflow: visible;
+  }
+
+  .carton-print-toolbar {
+    display: none !important;
+  }
+
+  .carton-print-sheet {
+    display: block;
+    gap: 0;
+  }
+
+  .carton-label {
+    width: 100mm;
+    height: 70mm;
+    border-radius: 0;
+    page-break-after: always;
+    break-after: page;
+  }
+
+  .carton-label:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+}
+
+/* 窄屏：逐箱清单的「箱号/备注/第几箱」一行放不下，让它换行而不是撑出横向滚动 */
+@media (max-width: 480px) {
+  .packing-carton-row {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .packing-carton-row label {
+    flex: 1 1 40%;
+  }
+
+  .packing-carton-row input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .packing-carton-seq {
+    margin-left: 0;
+    padding-bottom: 0;
+    order: 9;
+    width: 100%;
+  }
+
+  .packing-carton-line {
+    flex-wrap: wrap;
+  }
+
+  .packing-carton-line select {
+    flex: 1 1 100%;
+  }
+}

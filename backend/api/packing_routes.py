@@ -15,10 +15,11 @@
 8.  POST   /api/packing/sync-variants-from-takealot 官网结构化变体匹配
 9.  POST   /api/packing/image               base64 上传图片（SHA256 命名 + 魔数校验）/ 移除
 10. GET    /api/packing/images/{filename}   图片访问
-11. POST   /api/packing/export              生成装箱单 Excel（DISPIMG 图片）
-12. POST   /api/packing/import              迁移导入（zip：packing_migration.json + images，幂等）
-13. GET    /api/packing/backup              全量备份 zip（JSON + 图片）
-14. GET    /packing-ui                      远程版前端静态页
+11. POST   /api/packing/export              生成装箱单 Excel（DISPIMG 图片）+ 逐箱清单落库
+12. GET    /api/packing/cartons             逐箱清单查询（按日期看当天装箱 / 按 SKU 反查在哪几箱）
+13. POST   /api/packing/import              迁移导入（zip：packing_migration.json + images，幂等）
+14. GET    /api/packing/backup              全量备份 zip（JSON + 图片）
+15. GET    /packing-ui                      远程版前端静态页
 
 鉴权：复用 main.py 的 X-API-Key 中间件（所有 /api 前缀接口），无需重复实现。
 """
@@ -43,7 +44,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import PackingProduct, Product, Shipment, ShipmentLine, Store
+from models import (
+    PackingProduct, Product, Shipment, ShipmentAllocation, ShipmentCarton, ShipmentCartonItem,
+    ShipmentLine, Store,
+)
 from api.inventory_routes import inventory_balance_for_sku
 from api.store_routes import get_store_id
 from services import packing_excel as px
@@ -113,6 +117,17 @@ class ExportLine(BaseModel):
     count: str = '1'
 
 
+class CartonItemIn(BaseModel):
+    sku: str = ''
+    quantity: str = '1'
+
+
+class CartonIn(BaseModel):
+    box_no: str = ''
+    note: str = ''
+    items: List[CartonItemIn] = []
+
+
 class ExportIn(BaseModel):
     record_shipment: bool = False
     date: str = ''
@@ -121,6 +136,8 @@ class ExportIn(BaseModel):
     address: str = '找客服提供'
     items: List[ExportLine] = []
     draft_key: str = ''
+    # 逐箱清单：不传时按「一箱一个 SKU」自动展开，传了就以传的为准（混装必须传）
+    cartons: List[CartonIn] = []
 
 
 # ---- Helpers ----
@@ -460,6 +477,122 @@ def _catalog_product_for_sku(db: Session, sku: str, store_id: str) -> Optional[P
     return None
 
 
+def _auto_cartons(items):
+    """「一箱一个 SKU」时按箱数自动展开成逐箱清单（C01、C02…）。
+
+    装箱页最常见的情况就是每箱只装一个产品：填了「3 箱 × 每箱 10 件」，逐箱清单
+    不用再手填一遍——展开就是 C01→10 件、C02→10 件、C03→10 件。混装才需要人工录，
+    那种情况前端会把 cartons 一起传上来。
+    """
+    out = []
+    seq = 0
+    for p, cartons, count in items:
+        for _ in range(int(cartons)):
+            seq += 1
+            out.append({
+                'box_no': 'C%02d' % seq,
+                'note': '',
+                'items': [{'sku': p['sku'], 'quantity': int(count)}],
+            })
+    return out
+
+
+def _normalize_cartons(raw_cartons, items):
+    """校验并规整逐箱清单；返回 (箱列表, 错误信息)。
+
+    逐箱清单和装箱单必须是**同一票货**：每个 SKU 的箱内件数合计要等于
+    `箱数 × 每箱件数`，否则就是「箱子里写 10 件、账上扣了 12 件」，对不上账
+    比没有记录更糟。前端在提交前会先算一遍并提示差额，这里是最后一道闸。
+    """
+    expected = {}
+    names = {}
+    for p, cartons, count in items:
+        expected[p['sku']] = expected.get(p['sku'], 0) + int(cartons) * int(count)
+        names[p['sku']] = (p.get('name_zh', ''), p.get('name_en', ''))
+
+    if not raw_cartons:
+        return _auto_cartons(items), ''
+
+    cartons_out = []
+    counted = {}
+    for idx, carton in enumerate(raw_cartons, start=1):
+        box_no = (carton.box_no or '').strip() or 'C%02d' % idx
+        rows = []
+        for item in carton.items:
+            sku = (item.sku or '').strip()
+            if not sku:
+                continue
+            if sku not in expected:
+                return None, f'第 {idx} 箱里有不在本次装箱单中的 SKU：{sku}'
+            try:
+                qty = int(str(item.quantity).strip())
+            except (TypeError, ValueError):
+                return None, f'第 {idx} 箱的 {sku} 数量不是整数'
+            if qty < 1:
+                return None, f'第 {idx} 箱的 {sku} 数量必须 ≥1'
+            counted[sku] = counted.get(sku, 0) + qty
+            rows.append({'sku': sku, 'quantity': qty})
+        if not rows:
+            return None, f'第 {idx} 箱没有装任何产品，请删除空箱或补上明细'
+        cartons_out.append({'box_no': box_no, 'note': (carton.note or '').strip(), 'items': rows})
+
+    if not cartons_out:
+        return None, '逐箱清单为空，请至少保留 1 箱'
+
+    for sku, want in expected.items():
+        got = counted.get(sku, 0)
+        if got != want:
+            label = names.get(sku, ('', ''))[0] or sku
+            return None, f'{label}（{sku}）逐箱合计 {got} 件，与装箱单的 {want} 件不一致'
+    for sku in counted:
+        if sku not in expected:
+            return None, f'逐箱清单里的 {sku} 不在本次装箱单中'
+    return cartons_out, ''
+
+
+def _write_cartons(db: Session, shipment: Shipment, store_id: str, cartons, items):
+    """把逐箱清单落到 shipment_cartons / shipment_carton_items。"""
+    names = {p['sku']: (p.get('name_zh', ''), p.get('name_en', '')) for p, _, _ in items}
+    for seq, carton in enumerate(cartons, start=1):
+        row = ShipmentCarton(
+            id=str(uuid.uuid4()),
+            shipment_id=shipment.id,
+            store_id=store_id,
+            seq=seq,
+            box_no=carton['box_no'],
+            note=carton.get('note', ''),
+        )
+        db.add(row)
+        db.flush()
+        for item in carton['items']:
+            name_zh, name_en = names.get(item['sku'], ('', ''))
+            db.add(ShipmentCartonItem(
+                id=str(uuid.uuid4()),
+                carton_id=row.id,
+                sku=item['sku'],
+                name_zh=name_zh,
+                name_en=name_en,
+                quantity=item['quantity'],
+            ))
+
+
+def _replace_cartons(db: Session, shipment: Shipment, store_id: str, cartons, items):
+    """重写某票货的逐箱清单（先删旧箱和箱内明细，再按新布局写入）。
+
+    同一草稿重复导出时，装箱单 Excel 是按**本次**数量重新生成的；如果箱清单只写第一次，
+    就会出现「Excel 上是新数量、箱唛还是旧的」——印错标签比没有标签更糟。
+    """
+    old = db.query(ShipmentCarton).filter(ShipmentCarton.shipment_id == shipment.id).all()
+    if old:
+        db.query(ShipmentCartonItem).filter(
+            ShipmentCartonItem.carton_id.in_([c.id for c in old])
+        ).delete(synchronize_session=False)
+        db.query(ShipmentCarton).filter(
+            ShipmentCarton.shipment_id == shipment.id
+        ).delete(synchronize_session=False)
+    _write_cartons(db, shipment, store_id, cartons, items)
+
+
 def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str) -> None:
     """导出前补齐选品库中的重量和本地图片，不让远程图片只停留在页面预览。"""
     source = _catalog_product_for_sku(db, product.sku, store_id)
@@ -695,6 +828,10 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
         row = public(p)
         row['box_no'] = line.box_no.strip()
         items.append((row, cartons, count))
+    # 逐箱清单先校验：箱内件数合计对不上装箱单就直接拒，不生成半票货。
+    cartons_plan, cartons_error = _normalize_cartons(data.cartons, items)
+    if cartons_error:
+        return fail(400, cartons_error)
     db.commit()
     if data.record_shipment and not existing_shipment:
         for sku, requested in requested_by_sku.items():
@@ -738,12 +875,54 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 count_per_carton=int(count),
                 total_quantity=int(cartons) * int(count),
             ))
+        # 逐箱清单：一箱一条，箱唛就按这个印「第几箱 / 共几箱」
+        _write_cartons(db, shipment, store_id, cartons_plan, items)
         record_operation(db, store_id, "shipment", shipment.id, "confirm" if data.record_shipment else "export", f'{"确认发货单" if data.record_shipment else "导出装箱单"} {shipment.shipment_no}', {
             "shipment_date": shipment.shipment_date,
             "sku_count": len(items),
             "total_quantity": sum(int(cartons) * int(count) for _, cartons, count in items),
+            "carton_count": len(cartons_plan),
             "inventory_deducted": data.record_shipment,
         })
+        db.commit()
+    else:
+        # 同一草稿再导出：Excel 是按本次 payload 重新生成的，快照必须跟着更新，
+        # 否则 Excel 上是新数量、库里还是旧数量，箱唛也会印错。
+        stored = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == existing_shipment.id).all()
+        stored_totals = {l.sku: l.total_quantity for l in stored}
+        new_totals = {}
+        for p, cartons, count in items:
+            new_totals[p['sku']] = new_totals.get(p['sku'], 0) + int(cartons) * int(count)
+        if existing_shipment.status == 'confirmed' and stored_totals != new_totals:
+            return fail(409, '这张装箱单已确认发货（库存已扣减），不能改数量；要改请先作废再重开')
+        dropped = [l for l in stored if l.sku not in new_totals]
+        if dropped:
+            used = db.query(ShipmentAllocation).filter(
+                ShipmentAllocation.line_id.in_([l.id for l in dropped])
+            ).count()
+            if used:
+                return fail(409, '该发货单的明细已被库存分摊引用，不能删除；请作废后重新开单')
+            for line in dropped:
+                db.delete(line)
+        for p, cartons, count in items:
+            line = next((l for l in stored if l.sku == p['sku']), None)
+            if line is None:
+                db.add(ShipmentLine(
+                    id=str(uuid.uuid4()),
+                    shipment_id=existing_shipment.id,
+                    sku=p['sku'],
+                    name_zh=p.get('name_zh', ''),
+                    name_en=p.get('name_en', ''),
+                    image_file=p.get('image_file', ''),
+                    cartons=int(cartons),
+                    count_per_carton=int(count),
+                    total_quantity=int(cartons) * int(count),
+                ))
+            else:
+                line.cartons = int(cartons)
+                line.count_per_carton = int(count)
+                line.total_quantity = int(cartons) * int(count)
+        _replace_cartons(db, existing_shipment, store_id, cartons_plan, items)
         db.commit()
     return Response(
         content=content,
@@ -752,7 +931,72 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
     )
 
 
-# ---- 8. POST /api/packing/import ----
+# ---- 8. GET /api/packing/cartons ----
+
+@router.get('/cartons')
+def list_cartons(date: str = '', sku: str = '', limit: int = 300,
+                 db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    """逐箱清单查询：某天装了哪些箱，或反查某个 SKU 在哪几箱。
+
+    - `date`：按发货日期过滤（业务时区 YYYY-MM-DD）；不传则最近 50 票
+    - `sku`：只返回装有该 SKU 的箱，但**仍带该票货的总箱数**，箱唛才能印「3/5」
+
+    箱子封上以后外观一样，「哪箱装了什么」只能查这里。
+    """
+    query = db.query(Shipment).filter(Shipment.store_id == store_id)
+    if date.strip():
+        query = query.filter(Shipment.shipment_date == date.strip())
+    shipments = query.order_by(Shipment.created_at.desc()).limit(50).all()
+    if not shipments:
+        return {'date': date.strip(), 'total_cartons': 0, 'cartons': []}
+
+    ids = [s.id for s in shipments]
+    cartons = (db.query(ShipmentCarton)
+               .filter(ShipmentCarton.shipment_id.in_(ids))
+               .order_by(ShipmentCarton.seq)
+               .all())
+    if not cartons:
+        return {'date': date.strip(), 'total_cartons': 0, 'cartons': []}
+
+    items_by_carton = {}
+    for item in (db.query(ShipmentCartonItem)
+                 .filter(ShipmentCartonItem.carton_id.in_([c.id for c in cartons]))
+                 .all()):
+        items_by_carton.setdefault(item.carton_id, []).append(item)
+
+    # 每票货的总箱数，用于「第 3 箱 / 共 5 箱」
+    total_by_shipment = {}
+    for c in cartons:
+        total_by_shipment[c.shipment_id] = total_by_shipment.get(c.shipment_id, 0) + 1
+    shipment_by_id = {s.id: s for s in shipments}
+
+    wanted_sku = sku.strip()
+    rows = []
+    for carton in cartons:
+        items = items_by_carton.get(carton.id, [])
+        if wanted_sku and not any(i.sku == wanted_sku for i in items):
+            continue
+        shipment = shipment_by_id[carton.shipment_id]
+        rows.append({
+            'shipment_id': carton.shipment_id,
+            'shipment_no': shipment.shipment_no,
+            'shipment_date': shipment.shipment_date,
+            'mark': shipment.mark or '',
+            'seq': carton.seq,
+            'total': total_by_shipment.get(carton.shipment_id, 0),
+            'box_no': carton.box_no,
+            'note': carton.note or '',
+            'items': [
+                {'sku': i.sku, 'name_zh': i.name_zh or '', 'name_en': i.name_en or '', 'quantity': i.quantity}
+                for i in items
+            ],
+        })
+        if len(rows) >= max(1, min(limit, 1000)):
+            break
+    return {'date': date.strip(), 'total_cartons': len(rows), 'cartons': rows}
+
+
+# ---- 9. POST /api/packing/import ----
 
 @router.post('/import')
 async def import_migration(file: Optional[UploadFile] = File(None), db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
@@ -825,7 +1069,7 @@ async def import_migration(file: Optional[UploadFile] = File(None), db: Session 
     return {'ok': True, 'imported': imported, 'skipped': skipped, 'images_written': images_written}
 
 
-# ---- 9. GET /api/packing/backup ----
+# ---- 10. GET /api/packing/backup ----
 
 @router.get('/backup')
 def backup(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
@@ -849,7 +1093,7 @@ def backup(db: Session = Depends(get_db), store_id: str = Depends(get_store_id))
     )
 
 
-# ---- 10. GET /packing-ui（静态托管远程版前端） ----
+# ---- 11. GET /packing-ui（静态托管远程版前端） ----
 
 ui_router = APIRouter(tags=["packing-ui"])
 

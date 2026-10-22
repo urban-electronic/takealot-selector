@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import { useApi } from '../DataSourceContext';
 import {
   getPackingProducts,
@@ -18,7 +19,7 @@ import {
   getStoreStorageKey,
   readStoreStorage,
 } from '../remoteApi';
-import type { PackingProduct, Product, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
+import type { PackingProduct, Product, PackingCarton, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
 import { safeSetItem } from '../utils/storage';
 import { todayLocal } from '../utils/datetime';
 import { CATALOG_CHANGED } from '../utils/catalogEvents';
@@ -118,7 +119,13 @@ const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 
 type PackingLines = Record<string, { cartons: string; count: string }>;
 type PackingExportForm = { date: string; mark: string; shipping: string; address: string; record_shipment?: boolean };
-type PackingDraft = { selected: string[]; lines: PackingLines; exportForm: Partial<PackingExportForm>; draftKey: string };
+type PackingDraft = {
+  selected: string[];
+  lines: PackingLines;
+  exportForm: Partial<PackingExportForm>;
+  draftKey: string;
+  cartons: PackingCarton[];
+};
 const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 function readPackingDraft(): PackingDraft {
@@ -129,9 +136,10 @@ function readPackingDraft(): PackingDraft {
       lines: parsed.lines && typeof parsed.lines === 'object' ? parsed.lines as PackingLines : {},
       exportForm: parsed.exportForm && typeof parsed.exportForm === 'object' ? parsed.exportForm as Partial<PackingExportForm> : {},
       draftKey: typeof parsed.draftKey === 'string' && parsed.draftKey ? parsed.draftKey : newDraftKey(),
+      cartons: Array.isArray(parsed.cartons) ? parsed.cartons as PackingCarton[] : [],
     };
   } catch {
-    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey() };
+    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [] };
   }
 }
 
@@ -158,6 +166,9 @@ export default function Packing() {
   // 本次装箱单行
   const [selected, setSelected] = useState<Set<string>>(() => new Set(savedDraft.selected));
   const [lines, setLines] = useState<PackingLines>(() => savedDraft.lines);
+  // 逐箱清单：一箱一条。箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录。
+  const [cartons, setCartons] = useState<PackingCarton[]>(() => savedDraft.cartons);
+  const [printOpen, setPrintOpen] = useState(false);
 
   // 导出设置
   const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm, record_shipment: false });
@@ -262,8 +273,9 @@ export default function Packing() {
       lines,
       exportForm,
       draftKey,
+      cartons,
     }));
-  }, [selected, lines, exportForm, draftKey]);
+  }, [selected, lines, exportForm, draftKey, cartons]);
 
   // URL import 自动勾选 + 缺失 SKU 提示一键导入
   useEffect(() => {
@@ -374,6 +386,71 @@ export default function Packing() {
       return { ...prev, [sku]: { ...cur, [key]: value } };
     });
   };
+
+  // ---- 逐箱清单 ----
+  // 「一箱一个 SKU」是常态：按箱数自动展开成 C01..Cn，不用手填一遍。
+  // 混装（一箱多 SKU）只能人工加箱、逐行选 SKU 填数量。
+  const expandCartons = () => {
+    const next: PackingCarton[] = [];
+    selectedRows.forEach(p => {
+      const cartonsCount = parseInt(lines[p.sku]?.cartons || '0', 10) || 0;
+      const perCount = parseInt(lines[p.sku]?.count || '', 10) || 0;
+      for (let i = 0; i < cartonsCount; i += 1) {
+        next.push({ box_no: `C${String(next.length + 1).padStart(2, '0')}`, note: '', items: [{ sku: p.sku, quantity: String(perCount || '') }] });
+      }
+    });
+    setCartons(next);
+  };
+
+  const addCarton = () => {
+    setCartons(prev => [...prev, { box_no: `C${String(prev.length + 1).padStart(2, '0')}`, note: '', items: [{ sku: '', quantity: '' }] }]);
+  };
+
+  const patchCarton = (index: number, patch: Partial<PackingCarton>) => {
+    setCartons(prev => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)));
+  };
+
+  const removeCarton = (index: number) => {
+    setCartons(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const patchCartonItem = (index: number, itemIndex: number, patch: Partial<PackingCarton['items'][number]>) => {
+    setCartons(prev => prev.map((c, i) => (i === index
+      ? { ...c, items: c.items.map((it, j) => (j === itemIndex ? { ...it, ...patch } : it)) }
+      : c)));
+  };
+
+  const addCartonItem = (index: number) => {
+    setCartons(prev => prev.map((c, i) => (i === index ? { ...c, items: [...c.items, { sku: '', quantity: '' }] } : c)));
+  };
+
+  const removeCartonItem = (index: number, itemIndex: number) => {
+    setCartons(prev => prev.map((c, i) => (i === index
+      ? { ...c, items: c.items.filter((_, j) => j !== itemIndex) }
+      : c)));
+  };
+
+  // 箱内合计 vs 装箱单合计：对不上就是「箱子里写 10 件、账上扣 12 件」，
+  // 比没有记录更糟。这里实时算出来给用户看，导出前还会再拦一次。
+  const cartonTotals = useMemo(() => {
+    const got: Record<string, number> = {};
+    cartons.forEach(c => c.items.forEach(it => {
+      const sku = (it.sku || '').trim();
+      if (!sku) return;
+      got[sku] = (got[sku] || 0) + (parseInt(it.quantity || '0', 10) || 0);
+    }));
+    const want: Record<string, number> = {};
+    selectedRows.forEach(p => {
+      want[p.sku] = (parseInt(lines[p.sku]?.cartons || '0', 10) || 0) * (parseInt(lines[p.sku]?.count || '0', 10) || 0);
+    });
+    const skus = Array.from(new Set([...Object.keys(got), ...Object.keys(want)]));
+    return skus.map(sku => ({ sku, got: got[sku] || 0, want: want[sku] || 0 }));
+  }, [cartons, selectedRows, lines]);
+
+  const cartonMismatch = cartonTotals.filter(row => row.got !== row.want);
+  const cartonPieces = (c: PackingCarton) =>
+    c.items.reduce((s, it) => s + (parseInt(it.quantity || '0', 10) || 0), 0);
+  const cartonTotalPieces = cartons.reduce((sum, c) => sum + cartonPieces(c), 0);
 
   const totalCartons = useMemo(
     () => selectedRows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0),
@@ -506,6 +583,17 @@ export default function Packing() {
     if (selectedRows.length !== rows.length) {
       setError('部分勾选产品箱数/每箱件数无效（需 ≥1 的正整数），已自动跳过这些行');
     }
+    // 逐箱清单和装箱单必须是同一票货：合计对不上就不让导，否则箱唛会印错。
+    if (cartons.length) {
+      const bad = cartonTotals.filter(row => row.got !== row.want);
+      if (bad.length) {
+        const detail = bad.slice(0, 3)
+          .map(row => `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} / 装箱单 ${row.want}`)
+          .join('；');
+        setError(`逐箱合计与装箱单不一致：${detail}。请先调整逐箱清单，或点「按 SKU 展开」重来`);
+        return;
+      }
+    }
     setExporting(true);
     setError('');
     try {
@@ -521,6 +609,14 @@ export default function Packing() {
           cartons: lines[p.sku]?.cartons || '1',
           count: lines[p.sku]?.count || String(p.default_count || 1),
         })),
+        // 没填逐箱清单就不传，后端按「一箱一个 SKU」自动展开
+        cartons: cartons.length
+          ? cartons.map(c => ({
+            box_no: c.box_no,
+            note: c.note,
+            items: c.items.filter(it => (it.sku || '').trim()).map(it => ({ sku: it.sku.trim(), quantity: it.quantity || '1' })),
+          }))
+          : undefined,
       };
       const blob = await exportPacking(payload);
       const url = URL.createObjectURL(blob);
@@ -533,6 +629,7 @@ export default function Packing() {
       URL.revokeObjectURL(url);
       setSelected(new Set());
       setLines({});
+      setCartons([]);
       setDraftKey(newDraftKey());
       setImportMissing([]);
       localStorage.removeItem(getStoreStorageKey(PACKING_DRAFT_KEY));
@@ -918,6 +1015,74 @@ export default function Packing() {
         )}
       </div>
 
+      {/* 逐箱清单：箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录 */}
+      <div className="card packing-carton-card">
+        <div className="packing-carton-head">
+          <h3 style={{ margin: 0 }}>逐箱清单</h3>
+          <span className="packing-carton-total">{cartons.length} 箱 · {cartonTotalPieces} 件</span>
+        </div>
+        <small className="packing-carton-hint">
+          箱子封上就分不出哪箱是什么了，这里记下「第几箱装了什么」，箱唛按它印。
+          一箱一个 SKU 点「按 SKU 展开」就行；混装就新建一箱、逐行加产品。
+        </small>
+        <div className="packing-carton-actions">
+          <button className="btn btn-outline btn-sm" onClick={expandCartons} disabled={!selectedRows.length} title="按已选产品的箱数×每箱件数，展开成 C01、C02…">
+            按 SKU 展开
+          </button>
+          <button className="btn btn-outline btn-sm" onClick={addCarton}>+ 新建一箱</button>
+          <button className="btn btn-outline btn-sm" onClick={() => setPrintOpen(true)} disabled={!cartons.length}>打印箱唛</button>
+        </div>
+        {cartons.length === 0 ? (
+          <div className="packing-carton-empty">
+            还没有逐箱记录。导出时留空的话，会按「一箱一个 SKU」自动生成，事后也能查。
+          </div>
+        ) : (
+          <div className="packing-carton-list">
+            {cartons.map((c, i) => (
+              <div className="packing-carton-item" key={i}>
+                <div className="packing-carton-row">
+                  <label>箱号
+                    <input value={c.box_no} onChange={e => patchCarton(i, { box_no: e.target.value })} />
+                  </label>
+                  <label>备注
+                    <input value={c.note} onChange={e => patchCarton(i, { note: e.target.value })} placeholder="如：大箱 / 易碎" />
+                  </label>
+                  <span className="packing-carton-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
+                  <button className="packing-remove-btn" onClick={() => removeCarton(i)} title="删除这一箱">×</button>
+                </div>
+                {c.items.map((it, j) => (
+                  <div className="packing-carton-line" key={j}>
+                    <select value={it.sku} onChange={e => patchCartonItem(i, j, { sku: e.target.value })}>
+                      <option value="">选择产品…</option>
+                      {selectedRows.map(p => (
+                        <option key={p.sku} value={p.sku}>{p.name_zh || p.name_en || p.sku}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      placeholder="数量"
+                      value={it.quantity}
+                      onChange={e => patchCartonItem(i, j, { quantity: e.target.value })}
+                    />
+                    <button className="packing-remove-btn" onClick={() => removeCartonItem(i, j)} title="移除这一行">×</button>
+                  </div>
+                ))}
+                <button className="btn btn-outline btn-sm" onClick={() => addCartonItem(i)}>+ 这箱再加一个产品</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {cartonMismatch.length > 0 && (
+          <div className="packing-carton-warn" role="status">
+            合计对不上：{cartonMismatch.slice(0, 4).map(row => (
+              `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} / 装箱单 ${row.want}`
+            )).join('；')}
+            {cartonMismatch.length > 4 ? ` 等 ${cartonMismatch.length} 项` : ''}
+          </div>
+        )}
+      </div>
+
       {/* 导出设置 */}
       <div className="card packing-export-card">
         <h3 style={{ marginTop: 0, marginBottom: 12 }}>出货信息</h3>
@@ -1157,6 +1322,56 @@ export default function Packing() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 箱唛：贴在箱子外面的那张纸。用 HTML 打印而不是生成 PDF ——
+          箱唛必须能印中文，而前端那个零依赖 PDF 生成器只支持 ASCII（中文会变 ?）。
+          挂到 body 而不是留在 #root 里：打印时要把 #root 整块 display:none，
+          否则应用那一长条布局会跟着分页，5 张箱唛能印出 14 页。 */}
+      {printOpen && createPortal(
+        <div className="carton-print-overlay">
+          <div className="carton-print-toolbar">
+            <strong>箱唛预览 · {cartons.length} 张</strong>
+            <small>打印时选 100×70mm 标签纸、缩放 100%，一张一页</small>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary" onClick={() => window.print()}>打印</button>
+              <button className="btn btn-outline" onClick={() => setPrintOpen(false)}>关闭</button>
+            </div>
+          </div>
+          <div className="carton-print-sheet">
+            {cartons.map((c, i) => (
+              <div className="carton-label" key={i}>
+                <div className="carton-label-head">
+                  <span className="carton-label-no">{c.box_no || `C${String(i + 1).padStart(2, '0')}`}</span>
+                  <span className="carton-label-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
+                </div>
+                <div className="carton-label-meta">
+                  <span>{exportForm.date || todayStr()}</span>
+                  {exportForm.mark ? <span>{exportForm.mark}</span> : null}
+                  {c.note ? <span className="carton-label-note">{c.note}</span> : null}
+                </div>
+                <div className="carton-label-items">
+                  {c.items.filter(it => (it.sku || '').trim()).map((it, j) => {
+                    const product = products.find(p => p.sku === it.sku);
+                    return (
+                      <div className="carton-label-item" key={j}>
+                        <div className="carton-label-text">
+                          <strong>{product?.name_zh || product?.name_en || it.sku}</strong>
+                          <small>{it.sku}</small>
+                        </div>
+                        <div className="carton-label-qty">×{it.quantity || 0}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="carton-label-foot">
+                  {c.items.filter(it => (it.sku || '').trim()).length} 个产品 · {cartonPieces(c)} 件
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

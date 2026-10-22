@@ -323,3 +323,39 @@ class ShipmentAllocation(Base):
     line_id = Column(String, ForeignKey("shipment_lines.id"), primary_key=True)
     domestic_quantity = Column(Integer, nullable=False)
     legacy_quantity = Column(Integer, nullable=False)
+
+
+class ShipmentCarton(Base):
+    """逐箱清单：一箱一条，记「第几箱里装了什么」。
+
+    `ShipmentLine` 是**按 SKU 汇总**（A 有 3 箱 × 10 件），回答不了「第 3 箱装的是
+    什么」——箱子封上以后外观一样，这正是装完就忘的根因。所以再加一层按箱的记录：
+
+    - `seq` 是这一箱在整票货里的序号（1 起），箱唛上印「第 3 箱 / 共 5 箱」；
+    - `box_no` 是印在箱子外面的编号（默认 C01、C02…），可以手改成自己的规则；
+    - 一箱一个 SKU 时导出会自动展开成逐箱；混装由人工在装箱页录入。
+
+    和 Shipment 一样按 store 隔离：同一票货不会跨店铺。
+    """
+    __tablename__ = "shipment_cartons"
+    __table_args__ = (UniqueConstraint("shipment_id", "seq", name="ux_cartons_shipment_seq"),)
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    shipment_id = Column(String, ForeignKey("shipments.id"), nullable=False, index=True)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
+    seq = Column(Integer, nullable=False)
+    box_no = Column(String, default="")
+    note = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ShipmentCartonItem(Base):
+    """箱内明细：一个箱子里的一行 SKU（混装时一箱多行）。"""
+    __tablename__ = "shipment_carton_items"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    carton_id = Column(String, ForeignKey("shipment_cartons.id"), nullable=False, index=True)
+    sku = Column(String, nullable=False, index=True)
+    name_zh = Column(String, default="")
+    name_en = Column(String, default="")
+    quantity = Column(Integer, nullable=False, default=1)
