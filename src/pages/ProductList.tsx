@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, downloadProductLabels, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
@@ -202,6 +202,33 @@ export default function ProductList() {
   });
 
   // 在产品库和装箱单之间切换时保留本次勾选，成功导出装箱单后由装箱单页清除。
+  const [labelLoading, setLabelLoading] = useState(false);
+
+  // 每个 SKU 一个独立 PDF（页面 40×30），多个时后端打包成 zip。
+  // 后端只画 13 位合法 EAN-13 的 SKU，其余跳过。
+  const downloadLabels = async () => {
+    const skus = Array.from(selectedSkus);
+    if (!skus.length || labelLoading) return;
+    setLabelLoading(true);
+    setError('');
+    try {
+      const blob = await downloadProductLabels(skus, { mode: 'single' });
+      const isZip = blob.type.includes('zip');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = isZip ? `标签_${skus.length}个SKU.zip` : `${skus[0]}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '生成产品标签失败');
+    } finally {
+      setLabelLoading(false);
+    }
+  };
+
   useEffect(() => {
     // 每次勾选都会写；配额满时若抛出会让整个列表崩掉
     safeSetItem(getStoreStorageKey(LS_SELECTED_SKUS_KEY), JSON.stringify(Array.from(selectedSkus)));
@@ -1357,6 +1384,19 @@ export default function ProductList() {
             </div>
           )}
         </div>
+
+        <button
+          className="btn btn-outline btn-sm"
+          disabled={selectedSkus.size === 0 || labelLoading}
+          title={
+            selectedSkus.size === 0
+              ? '请先勾选产品（需要 13 位条码才能生成 EAN-13 标签）'
+              : `为选中的 ${selectedSkus.size} 个 SKU 各生成一个 40×30mm 的标签 PDF（多选会打包成 zip），标签打印机直接打`
+          }
+          onClick={downloadLabels}
+        >
+          {labelLoading ? '生成中…' : `下载标签${selectedSkus.size > 0 ? ` (${selectedSkus.size})` : ''}`}
+        </button>
 
         <button
           className="btn btn-primary btn-sm"

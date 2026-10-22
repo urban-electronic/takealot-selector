@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { getFxRates } from '../remoteApi';
+import { getFxRates, downloadProductLabels } from '../remoteApi';
 import { openUrl } from '../api';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
@@ -13,6 +13,8 @@ import { useFxRates } from '../utils/useFxRates';
 import { beijingDateTime } from '../utils/datetime';
 import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
+import { skuVariants } from '../utils/variants';
+import { isEan13 } from '../utils/ean';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
 
 export default function ProductDetail() {
@@ -46,6 +48,36 @@ export default function ProductDetail() {
     if (!ok) return;
     setCopiedSku(true);
     setTimeout(() => setCopiedSku(false), 2000);
+  };
+
+  // 产品标签：每个 SKU 一个独立 PDF（页面就是 40×30mm，标签打印机直接打）
+  const [labelLoading, setLabelLoading] = useState(false);
+  const labelVariants = product ? skuVariants(product.sku) : [];
+  const labelCount = labelVariants.filter(isEan13).length;
+
+  const downloadLabels = async () => {
+    if (!product || labelLoading || !labelCount) return;
+    setLabelLoading(true);
+    try {
+      // 传 id 而不是 sku：后端会把该产品的每个 SKU 拆成一个文件，前端不用重复实现拆分
+      const blob = await downloadProductLabels([], { productIds: [product.id], mode: 'single' });
+      // 多个 SKU 后端会打包成 zip；只有一个就直接是 pdf
+      const isZip = blob.type.includes('zip');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = isZip
+        ? `${product.sku || product.id}_标签_${labelCount}个.zip`
+        : `${labelVariants.find(isEan13) || product.sku || product.id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '生成产品标签失败');
+    } finally {
+      setLabelLoading(false);
+    }
   };
 
   /**
@@ -261,6 +293,11 @@ export default function ProductDetail() {
           </h2>
         </div>
         <div className="page-actions">
+          {labelCount > 0 && (
+            <button className="btn btn-outline" onClick={downloadLabels} disabled={labelLoading}>
+              {labelLoading ? '生成中…' : `下载标签 (${labelCount} 个 SKU)`}
+            </button>
+          )}
           {!editMode ? (
             <button className="btn btn-primary" onClick={() => setEditMode(true)}>编辑</button>
           ) : (
@@ -437,6 +474,23 @@ export default function ProductDetail() {
                 </td>
               </tr>
               <tr><td style={{ fontWeight: 600 }}>SKU</td><td>{product.sku || '-'}</td></tr>
+              <tr>
+                <td style={{ fontWeight: 600 }}>产品标签</td>
+                <td style={{ fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
+                  {labelVariants.length === 0 ? (
+                    '没有 SKU，生成不了标签'
+                  ) : labelCount === 0 ? (
+                    `${labelVariants.length} 个 SKU 都没有 13 位合法条码，生成不了标签`
+                  ) : (
+                    <>
+                      {labelVariants.length} 个 SKU，{labelCount} 个可出标签（每个 SKU 一个 40×30mm 的 PDF）
+                      {labelVariants.length > labelCount
+                        ? `；另有 ${labelVariants.length - labelCount} 个条码不合法`
+                        : ''}
+                    </>
+                  )}
+                </td>
+              </tr>
               <tr><td style={{ fontWeight: 600 }}>中文品名</td><td>{product.chinese_product_name || '-'}</td></tr>
               <tr><td style={{ fontWeight: 600 }}>产品单价</td><td>{formatPrice(product.unit_price_cny, 'CNY')}</td></tr>
               <tr><td style={{ fontWeight: 600 }}>采购总成本</td><td>{formatPrice(product.purchase_cost_cny, 'CNY')}</td></tr>

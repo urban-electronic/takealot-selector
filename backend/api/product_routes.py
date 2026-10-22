@@ -5,14 +5,21 @@
 from datetime import datetime
 from typing import Optional, List, Literal, Dict, Any
 import asyncio
+import io
 import json
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+import tempfile
+import zipfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, field_validator
 
 from database import get_db
 from models import Product, SelectionStatus, ScrapeLog
+from services.label_pdf import generate_label_files, generate_labels, split_skus, variant_items
 from services.product_calculator import calculate_all, determine_selection_status, default_fulfillment_fee_zar
 from services.translator import translate_to_chinese_sync
 from api.store_routes import get_store_id
@@ -885,3 +892,102 @@ def translate_text(data: TranslateRequest):
     """翻译英文产品名到中文"""
     result = translate_to_chinese_sync(data.text)
     return {"chinese_name": result}
+
+
+class LabelsRequest(BaseModel):
+    skus: list[str] = Field(default_factory=list, max_length=2000)
+    # 产品详情页按 id 下载：一个产品有几个 SKU 就出几个文件，前端不用自己拆
+    # Product.id 是 UUID 字符串，不是自增数字
+    product_ids: list[str] = Field(default_factory=list, max_length=500)
+    size: Literal["40x30", "30x40"] = "40x30"
+    copies: int = Field(default=1, ge=1, le=99)
+    # single = 每个 SKU 一个 40x30 的独立 PDF（标签打印机直接打，多个打 zip）
+    # sheet  = A4 拼版，45 张/页带裁切角标（给普通打印机 + 手工裁）
+    mode: Literal["single", "sheet"] = "single"
+
+
+@router.post("/labels")
+def download_labels(data: LabelsRequest, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    """生成 Takealot 风格产品标签。
+
+    一个 SKU 一张 40x30mm（官方 Product Label 的尺寸），版式对齐官方
+    product_labels.pdf：产品名 3 行 + EAN-13 条码 + 1-6-6 分组数字 + M/P 标记。
+    没有 13 位合法条码的 SKU 会被跳过——印出来扫不出的标签是废纸。
+    """
+    wanted = [s.strip() for s in data.skus if s and s.strip()]
+    ids = [i.strip() for i in data.product_ids if isinstance(i, str) and i.strip()]
+    if not wanted and not ids:
+        raise HTTPException(status_code=400, detail="请先勾选产品或指定产品")
+
+    query = db.query(Product).filter(Product.store_id == store_id)
+    items = []
+
+    if ids:
+        # 详情页：按产品 id 取，有几个 SKU 就出几个文件
+        products = query.filter(Product.id.in_(ids)).all()
+        for p in products:
+            items.extend(variant_items(p, data.copies))
+    else:
+        # 列表页勾的是「单个 SKU」，而多规格产品的 sku 字段是空格拼起来的一整串，
+        # 精确 in_ 匹配不上，得用 like 粗筛再按拆分结果精确比对。
+        conds = [Product.sku.like(f"%{s}%") for s in wanted]
+        products = query.filter(or_(*conds)).all()
+        by_variant = {}
+        for p in products:
+            for v in split_skus(p.sku):
+                by_variant.setdefault(v, p)
+        for s in wanted:
+            hit = by_variant.get(s)
+            if hit:
+                items.append({'id': hit.id, 'sku': s, 'name': hit.product_name, 'copies': data.copies})
+                continue
+            # 兼容传整串 sku 的老调用方
+            for p in products:
+                if (p.sku or '').strip() == s:
+                    items.extend(variant_items(p, data.copies))
+                    break
+
+    if not products:
+        raise HTTPException(status_code=404, detail="选中的产品都没有 SKU，生成不了条码")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+
+        if data.mode == "single":
+            # 每个 SKU 一个独立 PDF，页面就是 40x30mm —— 直接丢标签打印机，不用裁。
+            files, skipped, count = generate_label_files(items, tmp_dir, size=data.size)
+            if not files:
+                sample = "；".join(f"{sku or '无SKU'}：{why}" for sku, why in skipped[:5])
+                raise HTTPException(status_code=400, detail=f"没有可生成的标签（{sample}）")
+            if len(files) == 1:
+                content = files[0].read_bytes()
+                media_type = "application/pdf"
+                filename = files[0].name
+            else:
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in files:
+                        zf.write(f, arcname=f.name)
+                content = buf.getvalue()
+                media_type = "application/zip"
+                # HTTP 头只能放 latin-1，文件名不能带中文
+                filename = f"product_labels_{len(files)}_skus.zip"
+        else:
+            output = tmp_dir / "labels.pdf"
+            count, skipped = generate_labels(items, output, size=data.size)
+            if not count:
+                sample = "；".join(f"{sku or '无SKU'}：{why}" for sku, why in skipped[:5])
+                raise HTTPException(status_code=400, detail=f"没有可生成的标签（{sample}）")
+            content = output.read_bytes()
+            media_type = "application/pdf"
+            filename = f"product_labels_{data.size}_{count}.pdf"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Label-Count": str(count),
+            "X-Label-Skipped": str(len(skipped)),
+        },
+    )

@@ -587,3 +587,37 @@ export const cloudBrowserFrame = async (session: string) => {
   if(!response.ok) { let detail='云端画面读取失败'; try { detail=(await response.json()).detail||detail; } catch {} throw Object.assign(new Error(detail),{status:response.status}); }
   return response.blob();
 };
+
+/**
+ * 生成产品标签。默认 single：每个 SKU 一个独立 PDF，页面就是 40×30mm，
+ * 可直接丢给标签打印机；多个 SKU 时后端打包成 zip。
+ * mode='sheet' 才返回 A4 拼版（45 张/页，带裁切角标）。
+ * 传 skus 走列表页批量；传 productIds 走详情页——后端会把该产品的每个 SKU 都拆成一个文件。
+ * 只有 13 位合法 EAN-13 的 SKU 才会被画出来，其余后端跳过。
+ */
+export const downloadProductLabels = async (
+  skus: string[],
+  opts: { size?: '40x30' | '30x40'; copies?: number; productIds?: string[]; mode?: 'single' | 'sheet' } = {},
+): Promise<Blob> => {
+  const res = await fetch(`${getBaseUrl()}/api/products/labels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey(), 'X-Store-ID': getActiveStoreId() },
+    body: JSON.stringify({
+      skus,
+      product_ids: opts.productIds || [],
+      size: opts.size || '40x30',
+      copies: opts.copies || 1,
+      mode: opts.mode || 'single',
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}: ${res.statusText}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail || body?.error || detail;
+    } catch { /* 保留默认错误 */ }
+    throw new Error(detail);
+  }
+  return await res.blob();
+};
