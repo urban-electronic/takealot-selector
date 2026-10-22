@@ -21,14 +21,15 @@
 """
 
 import json
-import subprocess
-import time
+import sys
 from pathlib import Path
-from urllib.request import build_opener, ProxyHandler
 
 from playwright.sync_api import sync_playwright
 
-BASE = 'http://127.0.0.1:5173'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _audit_server import vite_server  # noqa: E402  （必须先插 sys.path）
+
+BASE = 'http://127.0.0.1:5173'  # 默认值；__main__ 会换成现挑的空闲端口（见 _audit_server.py）
 ROOT = Path(__file__).resolve().parents[1]
 
 PACKS = [
@@ -103,7 +104,7 @@ def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={'width': 1440, 'height': 1000})
-        context.add_init_script("localStorage.setItem('api_base_url', 'http://127.0.0.1:5173')")
+        context.add_init_script(f"localStorage.setItem('api_base_url', '{BASE}')")
 
         def intercept(route):
             from urllib.parse import urlsplit, parse_qs
@@ -276,22 +277,9 @@ def run():
 
 
 if __name__ == '__main__':
-    server = subprocess.Popen(
-        ['node', 'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5173'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(ROOT))
-    try:
-        for _ in range(80):
-            try:
-                build_opener(ProxyHandler({})).open(BASE, timeout=1).close()
-                break
-            except OSError:
-                if server.poll() is not None:
-                    raise RuntimeError('Vite test server failed to start')
-                time.sleep(0.1)
-        else:
-            raise RuntimeError('Vite test server did not become ready')
+    # 端口现挑：本机可能同时有另一份工作副本在跑 selfcheck，写死 5173 会互相探到/杀掉
+    # 对方的服务（表现为随机 ERR_CONNECTION_REFUSED 或「按钮找不到」）。
+    with vite_server(ROOT) as base:
+        globals()['BASE'] = base
         failures, errors = run()
-    finally:
-        server.terminate()
-        server.wait(timeout=10)
-    assert not failures and not errors, {'failures': failures, 'page_errors': page_errors}
+    assert not failures and not errors, {'failures': failures, 'page_errors': errors}

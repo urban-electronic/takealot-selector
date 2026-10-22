@@ -220,6 +220,27 @@ export default function Packing() {
   const [deleteSku, setDeleteSku] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ sku: string; x: number; y: number } | null>(null);
 
+  // 三个弹层都写了 aria-modal="true"，那就得能被 Esc 关掉、关掉之前背后不滚动 ——
+  // 产品列表、补货页的弹层都是这么做的，这里一个都没做：键盘用户关不掉，
+  // 窄屏上手指划的其实是背后的装箱表。按「最上面那层」关：确认删除 > 编辑产品 > 查箱子。
+  const openDialog = deleteSku ? 'delete' : editSku ? 'edit' : cartonQueryOpen ? 'query' : '';
+  useEffect(() => {
+    if (!openDialog) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (openDialog === 'delete') setDeleteSku(null);
+      else if (openDialog === 'edit') setEditSku(null);
+      else setCartonQueryOpen(false);
+    };
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', close);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener('keydown', close);
+    };
+  }, [openDialog]);
+
   // 从选品库导入弹层
   const [importOpen, setImportOpen] = useState(false);
   const [importSearch, setImportSearch] = useState('');
@@ -419,17 +440,45 @@ export default function Packing() {
     return prefix ? `${prefix}-${String(index + 1).padStart(3, '0')}` : `C${String(index + 1).padStart(2, '0')}`;
   };
 
+  // 箱数 / 每箱件数的**唯一**口径。显示（小计、合计）、按 SKU 展开、箱内合计校验、
+  // 导出过滤与导出内容必须共用这两个函数：原来各写各的（输入框 `?? '1'`、合计 `|| '0'`、
+  // 导出却要求**手填过**），于是一个「刚勾上、还没动过」的行界面上写着「1 箱 · 小计 10 件」，
+  // 点导出却被判成无效整行跳过，提示还让用户去填那些看起来已经填好的框。
+  const lineCartons = (p: PackingProduct): number => {
+    const raw = lines[p.sku]?.cartons;
+    if (raw === undefined) return 1; // 没动过这一行：输入框显示的就是 1
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0; // 清空了 = 0，导出时点名，不静默当 1
+  };
+  const lineCount = (p: PackingProduct): number => {
+    const raw = lines[p.sku]?.count;
+    if (raw !== undefined && raw.trim() !== '') {
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+    return p.default_count || 0; // 留空按产品库的默认件数（输入框 placeholder 写的就是它）
+  };
+
   // 「一箱一个 SKU」是常态：按箱数自动展开成 C01..Cn，不用手填一遍。
   // 混装（一箱多 SKU）只能人工加箱、逐行选 SKU 填数量。
   const expandCartons = () => {
     const next: PackingCarton[] = [];
     selectedRows.forEach(p => {
-      const cartonsCount = parseInt(lines[p.sku]?.cartons || '0', 10) || 0;
-      const perCount = parseInt(lines[p.sku]?.count || '', 10) || 0;
+      const cartonsCount = lineCartons(p);
+      const perCount = lineCount(p);
+      // 导不出去的行不展开：否则箱里写着这个 SKU、导出却把整行跳过，后端只能报
+      // 「第 N 箱里有不在本次装箱单中的 SKU」——用户看着明明勾了，却被告知不在单里。
+      if (cartonsCount < 1 || perCount < 1) return;
       for (let i = 0; i < cartonsCount; i += 1) {
-        next.push({ box_no: boxNoFor(next.length), note: '', items: [{ sku: p.sku, quantity: String(perCount || '') }] });
+        next.push({ box_no: boxNoFor(next.length), note: '', items: [{ sku: p.sku, quantity: String(perCount) }] });
       }
     });
+    if (!next.length) {
+      // 空列表会把已有的逐箱记录清掉，得说清为什么没展开
+      setError('请先填好箱数和每箱件数（≥1）再按 SKU 展开');
+      return;
+    }
+    setError('');
     setCartons(next);
   };
 
@@ -482,7 +531,7 @@ export default function Packing() {
     }));
     const want: Record<string, number> = {};
     selectedRows.forEach(p => {
-      want[p.sku] = (parseInt(lines[p.sku]?.cartons || '0', 10) || 0) * (parseInt(lines[p.sku]?.count || '0', 10) || 0);
+      want[p.sku] = lineCartons(p) * lineCount(p);
     });
     const skus = Array.from(new Set([...Object.keys(got), ...Object.keys(want)]));
     return skus.map(sku => ({ sku, got: got[sku] || 0, want: want[sku] || 0 }));
@@ -535,15 +584,17 @@ export default function Packing() {
   }, [cartonQueryRows]);
 
   const totalCartons = useMemo(
-    () => selectedRows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0),
+    () => selectedRows.reduce((sum, p) => sum + lineCartons(p), 0),
     [selectedRows, lines],
   );
   const totalCount = useMemo(
-    () => selectedRows.reduce((sum, p) => {
-      const count = parseInt(lines[p.sku]?.count || '', 10) || p.default_count || 0;
-      const cartons = parseInt(lines[p.sku]?.cartons || '1', 10) || 1;
-      return sum + count * cartons;
-    }, 0),
+    () => selectedRows.reduce((sum, p) => sum + lineCount(p) * lineCartons(p), 0),
+    [selectedRows, lines],
+  );
+  // 「将导出 N 行」与实际导出必须是同一批：导不出去的行在这里就排掉，
+  // 免得界面上写 3 行、文件里只有 2 行。
+  const exportableRows = useMemo(
+    () => selectedRows.filter(p => lineCartons(p) >= 1 && lineCount(p) >= 1),
     [selectedRows, lines],
   );
 
@@ -653,11 +704,7 @@ export default function Packing() {
 
   // 导出
   const handleExport = async () => {
-    const rows = selectedRows.filter(p => {
-      const cartons = parseInt(lines[p.sku]?.cartons || '0', 10);
-      const count = parseInt(lines[p.sku]?.count || '', 10);
-      return cartons >= 1 && count >= 1;
-    });
+    const rows = exportableRows;
     if (rows.length === 0) {
       setError('请至少勾选 1 个产品，并填写有效的箱数和每箱件数（≥1）后再导出');
       return;
@@ -688,8 +735,8 @@ export default function Packing() {
         record_shipment: exportForm.record_shipment === true,
         items: rows.map(p => ({
           sku: p.sku,
-          cartons: lines[p.sku]?.cartons || '1',
-          count: lines[p.sku]?.count || String(p.default_count || 1),
+          cartons: String(lineCartons(p)),
+          count: String(lineCount(p)),
         })),
         // 没填逐箱清单就不传，后端按「一箱一个 SKU」自动展开
         cartons: cartons.length
@@ -725,7 +772,7 @@ export default function Packing() {
       // 前端手里没有，草稿又被清空了 —— 这时候最容易漏掉「去 OMS 建入库单」这一步。
       // 直接把入口给出来，并默认勾上刚导出的这一票。
       const autoExpanded = !payload.cartons;
-      const expandedCount = rows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0);
+      const expandedCount = rows.reduce((sum, p) => sum + lineCartons(p), 0);
       const okMsg = exportForm.record_shipment
         ? '导出成功，已登记发货并扣库存'
         : '导出成功，装箱单已留档，库存未变化';
@@ -1093,8 +1140,8 @@ export default function Packing() {
         ) : (
           <div className="packing-selected-scroll">
                 {selectedRows.map(p => {
-                  const cartons = parseInt(lines[p.sku]?.cartons || '1', 10) || 1;
-                  const perCount = parseInt(lines[p.sku]?.count || '', 10) || p.default_count || 0;
+                  const cartons = lineCartons(p);
+                  const perCount = lineCount(p);
                   return (
                     <div className="packing-selected-item" key={p.sku}>
                       <div className="packing-selected-item-head">
@@ -1255,7 +1302,7 @@ export default function Packing() {
           <button className="btn packing-export-btn packing-export-wide" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
           </button>
-          <span style={{ fontSize: 13, color: 'var(--text-subtle)' }}>将导出 {selectedRows.length} 行装箱单数据（带产品图）</span>
+          <span style={{ fontSize: 13, color: 'var(--text-subtle)' }}>将导出 {exportableRows.length} 行装箱单数据（带产品图）</span>
         </div>
       </div>
       </aside>

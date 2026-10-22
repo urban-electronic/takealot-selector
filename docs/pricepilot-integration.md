@@ -1557,3 +1557,48 @@ WorkBuddy；基线 `eb6db9bf07`。
 - 复现：产品名改回现扫 `products` → 「产品名要从 labelNames.current 取」转红；
   去掉 `role="status"` → 对应断言转红（均已还原）。
 - 复测：`test-label-ean.cjs` 96 条检查；`tsc --noEmit` 通过。
+
+### PACK-DEFAULT-01 装箱单默认箱数/件数一个口径，六处共用（2026-10-23）
+
+WorkBuddy；基线 `8f3a1df552`。
+
+- 症状：「刚勾上、还没动过」的一行，界面写着「1 箱 · 小计 12 件」（输入框默认 1、
+  placeholder 写「默认 12」），但导出过滤要求**手填过**才有效（`parseInt(lines[sku].count)`
+  为 NaN 整行跳过），于是「勾一个产品、什么都不改、点导出」报「请填写有效的箱数和每箱
+  件数」；「将导出 N 行」数的是勾选数；按 SKU 展开的箱内数量是空串（印成「×0」）；
+  导出成功提示写「已自动展开 0 箱」。
+- 改动：`src/pages/Packing.tsx` 抽出 `lineCartons()` / `lineCount()`（没动过 = 1 箱 ×
+  `default_count`，显式清空 = 0），显示、汇总、按 SKU 展开、箱内合计校验、导出过滤与
+  导出内容六处全部改走它们；`expandCartons()` 跳过导不出去的行并说明原因。
+- 复现：`exportableRows` 改回「必须手填」→ `test-packing-display.cjs` 在
+  「将导出 1 行」转红（已还原）。
+- 复测：`test-packing-display.cjs` 28 → 40 条断言；`tsc --noEmit` 通过；
+  `scripts/test-packing-oms.py` 8 组仍全过。
+
+### PACK-MODAL-01 装箱页三个弹层补 Esc 关闭与滚动锁（2026-10-23）
+
+WorkBuddy；基线 `8f3a1df552`。
+
+- 症状：查箱子 / 编辑装箱产品 / 确认删除都写了 `aria-modal="true"`，但都不能用 Esc 关闭、
+  也不锁背景滚动（产品列表、补货页的同类弹层都做了）。键盘用户关不掉，窄屏上手指划的
+  其实是背后的装箱表。
+- 改动：`src/pages/Packing.tsx` 加一个 effect：有弹层打开时锁 `body` 滚动，Esc 关
+  「最上面那层」（确认删除 > 编辑产品 > 查箱子），关闭后恢复原滚动值。
+- 复现：把 Esc 分支短路 → 「Escape closes 「查箱子」」转红（已还原）。
+- 复测：同上 40 条断言里的 4 条弹层断言。
+
+### AUDIT-PORT-01 四个浏览器审计各自现挑端口（2026-10-23）
+
+WorkBuddy；基线 `8f3a1df552`。
+
+- 症状：`test-responsive-layout.py` / `test-packing-oms.py` 写死 5173、
+  `test-contrast-audit.py` 5183、`test-text-overlap.py` 5199。本机同时有另一份工作副本
+  在跑 selfcheck 时（实测 01:16 有另一个 `_repo` 的 pytest 在跑），两边探到的是**对方**
+  起的服务，先结束的一方 teardown 把对方正在用的服务杀掉 → 随机出现
+  `ERR_CONNECTION_REFUSED`、或「按钮找不到」这类假红；vite 在端口被占时还会**静默**
+  换端口，断言就可能打在另一份构建上而结论写着「通过」。
+- 改动：新增 `scripts/_audit_server.py`（`free_port()` + `vite_server()` 上下文管理器，
+  带 `--strictPort`、就绪超时、terminate→kill 兜底），四个审计改为从它取 BASE。
+- 复现：并发跑 `test-packing-oms.py` 与 `test-responsive-layout.py`，改前两者抢 5173
+  （其中一个必然半路掉线），改后两个都 exit 0。
+- 复测：全量 selfcheck 36 步通过，四个审计各自的真实浏览器断言全过。

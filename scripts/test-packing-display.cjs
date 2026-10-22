@@ -12,6 +12,7 @@ for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Ev
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 if (!dom.window.URL.createObjectURL) dom.window.URL.createObjectURL = () => 'blob:stub';
+if (!dom.window.URL.revokeObjectURL) dom.window.URL.revokeObjectURL = () => {};
 
 const React = require('react');
 const { act } = React;
@@ -22,6 +23,7 @@ const file = path.resolve(__dirname, '../src/pages/Packing.tsx');
 let catalog = [];
 let packingReads = 0;
 const writes = [];
+const exported = [];
 const api = {
   getProducts: async () => [],
   getImageUrl: (x) => x,
@@ -37,7 +39,8 @@ const remote = {
   importFromProducts: async () => ({ ok: true, imported: 0, skipped: 0, failed: [] }),
   syncPackingImagesFromProducts: async () => ({ ok: true, updated: 0, total_pending: 0, failed: [] }),
   syncPackingVariantsFromTakealot: async () => ({ ok: true, groups_checked: 0, matched: 0, images: 0, unresolved: [] }),
-  exportPacking: async () => ({ ok: true }),
+  exportPacking: async (payload) => { exported.push(payload); return { ok: true }; },
+  getPackingCartons: async () => ({ date: '', total_cartons: 0, cartons: [] }),
   fetchPackingImageBlob: async () => { throw new Error('no image in fixture'); },
   getShipments: async () => [],
   exportInboundTemplate: async () => ({ ok: true }),
@@ -85,7 +88,7 @@ catalog = [
   // 非中文定语要能被标出来
   row({ sku: '113', name_zh: 'Color·daisy', name_en: 'Steering Cover - daisy', variant_group: 'g2', variant_label: 'Color·daisy', is_primary_variant: true }),
   // 单规格：中文名就是全名，不该被当成定语截断
-  row({ sku: '114', name_zh: '露营速干遮阳帽', name_en: 'Camping Hat' }),
+  row({ sku: '114', name_zh: '露营速干遮阳帽', name_en: 'Camping Hat', default_count: 12 }),
 ];
 
 const host = document.getElementById('root');
@@ -149,6 +152,63 @@ const root = createRoot(host);
   await act(async () => { await Promise.resolve(); });
   check(packingReads > before, 'a catalog change triggers a packing reload');
   check(host.textContent.includes('改过的中文名'), 'the edited Chinese name shows up in the packing list');
+
+  // ---- 箱数 / 每箱件数的默认值：界面上写多少，导出就必须是多少 ----------------
+  // 输入框里「箱数」默认显示 1、「每箱件数」的 placeholder 写着「默认 12」，小计也按 12 算；
+  // 但导出曾经要求**手填过**才算有效（`parseInt(lines[sku].count)` 为 NaN 就整行跳过）。
+  // 于是「勾一个产品、什么都不改、点导出」会报「请填写有效的箱数和每箱件数」——
+  // 让用户去填那两个看起来已经填好的框。
+  await act(async () => { rowOf('114').querySelector('input[type=checkbox]').click(); });
+  await act(async () => { await Promise.resolve(); });
+  const pickedRow = [...host.querySelectorAll('.packing-selected-item')][0];
+  check(!!pickedRow, 'selecting a product adds a row to the packing list');
+  check(pickedRow.querySelector('.packing-line-total').textContent.includes('12 件'),
+    `the row subtotal uses the default pieces per carton, got ${pickedRow.querySelector('.packing-line-total').textContent}`);
+  const headTotal = host.querySelector('.packing-summary-banner small').textContent;
+  check(headTotal.includes('1 箱') && headTotal.includes('12 件'),
+    `the list header must agree with the row (1 carton, 12 pieces), got ${headTotal}`);
+  check(host.querySelector('.packing-export-card').textContent.includes('将导出 1 行'),
+    'the export hint counts the rows that will actually be exported');
+
+  // 按 SKU 展开：箱内数量必须是默认件数，不能是空（空会印成「×0」）
+  const expandBtn = [...host.querySelectorAll('.packing-carton-actions button')].find(b => b.textContent.includes('按 SKU 展开'));
+  await act(async () => { expandBtn.click(); });
+  await act(async () => { await Promise.resolve(); });
+  check(host.querySelectorAll('.packing-carton-item').length === 1, 'expanding one carton of one SKU yields one carton');
+  const qtyInput = host.querySelector('.packing-carton-line input[type=number]');
+  check(qtyInput && qtyInput.value === '12',
+    `the carton line must carry the default pieces (12), got ${qtyInput && qtyInput.value}`);
+  check(!host.querySelector('.packing-carton-warn'), 'a default-filled carton list must not be flagged as mismatched');
+
+  // ---- 弹层：声明了 aria-modal 就得能被 Esc 关掉、关掉前背后不滚动 -------------
+  // 产品列表、补货页的弹层都是这么做的，装箱页三个弹层一个都没做：
+  // 键盘用户关不掉，窄屏上手指划的其实是背后的装箱表。
+  const queryBtn = [...host.querySelectorAll('button')].find(b => b.textContent.trim() === '查箱子');
+  check(!!queryBtn, 'the packing page has a 「查箱子」 entry point');
+  await act(async () => { queryBtn.click(); await Promise.resolve(); });
+  check(!!host.querySelector('.carton-query-modal'), '「查箱子」 opens a dialog');
+  check(document.body.style.overflow === 'hidden', 'an aria-modal dialog must lock background scrolling');
+  await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' })); });
+  check(!host.querySelector('.carton-query-modal'), 'Escape closes 「查箱子」（键盘用户没有别的关闭方式）');
+  check(document.body.style.overflow !== 'hidden', 'closing the dialog restores background scrolling');
+
+  const editBtn = [...rowOf('114').querySelectorAll('button')].find(b => b.textContent.trim() === '编辑');
+  await act(async () => { editBtn.click(); await Promise.resolve(); });
+  check(!!host.querySelector('[aria-label="编辑装箱产品"]'), '「编辑」 opens the edit dialog');
+  check(document.body.style.overflow === 'hidden', 'the edit dialog locks background scrolling too');
+  await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' })); });
+  check(!host.querySelector('[aria-label="编辑装箱产品"]'), 'Escape closes the edit dialog');
+  check(document.body.style.overflow !== 'hidden', 'closing the edit dialog restores scrolling');
+
+  // 导出 payload：默认值必须原样进 items 与 cartons（后端拿它生成装箱单与箱唛）
+  const exportBtn = host.querySelector('.packing-export-btn');
+  await act(async () => { exportBtn.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(exported.length === 1, `export must be called once, got ${exported.length}`);
+  const payload = exported[0] || {};
+  check(JSON.stringify(payload.items) === JSON.stringify([{ sku: '114', cartons: '1', count: '12' }]),
+    `export items must carry cartons=1 / count=12, got ${JSON.stringify(payload.items)}`);
+  check(JSON.stringify(payload.cartons) === JSON.stringify([{ box_no: 'C01', note: '', items: [{ sku: '114', quantity: '12' }] }]),
+    `export cartons must carry quantity=12, got ${JSON.stringify(payload.cartons)}`);
 
   check(writes.length === 0, 'rendering and reloading never writes to the backend');
   await act(async () => root.unmount());
