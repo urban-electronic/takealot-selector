@@ -74,7 +74,9 @@ def carton_records(sku=''):
             mark='CK-01', seq=seq, total=5, box_no=box_no, note='',
             items=[dict(sku=s, name_zh=zh, name_en=en, quantity=qty)],
         ))
-    return {'date': '2026-10-22', 'total_cartons': 5, 'cartons': rows}
+    # total_cartons 忠实于后端：它是「本次返回多少箱」= len(rows)，按 SKU 筛时会变小。
+    # 这里千万别写死 5 —— fixture 比后端宽容，就会把「共 N 箱」的文案矛盾遮住。
+    return {'date': '2026-10-22', 'total_cartons': len(rows), 'cartons': rows}
 
 
 def run():
@@ -224,8 +226,10 @@ def run():
         page.wait_for_timeout(500)
         check(page.locator('.carton-query-row').count() == 2, f'按 SKU 查应只剩 2 箱，实得 {page.locator(".carton-query-row").count()}')
         sku_summary = page.locator('.carton-query-summary').inner_text()
-        check('共 5 箱' in sku_summary and '只列出装了' in sku_summary,
-              f'按 SKU 查要说明「共 N 箱仍是整票总数」，实得 {sku_summary!r}')
+        # 按 SKU 筛时后端 total_cartons 只是命中数，文案不能说「共 N 箱」否则自相矛盾
+        check('找到 2 箱' in sku_summary and '整票总数' in sku_summary,
+              f'按 SKU 查应说「找到 2 箱…整票总数」，实得 {sku_summary!r}')
+        check('共 2 箱' not in sku_summary, f'按 SKU 查不能说「共 2 箱」（与「共 5 箱」矛盾），实得 {sku_summary!r}')
         sku_row = page.locator('.carton-query-row').nth(0).inner_text()
         check('第 4 箱' in sku_row and '共 5 箱' in sku_row,
               f'按 SKU 查到的第一箱应是「第 4 箱 / 共 5 箱」，实得 {sku_row!r}')

@@ -1229,7 +1229,10 @@ export default function Packing() {
                 {cartonQueryLoading
                   ? '查询中…'
                   : cartonQueryRows.length
-                    ? `共 ${cartonQueryTotal} 箱${cartonQuerySku.trim() ? `（只列出装了 ${cartonQuerySku.trim()} 的箱，箱唛上的「共 N 箱」仍是整票总数）` : ''}`
+                    ? (cartonQuerySku.trim()
+                      // 按 SKU 筛时后端返回的 total_cartons 只是命中数，说「共 N 箱」会自相矛盾
+                      ? `找到 ${cartonQueryRows.length} 箱装了 ${cartonQuerySku.trim()}（箱唛上的「共 N 箱」仍是整票总数）`
+                      : `共 ${cartonQueryTotal} 箱`)
                     : '这一天没有装箱记录'}
               </div>
             )}
