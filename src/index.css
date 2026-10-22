@@ -21,7 +21,16 @@
 }
 
 body {
-  font-family: 'Microsoft YaHei UI', 'PingFang SC', 'Microsoft YaHei', ui-rounded, system-ui, sans-serif;
+  /* 西文优先，中文回退。
+     原来 'Microsoft YaHei UI' 排第一，英文和数字就用了雅黑自带的西文字形 ——
+     雅黑的西文被拉齐到中文的宽度，看着像等宽字体（尤其表格里的 48.11% / R 104.88 /
+     产品英文名），跟中文标题混在一起很跳。
+     注意：中文 Windows 上 `system-ui` 解析出来**就是** Microsoft YaHei UI
+     （实测 canvas 量宽度两者完全一致），所以 system-ui 放前面没用，必须把
+     'Segoe UI' / -apple-system 显式排在前面；汉字不在这些字体里，会自动回退到雅黑，
+     中文显示一点不变。 */
+  font-family: -apple-system, 'Segoe UI', system-ui, 'Helvetica Neue',
+    'Microsoft YaHei UI', 'PingFang SC', 'Microsoft YaHei', ui-rounded, sans-serif;
   -webkit-font-smoothing: antialiased;
   background: var(--color-bg);
   color: var(--color-text);
