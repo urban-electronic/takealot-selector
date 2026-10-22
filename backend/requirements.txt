@@ -11,3 +11,6 @@ lxml==5.3.0
 python-multipart==0.0.12
 cryptography>=44.0.0,<47.0.0
 tzdata>=2024.1
+# 产品标签 PDF（services/label_pdf.py）。Dockerfile 和 CI 装的都是这份，
+# 只加到根目录 requirements.txt 不够——容器启动时会 import 失败。
+reportlab>=4.0
