@@ -7,7 +7,7 @@ import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { useFeeCategories } from '../utils/useFeeCategories';
-import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, serializeMarketPrices, today } from '../utils/marketPrice';
+import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPrice, fxCaption, manualPriceEntry, marketInsights, parseMarketPrices, serializeMarketPrices } from '../utils/marketPrice';
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { beijingDateTime } from '../utils/datetime';
@@ -158,13 +158,9 @@ export default function ProductDetail() {
     if (!Number.isFinite(value) || value < 0) {
       delete next[code];
     } else {
-      next[code] = {
-        ...(next[code] || {}),
-        price: value,
-        cur: MARKET_META[code].cur,
-        src: next[code]?.src || '手工',
-        at: today(),
-      };
+      // 日期用业务时区、并清掉上一次自动同步留下的 stale/miss —— 两条口径
+      // 都在 manualPriceEntry() 里，与 /api/market-prices/batch 保持一致。
+      next[code] = manualPriceEntry(next[code], code, value);
     }
     setMpDraft(next);
     updateField('market_prices', serializeMarketPrices(next));

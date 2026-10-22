@@ -35,9 +35,13 @@ UTC 16:00 之后创建的记录连日期都是前一天。`toLocaleString` 不�
 import { todayLocal } from '../utils/datetime';   // YYYY-MM-DD，Asia/Shanghai
 ```
 
-采购默认日期、库存调整默认日期、补货计划默认日期、装箱单导出日期与文件名都走它。
-页面里不要再写 `getFullYear()/getMonth()/getDate()` 拼日期——`Packing.tsx` 曾经有一份私有实现，
-非东八区机器上装箱单日期与其它页差一天。
+采购默认日期、库存调整默认日期、补货计划默认日期、装箱单导出日期与文件名、
+多市场参考价的「采集日期」都走它。页面里不要再写 `getFullYear()/getMonth()/getDate()`
+拼日期——`Packing.tsx` 曾经有一份私有实现，非东八区机器上装箱单日期与其它页差一天；
+`utils/marketPrice.ts` 里的 `today()` 是同一类残留（2026-10-22 删掉）。
+
+守卫：`scripts/test-datetime.cjs` 扫**整个 `src/`**，出现 `getFullYear()/getMonth()/getDate()`
+即失败；只盯单个页面时，新文件会再长出第三份实现。
 
 ## 4. 服务端要落「用户看得见的日期」时，显式写 UTC+8
 

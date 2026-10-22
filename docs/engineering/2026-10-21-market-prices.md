@@ -31,6 +31,10 @@
 3. **回写**：`serializeMarketPrices()` 同样丢掉没有有效价格的市场——后端每个市场都
    要求数值 `price`，把「只有 cur 没有 price」的条目塞进 PATCH 会被 400 掉，
    整次保存失败。全部市场都空时返回空串，即清空该字段。
+   手工改一个市场统一走 `manualPriceEntry()`：`at` 由 `todayLocal()` 生成（Asia/Shanghai，
+   与采购/库存/装箱同一份业务日期），并清掉上次自动同步留下的 `stale`/`miss`/`last_error`
+   ——与 `/api/market-prices/batch` 同一口径。`src` 与 `url` 原样保留：这一格仍由每日
+   同步负责，成功抓取照常覆盖回来。
 
 ## 展示口径
 
@@ -44,6 +48,10 @@
   三个市场都在编辑态可手工录入，清空即删除该市场。
   淘宝的「样本条数」只在**已经有均价**时才出现：没有价格就没有「均了几个样本」，
   否则输入框可点可输但 `setMarketSample()` 会直接返回，敲进去的数字被静默丢掉。
+- 价格前面的**符号跟着条目上的 `cur` 走**（`symbolFor()` → `entryCurrency()`），
+  不跟市场写死：`entryCurrency()` 本来就承认迁移数据可能带别的币种，而
+  `MARKET_META` 再存一份符号表就会出现同一行「S$99」配「无汇率」——左边说新加坡元、
+  右边说不认识这个币种。认不出的币种写成 `GBP 99`（带代码），不猜符号。
 - 比价结论只出同币种能直接比的那一项（到手价 / 原价），不出跨币种比值。
 
 ## 兰特折算
@@ -83,10 +91,12 @@
   `backend/tests/test_market_price_sync.py::test_auto_markets_only_lists_writable_markets`
   （`status.auto_markets` 里的每个市场都必须能通过 `PriceInput` 校验——这个字段不参与
   任何校验，写错了会一直很安静）。
-- 前端：`scripts/test-market-prices.cjs`（89 条断言：解析、空值不当 0、数字字符串、
-  坏输入、序列化丢空市场、往返一致、币种符号与小数位、只显示采到的市场、兰特折算方向与
-  千分位、缺汇率时退回原币、汇率说明文案、批量录入只发真改过的行 / 无效行点名 / 清空发
-  `price:null`）；
+- 前端：`scripts/test-market-prices.cjs`（110 条断言：解析、空值不当 0、数字字符串、
+  坏输入、序列化丢空市场、往返一致、币种符号与小数位、符号跟 `cur` 走（USD 不许冒用 S$）、
+  只显示采到的市场、兰特折算方向与千分位、缺汇率时退回原币、汇率说明文案、
+  批量录入只发真改过的行 / 无效行点名 / 清空发 `price:null`、
+  手工改价按北京时间记日期并清掉 stale/miss/last_error）；
+  `scripts/test-datetime.cjs`（30 条断言，含「扫整个 `src/` 不许自己拼本地日期」）；
   `scripts/test-fx-rates.cjs`（21 条断言：没有缓存退回兜底、缓存命中、坏 JSON / 没有可用
   货币时当没缓存、兜底标记与过期标记原样保留、过期与时间戳非法时按年龄重算 `stale`、
   localStorage 读不了时不抛异常）。

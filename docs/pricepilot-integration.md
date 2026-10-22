@@ -1200,3 +1200,55 @@ WorkBuddy；基线 `fcba9ad87c`。
 - 复现：`test-datetime.cjs` 加源码断言——`Packing.tsx` 不许出现
   `getFullYear()/getMonth()/getDate()`，且必须从 `utils/datetime` 导入。把私有实现放回去即转红（已还原）。
 - 复测：`test-datetime.cjs` 28 条断言；`test-packing-display.cjs` 通过；全量 selfcheck 同上。
+
+### MARKET-DATE-02 参考价的采集日期按北京时间写（2026-10-22）
+
+WorkBuddy；基线 `5a790f13cd`。
+
+- 症状：`src/utils/marketPrice.ts` 里有一份私有 `today()`（`getFullYear/getMonth/getDate`），
+  取的是**浏览器本地时区**；采购、库存、补货、装箱四个页面都走 `todayLocal()`
+  （Asia/Shanghai）。非东八区的机器上，早上录进详情页的参考价 `at` 会被记成前一天，
+  列表悬停卡与详情页显示的「采集日期」比同一时刻的其它业务日期差一天。
+  这是 PACK-DATE-01 修掉的同一类残留：当时只盯了 `Packing.tsx`，没扫全目录。
+- 改动：删掉私有 `today()`，改由 `todayLocal()` 生成；新增 `manualPriceEntry()` 统一
+  「手工改一个市场」的写法（日期 + 币种 + 来源 + 清失败痕迹），`ProductDetail.tsx`
+  的 `setMarketPrice()` 只调它。
+- 复现：`test-datetime.cjs` 的源码守卫从「只看 `Packing.tsx`」改成**扫整个 `src/`**，
+  出现 `getFullYear()/getMonth()/getDate()` 即失败（28→30 条）；`test-market-prices.cjs`
+  钉住 `at: todayLocal()` 与「不许再有 `function today(`」。开发机本身是东八区，
+  只比日期差抓不到，所以同时钉实现。
+- 复测：`test-datetime.cjs` 30 条、`test-market-prices.cjs` 110 条；tsc（`noUnusedLocals`）通过。
+
+### MARKET-STALE-01 手工改价不再留着「已过期」标记（2026-10-22）
+
+WorkBuddy；基线 `5a790f13cd`。
+
+- 症状：`market_prices` 的两个写入口径不一致。`POST /api/market-prices/batch` 写入时
+  `pop('stale')`/`pop('miss')`，详情页 `setMarketPrice()` 却原样 spread 旧条目。
+  于是新加坡价连续三次没读到（`stale=true`、`miss=3`）之后，用户手工把正确价格填进去，
+  列表与详情页仍写「· 已过期（最近一次没读到）」，悬停卡还把这一格压到 0.6 透明——
+  看起来像这次录入没生效；下一次抓取失败（`miss` 已是 3）会立刻再打回 stale。
+- 改动：`manualPriceEntry()` 在写入新价时清掉 `stale`/`miss`/`last_error`，与 `/batch`
+  一致。**不改 `src`**：这一格仍是每日自动重读的市场，成功同步照常覆盖回来；
+  `url` 也原样保留，否则自动同步再也回不来。
+- 复现：`test-market-prices.cjs` 新增断言——手工改价后三个失败字段必须消失，
+  `src`/`url` 必须保留。把 `delete next.stale/miss/last_error` 去掉即报
+  `手工改价必须清掉 stale（否则界面仍写「已过期」）`（已还原）。
+- 复测：`test-market-prices.cjs` 89→110 条。
+
+### MARKET-CUR-01 参考价的符号跟着条目币种走（2026-10-22）
+
+WorkBuddy；基线 `5a790f13cd`。
+
+- 症状：`formatMarketPrice()` 一直用 `MARKET_META[code].symbol` 渲染价格，而
+  `entryCurrency()` 明确承认「条目上写了 `cur` 就以它为准（迁移数据可能有别种货币）」。
+  两条口径并存的结果是同一行自相矛盾：迁移数据里一条 `{"price":99,"cur":"USD"}` 的
+  新加坡条目显示成 `S$99`，兰特列却写「无汇率」——左边说是新加坡元，右边说不认识这个币种。
+- 改动：符号表从 `MARKET_META` 挪到 `CURRENCY_SYMBOL`（按币种索引），
+  `symbolFor()` 按 `entryCurrency()` 取符号；认不出的币种写成 `GBP 99` 这种带代码的形式，
+  不猜符号、也不冒用市场的符号。`MARKET_META` 只剩 `label/short/cur`，不再自带第二份符号表。
+- 复现：`test-market-prices.cjs` 新增 7 条断言（`SGD→S$`、`CNY→¥`、`USD→US$`、
+  未知币种带代码、没写 `cur` 退回市场默认、`MARKET_META` 不许再有 `symbol`）。
+  把 `symbolFor()` 改回「按市场取符号」即报 `别的币种不许冒用 S$`（已还原）。
+- 复测：同上；`test-product-pagination.cjs` 的 TS 加载器补上递归 `m.require`
+  （marketPrice 现在 import 了 `utils/datetime`，只编译第一层会 MODULE_NOT_FOUND）。

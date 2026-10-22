@@ -6,11 +6,25 @@
 //      把 null 当 0 渲染，用户看到的是一个像真价格的假价格，比空着更糟。
 //   2) 空市场不许进 payload：后端 market_prices 每个市场都要求数值 price，
 //      塞一个只有 cur 没有 price 的条目进去会被 400 掉，整次保存失败。
+//   3) 参考价的「采集日期」与「失败痕迹」只有一套口径：日期走 utils/datetime 的
+//      todayLocal()（不是浏览器本地时区），手工改价要清掉 stale/miss/last_error
+//      （否则填了新价界面还挂「已过期」）。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
+
+// marketPrice.ts 现在依赖 utils/datetime。Node 默认不认 .ts，注册一个扩展钩子，
+// 让 require('./datetime') 也走同样的 transpile。
+Module._extensions['.ts'] = (target, filename) => {
+  target._compile(
+    ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    }).outputText,
+    filename,
+  );
+};
 
 const file = path.resolve(__dirname, '../src/utils/marketPrice.ts');
 const mod = new Module(file, module);
@@ -22,7 +36,7 @@ mod._compile(
   }).outputText,
   file,
 );
-const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX, buildMarketBatch, describeSkipped } = mod.exports;
+const { parseMarketPrices, serializeMarketPrices, formatMarketPrice, formatSyncTime, marketInsights, MARKET_ORDER, MARKET_META, visibleMarkets, toZar, formatZar, formatZarPrice, fxCaption, FALLBACK_FX, buildMarketBatch, describeSkipped, manualPriceEntry, symbolFor } = mod.exports;
 
 let checks = 0;
 const check = (value, message) => { assert.ok(value, message); checks++; };
@@ -247,6 +261,56 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   check(list.includes('describeSkipped('), '无效行要在提示里点名');
   check(!/if \(!Number\.isFinite\(value\) \|\| value <= 0\) return;/.test(list),
     '不许再出现「无效就静默 return」的写法');
+}
+
+// ---- 手工改价：日期走业务时区，失败痕迹要清掉 -------------------------------
+// 详情页原来自己拼 `at`（浏览器本地时区）且原样保留上次自动同步留下的
+// stale/miss/last_error：新加坡价连续三次没读到被打上 stale 之后，用户手工
+// 填了正确价格，界面还挂着「· 已过期（最近一次没读到）」。
+{
+  const beijingToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const fresh = manualPriceEntry(undefined, 'SG', 115);
+  check(fresh.price === 115 && fresh.cur === 'SGD', '手工录入补齐价格与默认币种');
+  check(fresh.src === '手工', '新条目来源是「手工」');
+  check(fresh.at === beijingToday, `采集日期按北京时间，实际 ${fresh.at}`);
+  check(/^\d{4}-\d{2}-\d{2}$/.test(fresh.at), '采集日期是 YYYY-MM-DD');
+
+  const staleEntry = {
+    price: 99, cur: 'SGD', src: '官网自动', at: '2026-10-01', url: 'https://x/1',
+    checked_at: '2026-10-20T00:00:00+00:00', miss: 3, stale: true, last_error: 'HTTP 503',
+  };
+  const fixed = manualPriceEntry(staleEntry, 'SG', 115);
+  check(fixed.price === 115, '手工价覆盖旧价');
+  check(fixed.stale === undefined, '手工改价必须清掉 stale（否则界面仍写「已过期」）');
+  check(fixed.miss === undefined, '手工改价要清掉失败计数');
+  check(fixed.last_error === undefined, '手工改价要清掉上次失败原因');
+  check(fixed.src === '官网自动', '不改来源：这一格仍是每日自动重读的市场（成功同步会覆盖回来）');
+  check(fixed.url === 'https://x/1', '链接必须保留，否则自动同步再也回不来');
+
+  // 详情页必须用这个函数，不能自己再拼一套日期/来源
+  const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
+  check(detail.includes('manualPriceEntry('), '详情页手工改价要用 manualPriceEntry()');
+  check(!/\bat: today\(\)/.test(detail), '详情页不许再调用私有的 today()');
+
+  // 开发机本身就是东八区，只比日期差是抓不到的（改回本地时区照样相等）。
+  // 所以同时钉实现：`at` 必须来自 todayLocal()。
+  const src = fs.readFileSync(path.resolve(__dirname, '../src/utils/marketPrice.ts'), 'utf8');
+  check(src.includes('at: todayLocal(),'), '采集日期必须由 todayLocal() 生成，不许自己拼');
+  check(!/function today\(/.test(src), 'marketPrice 不许再留一份私有 today()');
+}
+
+// ---- 货币符号跟着条目上的 cur 走，不跟着市场写死 ---------------------------
+// 迁移数据里可能有别的币种（entryCurrency 的注释就承认这一点）。价格列一直按
+// 市场写死符号，于是同一行会出现「S$99」配「无汇率」——左边说新加坡元、
+// 右边说不认识这个币种。
+{
+  check(formatMarketPrice('SG', { price: 115, cur: 'SGD' }) === 'S$115', '新加坡元用 S$');
+  check(formatMarketPrice('CN', { price: 469, cur: 'CNY' }) === '¥469', '人民币用 ¥');
+  check(formatMarketPrice('SG', { price: 99, cur: 'USD' }) === 'US$99', '别的币种不许冒用 S$');
+  check(formatMarketPrice('SG', { price: 99, cur: 'GBP' }) === 'GBP 99', '认不出的币种写出代码，不猜符号');
+  check(formatMarketPrice('TB', { price: 268 }) === '¥268', '没写 cur 时退回该市场的默认币种');
+  check(symbolFor('SG', { price: 115 }) === 'S$', 'symbolFor 与价格列口径一致');
+  check(!('symbol' in MARKET_META.SG), 'MARKET_META 不再自带符号表（避免两份真相）');
 }
 
 console.log(`test-market-prices: ${checks} checks passed`);

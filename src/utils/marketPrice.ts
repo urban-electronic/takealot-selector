@@ -5,6 +5,8 @@
  * 市场集合由这里维护，后端只校验「是对象 + 每个市场有数值 price」。
  */
 
+import { todayLocal } from './datetime';
+
 export type MarketCode = 'CN' | 'SG' | 'TB';
 
 export interface MarketPriceEntry {
@@ -48,14 +50,18 @@ export function visibleMarkets(prices: MarketPrices): MarketCode[] {
 }
 
 /**
+ * 市场元信息。这里**不写货币符号**：符号跟着条目上的 `cur` 走（见 `symbolFor()`），
+ * 市场只声明默认币种。两份符号表并存时，一份改了另一份不动就会出现
+ * 「S$99」配「无汇率」——左边说这是新加坡元，右边说不认识这个币种。
+ *
  * CN / TB 两路都指向「国内零售」：CN 是原价（吊牌/划线价），TB 是到手价（实付）。
  * 代码里的 CN/TB 只是历史键名——中国官网 charleskeith.cn 已停摆，实际数据来自
  * 天猫、京东的公开报价，所以标签必须写「国内」，不能写「官网」。
  */
-export const MARKET_META: Record<MarketCode, { label: string; short: string; symbol: string; cur: string }> = {
-  CN: { label: '国内原价', short: 'CN', symbol: '¥', cur: 'CNY' },
-  SG: { label: '新加坡官网', short: 'SG', symbol: 'S$', cur: 'SGD' },
-  TB: { label: '国内到手价', short: '到手', symbol: '¥', cur: 'CNY' },
+export const MARKET_META: Record<MarketCode, { label: string; short: string; cur: string }> = {
+  CN: { label: '国内原价', short: 'CN', cur: 'CNY' },
+  SG: { label: '新加坡官网', short: 'SG', cur: 'SGD' },
+  TB: { label: '国内到手价', short: '到手', cur: 'CNY' },
 };
 
 /** 把「像价格的值」归一成数字；null / 空串 / 布尔 / NaN / 负数一律当没有数据。
@@ -107,13 +113,60 @@ export function serializeMarketPrices(prices: MarketPrices): string {
 export function formatMarketPrice(code: MarketCode, entry: MarketPriceEntry): string {
   const value = Number(entry.price);
   const text = Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
-  return `${MARKET_META[code].symbol}${text}`;
+  return `${symbolFor(code, entry)}${text}`;
 }
 
-export function today(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+/**
+ * 价格前面的货币符号。
+ *
+ * 条目上写了 `cur` 就以它为准——`entryCurrency()` 已经这么认（`/api/migrate`
+ * 整行搬运的历史数据可能带别的币种），价格列却一直按市场写死符号，于是同一行
+ * 会出现「S$99」配「无汇率」：左边说这是新加坡元，右边说不认识这个币种。
+ * 认不出的币种宁可把代码写出来（`USD 99`），也不要冒用市场的符号。
+ */
+export function symbolFor(code: MarketCode, entry: MarketPriceEntry): string {
+  const cur = entryCurrency(code, entry);
+  return CURRENCY_SYMBOL[cur] || `${cur} `;
+}
+
+/** 展示用符号表；只收本系统真会遇到的币种，其余按代码原样显示。 */
+const CURRENCY_SYMBOL: Record<string, string> = {
+  CNY: '¥',
+  SGD: 'S$',
+  ZAR: 'R',
+  USD: 'US$',
+  EUR: '€',
+  MYR: 'RM',
+};
+
+/**
+ * 手工改一个市场的参考价，返回新条目（不含「没有这个市场」的判断）。
+ *
+ * 两件事在这里统一，避免两个写入口径不一样：
+ * 1. `at` 走 `todayLocal()`（Asia/Shanghai），与采购/库存/装箱同一份业务日期。
+ *    原来这里有一份私有的 `today()`，取的是**浏览器本地时区**：非东八区的机器上
+ *    早上录的价格会被记成前一天，而其它页面都按北京时间写。
+ * 2. 清掉上一次自动同步留下的失败痕迹（`stale` / `miss` / `last_error`）。
+ *    `/api/market-prices/batch` 一直是这么做的，详情页没有——于是新加坡价连续三次
+ *    没读到（打上 `stale`）之后，用户手工把正确价格填进去，界面还挂着
+ *    「· 已过期（最近一次没读到）」，看起来像这次录入没生效。
+ */
+export function manualPriceEntry(
+  prev: MarketPriceEntry | undefined,
+  code: MarketCode,
+  price: number,
+): MarketPriceEntry {
+  const next: MarketPriceEntry = {
+    ...(prev || {}),
+    price,
+    cur: MARKET_META[code].cur,
+    src: prev?.src || '手工',
+    at: todayLocal(),
+  };
+  delete next.stale;
+  delete next.miss;
+  delete next.last_error;
+  return next;
 }
 
 /**

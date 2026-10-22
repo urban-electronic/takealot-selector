@@ -105,4 +105,32 @@ check(todayLocal(new Date('2026-10-21T20:00:00Z')) === '2026-10-22',
   check(source.includes("from '../utils/datetime'"), `${rel} 的业务日期必须来自 utils/datetime`);
 }
 
+// ---- 6) 全 src 扫一遍：业务日期只许有一个来源 ------------------------------
+// 只盯 Packing.tsx 不够：marketPrice.ts 里还留着一份私有 today()，
+// 参考价的「采集日期」按浏览器本地时区写，非东八区机器上会比其它页面差一天。
+// 这里改成扫整个 src/，新增页面再自己拼一份就会红。
+{
+  const root = path.resolve(__dirname, '../src');
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+      const lines = fs.readFileSync(full, 'utf8').split('\n')
+        .filter(line => !line.trim().startsWith('//') && !line.trim().startsWith('*'));
+      for (const line of lines) {
+        if (/getFullYear\(\)|getMonth\(\)|getDate\(\)/.test(line)) {
+          offenders.push(`${path.relative(root, full)}: ${line.trim()}`);
+        }
+      }
+    }
+  };
+  walk(root);
+  check(offenders.length === 0, `业务日期必须走 utils/datetime，不许自己拼：${offenders.join(' | ')}`);
+  const marketSource = fs.readFileSync(path.resolve(root, 'utils/marketPrice.ts'), 'utf8');
+  check(marketSource.includes("from './datetime'"),
+    'marketPrice 的采集日期必须来自 utils/datetime 的 todayLocal()');
+}
+
 console.log(`test-datetime: ${checks} checks passed`);
