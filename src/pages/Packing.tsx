@@ -126,6 +126,9 @@ type PackingDraft = {
   exportForm: Partial<PackingExportForm>;
   draftKey: string;
   cartons: PackingCarton[];
+  // OMS（鲲鹏/JF WMS）的入库单号。箱唛号 = 入库单号 + '-' + 3 位箱序，
+  // 与 OMS「入库单管理」里生成的箱唛号一致，两张纸才能贴在同一个箱子上。
+  inboundNo: string;
 };
 const newDraftKey = () => globalThis.crypto?.randomUUID?.() || `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -138,9 +141,10 @@ function readPackingDraft(): PackingDraft {
       exportForm: parsed.exportForm && typeof parsed.exportForm === 'object' ? parsed.exportForm as Partial<PackingExportForm> : {},
       draftKey: typeof parsed.draftKey === 'string' && parsed.draftKey ? parsed.draftKey : newDraftKey(),
       cartons: Array.isArray(parsed.cartons) ? parsed.cartons as PackingCarton[] : [],
+      inboundNo: typeof parsed.inboundNo === 'string' ? parsed.inboundNo : '',
     };
   } catch {
-    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [] };
+    return { selected: [], lines: {}, exportForm: {}, draftKey: newDraftKey(), cartons: [], inboundNo: '' };
   }
 }
 
@@ -172,6 +176,9 @@ export default function Packing() {
   const [lines, setLines] = useState<PackingLines>(() => savedDraft.lines);
   // 逐箱清单：一箱一条。箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录。
   const [cartons, setCartons] = useState<PackingCarton[]>(() => savedDraft.cartons);
+  // OMS 入库单号（如 INH1501522）。填了它，箱号就是 OMS 的箱唛号 INH1501522-001，
+  // 与 OMS「入库单管理」打印的箱唛逐箱对应；不填就还是 C01、C02。
+  const [inboundNo, setInboundNo] = useState(savedDraft.inboundNo);
   const [printOpen, setPrintOpen] = useState(false);
 
   // 事后查箱：箱子封上以后就只剩「某天一共几箱」这一个印象，
@@ -291,8 +298,9 @@ export default function Packing() {
       exportForm,
       draftKey,
       cartons,
+      inboundNo,
     }));
-  }, [selected, lines, exportForm, draftKey, cartons]);
+  }, [selected, lines, exportForm, draftKey, cartons, inboundNo]);
 
   // URL import 自动勾选 + 缺失 SKU 提示一键导入
   useEffect(() => {
@@ -405,6 +413,17 @@ export default function Packing() {
   };
 
   // ---- 逐箱清单 ----
+  // 箱唛号：填了入库单号就照 OMS 的格式（INH1501522-001），否则退回 C01。
+  // OMS 的箱唛示例图里，条码下面的那串就是「箱唛号」，红框标着的。
+  const boxNoFor = (index: number) => {
+    const prefix = inboundNo.trim();
+    return prefix ? `${prefix}-${String(index + 1).padStart(3, '0')}` : `C${String(index + 1).padStart(2, '0')}`;
+  };
+
+  // 100×100 的明细区只放得下约 6 行大字号，混装箱按行数降档，别把后几行裁掉
+  const labelClass = (rows: number) =>
+    `carton-label${rows >= 7 ? ' is-dense' : rows >= 4 ? ' is-compact' : ''}`;
+
   // 「一箱一个 SKU」是常态：按箱数自动展开成 C01..Cn，不用手填一遍。
   // 混装（一箱多 SKU）只能人工加箱、逐行选 SKU 填数量。
   const expandCartons = () => {
@@ -413,14 +432,24 @@ export default function Packing() {
       const cartonsCount = parseInt(lines[p.sku]?.cartons || '0', 10) || 0;
       const perCount = parseInt(lines[p.sku]?.count || '', 10) || 0;
       for (let i = 0; i < cartonsCount; i += 1) {
-        next.push({ box_no: `C${String(next.length + 1).padStart(2, '0')}`, note: '', items: [{ sku: p.sku, quantity: String(perCount || '') }] });
+        next.push({ box_no: boxNoFor(next.length), note: '', items: [{ sku: p.sku, quantity: String(perCount || '') }] });
       }
     });
     setCartons(next);
   };
 
   const addCarton = () => {
-    setCartons(prev => [...prev, { box_no: `C${String(prev.length + 1).padStart(2, '0')}`, note: '', items: [{ sku: '', quantity: '' }] }]);
+    setCartons(prev => [...prev, { box_no: boxNoFor(prev.length), note: '', items: [{ sku: '', quantity: '' }] }]);
+  };
+
+  // 改了入库单号，已有箱的箱号要跟着改（否则填完单号还得手动逐箱改一遍）
+  const applyInboundNo = (value: string) => {
+    setInboundNo(value);
+    const prefix = value.trim();
+    setCartons(prev => prev.map((c, i) => ({
+      ...c,
+      box_no: prefix ? `${prefix}-${String(i + 1).padStart(3, '0')}` : `C${String(i + 1).padStart(2, '0')}`,
+    })));
   };
 
   const patchCarton = (index: number, patch: Partial<PackingCarton>) => {
@@ -716,7 +745,7 @@ export default function Packing() {
       await loadProducts();
       setExportForm(prev => ({ ...prev, record_shipment: false }));
       // 没展开逐箱清单就导出时，箱子是后端按「一箱一个 SKU」自动展开的，
-      // 前端手里没有，草稿又被清空了 —— 「打印箱唛」按钮是灰的，用户会以为印不了。
+      // 前端手里没有，草稿又被清空了 —— 「打印明细贴」按钮是灰的，用户会以为印不了。
       // 这里直接把去查/印的入口给出来。
       const autoExpanded = !payload.cartons;
       const expandedCount = rows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0);
@@ -726,7 +755,7 @@ export default function Packing() {
       const fullMsg = autoExpanded ? `${okMsg}；逐箱清单已按「一箱一个 SKU」自动展开 ${expandedCount} 箱` : okMsg;
       setMsg(fullMsg);
       setMsgAction(autoExpanded
-        ? { for: fullMsg, label: '去印箱唛', onClick: () => { setMsgAction(null); openCartonQuery(); } }
+        ? { for: fullMsg, label: '去印明细贴', onClick: () => { setMsgAction(null); openCartonQuery(); } }
         : null);
     } catch (e: any) {
       setError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
@@ -1122,15 +1151,33 @@ export default function Packing() {
           <span className="packing-carton-total">{cartons.length} 箱 · {cartonTotalPieces} 件</span>
         </div>
         <small className="packing-carton-hint">
-          箱子封上就分不出哪箱是什么了，这里记下「第几箱装了什么」，箱唛按它印。
+          箱子封上就分不出哪箱是什么了，这里记下「第几箱装了什么」。
           一箱一个 SKU 点「按 SKU 展开」就行；混装就新建一箱、逐行加产品。
         </small>
+        {/* 箱唛号 = 入库单号 + 3 位箱序，与 OMS「入库单管理」里打印的箱唛逐箱对应。
+            不填也能用，只是箱号退回 C01、C02。 */}
+        <div className="packing-carton-inbound">
+          <label>
+            OMS 入库单号
+            <input
+              value={inboundNo}
+              onChange={e => applyInboundNo(e.target.value)}
+              placeholder="如 INH1501522"
+              title="填了它，箱号就是 OMS 的箱唛号 INH1501522-001，和 OMS 打出来的箱唛一张对一张"
+            />
+          </label>
+          <span className="packing-carton-inbound-hint">
+            {inboundNo.trim()
+              ? `箱唛号：${inboundNo.trim()}-001 … ${inboundNo.trim()}-${String(Math.max(cartons.length, 1)).padStart(3, '0')}`
+              : '填上后箱号自动变成 OMS 的箱唛号，贴在箱子上能和 OMS 的箱唛对上'}
+          </span>
+        </div>
         <div className="packing-carton-actions">
           <button className="btn btn-outline btn-sm" onClick={expandCartons} disabled={!selectedRows.length} title="按已选产品的箱数×每箱件数，展开成 C01、C02…">
             按 SKU 展开
           </button>
           <button className="btn btn-outline btn-sm" onClick={addCarton}>+ 新建一箱</button>
-          <button className="btn btn-outline btn-sm" onClick={() => { setReprintRows([]); setPrintOpen(true); }} disabled={!cartons.length}>打印箱唛</button>
+          <button className="btn btn-outline btn-sm" onClick={() => { setReprintRows([]); setPrintOpen(true); }} disabled={!cartons.length}>打印明细贴</button>
         </div>
         {cartons.length === 0 ? (
           <div className="packing-carton-empty">
@@ -1319,7 +1366,7 @@ export default function Packing() {
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-outline btn-sm" onClick={() => setCartonQueryPicked(new Set())} disabled={!cartonQueryPicked.size}>清空选择</button>
                 <button className="btn btn-primary btn-sm" onClick={printPickedCartons} disabled={!cartonQueryPicked.size}>
-                  重印选中箱唛
+                  重印选中明细贴
                 </button>
               </div>
             </div>
@@ -1535,15 +1582,16 @@ export default function Packing() {
         </div>
       )}
 
-      {/* 箱唛：贴在箱子外面的那张纸。用 HTML 打印而不是生成 PDF ——
-          箱唛必须能印中文，而前端那个零依赖 PDF 生成器只支持 ASCII（中文会变 ?）。
+      {/* 箱内明细贴：贴在箱子侧面/封口，与 OMS 打印的箱唛配套。
+          用 HTML 打印而不是生成 PDF —— 必须能印中文，而前端那个零依赖 PDF 生成器
+          只支持 ASCII（中文会变 ?）。
           挂到 body 而不是留在 #root 里：打印时要把 #root 整块 display:none，
-          否则应用那一长条布局会跟着分页，5 张箱唛能印出 14 页。 */}
+          否则应用那一长条布局会跟着分页，8 张标签能印出 14 页。 */}
       {printOpen && createPortal(
         <div className="carton-print-overlay">
           <div className="carton-print-toolbar">
-            <strong>箱唛预览 · {cartons.length} 张</strong>
-            <small>打印时选 100×70mm 标签纸、缩放 100%，一张一页</small>
+            <strong>箱内明细贴预览 · {cartons.length} 张</strong>
+            <small>100×100mm 热敏纸、缩放 100%，一张一页；箱唛号与 OMS 箱唛一一对应</small>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-primary" onClick={() => window.print()}>打印</button>
               <button className="btn btn-outline" onClick={() => setPrintOpen(false)}>关闭</button>
@@ -1551,14 +1599,14 @@ export default function Packing() {
           </div>
           <div className="carton-print-sheet">
             {cartons.map((c, i) => (
-              <div className="carton-label" key={i}>
+              <div className={labelClass(c.items.filter(it => (it.sku || '').trim()).length)} key={i}>
                 <div className="carton-label-head">
-                  <span className="carton-label-no">{c.box_no || `C${String(i + 1).padStart(2, '0')}`}</span>
+                  <span className="carton-label-no">{c.box_no || boxNoFor(i)}</span>
                   <span className="carton-label-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
                 </div>
                 <div className="carton-label-meta">
                   <span>{exportForm.date || todayStr()}</span>
-                  {exportForm.mark ? <span>{exportForm.mark}</span> : null}
+                  <span>{cartonPieces(c)} 件 · {c.items.filter(it => (it.sku || '').trim()).length} 个 SKU</span>
                   {c.note ? <span className="carton-label-note">{c.note}</span> : null}
                 </div>
                 <div className="carton-label-items">
@@ -1576,7 +1624,7 @@ export default function Packing() {
                   })}
                 </div>
                 <div className="carton-label-foot">
-                  {c.items.filter(it => (it.sku || '').trim()).length} 个产品 · {cartonPieces(c)} 件
+                  {[exportForm.mark, exportForm.shipping].filter(Boolean).join(' · ') || '　'}
                 </div>
               </div>
             ))}
@@ -1585,13 +1633,13 @@ export default function Packing() {
         document.body,
       )}
 
-      {/* 箱唛重印：从历史记录出图，箱号与「第 N 箱 / 共 M 箱」照抄当时的值，
-          不能按本次选中的张数重排 —— 重排后同一箱会有两个箱号。 */}
+      {/* 明细贴重印：从历史记录出图，箱唛号与「第 N 箱 / 共 M 箱」照抄当时的值，
+          不能按本次选中的张数重排 —— 重排后同一箱会有两个箱号，与 OMS 箱唛对不上。 */}
       {reprintRows.length > 0 && createPortal(
         <div className="carton-print-overlay">
           <div className="carton-print-toolbar">
-            <strong>箱唛重印 · {reprintRows.length} 张</strong>
-            <small>箱号与「第几箱 / 共几箱」沿用装箱时的记录</small>
+            <strong>明细贴重印 · {reprintRows.length} 张</strong>
+            <small>箱唛号与「第几箱 / 共几箱」沿用装箱时的记录，与 OMS 箱唛一一对应</small>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-primary" onClick={() => window.print()}>打印</button>
               <button className="btn btn-outline" onClick={() => setReprintRows([])}>关闭</button>
@@ -1599,14 +1647,14 @@ export default function Packing() {
           </div>
           <div className="carton-print-sheet">
             {reprintRows.map(r => (
-              <div className="carton-label" key={cartonKey(r)}>
+              <div className={labelClass(r.items.length)} key={cartonKey(r)}>
                 <div className="carton-label-head">
                   <span className="carton-label-no">{r.box_no || `C${String(r.seq).padStart(2, '0')}`}</span>
                   <span className="carton-label-seq">第 {r.seq} 箱 / 共 {r.total} 箱</span>
                 </div>
                 <div className="carton-label-meta">
                   <span>{r.shipment_date}</span>
-                  {r.mark ? <span>{r.mark}</span> : null}
+                  <span>{r.items.reduce((s, it) => s + it.quantity, 0)} 件 · {r.items.length} 个 SKU</span>
                   {r.note ? <span className="carton-label-note">{r.note}</span> : null}
                 </div>
                 <div className="carton-label-items">
@@ -1621,7 +1669,7 @@ export default function Packing() {
                   ))}
                 </div>
                 <div className="carton-label-foot">
-                  {r.items.length} 个产品 · {r.items.reduce((s, it) => s + it.quantity, 0)} 件
+                  {r.mark || '　'}
                 </div>
               </div>
             ))}

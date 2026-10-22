@@ -8,14 +8,14 @@
   2) 混装多塞一个 SKU 后，合计对不上要当场警告（箱子里写 20、装箱单 15）；
   3) 打印时 #root 必须 display:none —— 用 visibility 隐藏会保留布局高度，
      5 张箱唛会印出 14 页；
-  4) 每张箱唛 100×70mm、一页一张、张数等于箱数；
+  4) 每张明细贴 100×100mm（热敏纸）、一页一张、张数等于箱数；
   5) 事后查箱：按日期查得到当天全部箱，按 SKU 反查只列装了它的箱，
      但「共 N 箱」仍是整票总数；
   6) 重印不能重排 —— 从记录里挑第 3、4 箱重印，箱唛上必须还是
      「第 3 箱 / 共 5 箱」「第 4 箱 / 共 5 箱」，不能变成「第 1 箱 / 共 2 箱」，
      否则同一箱会印出两个箱号；
   7) 没展开就导出时，箱是后端自动展开的、草稿已清空、「打印箱唛」是灰的，
-     提示条必须给出「去印箱唛」直达入口，否则用户以为印不了。
+     提示条必须给出「去印明细贴」直达入口，否则用户以为印不了。
 
 窄屏 320px 不许横向溢出（逐箱面板有「箱号/备注/第几箱」一行）。
 """
@@ -145,6 +145,16 @@ def run():
         seq_text = cartons.nth(2).locator('.packing-carton-seq').inner_text()
         check('第 3 箱' in seq_text and '共 5 箱' in seq_text, f'序号应显示「第 3 箱 / 共 5 箱」，实得 {seq_text}')
 
+        # 1b) 填 OMS 入库单号：箱号必须自动变成 OMS 的箱唛号（INH1501522-001），
+        #     这是「我们的纸」和「OMS 打的箱唛」唯一能对上的凭据
+        page.locator('.packing-carton-inbound input').fill('INH1501522')
+        page.wait_for_timeout(400)
+        box_nos2 = [cartons.nth(i).locator('input').nth(0).input_value() for i in range(cartons.count())]
+        want2 = [f'INH1501522-{i:03d}' for i in range(1, 6)]
+        check(box_nos2 == want2, f'填入库单号后箱号应变成 {want2}，实得 {box_nos2}')
+        hint = page.locator('.packing-carton-inbound-hint').inner_text()
+        check('INH1501522-001' in hint, f'提示要显示箱唛号范围，实得 {hint!r}')
+
         # 2) 混装：第 1 箱再塞一个 SKU ×5 → 该 SKU 箱内 20 / 装箱单 15
         cartons.nth(0).get_by_role('button', name='这箱再加一个产品').click()
         page.wait_for_timeout(300)
@@ -159,15 +169,20 @@ def run():
             check('20' in text and '15' in text, f'警告要写出「箱内 20 / 装箱单 15」，实得 {text}')
 
         # 3) 箱唛：张数、打印时隐藏 #root
-        page.get_by_role('button', name='打印箱唛').click()
+        page.get_by_role('button', name='打印明细贴').click()
         page.wait_for_timeout(500)
         labels = page.locator('.carton-label')
         check(labels.count() == 5, f'箱唛张数应等于箱数 5，实得 {labels.count()}')
         first_label = labels.first
-        check('C01' in first_label.inner_text(), '第一张箱唛要印箱号 C01')
+        check('INH1501522-001' in first_label.inner_text(),
+              '第一张明细贴要印 OMS 箱唛号 INH1501522-001，才能和 OMS 的箱唛对上')
         check('第 1 箱' in first_label.inner_text() and '共 5 箱' in first_label.inner_text(),
               '第一张箱唛要印「第 1 箱 / 共 5 箱」')
-        check('皮革黑色包' in first_label.inner_text(), '箱唛必须能印中文品名（HTML 打印的意义就在这）')
+        check('皮革黑色包' in first_label.inner_text(), '明细贴必须能印中文品名（HTML 打印的意义就在这）')
+        # 明细被裁掉的行等于没印 —— 100×100 只有约 58mm 放明细，字号一改就可能溢出
+        spills = page.evaluate(
+            "() => [...document.querySelectorAll('.carton-label-items')].map(el => el.scrollHeight - el.clientHeight)")
+        check(all(v <= 0 for v in spills), f'明细贴不该有被裁掉的行，各张溢出 {spills}')
 
         page.emulate_media(media='print')
         page.wait_for_timeout(300)
@@ -179,7 +194,7 @@ def run():
 
         pdf_path = ROOT / 'probe_carton' / 'test-carton-labels.pdf'
         pdf_path.parent.mkdir(exist_ok=True)
-        page.pdf(path=str(pdf_path), width='100mm', height='70mm', print_background=True)
+        page.pdf(path=str(pdf_path), width='100mm', height='100mm', print_background=True)
 
         page.emulate_media(media='screen')
         page.get_by_role('button', name='关闭', exact=True).click()
@@ -200,7 +215,7 @@ def run():
         qrows.nth(2).locator('input[type=checkbox]').check()
         qrows.nth(3).locator('input[type=checkbox]').check()
         page.wait_for_timeout(200)
-        page.get_by_role('button', name='重印选中箱唛').click()
+        page.get_by_role('button', name='重印选中明细贴').click()
         page.wait_for_timeout(500)
         rlabels = page.locator('.carton-label')
         check(rlabels.count() == 2, f'重印应出 2 张，实得 {rlabels.count()}')
@@ -216,7 +231,7 @@ def run():
         root_display = page.evaluate("() => getComputedStyle(document.getElementById('root')).display")
         check(root_display == 'none', '重印打印时 #root 也要 display:none（查询弹层在 #root 里，会被一起藏掉）')
         reprint_pdf = ROOT / 'probe_carton' / 'test-carton-reprint.pdf'
-        page.pdf(path=str(reprint_pdf), width='100mm', height='70mm', print_background=True)
+        page.pdf(path=str(reprint_pdf), width='100mm', height='100mm', print_background=True)
         page.emulate_media(media='screen')
         page.wait_for_timeout(200)
 
@@ -244,9 +259,14 @@ def run():
         overflow = page.evaluate(
             "() => { const el = document.querySelector('.packing-carton-card'); return el ? el.scrollWidth - el.clientWidth : -1 }")
         check(overflow == 0, f'320px 下逐箱面板横向溢出 {overflow}px')
+        # 头部多了「查箱子」按钮（新增产品 / ERP 模板 / 查箱子 / 导出 Excel），
+        # 窄屏下这四个容易把工具栏撑出屏幕
+        doc_overflow = page.evaluate(
+            "() => document.documentElement.scrollWidth - document.documentElement.clientWidth")
+        check(doc_overflow == 0, f'320px 下整页横向溢出 {doc_overflow}px（头部按钮挤爆了？）')
 
         # 8) 没展开就导出：后端会自动展开箱，前端草稿已清空，
-        #    「打印箱唛」是灰的 —— 必须给一个「去印箱唛」的直达入口，否则用户以为印不了
+        #    「打印箱唛」是灰的 —— 必须给一个「去印明细贴」的直达入口，否则用户以为印不了
         page.set_viewport_size({'width': 1440, 'height': 1000})
         # 前面第 2 步故意留了「箱内 20 / 装箱单 15」的不一致，导出会被闸拦住；
         # 这里清掉草稿重来，模拟「新开一票、什么都没展开就直接导出」
@@ -272,13 +292,13 @@ def run():
         if success.count():
             txt = success.first.inner_text()
             check('自动展开 5 箱' in txt, f'提示要说明已自动展开 5 箱，实得 {txt!r}')
-            btn = success.first.get_by_role('button', name='去印箱唛')
-            check(btn.count() == 1, '导出后要给「去印箱唛」直达按钮')
+            btn = success.first.get_by_role('button', name='去印明细贴')
+            check(btn.count() == 1, '导出后要给「去印明细贴」直达按钮')
             if btn.count():
                 btn.click()
                 page.wait_for_timeout(800)
                 check(page.locator('.carton-query-row').count() == 5,
-                      f'点「去印箱唛」应打开查箱子并列出 5 箱，实得 {page.locator(".carton-query-row").count()}')
+                      f'点「去印明细贴」应打开查箱子并列出 5 箱，实得 {page.locator(".carton-query-row").count()}')
 
         browser.close()
 
@@ -286,11 +306,11 @@ def run():
     try:
         import pymupdf
         doc = pymupdf.open(str(pdf_path))
-        check(doc.page_count == 5, f'箱唛 PDF 应 5 页（5 箱），实得 {doc.page_count} 页')
+        check(doc.page_count == 5, f'明细贴 PDF 应 5 页（5 箱），实得 {doc.page_count} 页')
         for i, page_obj in enumerate(doc):
             w = page_obj.rect.width / 72 * 25.4
             h = page_obj.rect.height / 72 * 25.4
-            check(abs(w - 100) < 1 and abs(h - 70) < 1, f'第 {i + 1} 页尺寸应为 100×70mm，实得 {w:.1f}×{h:.1f}mm')
+            check(abs(w - 100) < 1 and abs(h - 100) < 1, f'第 {i + 1} 页尺寸应为 100×100mm，实得 {w:.1f}×{h:.1f}mm')
         doc.close()
 
         # 重印是另一个 overlay：打印时同样只能剩下箱唛，张数等于勾选数
