@@ -113,12 +113,34 @@ C01                          第 1 箱 / 共 5 箱
 
 按 SKU 筛时**仍返回整票的总箱数**（`total`），否则箱唛上的「共 5 箱」会变成「共 3 箱」。
 
+界面上是头部「查箱子」按钮：选日期查当天，或填 SKU 反查。结果按票分组
+（同一趟货的箱排在一起），每行一箱，直接列出箱里装了什么、多少件。
+
+**重印不重排。** 从记录里勾第 3、4 箱重印，箱唛上必须还是「第 3 箱 / 共 5 箱」
+「第 4 箱 / 共 5 箱」。如果按「本次选中几张」重新编号，同一只箱子就会印出两个箱号，
+贴上去以后谁也说不清哪个是对的。重印走独立的 portal（`reprintRows`），
+与草稿箱唛互斥，避免两个 overlay 一起进打印流。
+
+### 第三个坑：`.packing-modal label` 会把 grid 压成行内流
+
+查询结果每行是 `<label class="carton-query-row">`（点整行就能勾选），
+样式写成 `display: grid`。第一版直接写 `.carton-query-row { display: grid }`，
+特异性 (0,1,0)；而 `.packing-modal label { display: block }` 是 (0,2,0) ——
+grid 被压回 block，箱号 `C01` 和「第 1 箱」粘成 `C01第 1 箱`，勾选框也贴着文字。
+截图一眼就能看出来，但 `tsc` 和断言都发现不了。
+
+修法是选择器统一加 `.packing-modal` 前缀（`.packing-modal .carton-query-row`），
+并显式 `margin-bottom: 0` 抵消 `.packing-modal label` 的 4px。
+**在这个弹层里给 `label` 写布局，必须带前缀。**
+
 ## 验证
 
 - `backend/tests/test_packing_cartons.py` 9 例：自动展开、混装、合计不符 400、
   未知 SKU/空箱 400、按日期/按 SKU 查询、店铺隔离、重复导出刷新、已确认拒改数量
-- `scripts/test-carton-label.py`（真实 Chromium，自检自动纳入）：展开得到 5 箱且箱号
-  C01..C05、混装后出现「20 / 15」警告、打印时 `#root` 为 `display:none`、
-  **箱唛 PDF 正好 5 页且每页 100×70mm**、320px 无横向溢出
+- `scripts/test-carton-label.py`（真实 Chromium，自检自动纳入，7 组）：
+  展开得到 5 箱且箱号 C01..C05、混装后出现「20 / 15」警告、打印时 `#root` 为 `display:none`、
+  **箱唛 PDF 正好 5 页且每页 100×70mm**、320px 无横向溢出、
+  **按日期查得 5 箱 / 按 SKU 反查只剩 2 箱但「共 5 箱」不变**、
+  **重印第 3、4 箱仍是「3/5」「4/5」且重印 PDF 正好 2 页**
 - 反向探针：把打印样式改回 `visibility: hidden` → PDF 变 14 页，用例转红；
   把 `z-index` 改回 60 → 打印按钮被导航拦截，用例超时转红（均已还原）

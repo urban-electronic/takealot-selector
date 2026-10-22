@@ -8,7 +8,12 @@
   2) 混装多塞一个 SKU 后，合计对不上要当场警告（箱子里写 20、装箱单 15）；
   3) 打印时 #root 必须 display:none —— 用 visibility 隐藏会保留布局高度，
      5 张箱唛会印出 14 页；
-  4) 每张箱唛 100×70mm、一页一张、张数等于箱数。
+  4) 每张箱唛 100×70mm、一页一张、张数等于箱数；
+  5) 事后查箱：按日期查得到当天全部箱，按 SKU 反查只列装了它的箱，
+     但「共 N 箱」仍是整票总数；
+  6) 重印不能重排 —— 从记录里挑第 3、4 箱重印，箱唛上必须还是
+     「第 3 箱 / 共 5 箱」「第 4 箱 / 共 5 箱」，不能变成「第 1 箱 / 共 2 箱」，
+     否则同一箱会印出两个箱号。
 
 窄屏 320px 不许横向溢出（逐箱面板有「箱号/备注/第几箱」一行）。
 """
@@ -48,6 +53,29 @@ DATA = {
                               'fetched_at': '2026-10-22T00:00:00+00:00', 'stale': False, 'fallback': False},
 }
 
+# 一票 5 箱：C01..C03 是包（各 10 件），C04..C05 是后视镜盖（各 5 件）。
+# 按 SKU 查时只返回装了它的箱，但 total 仍是 5 —— 箱唛要印「第 4 箱 / 共 5 箱」。
+CARTON_PLAN = [
+    ('C01', 1, '9902348623136', '皮革黑色包', 'Leather bag', 10),
+    ('C02', 2, '9902348623136', '皮革黑色包', 'Leather bag', 10),
+    ('C03', 3, '9902348623136', '皮革黑色包', 'Leather bag', 10),
+    ('C04', 4, '9902348621873', '宝马后视镜盖', 'Mirror cover', 5),
+    ('C05', 5, '9902348621873', '宝马后视镜盖', 'Mirror cover', 5),
+]
+
+
+def carton_records(sku=''):
+    rows = []
+    for box_no, seq, s, zh, en, qty in CARTON_PLAN:
+        if sku and s != sku:
+            continue
+        rows.append(dict(
+            shipment_id='ship-1', shipment_no='SHIP-20261022-01', shipment_date='2026-10-22',
+            mark='CK-01', seq=seq, total=5, box_no=box_no, note='',
+            items=[dict(sku=s, name_zh=zh, name_en=en, quantity=qty)],
+        ))
+    return {'date': '2026-10-22', 'total_cartons': 5, 'cartons': rows}
+
 
 def run():
     failures = []
@@ -63,11 +91,15 @@ def run():
         context.add_init_script("localStorage.setItem('api_base_url', 'http://127.0.0.1:5173')")
 
         def intercept(route):
-            from urllib.parse import urlsplit
+            from urllib.parse import urlsplit, parse_qs
             url = urlsplit(route.request.url)
             if url.path.startswith('/api/'):
                 if route.request.method != 'GET':
                     route.fulfill(status=200, json={'ok': True})
+                    return
+                if url.path == '/api/packing/cartons':
+                    qs = parse_qs(url.query)
+                    route.fulfill(json=carton_records((qs.get('sku') or [''])[0]))
                     return
                 if url.path in DATA:
                     route.fulfill(json=DATA[url.path])
@@ -149,6 +181,57 @@ def run():
         page.get_by_role('button', name='关闭', exact=True).click()
         page.wait_for_timeout(200)
 
+        # 5) 事后查箱：按日期查当天全部 5 箱
+        page.get_by_role('button', name='查箱子').click()
+        page.wait_for_timeout(600)
+        qrows = page.locator('.carton-query-row')
+        check(qrows.count() == 5, f'按日期查应得 5 箱，实得 {qrows.count()}')
+        summary = page.locator('.carton-query-summary').inner_text()
+        check('共 5 箱' in summary, f'查询摘要应写「共 5 箱」，实得 {summary!r}')
+        row3 = qrows.nth(2).inner_text()
+        check('第 3 箱' in row3 and '共 5 箱' in row3, f'第 3 行应是「第 3 箱 / 共 5 箱」，实得 {row3!r}')
+        check('皮革黑色包' in row3, '查询结果要直接看出箱里装的是什么，不能只给箱号')
+
+        # 6) 重印不重排：挑第 3、4 箱，箱唛必须还是 3/5、4/5
+        qrows.nth(2).locator('input[type=checkbox]').check()
+        qrows.nth(3).locator('input[type=checkbox]').check()
+        page.wait_for_timeout(200)
+        page.get_by_role('button', name='重印选中箱唛').click()
+        page.wait_for_timeout(500)
+        rlabels = page.locator('.carton-label')
+        check(rlabels.count() == 2, f'重印应出 2 张，实得 {rlabels.count()}')
+        t1 = rlabels.nth(0).inner_text()
+        t2 = rlabels.nth(1).inner_text()
+        check('第 3 箱' in t1 and '共 5 箱' in t1, f'重印第 1 张应保持「第 3 箱 / 共 5 箱」，实得 {t1!r}')
+        check('第 4 箱' in t2 and '共 5 箱' in t2, f'重印第 2 张应保持「第 4 箱 / 共 5 箱」，实得 {t2!r}')
+        check('第 1 箱' not in t1, '重印不能把箱号重排成「第 1 箱」——同一箱会出现两个箱号')
+        check('C03' in t1 and 'C04' in t2, f'重印箱号应为 C03 / C04，实得 {t1!r} / {t2!r}')
+
+        page.emulate_media(media='print')
+        page.wait_for_timeout(300)
+        root_display = page.evaluate("() => getComputedStyle(document.getElementById('root')).display")
+        check(root_display == 'none', '重印打印时 #root 也要 display:none（查询弹层在 #root 里，会被一起藏掉）')
+        reprint_pdf = ROOT / 'probe_carton' / 'test-carton-reprint.pdf'
+        page.pdf(path=str(reprint_pdf), width='100mm', height='70mm', print_background=True)
+        page.emulate_media(media='screen')
+        page.wait_for_timeout(200)
+
+        # 7) 按 SKU 反查：只列装了它的箱，但「共 N 箱」仍是整票总数
+        page.locator('.carton-print-toolbar').get_by_role('button', name='关闭').click()
+        page.wait_for_timeout(300)
+        page.locator('.carton-query-filters input').nth(1).fill('9902348621873')
+        page.get_by_role('button', name='查询', exact=True).click()
+        page.wait_for_timeout(500)
+        check(page.locator('.carton-query-row').count() == 2, f'按 SKU 查应只剩 2 箱，实得 {page.locator(".carton-query-row").count()}')
+        sku_summary = page.locator('.carton-query-summary').inner_text()
+        check('共 5 箱' in sku_summary and '只列出装了' in sku_summary,
+              f'按 SKU 查要说明「共 N 箱仍是整票总数」，实得 {sku_summary!r}')
+        sku_row = page.locator('.carton-query-row').nth(0).inner_text()
+        check('第 4 箱' in sku_row and '共 5 箱' in sku_row,
+              f'按 SKU 查到的第一箱应是「第 4 箱 / 共 5 箱」，实得 {sku_row!r}')
+        page.locator('.carton-query-head').get_by_role('button', name='关闭').click()
+        page.wait_for_timeout(200)
+
         # 4) 窄屏不许横向溢出
         page.set_viewport_size({'width': 320, 'height': 900})
         page.wait_for_timeout(500)
@@ -168,10 +251,18 @@ def run():
             h = page_obj.rect.height / 72 * 25.4
             check(abs(w - 100) < 1 and abs(h - 70) < 1, f'第 {i + 1} 页尺寸应为 100×70mm，实得 {w:.1f}×{h:.1f}mm')
         doc.close()
+
+        # 重印是另一个 overlay：打印时同样只能剩下箱唛，张数等于勾选数
+        if reprint_pdf.exists():
+            doc = pymupdf.open(str(reprint_pdf))
+            check(doc.page_count == 2, f'重印 PDF 应 2 页（勾了 2 箱），实得 {doc.page_count} 页')
+            doc.close()
+        else:
+            check(False, '重印没有生成 PDF')
     except ImportError:
         pass
 
-    report = {'checked': 4, 'failures': failures, 'page_errors': page_errors}
+    report = {'checked': 7, 'failures': failures, 'page_errors': page_errors}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return failures, page_errors
 

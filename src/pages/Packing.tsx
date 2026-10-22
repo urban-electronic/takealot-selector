@@ -16,10 +16,11 @@ import {
   fetchPackingImageBlob,
   getShipments,
   exportInboundTemplate,
+  getPackingCartons,
   getStoreStorageKey,
   readStoreStorage,
 } from '../remoteApi';
-import type { PackingProduct, Product, PackingCarton, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
+import type { PackingProduct, Product, PackingCarton, PackingCartonRecord, PackingExportPayload, ShipmentRecord, InventoryRow } from '../types';
 import { safeSetItem } from '../utils/storage';
 import { todayLocal } from '../utils/datetime';
 import { CATALOG_CHANGED } from '../utils/catalogEvents';
@@ -169,6 +170,19 @@ export default function Packing() {
   // 逐箱清单：一箱一条。箱子封上以后外观一样，「第几箱装了什么」只能靠这份记录。
   const [cartons, setCartons] = useState<PackingCarton[]>(() => savedDraft.cartons);
   const [printOpen, setPrintOpen] = useState(false);
+
+  // 事后查箱：箱子封上以后就只剩「某天一共几箱」这一个印象，
+  // 「昨天第 5 箱装的是什么」只能回查这张表。
+  const [cartonQueryOpen, setCartonQueryOpen] = useState(false);
+  const [cartonQueryDate, setCartonQueryDate] = useState('');
+  const [cartonQuerySku, setCartonQuerySku] = useState('');
+  const [cartonQueryRows, setCartonQueryRows] = useState<PackingCartonRecord[]>([]);
+  const [cartonQueryTotal, setCartonQueryTotal] = useState(0);
+  const [cartonQueryLoading, setCartonQueryLoading] = useState(false);
+  const [cartonQueryError, setCartonQueryError] = useState('');
+  const [cartonQueryPicked, setCartonQueryPicked] = useState<Set<string>>(new Set());
+  // 重印用：带着记录里的 seq/total，箱唛上的「第 N 箱 / 共 M 箱」不会被重排
+  const [reprintRows, setReprintRows] = useState<PackingCartonRecord[]>([]);
 
   // 导出设置
   const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm, record_shipment: false });
@@ -451,6 +465,65 @@ export default function Packing() {
   const cartonPieces = (c: PackingCarton) =>
     c.items.reduce((s, it) => s + (parseInt(it.quantity || '0', 10) || 0), 0);
   const cartonTotalPieces = cartons.reduce((sum, c) => sum + cartonPieces(c), 0);
+
+  // ---- 事后查箱 ----
+  const cartonKey = (r: PackingCartonRecord) => `${r.shipment_id}#${r.seq}`;
+
+  const runCartonQuery = async (date: string, sku: string) => {
+    setCartonQueryLoading(true);
+    setCartonQueryError('');
+    try {
+      const res = await getPackingCartons({ date, sku: sku.trim(), limit: 500 });
+      setCartonQueryRows(res.cartons || []);
+      setCartonQueryTotal(res.total_cartons || 0);
+      setCartonQueryPicked(new Set());
+    } catch (e) {
+      setCartonQueryError((e as Error)?.message || '查询失败');
+      setCartonQueryRows([]);
+      setCartonQueryTotal(0);
+    } finally {
+      setCartonQueryLoading(false);
+    }
+  };
+
+  const openCartonQuery = () => {
+    const d = exportForm.date || todayStr();
+    setCartonQueryOpen(true);
+    setCartonQueryDate(d);
+    setCartonQuerySku('');
+    void runCartonQuery(d, '');
+  };
+
+  const toggleCartonPick = (key: string) => {
+    setCartonQueryPicked(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // 同一票货的箱放一起，否则按日期查出来是一长条，看不出哪几箱是一趟的。
+  const cartonQueryGroups = useMemo(() => {
+    const map = new Map<string, { shipment_no: string; date: string; mark: string; rows: PackingCartonRecord[] }>();
+    cartonQueryRows.forEach(r => {
+      let g = map.get(r.shipment_id);
+      if (!g) {
+        g = { shipment_no: r.shipment_no, date: r.shipment_date, mark: r.mark, rows: [] };
+        map.set(r.shipment_id, g);
+      }
+      g.rows.push(r);
+    });
+    return Array.from(map.values());
+  }, [cartonQueryRows]);
+
+  const printPickedCartons = () => {
+    const picked = cartonQueryRows.filter(r => cartonQueryPicked.has(cartonKey(r)));
+    if (!picked.length) return;
+    // 两个 overlay 同时挂 body 会一起进打印流，先关掉草稿那份
+    setPrintOpen(false);
+    setReprintRows(picked);
+  };
 
   const totalCartons = useMemo(
     () => selectedRows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0),
@@ -776,6 +849,9 @@ export default function Packing() {
           <button className="btn btn-outline" onClick={openErpTemplate}>
             ERP 模板
           </button>
+          <button className="btn btn-outline" onClick={openCartonQuery} title="查某天装了哪些箱，或某个 SKU 在哪几箱">
+            查箱子
+          </button>
           <button className="btn packing-export-btn" onClick={handleExport} disabled={exporting}>
             {exporting ? '导出中...' : '导出 Excel'}
           </button>
@@ -1030,7 +1106,7 @@ export default function Packing() {
             按 SKU 展开
           </button>
           <button className="btn btn-outline btn-sm" onClick={addCarton}>+ 新建一箱</button>
-          <button className="btn btn-outline btn-sm" onClick={() => setPrintOpen(true)} disabled={!cartons.length}>打印箱唛</button>
+          <button className="btn btn-outline btn-sm" onClick={() => { setReprintRows([]); setPrintOpen(true); }} disabled={!cartons.length}>打印箱唛</button>
         </div>
         {cartons.length === 0 ? (
           <div className="packing-carton-empty">
@@ -1115,6 +1191,114 @@ export default function Packing() {
       </div>
       </aside>
       </div>
+
+      {/* 查箱子：事后回查「某天装了哪些箱」/「这个 SKU 在哪几箱」。
+          箱子封上以后外观一样，这里是唯一能反查的地方。 */}
+      {cartonQueryOpen && (
+        <div className="packing-modal-mask" onClick={e => { if (e.target === e.currentTarget) setCartonQueryOpen(false); }}>
+          <div className="packing-modal carton-query-modal" role="dialog" aria-modal="true" aria-label="查箱子">
+            <div className="carton-query-head">
+              <div>
+                <h3 style={{ margin: 0 }}>查箱子</h3>
+                <small>某天装了哪些箱，或某个 SKU 在哪几箱。</small>
+              </div>
+              <button className="btn btn-outline btn-sm" onClick={() => setCartonQueryOpen(false)}>关闭</button>
+            </div>
+
+            <div className="carton-query-filters">
+              <label>发货日期
+                <input type="date" value={cartonQueryDate} onChange={e => setCartonQueryDate(e.target.value)} />
+              </label>
+              <label>SKU（留空看当天全部）
+                <input
+                  value={cartonQuerySku}
+                  onChange={e => setCartonQuerySku(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') void runCartonQuery(cartonQueryDate, cartonQuerySku); }}
+                  placeholder="如 A-1"
+                />
+              </label>
+              <button className="btn btn-primary btn-sm" onClick={() => void runCartonQuery(cartonQueryDate, cartonQuerySku)} disabled={cartonQueryLoading}>
+                {cartonQueryLoading ? '查询中…' : '查询'}
+              </button>
+            </div>
+
+            {cartonQueryError && <div className="alert alert-error">{cartonQueryError}</div>}
+
+            {!cartonQueryError && (
+              <div className="carton-query-summary">
+                {cartonQueryLoading
+                  ? '查询中…'
+                  : cartonQueryRows.length
+                    ? `共 ${cartonQueryTotal} 箱${cartonQuerySku.trim() ? `（只列出装了 ${cartonQuerySku.trim()} 的箱，箱唛上的「共 N 箱」仍是整票总数）` : ''}`
+                    : '这一天没有装箱记录'}
+              </div>
+            )}
+
+            {cartonQueryRows.length > 0 && (
+              <div className="carton-query-body">
+                {cartonQueryGroups.map(g => {
+                  const pickedCount = g.rows.filter(r => cartonQueryPicked.has(cartonKey(r))).length;
+                  return (
+                    <div className="carton-query-group" key={g.shipment_no}>
+                      <div className="carton-query-group-head">
+                        <strong>{g.shipment_no || '未编号'}</strong>
+                        <span>{g.date}</span>
+                        {g.mark ? <span className="carton-query-mark">{g.mark}</span> : null}
+                        <span className="carton-query-group-count">{g.rows.length} 箱</span>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          onClick={() => setCartonQueryPicked(prev => {
+                            const next = new Set(prev);
+                            const all = pickedCount === g.rows.length;
+                            g.rows.forEach(r => { if (all) next.delete(cartonKey(r)); else next.add(cartonKey(r)); });
+                            return next;
+                          })}
+                        >
+                          {pickedCount === g.rows.length ? '取消本票' : '全选本票'}
+                        </button>
+                      </div>
+                      <div className="carton-query-list">
+                        {g.rows.map(r => {
+                          const key = cartonKey(r);
+                          const checked = cartonQueryPicked.has(key);
+                          const pieces = r.items.reduce((s, it) => s + it.quantity, 0);
+                          return (
+                            <label className={`carton-query-row${checked ? ' is-picked' : ''}`} key={key}>
+                              <input type="checkbox" checked={checked} onChange={() => toggleCartonPick(key)} />
+                              <span className="carton-query-no">{r.box_no || `C${String(r.seq).padStart(2, '0')}`}</span>
+                              <span className="carton-query-seq">第 {r.seq} 箱 / 共 {r.total} 箱</span>
+                              <span className="carton-query-items">
+                                {r.items.map((it, j) => (
+                                  <span className="carton-query-item" key={j}>
+                                    {it.name_zh || it.name_en || it.sku}
+                                    <small>{it.sku}</small>
+                                    <b>×{it.quantity}</b>
+                                  </span>
+                                ))}
+                              </span>
+                              <span className="carton-query-pieces">{pieces} 件</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="carton-query-foot">
+              <span>已选 {cartonQueryPicked.size} 箱</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-outline btn-sm" onClick={() => setCartonQueryPicked(new Set())} disabled={!cartonQueryPicked.size}>清空选择</button>
+                <button className="btn btn-primary btn-sm" onClick={printPickedCartons} disabled={!cartonQueryPicked.size}>
+                  重印选中箱唛
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 编辑弹层 */}
       {editSku && (
@@ -1366,6 +1550,51 @@ export default function Packing() {
                 </div>
                 <div className="carton-label-foot">
                   {c.items.filter(it => (it.sku || '').trim()).length} 个产品 · {cartonPieces(c)} 件
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* 箱唛重印：从历史记录出图，箱号与「第 N 箱 / 共 M 箱」照抄当时的值，
+          不能按本次选中的张数重排 —— 重排后同一箱会有两个箱号。 */}
+      {reprintRows.length > 0 && createPortal(
+        <div className="carton-print-overlay">
+          <div className="carton-print-toolbar">
+            <strong>箱唛重印 · {reprintRows.length} 张</strong>
+            <small>箱号与「第几箱 / 共几箱」沿用装箱时的记录</small>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary" onClick={() => window.print()}>打印</button>
+              <button className="btn btn-outline" onClick={() => setReprintRows([])}>关闭</button>
+            </div>
+          </div>
+          <div className="carton-print-sheet">
+            {reprintRows.map(r => (
+              <div className="carton-label" key={cartonKey(r)}>
+                <div className="carton-label-head">
+                  <span className="carton-label-no">{r.box_no || `C${String(r.seq).padStart(2, '0')}`}</span>
+                  <span className="carton-label-seq">第 {r.seq} 箱 / 共 {r.total} 箱</span>
+                </div>
+                <div className="carton-label-meta">
+                  <span>{r.shipment_date}</span>
+                  {r.mark ? <span>{r.mark}</span> : null}
+                  {r.note ? <span className="carton-label-note">{r.note}</span> : null}
+                </div>
+                <div className="carton-label-items">
+                  {r.items.map((it, j) => (
+                    <div className="carton-label-item" key={j}>
+                      <div className="carton-label-text">
+                        <strong>{it.name_zh || it.name_en || it.sku}</strong>
+                        <small>{it.sku}</small>
+                      </div>
+                      <div className="carton-label-qty">×{it.quantity}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="carton-label-foot">
+                  {r.items.length} 个产品 · {r.items.reduce((s, it) => s + it.quantity, 0)} 件
                 </div>
               </div>
             ))}
