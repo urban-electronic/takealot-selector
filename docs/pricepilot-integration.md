@@ -1252,3 +1252,50 @@ WorkBuddy；基线 `5a790f13cd`。
   把 `symbolFor()` 改回「按市场取符号」即报 `别的币种不许冒用 S$`（已还原）。
 - 复测：同上；`test-product-pagination.cjs` 的 TS 加载器补上递归 `m.require`
   （marketPrice 现在 import 了 `utils/datetime`，只编译第一层会 MODULE_NOT_FOUND）。
+
+### DETAIL-DRAFT-01 详情页「取消」不再留下被丢弃的参考价（2026-10-22）
+
+WorkBuddy；基线 `ecc9db7d34`。
+
+- 症状：`ProductDetail` 的参考价表格**两种模式都读 `mpDraft`**（编辑态渲染输入框、只读态渲染
+  `formatMarketPrice`），而「取消」只 `setEditMode(false)`，不还原草稿。把新加坡价从 115 改成
+  999 再点取消，表格继续显示 `S$999`；再点「编辑」，输入框里还是 999——看起来像「取消没生效」，
+  只有刷新页面才回到 115。普通字段没暴露这个问题，因为只读态读的是 `product`，正好掩盖了
+  草稿没还原这件事。
+- 改动：抽出 `resetDraft(product)`（原来 `useEffect` 里那 34 个字段的映射搬进来），加载、
+  取消、保存成功三处共用：取消退回服务端那一份；保存成功用 `updateProduct` 的返回值重建
+  （后端会归一价格小数位、给 `at` 补今天，不重建的话草稿和库里差一点）。
+- 复现：`test-market-prices.cjs` 新增源码级断言——`cancelEdit()` 必须调 `resetDraft(product)`、
+  取消按钮必须 `onClick={cancelEdit}`、保存成功后必须 `resetDraft(updated)`。把
+  `resetDraft(product)` 去掉即报「取消编辑必须用服务端那一份重建草稿」（已还原）。
+- 复测：`test-market-prices.cjs` 110 → 119 条断言；tsc（`noUnusedLocals`）通过；全量
+  selfcheck 33 步全绿。
+
+### DETAIL-SAVE-ERR-01 保存失败不再把整页换成一行红字（2026-10-22）
+
+WorkBuddy；基线 `ecc9db7d34`。
+
+- 症状：`handleSave` 的 catch 写的是 `setError(...)`，而 `error` 是「加载失败」的状态——渲染时
+  `if (error) return <div className="alert alert-error">`，整个页面（含所有输入框）被替换成
+  一行红字。网络抖一下、或后端 422（例如市场价条目不合规）之后，用户刚填的一整页表单连同
+  草稿一起消失，只能重填；从列表再点进来也拿不回。
+- 改动：新增 `saveError` 状态，在页头以 `role="alert"` 行内提示渲染；保存成功与取消时清空。
+  `error` 只留给加载失败。
+- 复现：断言按 `handleSave` 这一段切片检查——必须出现 `setSaveError(`、不许出现 `setError(`。
+  第一版断言用全文匹配，被 `cancelEdit` 里的 `setSaveError('')` 蒙过去了（探针不转红），已改成
+  只扫 handleSave 段；把 catch 改回 `setError(` 即转红（已还原）。
+- 复测：同上。
+
+### MARKET-COPY-02 「参考价」按钮不再叫「中国官网价」（2026-10-22）
+
+WorkBuddy；基线 `ecc9db7d34`。
+
+- 症状：列表页按钮 `title="批量录入中国官网价 / 淘宝价…"`，但点开面板后表头写的是
+  「国内原价 ¥ / 国内到手价 ¥」，正文还写着「中国官网（charleskeith.cn）已停摆」——同屏三处
+  口径互相打脸。`MARKET_META` 的注释早就写明「标签必须写国内，不能写官网」（CN/TB 只是历史键名，
+  数据实际来自天猫、京东）。
+- 改动：title 改为「批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端
+  每天自动重读」。
+- 复现：断言 title 不许再出现「批量录入中国官网价」、必须写「批量录入国内原价 / 到手价」。
+  改回旧文案即转红（已还原）。
+- 复测：同上。

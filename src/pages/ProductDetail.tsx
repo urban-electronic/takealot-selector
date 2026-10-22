@@ -23,6 +23,8 @@ export default function ProductDetail() {
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  /** 保存失败单独一个状态：写进 `error` 会让整页被替换成错误行，草稿一起丢。 */
+  const [saveError, setSaveError] = useState('');
   const feeCategoryState = useFeeCategories(api);
   const feeCategories = feeCategoryState.categories;
   const [editMode, setEditMode] = useState(searchParams.get('edit') === '1');
@@ -42,6 +44,54 @@ export default function ProductDetail() {
     setTimeout(() => setCopiedSku(false), 2000);
   };
 
+  /**
+   * 用服务端的产品重建两份草稿（普通字段 + 参考价）。
+   *
+   * 草稿是编辑态的唯一数据源，所以「取消」必须能把它退回去。原来取消只
+   * `setEditMode(false)`：普通字段在只读态读的是 `product`，看着像还原了；
+   * 但参考价表格**两种模式都读 `mpDraft`**，于是取消之后被丢弃的价格还挂在
+   * 页面上（再点「编辑」拿到的也是那份旧草稿），看起来像「取消没生效」。
+   * 保存成功后同理用服务端返回值重建：后端会归一（价格两位小数、`at` 补今天），
+   * 不重建的话草稿和服务端在细节上会一直差一点。
+   */
+  const resetDraft = (p: Product) => {
+    setMpDraft(parseMarketPrices(p.market_prices));
+    setEditData({
+      product_name: p.product_name || '',
+      takealot_url: p.takealot_url || '',
+      product_image_url: p.product_image_url || '',
+      note: p.note || '',
+      actual_sale_price_zar: p.actual_sale_price_zar,
+      unit_price_cny: p.unit_price_cny,
+      purchase_cost_cny: p.purchase_cost_cny,
+      purchase_shipping_cny: p.purchase_shipping_cny,
+      purchase_quantity: p.purchase_quantity,
+      length_mm: p.length_mm,
+      width_mm: p.width_mm,
+      height_mm: p.height_mm,
+      actual_weight_kg: p.actual_weight_kg,
+      packaging_cost_per_unit_cny: p.packaging_cost_per_unit_cny,
+      shipping_method: p.shipping_method,
+      fee_category: p.fee_category,
+      purchase_url: p.purchase_url || '',
+      sku: p.sku || '',
+      chinese_product_name: p.chinese_product_name || '',
+      link_status: p.link_status || '未购买',
+      inbound_listing_fee_cny: p.inbound_listing_fee_cny,
+      outbound_operation_fee_cny: p.outbound_operation_fee_cny,
+      last_mile_delivery_fee_cny: p.last_mile_delivery_fee_cny,
+      other_fee_cny: p.other_fee_cny,
+      fulfillment_fee_zar: p.fulfillment_fee_zar,
+      manual_domestic_forwarding_cny: p.manual_domestic_forwarding_cny ?? null,
+      manual_international_shipping_cny: p.manual_international_shipping_cny ?? null,
+      manual_overseas_op_cost_cny: p.manual_overseas_op_cost_cny ?? null,
+      manual_success_fee_zar: p.manual_success_fee_zar ?? null,
+      manual_fulfillment_fee_zar: p.manual_fulfillment_fee_zar ?? null,
+      manual_total_cost_zar: p.manual_total_cost_zar ?? null,
+      market_prices: p.market_prices || '',
+    });
+  };
+
   useEffect(() => {
     if (!id) return;
     if (id === 'new') {
@@ -51,41 +101,7 @@ export default function ProductDetail() {
     api.getProduct(id)
       .then((p: Product) => {
         setProduct(p);
-        setMpDraft(parseMarketPrices(p.market_prices));
-        setEditData({
-          product_name: p.product_name || '',
-          takealot_url: p.takealot_url || '',
-          product_image_url: p.product_image_url || '',
-          note: p.note || '',
-          actual_sale_price_zar: p.actual_sale_price_zar,
-          unit_price_cny: p.unit_price_cny,
-          purchase_cost_cny: p.purchase_cost_cny,
-          purchase_shipping_cny: p.purchase_shipping_cny,
-          purchase_quantity: p.purchase_quantity,
-          length_mm: p.length_mm,
-          width_mm: p.width_mm,
-          height_mm: p.height_mm,
-          actual_weight_kg: p.actual_weight_kg,
-          packaging_cost_per_unit_cny: p.packaging_cost_per_unit_cny,
-          shipping_method: p.shipping_method,
-          fee_category: p.fee_category,
-          purchase_url: p.purchase_url || '',
-          sku: p.sku || '',
-          chinese_product_name: p.chinese_product_name || '',
-          link_status: p.link_status || '未购买',
-          inbound_listing_fee_cny: p.inbound_listing_fee_cny,
-          outbound_operation_fee_cny: p.outbound_operation_fee_cny,
-          last_mile_delivery_fee_cny: p.last_mile_delivery_fee_cny,
-          other_fee_cny: p.other_fee_cny,
-          fulfillment_fee_zar: p.fulfillment_fee_zar,
-          manual_domestic_forwarding_cny: p.manual_domestic_forwarding_cny ?? null,
-          manual_international_shipping_cny: p.manual_international_shipping_cny ?? null,
-          manual_overseas_op_cost_cny: p.manual_overseas_op_cost_cny ?? null,
-          manual_success_fee_zar: p.manual_success_fee_zar ?? null,
-          manual_fulfillment_fee_zar: p.manual_fulfillment_fee_zar ?? null,
-          manual_total_cost_zar: p.manual_total_cost_zar ?? null,
-          market_prices: p.market_prices || '',
-        });
+        resetDraft(p);
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
@@ -93,6 +109,7 @@ export default function ProductDetail() {
 
   const handleSave = async () => {
     if (!id) return;
+    setSaveError('');
     try {
       // 手动覆盖字段：空字符串转为 null
       const manualFields = [
@@ -116,13 +133,26 @@ export default function ProductDetail() {
         fee_category_confirmed: editData.fee_category ? true : product?.fee_category_confirmed,
       });
       setProduct(updated);
+      // 以服务端返回值重建草稿：后端会归一价格小数位、给 `at` 补今天，
+      // 不重建的话再进编辑态看到的是「我提交的那份」而不是库里的那份。
+      resetDraft(updated);
       setEditMode(false);
       // 名称/SKU 变了要让装箱单重新同步，不然那边还是旧名字。
       notifyCatalogChanged(['sku', 'product_name', 'chinese_product_name']);
       if (searchParams.get('from')) navigate(-1);
     } catch (e: any) {
-      setError(typeof e === 'string' ? e : e.message || '保存失败');
+      // 保存失败不能写进 `error`：那个状态是「加载失败」，渲染时会整页换成
+      // 一行红字（`if (error) return …`），于是网络抖一下或后端 422 之后，
+      // 用户刚填的一整页表单连草稿一起消失，只能重新填。
+      setSaveError(typeof e === 'string' ? e : e.message || '保存失败');
     }
+  };
+
+  /** 取消编辑：连同草稿一起退回服务端那一份（见 `resetDraft` 的说明）。 */
+  const cancelEdit = () => {
+    if (product) resetDraft(product);
+    setSaveError('');
+    setEditMode(false);
   };
 
   const handleDelete = async () => {
@@ -188,6 +218,7 @@ export default function ProductDetail() {
 
   return (
     <div className="product-detail-page">
+      {saveError && <div role="alert" className="alert alert-error">{saveError}</div>}
       <div className="page-heading">
         <div>
           <a href="#" onClick={(e) => { e.preventDefault(); navigate(-1); }} style={{ fontSize: 13, color: 'var(--color-primary)', textDecoration: 'none' }}>&larr; 返回列表</a>
@@ -204,7 +235,7 @@ export default function ProductDetail() {
           ) : (
             <>
               <button className="btn btn-success" onClick={handleSave}>保存</button>
-              <button className="btn btn-outline" onClick={() => setEditMode(false)}>取消</button>
+              <button className="btn btn-outline" onClick={cancelEdit}>取消</button>
             </>
           )}
           <button className="btn btn-danger" onClick={handleDelete}>删除</button>

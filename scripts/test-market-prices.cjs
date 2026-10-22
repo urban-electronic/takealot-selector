@@ -313,4 +313,35 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
   check(!('symbol' in MARKET_META.SG), 'MARKET_META 不再自带符号表（避免两份真相）');
 }
 
+// ---- 编辑态草稿：取消要能退回去，保存失败不能吞掉整页 -----------------------
+// 参考价表格两种模式都读 `mpDraft`，所以「取消」只 setEditMode(false) 时，
+// 被丢弃的价格还挂在页面上，再点「编辑」拿到的也是那份旧草稿。
+// 保存失败写进 `error` 更糟：那个状态渲染时整页换成一行红字，草稿一起消失。
+{
+  const detail = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductDetail.tsx'), 'utf8');
+  check(/const cancelEdit = \(\) => \{[\s\S]{0,200}?resetDraft\(product\)/.test(detail),
+    '取消编辑必须用服务端那一份重建草稿（否则参考价表格留着被丢弃的值）');
+  check(/onClick=\{cancelEdit\}/.test(detail), '取消按钮要调 cancelEdit，不能只 setEditMode(false)');
+  check(/resetDraft\(updated\)/.test(detail), '保存成功后要用服务端返回值重建草稿');
+  // 只对 handleSave 这一段断言：整份文件里 cancelEdit 也会 setSaveError('')，
+  // 用全文匹配会把「保存失败又写回 setError」漏过去（探针实测漏过一次）。
+  const saveStart = detail.indexOf('const handleSave');
+  const saveBody = detail.slice(saveStart, detail.indexOf('const cancelEdit', saveStart));
+  check(saveStart > 0 && saveBody.length > 200, '要能定位到 handleSave 的实现（断言依赖它）');
+  check(saveBody.includes('setSaveError('), '保存失败要写 saveError');
+  check(!saveBody.includes('setError('), '保存失败不许写进加载用的 error（会整页替换、草稿一起丢）');
+  check(/role="alert"[^>]*>\{saveError/.test(detail),
+    'saveError 要在页头以行内提示渲染');
+}
+
+// ---- 按钮文案与表头同一口径 -------------------------------------------------
+// 表头写「国内原价 / 国内到手价」，MARKET_META 也明确「标签必须写国内，不能写官网」，
+// 但按钮 title 一直写「批量录入中国官网价」——点开面板的同屏正文却在说
+// 「中国官网（charleskeith.cn）已停摆」。
+{
+  const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
+  check(!/title="批量录入中国官网价/.test(list), '「参考价」按钮不许再写「中国官网价」（官网已停摆）');
+  check(/title="批量录入国内原价 \/ 到手价/.test(list), '「参考价」按钮按表头口径写「国内原价 / 到手价」');
+}
+
 console.log(`test-market-prices: ${checks} checks passed`);

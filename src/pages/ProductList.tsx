@@ -1117,7 +1117,7 @@ export default function ProductList() {
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
-        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入中国官网价 / 淘宝价；新加坡官网价由后端每天自动重读">参考价</button>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
 
