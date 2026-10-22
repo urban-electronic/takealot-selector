@@ -256,3 +256,53 @@ def test_packing_list_without_cartons_keeps_sku_aggregate(tmp_path):
     assert read('A4') == 'CK-01'         # 没有箱号时退回唛头
     assert read('D4') == '3'
     assert read('E4') == '10'
+
+
+def test_reexport_updates_metadata_and_date_queries_atomically(db):
+    """File, shipment header and carton query must describe the same shipment."""
+    from models import ShipmentCarton
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=generate_stub):
+        original = payload('metadata-retry')
+        assert routes.export_excel(original, db, 'default-store').status_code == 200
+        number = db.query(Shipment).one().shipment_no
+        revised = original.model_copy(update=dict(date='2026-10-16', shipping='空', mark='NEW', address='新地址'))
+        assert routes.export_excel(revised, db, 'default-store').status_code == 200
+    shipment = db.query(Shipment).one()
+    assert (shipment.shipment_date, shipment.shipping, shipment.mark, shipment.address) == ('2026-10-16', '空', 'NEW', '新地址')
+    assert shipment.shipment_no == number
+    assert db.query(ShipmentCarton).count() == 1
+    assert routes.list_cartons(date='2026-10-15', db=db, store_id='default-store')['total_cartons'] == 0
+    fresh = routes.list_cartons(date='2026-10-16', db=db, store_id='default-store')
+    assert fresh['total_cartons'] == 1 and fresh['cartons'][0]['mark'] == 'NEW'
+    assert inventory_balance_for_sku(db, 'sku-a', 'default-store') == 3
+
+
+@pytest.mark.parametrize('field,value', [('date', '2026-10-16'), ('shipping', '空'),
+                                        ('mark', 'NEW'), ('address', '新地址')])
+def test_confirmed_reexport_rejects_metadata_changes_before_generating_a_file(db, field, value):
+    """Already deducted inventory: a retry cannot silently change shipment context."""
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=generate_stub) as generate:
+        original = payload('confirmed-metadata', record=True, sku='sku-b', count='5')
+        assert routes.export_excel(original, db, 'default-store').status_code == 200
+        calls = generate.call_count
+        changed = original.model_copy(update={field: value})
+        response = routes.export_excel(changed, db, 'default-store')
+        assert response.status_code == 409
+        assert generate.call_count == calls
+        assert inventory_balance_for_sku(db, 'sku-b', 'default-store') == 20
+        assert db.query(Shipment).count() == 1
+        assert routes.export_excel(original, db, 'default-store').status_code == 200
+        assert inventory_balance_for_sku(db, 'sku-b', 'default-store') == 20
+
+
+def test_failed_reexport_keeps_previous_header_and_cartons(db):
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=generate_stub):
+        original = payload('metadata-failure')
+        assert routes.export_excel(original, db, 'default-store').status_code == 200
+    revised = original.model_copy(update=dict(date='2026-10-16', shipping='空', mark='NEW'))
+    with patch.object(routes, '_hydrate_export_product'), patch.object(routes.px, 'generate', side_effect=ValueError('fixture export failure')):
+        assert routes.export_excel(revised, db, 'default-store').status_code == 400
+    shipment = db.query(Shipment).one()
+    assert (shipment.shipment_date, shipment.shipping, shipment.mark) == ('2026-10-15', '海', original.mark)
+    assert routes.list_cartons(date='2026-10-15', db=db, store_id='default-store')['total_cartons'] == 1
+    assert inventory_balance_for_sku(db, 'sku-a', 'default-store') == 3

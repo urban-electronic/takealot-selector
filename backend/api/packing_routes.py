@@ -811,6 +811,11 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
     expected_status = 'confirmed' if data.record_shipment else 'exported'
     if existing_shipment and existing_shipment.status != expected_status:
         return fail(409, '此草稿已按其他方式留档，请新建装箱单后导出，避免重复扣库存')
+    metadata = dict(shipment_date=date.isoformat(), mark=data.mark,
+                    shipping=data.shipping, address=data.address)
+    if existing_shipment and existing_shipment.status == 'confirmed':
+        if any((getattr(existing_shipment, field) or '') != value for field, value in metadata.items()):
+            return fail(409, '这张装箱单已确认发货，不能改日期、运输方式、唛头或地址；请先作废再重开')
     requested_by_sku = {}
     for line in data.items:
         p = _find(db, store_id, line.sku.strip())
@@ -927,6 +932,9 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
                 line.cartons = int(cartons)
                 line.count_per_carton = int(count)
                 line.total_quantity = int(cartons) * int(count)
+        # Retry exports persist the header used in this workbook, with stable id/number.
+        for field, value in metadata.items():
+            setattr(existing_shipment, field, value)
         _replace_cartons(db, existing_shipment, store_id, cartons_plan, items)
         db.commit()
     return Response(
