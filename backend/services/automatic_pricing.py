@@ -109,15 +109,16 @@ def _pools(raw_offers, typed):
 
 
 def _winnable(pool, rule):
-    """这个卡位里，哪些价格我们跟得起（跟完之后仍不低于利润底价）。
+    """先判断同一卡位的实际最低价是否可达，不能删掉便宜对手再称为可抢。
 
-    旧实现直接取整池最低价：池里只要有一个低于底价的报价，
-    整条 SKU 就判「放弃竞争」——哪怕旁边还有一个完全打得过的竞品。
-    等于被一个我们本来就抢不起的低价钉死在原地。
+    最快配送与最低价分别调用；某一池不可达不妨碍评估另一池。
+    类型缺失时调用方只给一个合并池，不猜测第二个机会。
     """
-    lead = rule.get('lead_amount', 1)
-    floor = rule['min_price']
-    return [o for o in pool if math.floor(o['price'] - lead) >= floor]
+    if not pool:
+        return []
+    leader = min(pool, key=lambda offer: offer['price'])
+    target = math.floor(leader['price'] - rule.get('lead_amount', 1))
+    return [leader] if target >= rule['min_price'] else []
 
 
 def _raise_ceiling(rule, current):
@@ -137,7 +138,7 @@ def plan(current, stock, rule, snapshot):
     p = dict(regime='hold', target=None, reason='', confidence='low', risk='low',
              current=current, floor=floor, ceiling=rule.get('max_price'),
              cheapest=None, gap_pct=None, live_count=0, dark_count=0, sole_seller=False,
-             pressure='unknown', cover_days=None, outliers=0)
+             pressure='unknown', cover_days=None, outliers=0, target_lane=None)
     if stock <= 0:
         p.update(regime='off', reason='无库存，跳过')
         return p
@@ -189,8 +190,8 @@ def plan(current, stock, rule, snapshot):
         return p
     # 走到这里：要么已确认本店持位（holding），要么已确认对手持位
     # （price_matches 但 verified 是 False）——后者要走下面的抢位分支。
-    if holding and time.time() - rule.get('last_changed_epoch', 0) < rule.get('cooldown_minutes', 10) * 60:
-        p.update(regime='climb' if live else 'scarcity', reason='持有 Buybox，处于冷却期')
+    if time.time() - rule.get('last_changed_epoch', 0) < rule.get('cooldown_minutes', 10) * 60:
+        p.update(reason='上次调价仍处于冷却观察期，等待价格生效与新行情后再评估')
         return p
     day = datetime.now(ZoneInfo('Africa/Johannesburg')).date().isoformat()
     if rule.get('change_day') == day and rule.get('today_changes', 0) >= rule['max_daily_changes']:
@@ -264,12 +265,13 @@ def plan(current, stock, rule, snapshot):
                  reason=f'可售约 {int(cover)} 天，库存紧张，不跟降（同样的货少卖钱，还会提前断货）')
         return p
     if rule['strategy'] == 'follow_lowest':
+        p['target_lane'] = 'lowest'
         able = _winnable(live, rule)
         if not able:
             below = cheapest is not None and floor is not None and cheapest < floor
             p.update(regime='compete',
                      reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
-                             else '没有现货竞品，保持现价'))
+                             else '当前最低报价按领先差额无法满足底价，或缺少现货竞品，保持现价'))
             return p
         raw = math.floor(min(o['price'] for o in able) - rule.get('lead_amount', 1))
         if raw >= current:
@@ -283,19 +285,20 @@ def plan(current, stock, rule, snapshot):
             fastest = live
         best = [o for o in live if o.get('offerType') == 'best_price']
         raw = None
-        for pool in (fastest, best):
+        for lane, pool in (('fastest' if typed else 'lowest', fastest), ('best_price', best)):
             able = _winnable(pool, rule)
             if not able:
                 continue
             candidate = math.floor(min(o['price'] for o in able) - rule.get('lead_amount', 1))
             if candidate < current:
                 raw = candidate
+                p['target_lane'] = lane
                 break
         if raw is None:
             below = cheapest is not None and floor is not None and cheapest < floor
             p.update(regime='compete',
                      reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
-                             else '两个现货卡位均不可达，保持现价'))
+                             else '两个现货卡位均不可达或无需降价，保持现价'))
             return p
     if raw < rule['min_price']:
         p.update(regime='compete', reason='建议价低于最低价，放弃竞争')
@@ -318,8 +321,9 @@ def plan(current, stock, rule, snapshot):
         p.update(regime='compete', reason='变化小于调整阈值')
         return p
     p.update(regime='compete', target=target,
-             reason=(f'未持有 Buybox，降到 R {int(target)} 抢位'
-                     + (f'（一次最多降 {drop_cap:g}%，本轮只走这一步）' if capped else '')
+             reason=(f'未持有 Buybox，建议 R {int(target)} 尝试竞争'
+                     + (f'（一次最多降 {drop_cap:g}%，分步接近目标）' if capped else '')
+                     + '，待新行情确认持位效果'
                      + f'（让利 {int(current - target)}，底价 R {int(floor)}）'))
     return p
 
