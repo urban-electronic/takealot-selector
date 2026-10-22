@@ -92,3 +92,33 @@ mark = data.mark.strip() or data.inbound_no.strip() or 'KPLDJ'
 测试里改 localStorage 草稿时，键是 `packingDraftV1:<店铺ID>`。写到裸键 `packingDraftV1`
 上没用 —— `readStoreStorage` 先读店铺键，店铺键已存在时根本不看裸键。
 必须 `Object.keys(localStorage).find(k => k.includes('packingDraftV1'))` 找到真键再写。
+
+## 顺带修掉 #176 带出来的 CI 红灯
+
+`pr-check.yml` 的 `Typecheck / visual / tests / build` 在 #176 上是红的：
+
+```
+✗ 前端 test-packing-display.cjs 1.1s
+TypeError: Cannot read properties of undefined (reading 'click')
+    at scripts/test-packing-display.cjs:175:37
+```
+
+`#176` 把「按 SKU 展开」按钮换成了自动生成 + 「手动调整（混装 / 拆箱）」，
+但同一个分支上的 `test-packing-display.cjs` 还在 `[...host.querySelectorAll('.packing-carton-actions button')]
+.find(b => b.textContent.includes('按 SKU 展开'))` 之后 `.click()` —— 找不到就是 undefined。
+不是环境差异，是测试没跟着改。
+
+改成断言新行为：勾一个产品、什么都不改，箱子就该按「箱数 × 每箱件数」自动长出来
+（1 箱 / 12 件 / 无对不上告警）。同时补了本 PR 的三条断言：
+
+- 空着运输方式点导出必须被拦住，并说明原因；
+- 下拉只有「空运 / 海运」两项（不是自由文本）；
+- 选中的运输方式要真的进 payload。
+
+## 一个容易复发的坑：本地 `_repo` 会落后于目标分支
+
+本地 `scripts/test-packing-display.cjs` 是 156 行的旧版，而 `main` 和 `#176` head 都是 216 行。
+于是本地 `selfcheck` 显示「36 步全过」，CI 却红 —— **跑的根本不是同一份测试**。
+
+推之前把要动的每个文件与远端同 ref 比一遍，本地必须是远端的超集（只多不少）才能整文件覆盖。
+另外注意：**不在自己改动列表里的文件也可能是旧的**，本地全绿不等于 CI 全绿。
