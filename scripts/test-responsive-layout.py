@@ -26,7 +26,8 @@ PRODUCT['market_prices'] = json.dumps({
     'SG': dict(price=245.9, cur='SGD', src='官网自动', at='2026-10-21', miss=3, stale=True),
     'TB': dict(price=899, cur='CNY', src='淘宝均价', n=128, at='2026-10-21'),
 }, ensure_ascii=False)
-STORE = dict(id='default-store', name='自营店铺', platform='Takealot', status='active', owner_name='', sync_method='manual', sync_interval_minutes=60, external_store_ref='', allow_negative_inventory_shipments=False, last_synced_at=None)
+# 店名写「代理」：多市场参考价这套只对代理店显示（自营店没有官方售价，整块会收起来）
+STORE = dict(id='default-store', name='代理CK店铺', platform='Takealot', status='active', owner_name='', sync_method='manual', sync_interval_minutes=60, external_store_ref='', allow_negative_inventory_shipments=False, last_synced_at=None)
 PROCUREMENT = dict(id='fixture-record', product_id=PRODUCT['id'], product_no='1', product_name=PRODUCT['product_name'], recorded_at='2026-10-15', quantity=2, unit_price_cny=10, total_price_cny=20, status='in_transit', notes='', shipping_cost_cny=0)
 PACK = dict(sku='TEST-001', name='收纳包', name_zh='收纳包', name_en='Travel storage bag', image_file='', default_count=1, material='织物', electric='否', magnetic='否', unit='个', weight='0.2', brand='', battery='')
 RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last_result='未启动',

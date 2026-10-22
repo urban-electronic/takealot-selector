@@ -17,7 +17,9 @@ rows[0].takealot_url='https://example.invalid/product';
 rows[1].sku='SKU2 SKU2B';rows[1].chinese_product_name='红色 蓝色';
 let pendingUpdate;const writes=[];
 const api={getProducts:async()=>rows,getImageUrl:x=>x,updateProduct:(...args)=>{assert.ok(pendingUpdate,'unexpected fixture mutation');writes.push(args);return pendingUpdate;}};
-const remote={getStoreStorageKey:x=>x,readStoreStorage:x=>localStorage.getItem(x),getActiveStoreId:()=> 'default-store'};
+// getStores 给空数组：拿不到店铺时页面按「代理」处理（保留参考价列），
+// 这样这条用例只量分页，不被代理/自营的显示差异干扰。
+const remote={getStoreStorageKey:x=>x,readStoreStorage:x=>localStorage.getItem(x),getActiveStoreId:()=> 'default-store',getStores:()=>Promise.resolve([])};
 // 未在 mocks 中声明的相对导入，按真实 .ts/.tsx 编译，避免新增一个模块就让整组测试失败。
 // 递归里也要接管 m.require：只编译第一层的话，被编译模块再 import 一个相对 .ts
 // （例如 marketPrice → utils/datetime）会掉回 Node 的默认解析，报 MODULE_NOT_FOUND。

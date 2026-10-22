@@ -68,6 +68,18 @@ check(!isEan13(null), 'null 必须拒绝');
   check(text.includes('(9) Tj'), '13 位数字要按 1-6-6 拆开画');
   check(text.includes('(902348) Tj') && text.includes('(623136) Tj'), '数字分组必须是 1-6-6');
   check(!/[^\x00-\x7f]/.test(text), 'PDF 里不能出现非 ASCII（会算错 xref 偏移）');
+
+  // 护线：官方版式里起/中/止六根护线比数据条长 9.6pt（31.181 vs 21.581），
+  // 一直伸到 13 位数字那一行。少了它整张标签会比官方矮一截。
+  check((text.match(/31\.181 re f/g) || []).length === 6,
+    `护线必须正好 6 根，实际 ${(text.match(/31\.181 re f/g) || []).length}`);
+  check((text.match(/21\.581 re f/g) || []).length > 0, '数据条高必须是 21.581');
+  check(text.includes('0.459 0.935 31.181 re f'), '首根护线要在 y=0.459、宽 0.935');
+  // 文字基线（官方实测）：产品名 53.3 / 45.3 / 37.3，M 23.13，P 14.63，数字 2.37
+  check(text.includes('0 53.30 Tm') && text.includes('0 45.30 Tm') && text.includes('0 37.30 Tm'),
+    '产品名三行基线必须是 53.3 / 45.3 / 37.3');
+  check(text.includes('0.00 23.13 Tm') && text.includes('0.00 14.63 Tm'), 'M / P 基线必须是 23.13 / 14.63');
+  check(text.includes('2.37 Tm'), '13 位数字基线必须是 2.37');
 }
 
 // ---- 4) copies 是同一份多页 ----
@@ -91,10 +103,17 @@ check(DEFAULT_LABEL_SIZE === '40x30', '默认必须是 40x30（30 宽会把条�
   const one = buildLabelBundle([{ sku: SKU, name: NAME }]);
   check(one.kind === 'pdf', '只有一个 SKU 时直接给 pdf');
   check(one.count === 1, '只有一个 SKU 时张数是 1');
-  check(one.filename === `${SKU}.pdf`, `文件名应该是 SKU，实际 ${one.filename}`);
+  check(one.filename === `${SKU}.pdf`, `没给中文名时文件名就是 SKU，实际 ${one.filename}`);
+
+  // 文件名 = SKU + 中文简写，打印时一眼能认出是哪个品
+  const named = buildLabelBundle([{ sku: SKU, name: NAME, cn: '皮革黑色包' }]);
+  check(named.filename === `${SKU}_皮革黑色包.pdf`, `文件名要带中文简写，实际 ${named.filename}`);
+  // 占位值不能当文件名（多规格没对上颜色/尺码时会出现）
+  const placeholder = buildLabelBundle([{ sku: SKU, name: NAME, cn: '规格待识别' }]);
+  check(placeholder.filename === `${SKU}.pdf`, `占位值不进文件名，实际 ${placeholder.filename}`);
 
   const many = buildLabelBundle([
-    { sku: SKU, name: NAME },
+    { sku: SKU, name: NAME, cn: '皮革黑色包' },
     { sku: '9902348621873', name: 'SHORT' },
     { sku: '123', name: 'BAD' },
   ]);
@@ -103,9 +122,12 @@ check(DEFAULT_LABEL_SIZE === '40x30', '默认必须是 40x30（30 宽会把条�
   check(many.skipped.length === 1 && many.skipped[0].sku === '123', '非法条码要单独记下来');
   const bytes = new Uint8Array(await many.blob.arrayBuffer());
   check(bytes[0] === 0x50 && bytes[1] === 0x4b, 'zip 必须以 PK 开头');
-  const zipText = Buffer.from(bytes).toString('latin1');
-  check(zipText.includes(`${SKU}.pdf`), 'zip 里必须有一个 SKU 一个 pdf');
-  check(zipText.includes('9902348621873.pdf'), '第二个 SKU 也要在');
+  // 文件名是 UTF-8 的（通用标志位 bit 11 已置位），要按 utf8 解码才能比对中文
+  const zipUtf8 = Buffer.from(bytes).toString('utf8');
+  check(zipUtf8.includes(`${SKU}_皮革黑色包.pdf`), 'zip 里文件名要带中文简写');
+  check(zipUtf8.includes('9902348621873.pdf'), '没有中文名的回退成纯 SKU');
+  const zipLatin = Buffer.from(bytes).toString('latin1');
+  check((zipLatin.match(/\x00\x08\x00\x00/g) || []).length >= 2, 'zip 条目要置 UTF-8 标志位');
 
   // 全是非法条码 → 0 张，不抛异常
   const none = buildLabelBundle([{ sku: '123', name: 'X' }]);

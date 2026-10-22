@@ -2,8 +2,13 @@
 
 版式不是猜的，是从官方下载的 product_labels.pdf 里量出来的：
 全部 Helvetica 8pt，产品名 3 行在上，EAN-13 横排、最小条宽 0.33mm（0.935pt）、
-数据条高 7.6mm（21.59pt），13 位数字按 1-6-6 分组内嵌在条码下方，
-条码左侧还有 M / P 两个标记。整块内容 34.3 x 21.8mm。
+数据条高 7.61mm（21.581pt），起/中/止六根护线 31.181pt（伸到数字那一行），
+13 位数字按 1-6-6 分组内嵌在条码下方，条码左侧还有 M / P 两个标记。
+整块内容 34.3 x 21.8mm。
+
+「跟官方裁剪后一模一样」是逐条比对过的：同 SKU 下 17 段文字、30 个条码矩形
+x/y/宽/高全部一致（残差 ≤0.04pt 是官方自己写 PDF 时的舍入），
+203 / 300 / 400 / 600 / 1200 dpi 全部扫得出。
 
 官方那份是一张 A4 只印一个标签（左下角）。这里两种出法：
 - generate_label_files：每个 SKU 一个 PDF，页面就是 40x30，标签打印机直接打（默认）
@@ -15,27 +20,47 @@
 
 import re
 
-from reportlab.graphics.barcode import createBarcodeDrawing
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 # --- 官方 product_labels.pdf 量出来的版式，单位 pt，原点在内容左下角 ---
+# 数值全部来自官方文件第 1 页第 1 张标签的实测（x0=17.86, y0=735.09 为内容块原点），
+# 不是估算。改动这里必须同步 src/utils/labelPdf.ts，否则前后端出的标签会不一样。
 CONTENT_W = 97.24
 CONTENT_H = 61.90
 NAME_SIZE = 8.0
-NAME_BASELINES = (52.9, 44.9, 36.9)  # 3 行，从上到下
-DIGITS_BASELINE = 2.0
-BAR_X = 8.38
-BAR_Y = 10.06
-BAR_WIDTH = 0.935   # pt = 0.33mm
-BAR_HEIGHT = 21.59  # pt = 7.6mm
+NAME_BASELINES = (53.3, 45.3, 37.3)  # 3 行，从上到下
+# 产品名折行宽度：比内容宽多 0.5pt 的容差。
+# 不能写成 CONTENT_W - BAR_X（88.82）—— 官方第 2 行实测 97.35pt，比内容宽还多 0.11，
+# 照样排在同一行；用 88.82 会提前折行，三行的断词位置就跟官方对不上了。
+NAME_MAX_WIDTH = CONTENT_W + 0.5
+DIGITS_BASELINE = 2.37
+BAR_X = 8.42          # 官方首条（起始护线第一根）的 x
+BAR_TOP = 31.64       # 条码**顶部**（从内容块底部算），数据条和护线顶对齐
+BAR_WIDTH = 0.935     # pt = 0.33mm，95 个模块正好铺满 88.825pt
+BAR_HEIGHT = 21.581   # 数据条高（7.61mm）
+GUARD_HEIGHT = 31.181  # 护线高：比数据条长 9.6pt，官方版式里伸到数字下方
 MARK_X = 0.0
-MARK_M_BASELINE = 22.4
-MARK_P_BASELINE = 13.9
-# 数字分组位置（1-6-6），官方是 0.8 / 17.5 / 61.4
-DIGIT_X = (0.8, 17.5, 61.4)
+MARK_M_BASELINE = 23.13
+MARK_P_BASELINE = 14.63
+# 数字分组位置（1-6-6）
+DIGIT_X = (0.93, 17.52, 61.49)
+
+# EAN-13 的 95 个模块里，哪些是护线（起始 101 / 中间 01010 / 终止 101）。
+# 护线要画得比数据条长，这是官方标签最容易被漏掉的一处细节。
+GUARD_MODULES = frozenset((0, 2, 46, 48, 92, 94))
+
+# EAN-13 编码表（标准，与官方条码逐条实测一致）
+EAN_L = ('0001101', '0011001', '0010011', '0111101', '0100011',
+         '0110001', '0101111', '0111011', '0110111', '0001011')
+EAN_G = ('0100111', '0110011', '0011011', '0100001', '0011101',
+         '0111001', '0000101', '0010001', '0001001', '0010111')
+EAN_R = ('1110010', '1100110', '1101100', '1000010', '1011100',
+         '1001110', '1010000', '1000100', '1001000', '1110100')
+EAN_PARITY = ('LLLLLL', 'LLGLGG', 'LLGGLG', 'LLGGGL', 'LGLLGG',
+              'LGGLLG', 'LGGGLL', 'LGLGLG', 'LGLGGL', 'LGGLGL')
 
 LABEL_SIZES = {'40x30': (40, 30), '30x40': (30, 40)}
 DEFAULT_SIZE = '40x30'
@@ -62,11 +87,25 @@ def split_skus(sku):
 
 
 def variant_items(product, copies=1):
-    """一个产品 → 每个 SKU 一条标签数据，名字统一用产品英文名（跟官方一致）。"""
+    """一个产品 → 每个 SKU 一条标签数据，名字统一用产品英文名（跟官方一致）。
+
+    `cn` 是中文简写（chinese_product_name 按 SKU 顺序一一对应），只进文件名，
+    不印在标签上 —— 光看 13 位数字分不出是哪个品。
+    """
     name = (getattr(product, 'product_name', '') or '').strip()
+    skus = split_skus(getattr(product, 'sku', ''))
+    raw_cn = (getattr(product, 'chinese_product_name', '') or '').strip()
+    if len(skus) == 1:
+        # 单 SKU 时整串都是这一个品的中文名，不能按空格切 ——
+        # '6pcs tapo垃圾袋' 里那个空格是名字的一部分，切开就对不上了。
+        labels = [raw_cn]
+    else:
+        labels = split_skus(raw_cn)
+        if len(labels) != len(skus):
+            labels = [''] * len(skus)
     return [
-        {'id': getattr(product, 'id', ''), 'sku': sku, 'name': name, 'copies': copies}
-        for sku in split_skus(getattr(product, 'sku', ''))
+        {'id': getattr(product, 'id', ''), 'sku': sku, 'name': name, 'cn': cn, 'copies': copies}
+        for sku, cn in zip(skus, labels)
     ]
 
 
@@ -74,6 +113,21 @@ def safe_filename(text):
     """SKU 可能带斜杠/空格，落到文件名上要清掉，不然打包和打印都会出问题。"""
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', '_', str(text or '').strip())
     return cleaned or 'label'
+
+
+# 规格名占位值（没对上真实颜色/尺码时会出现），不能拿来当文件名
+PLACEHOLDER_LABEL = re.compile(r'^(主商品|规格待识别|规格待确认|历史分支)$')
+
+
+def label_filename(sku, cn=''):
+    """一个 SKU 一个文件：`9902348623136_皮革黑色包.pdf`。
+
+    13 位数字光看分不出是哪个品，把中文简写拼在后面，打印时一眼能认。
+    """
+    short = re.sub(r'[\\/:*?"<>|\s]+', '_', str(cn or '').strip()).strip('_')
+    if not short or PLACEHOLDER_LABEL.match(short):
+        return '%s.pdf' % safe_filename(sku)
+    return '%s_%s.pdf' % (safe_filename(sku), short[:20])
 
 
 def _latin1(text):
@@ -120,6 +174,45 @@ def _wrap(text, size, max_width, max_lines=3):
     return lines
 
 
+def ean13_modules(code):
+    """13 位数字 → 95 个模块（1 = 黑条），EAN-13 标准结构：101 + 6 位 + 01010 + 6 位 + 101。"""
+    parity = EAN_PARITY[int(code[0])]
+    bits = '101'
+    for i in range(6):
+        digit = int(code[i + 1])
+        bits += EAN_L[digit] if parity[i] == 'L' else EAN_G[digit]
+    bits += '01010'
+    for i in range(6):
+        bits += EAN_R[int(code[i + 7])]
+    bits += '101'
+    return [1 if b == '1' else 0 for b in bits]
+
+
+def barcode_rects(code):
+    """条码的矩形列表 [(x, y, w, h)]，坐标原点在内容块左下角。
+
+    连续的黑模块合并成一个矩形，但**护线和数据条不能合并** —— 两者高度不同。
+    官方版式里护线（起/中/止）比数据条长 9.6pt，正好落在 13 位数字那一行，
+    少了它标签会明显矮一截。
+    """
+    modules = ean13_modules(code)
+    rects = []
+    i = 0
+    total = len(modules)
+    while i < total:
+        if not modules[i]:
+            i += 1
+            continue
+        guard = i in GUARD_MODULES
+        run = 1
+        while i + run < total and modules[i + run] and (i + run in GUARD_MODULES) == guard:
+            run += 1
+        height = GUARD_HEIGHT if guard else BAR_HEIGHT
+        rects.append((BAR_X + i * BAR_WIDTH, BAR_TOP - height, run * BAR_WIDTH, height))
+        i += run
+    return rects
+
+
 def _draw_label(c, x, y, label_w, label_h, name, code):
     """在 (x, y) 画一张标签，左下角为原点。整块内容按官方比例等比缩放居中。"""
     scale = min((label_w - 2 * PAD) / CONTENT_W, (label_h - 2 * PAD) / CONTENT_H, 1.0)
@@ -135,20 +228,15 @@ def _draw_label(c, x, y, label_w, label_h, name, code):
 
     # 1) 产品名 3 行，官方字号 8pt
     c.setFont(FONT, NAME_SIZE)
-    lines = _wrap(name, NAME_SIZE, CONTENT_W - BAR_X, len(NAME_BASELINES))
+    lines = _wrap(name, NAME_SIZE, NAME_MAX_WIDTH, len(NAME_BASELINES))
     for line, baseline in zip(lines, NAME_BASELINES):
         c.drawString(0, baseline, line)
 
-    # 2) 条码：横排，quiet=False 由版式自己留白（官方也是这么画的）
-    drawing = createBarcodeDrawing(
-        'EAN13',
-        value=code,
-        barWidth=BAR_WIDTH,
-        barHeight=BAR_HEIGHT,
-        humanReadable=False,
-        quiet=False,
-    )
-    drawing.drawOn(c, BAR_X, BAR_Y)
+    # 2) 条码：自己编码 + 画矩形。
+    # 不用 createBarcodeDrawing 是因为它不给护线加长，出来的条码是等高的，
+    # 跟官方版式差 9.6pt（护线要伸到 13 位数字那一行）。
+    for bx, by, bw, bh in barcode_rects(code):
+        c.rect(bx, by, bw, bh, stroke=0, fill=1)
 
     # 3) 13 位数字 1-6-6 分组，压在条码下方
     c.setFont(FONT, NAME_SIZE)
@@ -198,11 +286,12 @@ def barcode_width_mm(size=DEFAULT_SIZE):
 
 
 def _collect(items):
-    """把 items 过滤成 [(name, sku, copies)]，条码不合法的单独记下来。"""
+    """把 items 过滤成 [(name, sku, cn, copies)]，条码不合法的单独记下来。"""
     usable, skipped = [], []
     for item in items:
         sku = str(item.get('sku') or '').strip()
         name = str(item.get('name') or '').strip()
+        cn = str(item.get('cn') or '').strip()
         if not sku:
             skipped.append((item.get('id') or '', '没有条码'))
             continue
@@ -214,7 +303,7 @@ def _collect(items):
         except (TypeError, ValueError):
             copies = 1
         copies = max(1, min(copies, 999))
-        usable.append((name or sku, sku, copies))
+        usable.append((name or sku, sku, cn, copies))
     return usable, skipped
 
 
@@ -227,8 +316,8 @@ def generate_label_files(items, output_dir, size=DEFAULT_SIZE):
     usable, skipped = _collect(items)
     label_w, label_h = LABEL_SIZES.get(size, LABEL_SIZES[DEFAULT_SIZE])
     files, total = [], 0
-    for name, sku, copies in usable:
-        out = output_dir / ('%s.pdf' % safe_filename(sku))
+    for name, sku, cn, copies in usable:
+        out = output_dir / label_filename(sku, cn)
         pdf = canvas.Canvas(str(out), pagesize=(label_w * mm, label_h * mm))
         pdf.setTitle(sku)
         for _ in range(copies):
@@ -264,7 +353,7 @@ def generate_labels(items, output, size=DEFAULT_SIZE):
     pdf = canvas.Canvas(str(output), pagesize=A4)
     pdf.setTitle('Takealot Product Labels %s' % size)
     slot = 0
-    for name, sku, copies in usable:
+    for name, sku, cn, copies in usable:
         for _ in range(copies):
             if slot and slot % per_page == 0:
                 pdf.showPage()

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, getStores, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
@@ -10,6 +10,7 @@ import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipp
 import { useFxRates } from '../utils/useFxRates';
 import { beijingClock } from '../utils/datetime';
 import { skuVariants, variantLabels } from '../utils/variants';
+import { isAgencyStoreName } from '../utils/agencyStore';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { isEan13 } from '../utils/ean';
 import { safeSetItem } from '../utils/storage';
@@ -193,6 +194,22 @@ export default function ProductList() {
   const [mpStatus, setMpStatus] = useState<MarketPriceStatus | null>(null);
   const [mpBusy, setMpBusy] = useState(false);
   const [mpMessage, setMpMessage] = useState('');
+  // 多市场参考价只对**代理店**有意义（CK 这类有官方售价的品）。
+  // 自营是我们自己选品、1688 采购，没有官方售价，整列 + 录入面板都不该出现。
+  // 未知时先按代理处理（保持原有界面），拿到店铺名再收起来。
+  const [showMarketPrice, setShowMarketPrice] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    getStores()
+      .then((rows) => {
+        if (!alive) return;
+        const active = rows.find((row) => row.id === getActiveStoreId());
+        // 店名里没写「代理」的就是自营店
+        setShowMarketPrice(active ? isAgencyStoreName(active.name) : true);
+      })
+      .catch(() => { /* 读不到店铺就保持原样，不误伤 */ });
+    return () => { alive = false; };
+  }, []);
   // 兰特汇率：参考价是三地本币，折成 R 才能和 Takealot 售价直接比。
   // 加载器从 remoteApi 注入（而不是让 hook 自己 import），见 useFxRates 的注释。
   const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
@@ -213,12 +230,24 @@ export default function ProductList() {
   // 变化，而 `products` 只是当前筛选结果。勾了 3 个再按关键词筛出 1 个，剩下 2 个
   // 在 `products` 里查不到名字，`buildLabelBundle()` 就会退回用 SKU 当产品名——
   // 印出来是「CK2-90151648-1」而不是商品名，而且看不出哪里错。
+  //
+  // 同一份缓存里顺手记中文简写（只进文件名），理由同上：被筛掉的行也要能带上中文名。
   const labelNames = useRef(new Map<string, string>());
+  const labelCnNames = useRef(new Map<string, string>());
   useEffect(() => {
     products.forEach((p) => {
       const name = (p.product_name || '').trim();
-      if (!name) return; // 改名清空时不要把已有名字擦掉
-      skuVariants(p.sku || '').forEach((sku) => labelNames.current.set(sku, name));
+      const skusOfProduct = skuVariants(p.sku || '');
+      // 单 SKU 时整串中文名都属于它，不能走 variantLabels（那个按空格切，
+      // '6pcs tapo垃圾袋' 会被拆成两个，长度对不上就退化成空）
+      const labels = skusOfProduct.length === 1
+        ? [(p.chinese_product_name || '').trim()]
+        : variantLabels(p);
+      skusOfProduct.forEach((sku, i) => {
+        if (name) labelNames.current.set(sku, name); // 改名清空时不要把已有名字擦掉
+        const cn = (labels[i] || '').trim();
+        if (cn) labelCnNames.current.set(sku, cn);
+      });
     });
   }, [products]);
   // 按钮上写「能真正出标签的数量」，不是勾选总数：不是合法 EAN-13 的 SKU 会被
@@ -235,10 +264,14 @@ export default function ProductList() {
     setError('');
     setLabelNote('');
     try {
-      // 勾选里只有 SKU，产品名从缓存里按 SKU 反查（多规格产品一个品对应多个 SKU）。
+      // 勾选里只有 SKU，产品名和中文简写从缓存里按 SKU 反查（多规格产品一个品对应多个 SKU）。
       // 用缓存而不是 `products`：被筛选挡掉的行仍然要印出真名字，见 labelNames 的注释。
       const bundle = buildLabelBundle(
-        skus.map((sku) => ({ sku, name: labelNames.current.get(sku) || '' })),
+        skus.map((sku) => ({
+          sku,
+          name: labelNames.current.get(sku) || '',
+          cn: labelCnNames.current.get(sku) || '',
+        })),
         { size: '40x30' },
       );
       if (!bundle.count) {
@@ -495,7 +528,9 @@ export default function ProductList() {
   }, [colPanelOpen]);
 
   // 实际渲染列（按 columnOrder，过滤 visibleColumns）
-  const renderColumns = columnOrder.filter(key => visibleColumns.has(key));
+  // 实际渲染列（按 columnOrder，过滤 visibleColumns）。
+  // 参考价列只在代理店出现：自营店没有官方售价，留一列空白纯属占地方。
+  const renderColumns = columnOrder.filter(key => visibleColumns.has(key) && (showMarketPrice || key !== 'market_prices'));
   const colDefMap = new Map(allColumns.map(c => [c.key, c]));
 
   // --- 数据获取 ---
@@ -1192,7 +1227,7 @@ export default function ProductList() {
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
-        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
 
@@ -1223,7 +1258,7 @@ export default function ProductList() {
         </div>
       </div>}
 
-      {mpPanel && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="多市场参考价" onClick={e => { if (e.target === e.currentTarget) setMpPanel(null); }}>
+      {mpPanel && showMarketPrice && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="多市场参考价" onClick={e => { if (e.target === e.currentTarget) setMpPanel(null); }}>
         <div className="seller-assist-dialog">
           <div className="seller-assist-header"><strong>多市场参考价</strong><button className="btn btn-outline btn-sm" onClick={() => setMpPanel(null)}>关闭 ×</button></div>
           <div className="seller-assist-body">
@@ -1401,7 +1436,7 @@ export default function ProductList() {
           </button>
           {colPanelOpen && (
             <div className="col-settings-panel">
-              {allColumns.map(c => (
+              {allColumns.filter(c => showMarketPrice || c.key !== 'market_prices').map(c => (
                 <label key={c.key} className="col-settings-item">
                   <input
                     type="checkbox"

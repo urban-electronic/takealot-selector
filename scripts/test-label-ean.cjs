@@ -123,7 +123,7 @@ const sameNumbers = (a, b) => a.length === b.length && a.every((n, i) => Math.ab
 // 版式常量：两份必须同值（单位都是 pt，原点在内容左下角）
 const LAYOUT = [
   'CONTENT_W', 'CONTENT_H', 'NAME_SIZE', 'NAME_BASELINES', 'DIGITS_BASELINE',
-  'BAR_X', 'BAR_Y', 'BAR_WIDTH', 'BAR_HEIGHT',
+  'BAR_X', 'BAR_TOP', 'BAR_WIDTH', 'BAR_HEIGHT', 'GUARD_HEIGHT',
   'MARK_X', 'MARK_M_BASELINE', 'MARK_P_BASELINE', 'DIGIT_X', 'PAD',
 ];
 for (const name of LAYOUT) {
@@ -153,10 +153,19 @@ check(tsDefault && tsDefault === pyDefault,
 check(tsDefault === '40x30', '默认必须是 40x30：30x40 竖版会把条宽压到 0.258mm，低于 EAN-13 下限');
 
 // 折行宽度与行数同源：常量对齐了、调用处各自换个数，还是印出两张不一样的标签
-check(/wrapName\(name, NAME_SIZE, CONTENT_W - BAR_X, NAME_BASELINES\.length\)/.test(tsLabel),
-  'labelPdf.ts 的折行必须用 (NAME_SIZE, CONTENT_W - BAR_X, 3 行)');
-check(/_wrap\(name, NAME_SIZE, CONTENT_W - BAR_X, len\(NAME_BASELINES\)\)/.test(pyLabel),
-  'label_pdf.py 的折行必须用 (NAME_SIZE, CONTENT_W - BAR_X, 3 行)');
+check(/wrapName\(name, NAME_SIZE, NAME_MAX_WIDTH, NAME_BASELINES\.length\)/.test(tsLabel),
+  'labelPdf.ts 的折行必须用 (NAME_SIZE, NAME_MAX_WIDTH, 3 行)');
+check(/_wrap\(name, NAME_SIZE, NAME_MAX_WIDTH, len\(NAME_BASELINES\)\)/.test(pyLabel),
+  'label_pdf.py 的折行必须用 (NAME_SIZE, NAME_MAX_WIDTH, 3 行)');
+// 折行宽度是 CONTENT_W + 0.5 的容差，不是 CONTENT_W - BAR_X（88.82）：
+// 官方第 2 行实测 97.35pt，用内容宽折行会把 DIN 挤到下一行，三行断词位置就跟官方不一样。
+for (const [label, src, expr] of [
+  ['labelPdf.ts', tsLabel, 'CONTENT_W + 0.5'],
+  ['label_pdf.py', pyLabel, 'CONTENT_W + 0.5'],
+]) {
+  const raw = (label === 'labelPdf.ts' ? tsValue(src, 'NAME_MAX_WIDTH') : pyValue(src, 'NAME_MAX_WIDTH')) || '';
+  check(raw.replace(/\s/g, '') === expr.replace(/\s/g, ''), `${label} 的 NAME_MAX_WIDTH 必须是 ${expr}，实得 ${raw}`);
+}
 check(tsLabel.includes('2 * PAD) / CONTENT_W') && pyLabel.includes('2 * PAD) / CONTENT_W'),
   '两边缩放公式都必须是 (尺寸 - 2*PAD) / CONTENT_W（少一个 PAD 会整体偏移）');
 

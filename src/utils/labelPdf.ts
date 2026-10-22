@@ -3,8 +3,13 @@
  *
  * 版式和 backend/services/label_pdf.py 完全一致（两边都是从官方 product_labels.pdf
  * 量出来的同一组参数）：Helvetica 8pt，产品名 3 行在上，EAN-13 横排、
- * 最小条宽 0.33mm、数据条高 7.6mm，13 位数字按 1-6-6 分组压在条码下，
- * 条码左侧固定 M / P 两个标记。整块内容 34.3 x 21.8mm。
+ * 最小条宽 0.33mm、数据条高 7.61mm、起/中/止六根护线 31.181pt（伸到数字那一行），
+ * 13 位数字按 1-6-6 分组压在条码下，条码左侧固定 M / P 两个标记。
+ * 整块内容 34.3 x 21.8mm。
+ *
+ * 「跟官方裁剪后一模一样」是逐条比对过的：同 SKU 下 17 段文字、30 个条码矩形
+ * x/y/宽/高全部一致（残差 ≤0.04pt 是官方自己写 PDF 时的舍入），
+ * 203 / 300 / 400 / 600 / 1200 dpi 全部扫得出。
  *
  * 为什么前端自己出 PDF：后端部署（Railway）不可控的时候，标签这种「打印前必须
  * 拿到手」的东西不该卡在部署上。这里零依赖手写 PDF + ZIP，打开页面就能下。
@@ -16,20 +21,29 @@
 const MM = 72 / 25.4; // 1mm = 2.8346pt
 
 // --- 官方 product_labels.pdf 量出来的版式，单位 pt，原点在内容左下角 ---
+// 数值与 backend/services/label_pdf.py 一字不差，改一边必须同步另一边。
 const CONTENT_W = 97.24;
 const CONTENT_H = 61.9;
 const NAME_SIZE = 8.0;
-const NAME_BASELINES = [52.9, 44.9, 36.9];
-const DIGITS_BASELINE = 2.0;
-const BAR_X = 8.38;
-const BAR_Y = 10.06;
-const BAR_WIDTH = 0.935; // pt = 0.33mm
-const BAR_HEIGHT = 21.59; // pt = 7.6mm
+const NAME_BASELINES = [53.3, 45.3, 37.3];
+// 折行宽度比内容宽多 0.5pt 容差：官方第 2 行实测 97.35pt，比内容宽还多 0.11 也照样
+// 排在同一行；用 CONTENT_W - BAR_X（88.82）会提前折行，三行断词位置就跟官方不一样。
+const NAME_MAX_WIDTH = CONTENT_W + 0.5;
+const DIGITS_BASELINE = 2.37;
+const BAR_X = 8.42; // 官方首条（起始护线第一根）的 x
+const BAR_TOP = 31.64; // 条码顶部，数据条和护线顶对齐
+const BAR_WIDTH = 0.935; // pt = 0.33mm，95 个模块正好铺满 88.825pt
+const BAR_HEIGHT = 21.581; // 数据条高（7.61mm）
+const GUARD_HEIGHT = 31.181; // 护线高：比数据条长 9.6pt，伸到 13 位数字那一行
 const MARK_X = 0.0;
-const MARK_M_BASELINE = 22.4;
-const MARK_P_BASELINE = 13.9;
-const DIGIT_X = [0.8, 17.5, 61.4];
+const MARK_M_BASELINE = 23.13;
+const MARK_P_BASELINE = 14.63;
+const DIGIT_X = [0.93, 17.52, 61.49];
 const PAD = 1.6 * MM;
+
+// EAN-13 的 95 个模块里哪些是护线（起始 101 / 中间 01010 / 终止 101）。
+// 护线必须画得比数据条长 —— 这是官方标签最容易被漏掉的一处细节。
+const GUARD_MODULES = new Set([0, 2, 46, 48, 92, 94]);
 
 export type LabelSize = '40x30' | '30x40';
 
@@ -43,6 +57,8 @@ export const DEFAULT_LABEL_SIZE: LabelSize = '40x30';
 export interface LabelItem {
   sku: string;
   name: string;
+  /** 中文简写，只进文件名（SKU 是 13 位数字，光看分不出是哪个品） */
+  cn?: string;
   copies?: number;
 }
 
@@ -176,28 +192,33 @@ function contentStream(name: string, code: string, labelW: number, labelH: numbe
   ];
 
   // 1) 产品名 3 行
-  const lines = wrapName(name, NAME_SIZE, CONTENT_W - BAR_X, NAME_BASELINES.length);
+  const lines = wrapName(name, NAME_SIZE, NAME_MAX_WIDTH, NAME_BASELINES.length);
   ops.push('BT', `/F1 ${NAME_SIZE} Tf`);
   lines.forEach((line, i) => {
     ops.push(`1 0 0 1 0 ${NAME_BASELINES[i].toFixed(2)} Tm`, `(${pdfStr(line)}) Tj`);
   });
   ops.push('ET');
 
-  // 2) 条码：连续黑条合并成矩形，横排，条高固定
+  // 2) 条码：连续黑模块合并成矩形，但**护线和数据条高度不同，不能合并**。
+  //    护线（起/中/止六根）比数据条长 9.6pt，一直伸到 13 位数字那一行；
+  //    少了它标签会比官方矮一截。
   const modules = ean13Modules(code);
-  // 起点对齐 0.5pt 网格，否则模块宽落在半像素上，300/400dpi 会渲染出灰边被误读
-  const bx0 = Math.round((BAR_X * 2)) / 2;
-  const by0 = Math.round((BAR_Y * 2)) / 2;
   let i = 0;
   while (i < modules.length) {
     if (!modules[i]) {
       i += 1;
       continue;
     }
+    const guard = GUARD_MODULES.has(i);
     let run = 1;
-    while (i + run < modules.length && modules[i + run]) run += 1;
-    const x = bx0 + i * BAR_WIDTH;
-    ops.push(`${x.toFixed(3)} ${by0.toFixed(2)} ${(run * BAR_WIDTH).toFixed(3)} ${BAR_HEIGHT.toFixed(2)} re f`);
+    while (
+      i + run < modules.length
+      && modules[i + run]
+      && GUARD_MODULES.has(i + run) === guard
+    ) run += 1;
+    const h = guard ? GUARD_HEIGHT : BAR_HEIGHT;
+    const x = BAR_X + i * BAR_WIDTH;
+    ops.push(`${x.toFixed(3)} ${(BAR_TOP - h).toFixed(3)} ${(run * BAR_WIDTH).toFixed(3)} ${h.toFixed(3)} re f`);
     i += run;
   }
 
@@ -271,6 +292,28 @@ function buildPdf(pages: { stream: string }[], wPt: number, hPt: number, title: 
 
 function safeFilename(text: string): string {
   return (text || '').replace(/[\\/:*?"<>|\s]+/g, '_').trim() || 'label';
+}
+
+/** 规格名占位值（没对上真实颜色/尺码时会出现），不能拿来当文件名 */
+const PLACEHOLDER_LABEL = /^(主商品|规格待识别|规格待确认|历史分支)$/;
+
+/**
+ * 文件名里的中文简写：SKU 之外的第二个识别依据。
+ * 打印软件和资源管理器里光看 13 位数字分不出是哪个品，加上中文名一眼就能挑。
+ */
+function shortName(cn: string | undefined): string {
+  const cleaned = (cn || '')
+    .replace(/[\\/:*?"<>|\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || PLACEHOLDER_LABEL.test(cleaned)) return '';
+  return cleaned.replace(/ /g, '_').slice(0, 20);
+}
+
+/** 一个 SKU 一个文件：`9902348623136_皮革黑色包.pdf` */
+function labelFileName(sku: string, cn?: string): string {
+  const short = shortName(cn);
+  return short ? `${safeFilename(sku)}_${short}.pdf` : `${safeFilename(sku)}.pdf`;
 }
 
 /** 单个 SKU 的标签 PDF（copies > 1 时同一份里重复多页，连打就是多张） */
@@ -373,7 +416,7 @@ function buildZip(entries: ZipEntry[]): Uint8Array<ArrayBuffer> {
 
 /** 多 SKU → 一个 zip；只有一个 SKU → 直接给 pdf */
 export function buildLabelBundle(items: LabelItem[], opts: { size?: LabelSize; copies?: number } = {}): LabelBundle {
-  const usable: { sku: string; name: string }[] = [];
+  const usable: { sku: string; name: string; cn: string }[] = [];
   const skipped: { sku: string; reason: string }[] = [];
   for (const item of items) {
     const sku = (item.sku || '').trim();
@@ -382,7 +425,7 @@ export function buildLabelBundle(items: LabelItem[], opts: { size?: LabelSize; c
     } else if (!isEan13(sku)) {
       skipped.push({ sku, reason: '不是合法 EAN-13' });
     } else {
-      usable.push({ sku, name: (item.name || '').trim() || sku });
+      usable.push({ sku, name: (item.name || '').trim() || sku, cn: item.cn || '' });
     }
   }
 
@@ -398,12 +441,12 @@ export function buildLabelBundle(items: LabelItem[], opts: { size?: LabelSize; c
       count: copies,
       skipped,
       kind: 'pdf',
-      filename: `${safeFilename(usable[0].sku)}.pdf`,
+      filename: labelFileName(usable[0].sku, usable[0].cn),
     };
   }
 
   const entries: ZipEntry[] = usable.map((u) => ({
-    name: `${safeFilename(u.sku)}.pdf`,
+    name: labelFileName(u.sku, u.cn),
     data: buildLabelPdf(u.name, u.sku, { size: opts.size, copies }),
   }));
   return {

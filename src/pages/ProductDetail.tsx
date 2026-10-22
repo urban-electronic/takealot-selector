@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { getFxRates } from '../remoteApi';
+import { getFxRates, getStores, getActiveStoreId } from '../remoteApi';
 import { openUrl } from '../api';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
@@ -13,7 +13,8 @@ import { useFxRates } from '../utils/useFxRates';
 import { beijingDateTime } from '../utils/datetime';
 import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
-import { skuVariants } from '../utils/variants';
+import { skuVariants, variantLabels } from '../utils/variants';
+import { isAgencyStoreName } from '../utils/agencyStore';
 import { isEan13 } from '../utils/ean';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
@@ -42,6 +43,22 @@ export default function ProductDetail() {
   const [mpText, setMpText] = useState<Partial<Record<MarketCode, string>>>({});
   // 兰特汇率：三个市场各自的本币，折成 R 才能和 Takealot 售价直接比
   const fx = useFxRates({ load: getFxRates, fallback: FALLBACK_FX });
+  // 多市场参考价只对**代理店**有意义（CK 这类有官方售价的品）。
+  // 自营是我们自己选品、1688 采购，没有官方售价，这块卡片不该出现。
+  // 未知时先按代理处理，拿到店铺名再收起来。
+  const [showMarketPrice, setShowMarketPrice] = useState(true);
+  useEffect(() => {
+    let alive = true;
+    getStores()
+      .then((rows) => {
+        if (!alive) return;
+        const active = rows.find((row) => row.id === getActiveStoreId());
+        // 店名里没写「代理」的就是自营店
+        setShowMarketPrice(active ? isAgencyStoreName(active.name) : true);
+      })
+      .catch(() => { /* 读不到店铺就保持原样，不误伤 */ });
+    return () => { alive = false; };
+  }, []);
   const [copiedSku, setCopiedSku] = useState(false);
   const copySku = async () => {
     if (!product?.sku) return;
@@ -60,6 +77,14 @@ export default function ProductDetail() {
    */
   const [labelError, setLabelError] = useState('');
   const labelVariants = product ? skuVariants(product.sku) : [];
+  // 与 SKU 一一对应的中文简写，写进文件名（9902348623136_皮革黑色包.pdf）。
+  // 只有一个 SKU 时整串都是它的中文名，不能走 variantLabels —— 那个按空格切，
+  // '6pcs tapo垃圾袋' 会被拆成两个，长度对不上就退化成空。
+  const labelNames = product
+    ? (labelVariants.length === 1
+      ? [product.chinese_product_name || '']
+      : variantLabels(product))
+    : [];
   const labelCount = labelVariants.filter(isEan13).length;
 
   const downloadLabels = () => {
@@ -70,7 +95,11 @@ export default function ProductDetail() {
       // 浏览器里直接出 PDF（src/utils/labelPdf.ts），不走后端：
       // 标签是打印前必须拿到手的东西，不该被后端部署卡住。
       const bundle = buildLabelBundle(
-        labelVariants.map((sku) => ({ sku, name: product.product_name || '' })),
+        labelVariants.map((sku, i) => ({
+          sku,
+          name: product.product_name || '',
+          cn: labelNames[i] || '',
+        })),
         { size: '40x30' },
       );
       if (!bundle.count) {
@@ -512,8 +541,8 @@ export default function ProductDetail() {
         )}
       </div>
 
-      {/* 多市场参考价 */}
-      <div className="card">
+      {/* 多市场参考价：只有代理店有官方售价，自营店整块不显示 */}
+      {showMarketPrice && <div className="card">
         <div className="card-title">多市场参考价</div>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
           只作定价参考，不参与利润计算。三个市场都是本币（S$ / ¥），下面另起一列按下列汇率折成兰特（R），
@@ -606,7 +635,7 @@ export default function ProductDetail() {
             ))}
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Dimensions & Weight */}
       <div className="card">
