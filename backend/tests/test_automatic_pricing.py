@@ -28,12 +28,12 @@ def test_holding_rebound_ceiling_and_cooldown():
     assert pricing.decide(100, 5, {**RULE, 'max_price': 105}, {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(120)]})[0] == 105
     assert pricing.decide(100, 5, {**RULE, 'last_changed_epoch': pricing.time.time()}, {'buyboxPrice': 100, 'holdingBuyboxVerified':True, 'offers': [offer(120)]})[0] is None
 
-def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89, pause_before_patch=False, pause_all_before_patch=False):
+def run_cycle(monkeypatch, pause_during_collect=False, verify_price=89, pause_before_patch=False, pause_all_before_patch=False, rule_extra=None):
     engine = create_engine('sqlite://'); Base.metadata.create_all(engine); factory = sessionmaker(bind=engine)
     key = pricing.PREFIX + DEFAULT_STORE_ID + ':p:1'
     with factory() as db:
         db.add(Product(id='p', store_id=DEFAULT_STORE_ID, sku='a', takealot_url='https://www.takealot.com/x/PLID1'))
-        db.add(SystemSettings(key=key, value=json.dumps(RULE))); db.commit()
+        db.add(SystemSettings(key=key, value=json.dumps({**RULE, **(rule_extra or {})}))); db.commit()
     import database
     monkeypatch.setattr(database, 'SessionLocal', factory)
     monkeypatch.setattr(pricing, 'configured_key', lambda db: 'test-secret')
@@ -172,3 +172,55 @@ def test_blind_regime_when_ownership_unproven():
     # （去设置里填一次卖家名，之后就能自动核实）。
     plan = pricing.plan(100, 5, {**RULE, 'smart_raise': True}, {'buyboxPrice': 100, 'offers': [offer(120)]})
     assert plan['regime'] == 'blind' and plan['target'] is None and '卖家名' in plan['reason']
+
+
+# ── 价格战熔断 ──────────────────────────────────────────────────────────────
+
+def test_price_war_breaker_stops_following_down():
+    """连续跟降还没拿到 Buybox，说明对手在陪着降。继续跟只会两边一起掉到地板上。"""
+    snap = {'offers': [offer(190)]}
+    ok = pricing.plan(200, 5, {**RULE, 'drop_streak': 3, 'drop_streak_from': 200}, snap)
+    assert ok['regime'] == 'compete' and ok['target'] == 189 and ok['war'] is None
+    war = pricing.plan(200, 5, {**RULE, 'drop_streak': 4, 'drop_streak_from': 200}, snap)
+    assert war['regime'] == 'hold' and war['war'] == 'open' and war['target'] is None
+    assert '价格战' in war['reason'] and war['war_info']['streak'] == 4
+
+
+def test_price_war_breaker_also_trips_on_total_discount():
+    """次数少但每刀都深：连降 2 次已经让了 10%，同样要停手。"""
+    p = pricing.plan(180, 5, {**RULE, 'drop_streak': 2, 'drop_streak_from': 200}, {'offers': [offer(178)]})
+    assert p['war'] == 'open' and p['war_info']['drop_pct'] == 10.0
+
+
+def test_war_pause_blocks_only_the_drop_not_the_raise():
+    """熔断只停「跟降」。守位涨价和缺货试涨不是在打价格战，照常走。"""
+    future = pricing.time.time() + 3600
+    rule = {**RULE, 'war_until': future, 'drop_streak': 6, 'reference_price': 100, 'smart_raise': True}
+    hold = {'buyboxPrice': 100, 'holdingBuyboxVerified': True, 'offers': [offer(120)]}
+    assert pricing.plan(100, 5, rule, hold)['target'] == 103
+    drop = pricing.plan(200, 5, rule, {'offers': [offer(190)]})
+    assert drop['regime'] == 'hold' and drop['war'] == 'paused' and drop['target'] is None
+
+
+def test_drop_streak_is_counted_from_the_first_drop(monkeypatch):
+    """连降计数与起点价落库，下一轮才判得出来「这段让了多少」。"""
+    client, rule = run_cycle(monkeypatch)
+    assert client.patch.call_count == 1
+    assert rule['drop_streak'] == 1 and rule['drop_streak_from'] == 100
+
+
+def test_price_war_breaker_pauses_the_rule_end_to_end(monkeypatch):
+    client, rule = run_cycle(monkeypatch, rule_extra={'drop_streak': 4, 'drop_streak_from': 100})
+    assert client.patch.call_count == 0
+    assert rule['war_until'] > pricing.time.time()
+    assert rule['plan']['war'] == 'open'
+
+
+def test_expired_breaker_rearms_instead_of_freezing_the_rule(monkeypatch):
+    """熔断期满必须清零计数，否则下一轮立刻再次熔断，这条 SKU 就永远动不了。"""
+    past = pricing.time.time() - 60
+    client, rule = run_cycle(monkeypatch, rule_extra={'drop_streak': 6, 'drop_streak_from': 100, 'war_until': past})
+    assert client.patch.call_count == 1
+    assert rule['war_until'] == 0 and rule['war_count'] == 1
+    assert rule['drop_streak'] == 1 and rule['drop_streak_from'] == 100
+

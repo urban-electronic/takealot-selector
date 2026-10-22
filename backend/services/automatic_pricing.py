@@ -32,6 +32,20 @@ DEFAULT_GLUT_COVER_DAYS = 180
 # 真实报价不会离参考价差 4 倍。差这么多的只有两种：我们读错了（划线价、运费、
 # 分期价），或者页面结构变了。两种都不该拿去调价。
 OUTLIER_RATIO = 4.0
+# 领先差额按价格缩放的百分比。原来写死 R1：R150 上是 0.67%，R3000 上是 0.03%
+# ——后者等于没领先，对手点一个 R1 就抹平，我们再点一个 R1 追回来。两边都在
+# 替对方做价格发现，谁也没多赚。差额随价格缩放，等于给对手设一道跟价门槛：
+# 想抢回去就得先让出这笔钱，而不是随手点一下。
+DEFAULT_LEAD_PCT = 0.5
+# 差额的绝对上限。R 20000 的货按 0.5% 要领先 R100，单件让利就太重了——
+# 这道闸保证「缩放」不会变成「大额让利」。
+LEAD_CAP = 50
+# 价格战熔断：连续跟降这么多轮还没拿到 Buybox，判定为对手在陪着降。
+DEFAULT_WAR_DROP_STREAK = 4
+# 或者：连续跟降累计让利超过这个比例（次数少但每刀都深的情况）。
+DEFAULT_WAR_DROP_TOTAL_PCT = 8
+# 熔断后停手多久。只观察不降价，让行情先稳定下来。
+DEFAULT_WAR_PAUSE_HOURS = 6
 
 
 def _pressure(rule, stock):
@@ -94,6 +108,60 @@ def decide(current, stock, rule, snapshot):
     return result['target'], result['reason']
 
 
+def _lead_amount(rule, current):
+    """领先差额（元）：比对手低多少才算真的领先。
+
+    固定 R1 的问题是它和价格无关。R150 的货上 R1 是 0.67%，够用；
+    R3000 的货上 R1 是 0.03%，对手跟一个 R1 就抹平，我们的下一次反应
+    又是一个 R1 —— 双方各让 R2，位置回到原样，唯一的结果是价格单向下行。
+    按价格缩放之后，对手要抢回去必须先让出成比例的钱，这是门槛，不是摆设。
+
+    `lead_amount` 仍然生效，作为下限：人工显式填了更大的值就用它。
+    `lead_pct` 填 0 则退回旧的「永远只领先 R1」。
+    """
+    base = rule.get('lead_amount') or 1
+    if isinstance(base, bool) or not isinstance(base, (int, float)) or base < 1:
+        base = 1
+    pct = rule.get('lead_pct', DEFAULT_LEAD_PCT)
+    if isinstance(pct, bool) or not isinstance(pct, (int, float)) or pct <= 0:
+        return int(base)
+    if isinstance(current, bool) or not isinstance(current, (int, float)) or current <= 0:
+        return int(base)
+    scaled = int(round(current * pct / 100.0))
+    return int(max(base, min(scaled, LEAD_CAP)))
+
+
+def _war(rule, current):
+    """价格战熔断：连续跟降却始终没拿到 Buybox，就该停手。
+
+    跟着对手一路降，最坏的结果不是「多让了几块钱」，而是双方一起掉到
+    地板上、位置还在对方手里。让利换不来持位的时候，继续让只是单向亏损。
+
+    两个触发条件，任一满足即熔断：
+      - 连续跟降次数达到上限（对手每轮都跟）；
+      - 这段跟降的累计让利比例达到上限（次数少但每刀都深）。
+    """
+    streak = rule.get('drop_streak')
+    if isinstance(streak, bool) or not isinstance(streak, int) or streak <= 0:
+        return None
+    limit = rule.get('war_drop_streak', DEFAULT_WAR_DROP_STREAK)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        limit = DEFAULT_WAR_DROP_STREAK
+    total = rule.get('war_drop_total_pct', DEFAULT_WAR_DROP_TOTAL_PCT)
+    if isinstance(total, bool) or not isinstance(total, (int, float)) or total <= 0:
+        total = DEFAULT_WAR_DROP_TOTAL_PCT
+    from_price = rule.get('drop_streak_from')
+    pct = 0.0
+    if (not isinstance(from_price, bool) and isinstance(from_price, (int, float))
+            and not isinstance(current, bool) and isinstance(current, (int, float))
+            and from_price > current > 0):
+        pct = (from_price - current) / from_price * 100.0
+    if streak >= limit or (streak >= 2 and pct >= total):
+        return {'streak': streak, 'drop_pct': round(pct, 1),
+                'streak_limit': limit, 'pct_limit': total}
+    return None
+
+
 def _pools(raw_offers, typed):
     """把竞品分成「能抢走 Buybox 的」和「抢不走的」。
 
@@ -108,17 +176,37 @@ def _pools(raw_offers, typed):
     return foreign, live, dark
 
 
-def _winnable(pool, rule):
-    """先判断同一卡位的实际最低价是否可达，不能删掉便宜对手再称为可抢。
+def _winnable(pool, rule, current):
+    """同一卡位的领跑者，以及压过它需要的价。
 
+    先判断实际最低价是否可达，不能删掉便宜对手再称为可抢。
     最快配送与最低价分别调用；某一池不可达不妨碍评估另一池。
-    类型缺失时调用方只给一个合并池，不猜测第二个机会。
+    返回 (leader, target)：leader 为 None 表示这一池没有可竞争的现货报价；
+    target 可能低于底价，由调用方判断「抢不起」并说清原因——这里不替它
+    下结论，否则「没竞品」和「抢不起」会混成同一句话。
     """
     if not pool:
-        return []
+        return None, None
     leader = min(pool, key=lambda offer: offer['price'])
-    target = math.floor(leader['price'] - rule.get('lead_amount', 1))
-    return [leader] if target >= rule['min_price'] else []
+    return leader, math.floor(leader['price'] - _lead_amount(rule, current))
+
+
+def _unreachable_reason(rule, current, cheapest, floor, leader, target):
+    """抢不到的时候，说清楚是「抢不起」还是「没有对手可抢」。
+
+    这两种情况在旧实现里共用一句话，用户看不出「该不该调区间」——
+    如果是领先差额把价格压过了底价，那要调的是差额或底价，不是等行情。
+    """
+    if leader is not None and target is not None and target < rule['min_price']:
+        lead = _lead_amount(rule, current)
+        if floor and leader['price'] - lead < floor:
+            return (f'现货最低价 R {int(leader["price"])} 减掉领先差额 R {lead} 已低于利润底价 '
+                    f'R {int(floor)}，这个位置抢不起，保持现价')
+        return (f'压过现货最低价 R {int(leader["price"])} 需要 R {int(target)}，低于最低价 '
+                f'R {int(rule["min_price"])}，这个位置抢不起，保持现价')
+    if cheapest is not None and floor is not None and cheapest < floor:
+        return '现货最低价已低于利润底价，这个位置抢不起，保持现价'
+    return '缺少可竞争的现货竞品，保持现价'
 
 
 def _raise_ceiling(rule, current):
@@ -135,10 +223,16 @@ def plan(current, stock, rule, snapshot):
     不再需要用户从 last_result 的一句话里反推系统在想什么。
     """
     floor = rule.get('min_price')
+    lead = _lead_amount(rule, current)
     p = dict(regime='hold', target=None, reason='', confidence='low', risk='low',
              current=current, floor=floor, ceiling=rule.get('max_price'),
              cheapest=None, gap_pct=None, live_count=0, dark_count=0, sole_seller=False,
-             pressure='unknown', cover_days=None, outliers=0, target_lane=None)
+             pressure='unknown', cover_days=None, outliers=0, target_lane=None,
+             # 本轮实际用到的领先差额。原来界面看不到这个数，于是「为什么只降 R1」
+             # 和「为什么降了 R15」在用户眼里都是同一个谜。
+             lead_amount=lead, war=None,
+             # 被追的那个卡位几天到。0 = 当天，None = 卡片上没写时效。
+             leader_leadtime=None)
     if stock <= 0:
         p.update(regime='off', reason='无库存，跳过')
         return p
@@ -207,7 +301,9 @@ def plan(current, stock, rule, snapshot):
                 return p
             # 守位时唯一正确的方向：贴着下一个现货竞品的价，把价格顶到
             # 「刚好还是最低」的位置。这不是猜测——对手的报价就是证据。
-            target = min(math.floor(low - rule.get('lead_amount', 1)), ceiling)
+            # 留出的差额同样按价格缩放：R2000 的货只留 R1 的话，对手一个
+            # R1 就把我们顶下去，我们的下一次反应又是「再涨回来 R1」。
+            target = min(math.floor(low - lead), ceiling)
             if rule.get('smart_raise'):
                 target = min(target, current + _raise_step(current, rule, pressure))
             if target <= current:
@@ -264,16 +360,31 @@ def plan(current, stock, rule, snapshot):
         p.update(regime='hold',
                  reason=f'可售约 {int(cover)} 天，库存紧张，不跟降（同样的货少卖钱，还会提前断货）')
         return p
+    # 价格战熔断。放在抢位之前、守位与试涨之后：只有「跟降」这一个动作会被
+    # 停掉，持位涨价和缺货试涨照常——那两种不是在打价格战。
+    war_until = rule.get('war_until') or 0
+    if war_until > time.time():
+        p.update(regime='hold', war='paused',
+                 reason=f'价格战熔断中（已连续跟降 {rule.get("drop_streak") or 0} 次仍未拿到 Buybox），'
+                        f'约 {(war_until - time.time()) / 3600:.1f} 小时后重新评估，期间不跟降')
+        return p
+    war = _war(rule, current)
+    if war:
+        pause = rule.get('war_pause_hours', DEFAULT_WAR_PAUSE_HOURS)
+        p.update(regime='hold', war='open', war_info=war,
+                 reason=f'连续跟降 {war["streak"]} 次、累计让利 {war["drop_pct"]:g}% 仍未拿到 Buybox，'
+                        f'判定为价格战：停手 {pause:g} 小时观察。继续跟只会两边一起掉到地板上，'
+                        f'而位置还在对方手里')
+        return p
     if rule['strategy'] == 'follow_lowest':
         p['target_lane'] = 'lowest'
-        able = _winnable(live, rule)
-        if not able:
-            below = cheapest is not None and floor is not None and cheapest < floor
+        leader, raw = _winnable(live, rule, current)
+        if leader is not None:
+            p['leader_leadtime'] = leader.get('leadtimeDays')
+        if leader is None or raw < rule['min_price']:
             p.update(regime='compete',
-                     reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
-                             else '当前最低报价按领先差额无法满足底价，或缺少现货竞品，保持现价'))
+                     reason=_unreachable_reason(rule, current, cheapest, floor, leader, raw))
             return p
-        raw = math.floor(min(o['price'] for o in able) - rule.get('lead_amount', 1))
         if raw >= current:
             p.update(regime='compete', reason='未持有 Buybox，只降不升')
             return p
@@ -285,20 +396,34 @@ def plan(current, stock, rule, snapshot):
             fastest = live
         best = [o for o in live if o.get('offerType') == 'best_price']
         raw = None
+        # 记下「离底价最近的那个卡位」和「有没有卡位其实够得着」：
+        # 全都够不着才说「抢不起」；够得着只是不必降价，是另一回事。
+        nearest = None
+        reachable = False
         for lane, pool in (('fastest' if typed else 'lowest', fastest), ('best_price', best)):
-            able = _winnable(pool, rule)
-            if not able:
+            leader, candidate = _winnable(pool, rule, current)
+            if leader is None:
                 continue
-            candidate = math.floor(min(o['price'] for o in able) - rule.get('lead_amount', 1))
+            if candidate < rule['min_price']:
+                if nearest is None or candidate > nearest[2]:
+                    nearest = (leader, lane, candidate)
+                continue
+            reachable = True
             if candidate < current:
                 raw = candidate
                 p['target_lane'] = lane
+                p['leader_leadtime'] = leader.get('leadtimeDays')
                 break
         if raw is None:
-            below = cheapest is not None and floor is not None and cheapest < floor
-            p.update(regime='compete',
-                     reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
-                             else '两个现货卡位均不可达或无需降价，保持现价'))
+            if nearest is not None and not reachable:
+                p['leader_leadtime'] = nearest[0].get('leadtimeDays')
+                p.update(regime='compete',
+                         reason=_unreachable_reason(rule, current, cheapest, floor, nearest[0], nearest[2]))
+            else:
+                below = cheapest is not None and floor is not None and cheapest < floor
+                p.update(regime='compete',
+                         reason=('现货最低价已低于利润底价，这个位置抢不起，保持现价' if below
+                                 else '两个现货卡位均无需降价，保持现价'))
             return p
     if raw < rule['min_price']:
         p.update(regime='compete', reason='建议价低于最低价，放弃竞争')
@@ -324,7 +449,7 @@ def plan(current, stock, rule, snapshot):
              reason=(f'未持有 Buybox，建议 R {int(target)} 尝试竞争'
                      + (f'（一次最多降 {drop_cap:g}%，分步接近目标）' if capped else '')
                      + '，待新行情确认持位效果'
-                     + f'（让利 {int(current - target)}，底价 R {int(floor)}）'))
+                     + f'（让利 {int(current - target)}，领先差额 R {lead}，底价 R {int(floor)}）'))
     return p
 
 async def collect(product, offer, seller_name=None):
@@ -505,6 +630,13 @@ def process(row_id):
                 rule['velocity'] = round(velocity_of(profile), 3)
                 rule['cover_days'] = (round(offer['stock_at_takealot_total'] / rule['velocity'], 1)
                                       if rule['velocity'] > 0 else None)
+                # 熔断期满就重新计数。不清零的话，下一轮 _war() 会立刻再次触发，
+                # 规则会永远停在「熔断中」——看着像保护，实际是把这条 SKU 冻死。
+                if rule.get('war_until') and rule['war_until'] <= time.time():
+                    rule['drop_streak'] = 0; rule['drop_streak_from'] = None; rule['war_until'] = 0
+                    rule['war_count'] = (rule.get('war_count') or 0) + 1
+                    result.update(drop_streak=0, drop_streak_from=None, war_until=0,
+                                  war_count=rule['war_count'])
                 if offer['stock_at_takealot_total'] <= 0:
                     # 走同一个 plan()：库存为零在它第一行就返回 off。
                     # 这里手工拼一个 dict 的话，决策卡片会缺字段（pressure/
@@ -521,7 +653,15 @@ def process(row_id):
                                   if k in ('regime', 'target', 'reason', 'confidence', 'risk',
                                            'floor', 'ceiling', 'cheapest', 'gap_pct',
                                            'live_count', 'dark_count', 'sole_seller', 'current',
-                                           'pressure', 'cover_days', 'outliers')}
+                                           'pressure', 'cover_days', 'outliers',
+                                           'lead_amount', 'war', 'leader_leadtime')}
+                # 熔断是「本轮决定停手」，要把截止时间落库，否则下一轮又从
+                # drop_streak 重新算一遍，等于每轮都重新打开一次熔断。
+                if decision.get('war') == 'open':
+                    pause = rule.get('war_pause_hours', DEFAULT_WAR_PAUSE_HOURS)
+                    result['war_until'] = time.time() + pause * 3600
+                    result['war_info'] = decision.get('war_info')
+                    result['war_opened_at'] = datetime.now(timezone.utc).isoformat()
                 result.update(current_price=offer['selling_price'], stock=offer['stock_at_takealot_total'],
                     # 日销与可售天数一起落库：界面据此解释「为什么不跟降」，
                     # 也是下一轮判断的输入。
@@ -532,6 +672,11 @@ def process(row_id):
                     holding_verified=snapshot.get('holdingBuyboxVerified') is True,
                     price_matches_buybox=snapshot.get('buyboxPrice')==offer['selling_price'],
                     competitor_price=min((o['price'] for o in snapshot.get('offers', []) if o.get('status') == 'in_stock' and not o.get('isMine') and isinstance(o.get('price'), (int, float))), default=None))
+                # 确认持位 = 上一轮那次跟降有效，连降计数归零。不归零的话，
+                # 抢到了位置的 SKU 会带着旧的连降记录，下次一降就立刻熔断。
+                if snapshot.get('holdingBuyboxVerified') is True and (rule.get('drop_streak') or 0):
+                    rule['drop_streak'] = 0; rule['drop_streak_from'] = None
+                    result.update(drop_streak=0, drop_streak_from=None)
                 if target is not None:
                     # A pause or edited range invalidates the claimed cycle before money-affecting writes.
                     db.expire_all(); live = db.query(SystemSettings).filter(SystemSettings.key == row_id).first()
@@ -564,6 +709,14 @@ def process(row_id):
                     result['today_changes'] = rule.get('today_changes', 0) + 1 if rule.get('change_day') == day else 1
                     result['change_day'] = day; result['enabled'] = True
                     result['history'] = ([{'at': result['last_changed_at'], 'from': offer['selling_price'], 'to': target}] + rule.get('history', []))[:50]
+                    # 连降计数：只有「降」才累加，「涨」就说明抢到了位置或者
+                    # 行情变了，计数清零。drop_streak_from 记住这段连降的起点价，
+                    # 用来算累计让利——次数少但每刀都深的情况靠它才拦得住。
+                    if target < offer['selling_price']:
+                        result['drop_streak'] = (rule.get('drop_streak') or 0) + 1
+                        result['drop_streak_from'] = rule.get('drop_streak_from') or offer['selling_price']
+                    elif target > offer['selling_price']:
+                        result['drop_streak'] = 0; result['drop_streak_from'] = None
                     if decision.get('trial') == 'raise':
                         result['last_scarcity_raise'] = time.time()
                         if not rule.get('scarcity_trial_started'):
