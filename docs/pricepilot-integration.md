@@ -1337,3 +1337,19 @@ WorkBuddy；基线 `5aa7464abf`。
   「时间文案必须显式指定 timeZone（或走 utils/datetime）」并列出该行（已还原）。
 - 复测：`test-datetime.cjs` 30 → 36 条断言（含 `beijingClock` 的跨日换算、naive 串、
   空值与坏值）；tsc 通过；全量 selfcheck 33 步全绿。
+
+
+### MARKET-ZERO-SAVE-02 无效参考价不得触发清空（2026-10-22）
+
+Codex；基线 `f58ff3521dc6`，接续 WorkBuddy 的 MARKET-ZERO-01。
+
+- 操作：已有 CN=100，编辑为 0 / -1 / Infinity 后点保存。原实现删除草稿 CN，
+  仍调用 updateProduct，提示「不会保存」实际却清空原价；隔离执行原页面 handler，
+  断言 0 次写入，实得 1 次，复现失败。
+- 修复：handleSave 在调用写入前检查所有非空价格原文，点名需修正或清空的市场并返回。
+  保留 WorkBuddy 的原文输入态、小数输入和显式清空行为。
+- 同条件复测：三个无效输入均零写入且有错误提示；空串可清空；0.5 与 150 可保存。
+  在现有 test-market-prices.cjs 中执行实际 handler（mock 写 API），新增 11 条隔离检查；
+  原有 124 条、datetime 36 条及 tsc --noEmit 通过。
+- 状态：代码与隔离测试完成；PR Check、部署和真实会话验收各自以当前 PR 证据为准。
+  未使用业务数据或执行真实价格写入。
