@@ -96,15 +96,47 @@ pymupdf 运行依赖，这一步是对的），但整文件重写时漏掉了两
 删除，或不属于当前店铺）」与 400「选中的产品没有可用的 SKU（SKU 为空或已被修改）」；
 顺带修掉 `items` 为空时 400 文案拼出空括号（「没有可生成的标签（）」）的问题。
 
+## 两份生成器的一致性由测试守着（LABEL-PARITY-01）
+
+「参数必须逐字对齐」原来只是一句话。两份实现分别在 `src/` 和 `backend/`，谁改了其中
+一份都不会有东西报错——表现只是「打印出来对不齐 / 网页和接口出的标签不一样」，
+而这两件事都不会在自检里显形。现在 `scripts/test-label-ean.cjs` 直接把两份源码里的
+版式常量读出来逐项比数值：`CONTENT_W/H`、`NAME_SIZE`、`NAME_BASELINES`、
+`DIGITS_BASELINE`、`BAR_X/Y/WIDTH/HEIGHT`、`MARK_X`、`MARK_M/P_BASELINE`、`DIGIT_X`、
+`PAD`，以及 `LABEL_SIZES` 与默认尺寸。常量对齐了但调用处各换一个数同样会印错，所以
+两边的折行调用（`NAME_SIZE, CONTENT_W - BAR_X, 3 行`）与缩放公式
+（`(尺寸 - 2*PAD) / CONTENT_W`）也一起钉住。
+
+**已知且故意的差异：字符集。** 后端 `_latin1()` 保留 Latin-1 重音字符（`Café` 印成
+`Café`），前端 `asciiOnly()` 把它们换成 `?`（`Caf?`）。不是漏改：前端这份是零依赖手写
+PDF，xref 偏移靠「字符数 == 字节数」算，而 `TextEncoder` 会把 `é` 编成两个字节，整份
+文件的偏移全错。要跟前端对齐，得把字节写入换成 latin1 编码器，属于另一件事。别为了
+「看起来一致」把 `asciiOnly()` 改成保留重音——`test-label-pdf.cjs` 有断言挡着。
+
+## 列表页下载标签时产品名不能只看当前筛选（LABEL-NAME-01）
+
+勾选存在 localStorage 里、不随筛选变化，而 `products` 只是**当前筛选结果**。下载标签时
+按 SKU 反查产品名原来是在 `products` 里现扫：勾 3 个、再按关键词筛出 1 个，剩下 2 个
+查不到名字，`buildLabelBundle()` 就退回用 SKU 当产品名——印出来是
+`CK2-90151648-1` 而不是商品名，而且看不出哪里错。改成把见过的 SKU→品名累积在
+`labelNames` ref 里（新值覆盖、空名不覆盖），筛选只影响展示，不影响已见过的名字。
+
+同一处提示条补上 `role="status"`：同页另外三条信息条（任务提示、批量录入提示、
+刷新详情）都有，只有「已生成 3 张、跳过 2 个」这条没有，读屏用户点完下载听不到任何反馈。
+
 ## 验证
 
 - `backend/tests/test_label_pdf.py` 25 例（含 2 例折行边界）、`test_label_routes.py` 10 例
 - `scripts/test-label-pdf.cjs`：前端生成器（EAN 编码结构、页面尺寸、copies、跳过、
   确定性、折行不丢词）
 - `scripts/test-label-ean.cjs`：三份 EAN 实现的判据一致 + 详情页/列表页的错误与跳过口径
-  + 列表页按钮数量按合法 EAN-13 计（41 条检查）
+  + 列表页按钮数量按合法 EAN-13 计 + 两份生成器的版式常量逐项对齐
+  + 产品名走累积缓存（96 条检查）
 - 反向探针：折行改回「凑满 3 行就截」→ `test_wrap_keeps_full_last_line`（pytest）与
   `test-label-pdf.cjs`「7 个词放得下，不许丢词」双红；详情页改回 `setError`、
   列表页跳过改回 `setError` → `test-label-ean.cjs` 各自转红；按钮数字改回
   `selectedSkus.size` → `test-label-ean.cjs` 转红；404 文案改回「都没有 SKU」→
-  `test_missing_product_is_not_reported_as_missing_sku` 转红（均已还原）
+  `test_missing_product_is_not_reported_as_missing_sku` 转红；
+  `labelPdf.ts` 的 `BAR_WIDTH` 改成 0.93 → 「BAR_WIDTH 两份生成器不一致」转红；
+  产品名改回现扫 `products` → 「产品名要从 labelNames.current 取」转红；
+  去掉 `role="status"` → 对应断言转红（均已还原）

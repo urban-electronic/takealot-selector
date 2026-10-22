@@ -112,7 +112,7 @@
   `backend/tests/test_market_price_sync.py::test_auto_markets_only_lists_writable_markets`
   （`status.auto_markets` 里的每个市场都必须能通过 `PriceInput` 校验——这个字段不参与
   任何校验，写错了会一直很安静）。
-- 前端：`scripts/test-market-prices.cjs`（133 条断言：解析、空值与 0 不当价格、数字字符串、
+- 前端：`scripts/test-market-prices.cjs`（135 条断言：解析、空值与 0 不当价格、数字字符串、
   坏输入、序列化丢空市场 / 丢 0、往返一致、币种符号与小数位、符号跟 `cur` 走（USD 不许冒用 S$）、
   只显示采到的市场、兰特折算方向与千分位、缺汇率时退回原币、汇率说明文案、
   批量录入只发真改过的行 / 无效行点名 / 清空发 `price:null`、

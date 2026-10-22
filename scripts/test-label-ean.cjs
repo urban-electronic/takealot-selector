@@ -1,6 +1,6 @@
 // 产品标签（EAN-13）的口径守卫：不启浏览器，直接编译 TS。
 //
-// 钉死的五件事：
+// 钉死的七件事：
 //   1) 三份 EAN-13 实现必须同一套判据：后端 services/label_pdf.py、详情页计数用的
 //      src/utils/ean.ts、真正出标签的 src/utils/labelPdf.ts。改了其中一份的权重或长度，
 //      按钮上写的「N 个 SKU」和实际下载到的文件数就会对不上。
@@ -9,6 +9,8 @@
 //   3) 列表页「生成成功但跳过几个」不是错误，不能占用页面顶部那条红色告警。
 //   4) 折行的省略号规则（只在真丢词时出现）两边一致，见 test-label-pdf.cjs / pytest。
 //   5) 列表页按钮上的数量 = 真正能出标签的数量（合法 EAN-13），不是勾选总数。
+//   6) 两份生成器的版式常量逐字对齐（网页版与接口版印出来的必须是同一张标签）。
+//   7) 列表页下载标签时，产品名不能只取「当前筛选结果」——勾选是持久化的。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -95,5 +97,80 @@ check(labelBtn.includes('下载标签${labelCount > 0'), '按钮上的数字必�
 check(labelBtn.includes('都不是合法 EAN-13 条码'), '一个都不合法时要说明原因，不能让按钮静默失效');
 check(/const labelCount = Array\.from\(selectedSkus\)\.filter\(isEan13\)\.length/.test(list),
   '列表页的 labelCount 必须复用 utils/ean 的 isEan13（别自己再写一份判据）');
+
+// ---- 6. 两份生成器的版式常量必须逐字对齐 -----------------------------------
+// 同一套版式有两份实现：`src/utils/labelPdf.ts`（网页实际用的）与
+// `backend/services/label_pdf.py`（接口 / A4 拼版用的）。文档写得很清楚——参数
+// 「必须逐字对齐，改一边不改另一边，同一个 SKU 在网页和接口里会印出两张不一样的标签」，
+// 但此前没有任何东西真的比过这两份常量：改错一位只会表现为「打印出来对不齐」，
+// 谁都不会在自检里看到。这里逐项比数值，改名或漏改都会点名。
+const tsLabel = read('src/utils/labelPdf.ts');
+const pyLabel = py; // 上面已读过 backend/services/label_pdf.py
+
+/** TS 侧 `const X = <值>;`（允许 `: Type` 注解）；返回原文，找不到返回 null。 */
+const tsValue = (src, name) => {
+  const m = src.match(new RegExp(`\\b${name}\\s*(?::[^=\\n]+)?=\\s*([^;\\n]+)`));
+  return m ? m[1].trim() : null;
+};
+/** PY 侧 `X = <值>`，去掉行尾注释。 */
+const pyValue = (src, name) => {
+  const m = src.match(new RegExp(`^${name}\\s*=\\s*(.+)$`, 'm'));
+  return m ? m[1].split('#')[0].trim() : null;
+};
+const numbers = (text) => (String(text).match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+const sameNumbers = (a, b) => a.length === b.length && a.every((n, i) => Math.abs(n - b[i]) < 1e-9);
+
+// 版式常量：两份必须同值（单位都是 pt，原点在内容左下角）
+const LAYOUT = [
+  'CONTENT_W', 'CONTENT_H', 'NAME_SIZE', 'NAME_BASELINES', 'DIGITS_BASELINE',
+  'BAR_X', 'BAR_Y', 'BAR_WIDTH', 'BAR_HEIGHT',
+  'MARK_X', 'MARK_M_BASELINE', 'MARK_P_BASELINE', 'DIGIT_X', 'PAD',
+];
+for (const name of LAYOUT) {
+  const tsRaw = tsValue(tsLabel, name);
+  const pyRaw = pyValue(pyLabel, name);
+  check(tsRaw !== null, `labelPdf.ts 里找不到常量 ${name}（改名了就要同步这里）`);
+  check(pyRaw !== null, `label_pdf.py 里找不到常量 ${name}（改名了就要同步这里）`);
+  if (tsRaw === null || pyRaw === null) continue;
+  check(sameNumbers(numbers(tsRaw), numbers(pyRaw)),
+    `${name} 两份生成器不一致：labelPdf.ts=${tsRaw} / label_pdf.py=${pyRaw}`);
+}
+// PAD 必须是「毫米换算出来的」而不是随手一个 pt 数字：1.6mm 才是官方量出来的边距
+check(/1\.6\s*\*\s*MM/.test(tsValue(tsLabel, 'PAD') || ''), 'labelPdf.ts 的 PAD 必须是 1.6 * MM');
+check(/1\.6\s*\*\s*mm/.test(pyValue(pyLabel, 'PAD') || ''), 'label_pdf.py 的 PAD 必须是 1.6 * mm');
+
+// 页面尺寸表与默认尺寸
+const tsSizes = (tsLabel.slice(tsLabel.indexOf('LABEL_SIZES'), tsLabel.indexOf('LABEL_SIZES') + 240)
+  .match(/\[(\d+),\s*(\d+)\]/g) || []).map((s) => s.replace(/[[\]]/g, '').replace(/\s/g, ''));
+const pySizes = (pyValue(pyLabel, 'LABEL_SIZES') || '').match(/\((\d+),\s*(\d+)\)/g) || [];
+const pySizeList = pySizes.map((s) => s.replace(/[()]/g, '').replace(/\s/g, ''));
+check(tsSizes.length === 2 && tsSizes.join('|') === pySizeList.join('|'),
+  `LABEL_SIZES 两份不一致：labelPdf.ts=${tsSizes.join('|')} / label_pdf.py=${pySizeList.join('|')}`);
+const tsDefault = (tsLabel.match(/DEFAULT_LABEL_SIZE[^=]*=\s*'([^']+)'/) || [])[1];
+const pyDefault = (pyLabel.match(/^DEFAULT_SIZE\s*=\s*'([^']+)'/m) || [])[1];
+check(tsDefault && tsDefault === pyDefault,
+  `默认尺寸两份不一致：labelPdf.ts=${tsDefault} / label_pdf.py=${pyDefault}`);
+check(tsDefault === '40x30', '默认必须是 40x30：30x40 竖版会把条宽压到 0.258mm，低于 EAN-13 下限');
+
+// 折行宽度与行数同源：常量对齐了、调用处各自换个数，还是印出两张不一样的标签
+check(/wrapName\(name, NAME_SIZE, CONTENT_W - BAR_X, NAME_BASELINES\.length\)/.test(tsLabel),
+  'labelPdf.ts 的折行必须用 (NAME_SIZE, CONTENT_W - BAR_X, 3 行)');
+check(/_wrap\(name, NAME_SIZE, CONTENT_W - BAR_X, len\(NAME_BASELINES\)\)/.test(pyLabel),
+  'label_pdf.py 的折行必须用 (NAME_SIZE, CONTENT_W - BAR_X, 3 行)');
+check(tsLabel.includes('2 * PAD) / CONTENT_W') && pyLabel.includes('2 * PAD) / CONTENT_W'),
+  '两边缩放公式都必须是 (尺寸 - 2*PAD) / CONTENT_W（少一个 PAD 会整体偏移）');
+
+// ---- 7. 列表页下载标签时的产品名不能只取当前筛选结果 -----------------------
+// 「勾选」存在 localStorage 里，不随筛选变化；`products` 只是当前筛选结果。
+// 按 SKU 反查产品名如果只查当前这一屏，被筛掉的那些 SKU 会退回用 SKU 当产品名
+// 印出来——标签上的名字本身是错的，而且看不出哪里错。名字要累积在 ref 里。
+const labelNamesRef = list.indexOf('labelNames');
+check(labelNamesRef >= 0, '列表页必须用 labelNames 缓存 SKU→产品名');
+check(/labelNames\.current\.set\(/.test(list), 'SKU→产品名要累积写进 labelNames.current');
+check(/labelNames\.current\.get\(/.test(listBody), '下载标签时产品名要从 labelNames.current 取');
+check(!listBody.includes('products.forEach'),
+  '下载标签时不许临时扫 products：那是筛选后的结果，被筛掉的 SKU 会拿 SKU 当产品名');
+check(!/\{labelNote && <div className="alert alert-info">/.test(list),
+  'labelNote 要有 role="status"，否则读屏用户听不到「跳过几个 SKU」（同页其它信息条都有）');
 
 console.log(`test-label-ean.cjs: ${checks} 项检查通过`);

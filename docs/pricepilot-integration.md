@@ -1523,3 +1523,37 @@ WorkBuddy；基线 `579a03621d`。
 - 复现：404 文案改回旧句，`test_missing_product_is_not_reported_as_missing_sku` 转红
   （已还原）。
 - 复测：`test_label_routes.py` 9 → 10 例。
+
+### LABEL-PARITY-01 两份标签生成器的版式常量开始逐项比对（2026-10-22）
+
+WorkBuddy；基线 `eb6db9bf07`。
+
+- 症状：同一套版式有两份实现——网页用的 `src/utils/labelPdf.ts`（零依赖手写 PDF）与
+  接口用的 `backend/services/label_pdf.py`。engineering 文档写着「参数必须逐字对齐，
+  改一边不改另一边，同一个 SKU 在网页和接口里会印出两张不一样的标签」，但没有任何
+  东西真的比过这两份常量：改错一位的表现只是「打印出来对不齐」，自检永远是绿的。
+- 改动：`scripts/test-label-ean.cjs` 把两份源码里的 14 个版式常量、`LABEL_SIZES`、
+  默认尺寸、折行调用与缩放公式逐项读出来比数值（41 → 96 条检查）。改名、漏改、
+  只在调用处换数都会点名。
+- 复现：`labelPdf.ts` 的 `BAR_WIDTH` 从 0.935 改成 0.93，
+  `test-label-ean.cjs` 报「BAR_WIDTH 两份生成器不一致：labelPdf.ts=0.93 /
+  label_pdf.py=0.935」（已还原）。
+- 已知差异（不是漂移）：后端 `_latin1()` 保留重音字符，前端 `asciiOnly()` 换成 `?`，
+  因为前端手写 PDF 的 xref 靠「字符数 == 字节数」算。写进 engineering 文档，避免以后
+  被当成 bug「修」成坏文件。
+- 复测：`test-label-ean.cjs` 96 条检查通过；全量 selfcheck 35 步。
+
+### LABEL-NAME-01 下载标签的产品名不再只取当前筛选结果（2026-10-22）
+
+WorkBuddy；基线 `eb6db9bf07`。
+
+- 症状：勾选存在 localStorage 里、不随筛选变化，而 `products` 只是当前筛选结果。
+  下载标签时按 SKU 反查产品名是在 `products` 里现扫：勾 3 个再按关键词筛出 1 个，
+  剩下 2 个查不到名字，`buildLabelBundle()` 退回用 SKU 当产品名——印出来是
+  `CK2-90151648-1` 而不是商品名，而且看不出哪里错。
+- 改动：把见过的 SKU→品名累积在 `labelNames` ref（新值覆盖、空名不覆盖），筛选只影响
+  展示。顺带给「已生成 3 张、跳过 2 个」这条提示补 `role="status"`（同页另外三条信息条
+  都有，读屏用户点完下载原本听不到反馈）。
+- 复现：产品名改回现扫 `products` → 「产品名要从 labelNames.current 取」转红；
+  去掉 `role="status"` → 对应断言转红（均已还原）。
+- 复测：`test-label-ean.cjs` 96 条检查；`tsc --noEmit` 通过。

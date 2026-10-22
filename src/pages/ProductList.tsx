@@ -207,6 +207,20 @@ export default function ProductList() {
   // 「生成成功、但跳过了几个」不是错误，不该占用页面顶部那条红色告警：
   // `error` 同时是加载失败的位置，红字会让人以为整页没读到。
   const [labelNote, setLabelNote] = useState('');
+  // SKU → 产品名，只增不减（新值覆盖旧值，空名不覆盖）。
+  //
+  // 为什么要缓存而不是下载时临时扫 `products`：勾选存在 localStorage 里、不随筛选
+  // 变化，而 `products` 只是当前筛选结果。勾了 3 个再按关键词筛出 1 个，剩下 2 个
+  // 在 `products` 里查不到名字，`buildLabelBundle()` 就会退回用 SKU 当产品名——
+  // 印出来是「CK2-90151648-1」而不是商品名，而且看不出哪里错。
+  const labelNames = useRef(new Map<string, string>());
+  useEffect(() => {
+    products.forEach((p) => {
+      const name = (p.product_name || '').trim();
+      if (!name) return; // 改名清空时不要把已有名字擦掉
+      skuVariants(p.sku || '').forEach((sku) => labelNames.current.set(sku, name));
+    });
+  }, [products]);
   // 按钮上写「能真正出标签的数量」，不是勾选总数：不是合法 EAN-13 的 SKU 会被
   // 跳过（见 utils/ean.ts 的说明），写总数的话「勾 3 个只下到 1 张」看起来像文件
   // 丢了。详情页的 labelCount 就是这么算的，两页口径必须一致。
@@ -221,14 +235,10 @@ export default function ProductList() {
     setError('');
     setLabelNote('');
     try {
-      // 勾选里只有 SKU，产品名要从列表里按 SKU 反查（多规格产品一个品对应多个 SKU）
-      const nameBySku = new Map<string, string>();
-      products.forEach((p) => {
-        const name = p.product_name || '';
-        skuVariants(p.sku || '').forEach((s) => nameBySku.set(s, name));
-      });
+      // 勾选里只有 SKU，产品名从缓存里按 SKU 反查（多规格产品一个品对应多个 SKU）。
+      // 用缓存而不是 `products`：被筛选挡掉的行仍然要印出真名字，见 labelNames 的注释。
       const bundle = buildLabelBundle(
-        skus.map((sku) => ({ sku, name: nameBySku.get(sku) || '' })),
+        skus.map((sku) => ({ sku, name: labelNames.current.get(sku) || '' })),
         { size: '40x30' },
       );
       if (!bundle.count) {
@@ -1434,7 +1444,7 @@ export default function ProductList() {
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
-      {labelNote && <div className="alert alert-info">{labelNote}</div>}
+      {labelNote && <div className="alert alert-info" role="status">{labelNote}</div>}
 
       {loading ? (
         <div className="loading">加载中...</div>
