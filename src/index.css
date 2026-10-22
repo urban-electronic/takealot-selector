@@ -1129,8 +1129,19 @@ button {
   margin-bottom: 4px;
 }
 
-.packing-export-grid input {
+.packing-export-grid input,
+.packing-export-grid select {
   width: 100%;
+}
+
+/* 日期/唛头下面的小字：说明默认值从哪来。别用 label 包，否则会跟着 12px 灰字一起
+   被当成字段名，读起来像第二个标题。 */
+.packing-field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-subtle);
 }
 
 .packing-export-wide {
