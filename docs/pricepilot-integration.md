@@ -1557,3 +1557,17 @@ WorkBuddy；基线 `eb6db9bf07`。
 - 复现：产品名改回现扫 `products` → 「产品名要从 labelNames.current 取」转红；
   去掉 `role="status"` → 对应断言转红（均已还原）。
 - 复测：`test-label-ean.cjs` 96 条检查；`tsc --noEmit` 通过。
+
+
+### PRICING-TARGET-01 / PRICING-COOLDOWN-02（2026-10-23）
+
+- 优先级 P1；Codex 修复，WorkBuddy 本机只读验收。基线 `4a94d84cc2ad`。
+- 复现：同一 fastest 池 R90/R115，本店 R120、底价 R100，原建议 R114；最低价仍为 R90，
+  不能通过丢弃它宣称目标可达。原冷却只限制 holding，刚降价仍失位时可以继续建议降价。
+- 修复：每个目标池先取真实领跑价再判底价；另一独立卡位可继续评估。没有类型不猜第二池。
+  涨跌均遵守冷却；target_lane + 理由明确“尝试/分步/待新行情确认”。
+- 验证：同条件新增 6 例 + 原有 11 例纯逻辑回归隔离通过；无 pytest 的本机环境不能称完整后端通过，
+  完整 PR Check 单独验收。未执行真实价格修改。
+- 参考与后续：见 docs/pricing/2026-10-18-buybox-pricing-model.md（外部 skill/论文、反馈闭环路线）。
+- 下一动作：Codex 审核最新 head 的完整 CI 后合并部署；WorkBuddy 仅提交本机脱敏决策证据，
+  禁止自行合并/部署或开启真实调价。验收 R90/R115 同池保持、跨池可尝试、冷却内保持、边界后再评估。
