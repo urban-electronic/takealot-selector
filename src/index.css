@@ -2746,6 +2746,23 @@ table tbody tr:hover { background: #f8fafc; }
   font-size: var(--fs-body);
 }
 
+/* 箱号一填 OMS 入库单号就变成 INH1501522-001（13 个字符），96px 只够 C01 ——
+   截成「INH1501522-」等于把这箱唯一的凭据藏起来了，所以让它按内容撑开。 */
+.packing-carton-row label:first-child input {
+  width: 150px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 备注是给人看的，可长可短；让它在窄屏能收缩，别把箱号挤出去 */
+.packing-carton-row label:nth-child(2) {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.packing-carton-row label:nth-child(2) input {
+  width: 100%;
+}
+
 .packing-carton-seq {
   margin-left: auto;
   padding-bottom: 8px;
@@ -2756,15 +2773,16 @@ table tbody tr:hover { background: #f8fafc; }
 }
 
 /* OMS 箱唛一张只放得下 5 行 SKU，第 6 行起另起一页且那页没有箱号。
-   装的时候就标出来，别等打印完才发现有一页认不出是哪箱。 */
+   装的时候就标出来，别等打印完才发现有一页认不出是哪箱。
+   整行独占，不跟「第 N 箱 / 共 M 箱」抢位置。 */
 .packing-carton-overflow {
-  padding: 3px 8px;
-  border-radius: 999px;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
   background: var(--warning-bg, #fff4e0);
   color: var(--warning-strong, #8a5900);
   font-size: var(--fs-caption);
-  white-space: nowrap;
-  cursor: help;
+  line-height: 1.5;
 }
 
 .packing-carton-line {
@@ -3014,16 +3032,23 @@ table tbody tr:hover { background: #f8fafc; }
     flex: 1 1 40%;
   }
 
-  .packing-carton-row input {
+  .packing-carton-row input,
+  /* 上面给箱号定的 150px 是桌面宽度，窄屏要跟着格子走，否则撑出卡片 */
+  .packing-carton-row label:first-child input {
     width: 100%;
     box-sizing: border-box;
   }
 
+  /* 「第 N 箱 / 共 M 箱」和删除按钮要待在同一行末尾，别一上一下错开 */
   .packing-carton-seq {
     margin-left: 0;
+    margin-right: auto;
     padding-bottom: 0;
     order: 9;
-    width: 100%;
+  }
+
+  .packing-carton-row .packing-remove-btn {
+    order: 10;
   }
 
   .packing-carton-line {

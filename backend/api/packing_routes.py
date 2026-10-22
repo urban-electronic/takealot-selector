@@ -841,7 +841,12 @@ def export_excel(data: ExportIn, db: Session = Depends(get_db), store_id: str = 
     try:
         with tempfile.TemporaryDirectory() as td:
             output = Path(td) / 'list.xlsx'
-            px.generate(items, date.isoformat(), data.mark, data.shipping, data.address, output)
+            # 装箱单也按箱展开：A 列（箱唛）写箱唛号，物流按「箱唛 + 箱数」认箱。
+            # 没填入库单号时箱号是 C01、C02，同样能对上逐箱清单。
+            px.generate(
+                items, date.isoformat(), data.mark, data.shipping, data.address, output,
+                boxes=[(c['box_no'], [(it['sku'], it['quantity']) for it in c['items']]) for c in cartons_plan],
+            )
             content = output.read_bytes()
     except FileNotFoundError as e:
         return fail(400, str(e))

@@ -141,11 +141,18 @@ def setcell(row, col, val, numeric=False, formula=None):
         ET.SubElement(ET.SubElement(c, Q('is')), Q('t')).text = str(val if val is not None else '')
 
 
-def generate(items, date, mark, shipping, address, output):
+def generate(items, date, mark, shipping, address, output, boxes=None):
     """
     items: [(product_dict, cartons, count), ...]
     product_dict 需含 template_row / name_zh / name_en / sku / unit / weight /
     material / brand / battery / electric / magnetic / image_file
+
+    boxes: [(箱唛号, [(sku, 件数), ...]), ...]。给了就**按箱展开**，
+    没给就按 SKU 汇总 —— 两种写法都在用，看调用方手里有没有逐箱清单。
+
+    按箱展开时 A 列（箱唛）和 D 列（箱数）只在每箱第一行写：
+    箱唛号写全部行会让人以为有 8 个箱子，箱数每行都写 1 会被物流累加成 8 箱。
+    这个格式照抄鲲鹏那份 `KPLDJ_海运装箱单_8箱.xlsx`。
     """
     with zipfile.ZipFile(TEMPLATE) as src:
         root = ET.fromstring(src.read('xl/worksheets/sheet1.xml'))
@@ -190,7 +197,23 @@ def generate(items, date, mark, shipping, address, output):
             raise ValueError('模板缺少 cellImage pic 母版，无法生成带图片的装箱单')
         next_rel = max(int(x.get('Id')[3:]) for x in image_rels) + 1
         extras = {}
-        for i, (p, cartons, count) in enumerate(items):
+        if boxes:
+            by_sku = {p['sku']: p for p, _, _ in items}
+            lines = []
+            for box_no, entries in boxes:
+                first = True
+                for sku, qty in entries:
+                    p = by_sku.get(sku)
+                    if p is None:
+                        continue
+                    lines.append((p, box_no if first else '', 1 if first else '', qty))
+                    first = False
+        else:
+            lines = [
+                (p, p.get('box_no') or (mark if i == 0 else ''), cartons, count)
+                for i, (p, cartons, count) in enumerate(items)
+            ]
+        for i, (p, box, cartons, count) in enumerate(lines):
             rn = i + 4
             row = copy.deepcopy(rows.get(p['template_row'], rows[8]))
             row.set('r', str(rn))
@@ -198,7 +221,7 @@ def generate(items, date, mark, shipping, address, output):
                 c.set('r', re.sub(r'\d+$', str(rn), c.get('r')))
             name = ' / '.join(x for x in [p['name_zh'], p['name_en']] if x)
             values = {
-                'A': p.get('box_no') or (mark if i == 0 else ''),
+                'A': box,
                 'B': p['sku'],
                 'C': name,
                 'D': cartons,
@@ -255,7 +278,7 @@ def generate(items, date, mark, shipping, address, output):
         setcell(rows[2], 'J', address)
         dim = root.find(Q('dimension'))
         if dim is not None:
-            dim.set('ref', 'A1:O' + str(max(10, len(items) + 3)))
+            dim.set('ref', 'A1:O' + str(max(10, len(lines) + 3)))
         changed = {
             'xl/worksheets/sheet1.xml': root,
             'xl/drawings/drawing1.xml': drawing_xml,

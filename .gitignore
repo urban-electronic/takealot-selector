@@ -16,3 +16,6 @@ backend/packing_images/
 
 # Private collector browser sessions
 **/buybox_browser_profile/
+
+# 自检给 pytest 的临时目录（每次一个新目录，避免批量删除被拦）
+backend/.pytest-tmp/

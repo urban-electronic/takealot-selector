@@ -91,7 +91,15 @@ for (const f of pySuites) {
   add(`审计 ${f}`, py || '', py ? [path.join('scripts', f)] : [], ROOT, 180000, pySkip);
 }
 if (!QUICK) {
-  add('后端 pytest', py || '', py ? ['-m', 'pytest', 'tests', '-q', '-p', 'no:cacheprovider'] : [],
+  // --basetemp 指到一个每次唯一的目录：pytest 默认把上一轮的临时目录挪进
+  // `garbage-*` 再整目录删掉，本机沙箱的批量删除闸（>50 个文件）会拦下这一步，
+  // 于是测试全过、退出码却是 1。每次给个新目录，就没有可删的旧目录了。
+  // 父目录必须先建好 —— pytest 建 basetemp 时不用 parents=True。
+  const tmpRoot = path.join(BACKEND, '.pytest-tmp');
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  const basetemp = path.join(tmpRoot, String(Date.now()));
+  add('后端 pytest', py || '',
+      py ? ['-m', 'pytest', 'tests', '-q', '-p', 'no:cacheprovider', '--basetemp', basetemp] : [],
       BACKEND, 420000, pySkip);
 }
 

@@ -15,7 +15,7 @@ def test_export_is_repeatable_with_snapshots_without_deducting_inventory():
     db = Session(engine)
     data = routes.ExportIn(date='2026-10-08', record_shipment=False, draft_key='clearance-test-draft',
                            items=[routes.ExportLine(sku='real-sku', box_no='BOX-001', cartons='1', count='10')])
-    def generate(items, date, mark, shipping, address, output):
+    def generate(items, date, mark, shipping, address, output, boxes=None):
         assert items[0][0]['box_no'] == 'BOX-001'
         output.write_bytes(b'original-template-export')
     with patch.object(routes, '_find', return_value=SimpleNamespace(sku='real-sku')), \

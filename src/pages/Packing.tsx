@@ -670,7 +670,7 @@ export default function Packing() {
       const bad = cartonTotals.filter(row => row.got !== row.want);
       if (bad.length) {
         const detail = bad.slice(0, 3)
-          .map(row => `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} / 装箱单 ${row.want}`)
+          .map(row => `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} 件 / 装箱单 ${row.want} 件`)
           .join('；');
         setError(`逐箱合计与装箱单不一致：${detail}。请先调整逐箱清单，或点「按 SKU 展开」重来`);
         return;
@@ -1185,15 +1185,16 @@ export default function Packing() {
                     <input value={c.note} onChange={e => patchCarton(i, { note: e.target.value })} placeholder="如：大箱 / 易碎" />
                   </label>
                   <span className="packing-carton-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
-                  {/* OMS 的箱唛一张只放得下 5 行 SKU，第 6 行起会另起一页且那页没有箱号。
-                      装的时候就提示，别等打印出来才发现有一页认不出是哪箱。 */}
-                  {c.items.length > MAX_SKUS_PER_BOX && (
-                    <span className="packing-carton-overflow" title={`OMS 箱唛一张只放得下 ${MAX_SKUS_PER_BOX} 行 SKU，这箱 ${c.items.length} 个，会多印一页且那一页没有箱号`}>
-                      {c.items.length} 个 SKU，超出箱唛 5 行
-                    </span>
-                  )}
                   <button className="packing-remove-btn" onClick={() => removeCarton(i)} title="删除这一箱">×</button>
                 </div>
+                {/* OMS 的箱唛一张只放得下 5 行 SKU，第 6 行起会另起一页且那页没有箱号。
+                    装的时候就提示，别等打印出来才发现有一页认不出是哪箱。
+                    单独占一行 —— 挤在「第 N 箱」旁边会把删除按钮顶出去。 */}
+                {c.items.length > MAX_SKUS_PER_BOX && (
+                  <div className="packing-carton-overflow" title={`OMS 箱唛一张只放得下 ${MAX_SKUS_PER_BOX} 行 SKU，这箱 ${c.items.length} 个，会多印一页且那一页没有箱号`}>
+                    这箱 {c.items.length} 个 SKU，超出 OMS 箱唛的 {MAX_SKUS_PER_BOX} 行 —— 会多印一页，那一页没有箱号
+                  </div>
+                )}
                 {c.items.map((it, j) => (
                   <div className="packing-carton-line" key={j}>
                     <select value={it.sku} onChange={e => patchCartonItem(i, j, { sku: e.target.value })}>
@@ -1220,7 +1221,7 @@ export default function Packing() {
         {cartonMismatch.length > 0 && (
           <div className="packing-carton-warn" role="status">
             合计对不上：{cartonMismatch.slice(0, 4).map(row => (
-              `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} / 装箱单 ${row.want}`
+              `${products.find(p => p.sku === row.sku)?.name_zh || row.sku} 箱内 ${row.got} 件 / 装箱单 ${row.want} 件`
             )).join('；')}
             {cartonMismatch.length > 4 ? ` 等 ${cartonMismatch.length} 项` : ''}
           </div>

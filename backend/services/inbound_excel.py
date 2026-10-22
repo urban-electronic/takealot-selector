@@ -36,12 +36,17 @@ def _plain_cell(coordinate: str, value, *, text: bool = False) -> str:
 
 
 def _data_row(index: int, box_seq: int, sku: str, quantity: int) -> str:
-    """A 标识号、B 箱子数量、C 自定义箱号、I SKU、J SKU数量/箱。"""
+    """A 标识号、B 箱子数量、C 自定义箱号、I SKU、J SKU数量/箱。
+
+    C 写成**数字**不是文本 "01"：用户手工维护、且真的导入成功过的那份
+    `海运_ERP入仓模板_2026-10-07.xlsx` 里 C 列就是 1、2、3 这种数字。
+    之前按「至少 2 个字符」写成文本 "01"，类型和那份对不上，没必要冒这个险。
+    """
     return (
         f'<row r="{index}" spans="1:10">'
         f'{_plain_cell(f"A{index}", box_seq)}'
         f'{_plain_cell(f"B{index}", 1)}'
-        f'{_plain_cell(f"C{index}", f"{box_seq:02d}", text=True)}'
+        f'{_plain_cell(f"C{index}", box_seq)}'
         f'{_plain_cell(f"I{index}", sku, text=True)}'
         f'{_plain_cell(f"J{index}", quantity)}'
         '</row>'
