@@ -178,27 +178,30 @@ def parse_leadtime(text: str | None) -> int | None:
     三个报价类型上全是 None，于是「时效位」和「价格位」在引擎眼里毫无区别
     ——它会在最快配送卡位上靠降价去抢一个由配送速度决定的展示位。
 
-    区间一律取上界（"2-4 days" → 4）：宁可认为对手比实际慢，也不要以为
-    自己已经比对手快，后者会导致对时效位的误判。
+    只解析明确的送达承诺，区间以截止日为代表值（"2-4 days" → 4）。
+    发货时长、工作日不等于自然日送达天数，未知时保留原文、不推断。
     """
     if not text:
         return None
-    t = text.lower()
-    if 'get it today' in t or 'delivered today' in t or 'delivery today' in t:
+    # Dispatch promises and working-day durations cannot be compared with calendar
+    # arrival days without a dispatch date and the destination holiday calendar.
+    arrival = re.search(r'\b(?:get it|delivery|delivered|delivers)\b(?:\s+(?:in|on|by|from|between))?\s+([^.;\n]+)', text.lower())
+    if not arrival:
+        return None
+    t = re.split(r'\bships?\b', arrival.group(1), maxsplit=1)[0]
+    if re.search(r'\b(?:working|business)\s+days?\b', t):
+        return None
+    if 'today' in t:
         return 0
-    if 'get it tomorrow' in t or 'delivered tomorrow' in t or 'delivery tomorrow' in t:
+    if 'tomorrow' in t:
         return 1
     # "delivery in 2-4 days" / "delivers in 3 - 5 working days"
-    m = re.search(r'in\s+(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*(?:working\s+)?days', t)
+    m = re.search(r'^(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*(?:working\s+)?days', t)
     if m:
         return int(m.group(2))
-    m = re.search(r'in\s+(\d{1,2})\s*(?:working\s+)?days', t)
+    m = re.search(r'^(\d{1,2})\s*(?:working\s+)?days', t)
     if m:
         return int(m.group(1))
-    # "ships in 3 days" / "ships in 2 - 4 days"
-    m = re.search(r'ships?\s+in\s+(\d{1,2})\s*(?:-|–|to)?\s*(\d{1,2})?\s*(?:working\s+)?days', t)
-    if m:
-        return int(m.group(2) or m.group(1))
     # "delivery 11 sep - 16 sep" / "delivered 11 sep to 16 sep"
     m = re.search(r'(\d{1,2})\s+([a-z]{3})[a-z]*\s*(?:-|–|to)\s*(\d{1,2})\s+([a-z]{3})', t)
     if m:

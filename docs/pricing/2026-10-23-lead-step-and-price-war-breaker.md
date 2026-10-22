@@ -92,12 +92,13 @@ if streak >= war_drop_streak (4) or (streak >= 2 and drop_pct >= war_drop_total_
 parse_leadtime('Get it today')              # 0
 parse_leadtime('Get it tomorrow')           # 1
 parse_leadtime('Delivery in 2-4 days')      # 4  ← 区间取上界
-parse_leadtime('Ships in 3 - 5 working days')  # 5
+parse_leadtime('Ships in 3 - 5 working days')  # None：工作日发货，不是自然日送达
 parse_leadtime('Delivery 23 Oct - 28 Oct')  # 到 28 Oct 的天数
 parse_leadtime('In stock')                  # None ← 读不出来就不猜
 ```
 
-区间一律取上界：宁可认为对手比实际慢，也不要以为自己已经比对手快。
+送达区间取截止日作为代表值，并不证明我方比对手快。`Ships in ...` 只说明发货；
+working/business days 缺少日历换算依据，均不写入自然日送达天数。保留 `deliveryLabel` 原文。
 日期跨年（12 月看到「1 月 4 日」）按明年算。
 
 三处 `leadtimeDays: None` 换成真值，另外新增 `buyboxLeadtime`（Buybox 主卡的时效，
@@ -131,3 +132,12 @@ Buybox？** 这是毛利和转化之间的取舍，不是代码对错，所以�
 
 **还没解决的（上一轮列的）**：没有竞品价格时间序列（分不出限时券和永久降价）、
 没有转化闭环（引擎只会贴最低价）、没有对手反应模型、冷却与日限额仍是全局常数。
+
+
+## DELIVERY-UNIT-01 审核修正（Codex，2026-10-23）
+
+PR177 `3b04163` 的 `Ships in 2 days` 与 `Ships in 3-5 working days` 原返回 2 / 5，
+把发货期限、工作日当成自然日送达。现仅解析明确送达承诺，无法换算返回 None，
+原文继续保留。复测源码抽取的实际纯解析函数与现有/新增用例：23 个隔离案例通过，
+覆盖发货、工作日、送达自然日、复合文案、日期与跨年；未导入网络/浏览器/业务数据库。
+编译通过；本机完整 pytest 环境缺失，完整最新 head PR Check 待验。不代表真实网页验收。

@@ -20,8 +20,14 @@ TODAY = datetime.now(ZoneInfo('Africa/Johannesburg')).date()
     ('Delivered tomorrow', 1),
     ('Fastest Delivery in 2-4 days', 4),      # 区间取上界
     ('Delivery in 3 days', 3),
-    ('Ships in 3 - 5 working days', 5),
-    ('Ships in 2 days', 2),
+    ('Ships in 3 - 5 working days', None),
+    ('Ships in 2 days', None),
+    ('Delivery in 3 working days', None),
+    ('Delivery in 2-4 business days', None),
+    ('Ships in 2 days. Get it tomorrow', 1),
+    ('Delivery in 2 days. Ships in 1 day', 2),
+    ('Get it in 2-4 days', 4),
+    ('Delivers in 3 days', 3),
 ])
 def test_leadtime_from_delivery_wording(label, expected):
     assert parse_leadtime(label) == expected
