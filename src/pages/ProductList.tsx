@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, downloadProductLabels, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
@@ -10,6 +10,7 @@ import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipp
 import { useFxRates } from '../utils/useFxRates';
 import { beijingClock } from '../utils/datetime';
 import { skuVariants, variantLabels } from '../utils/variants';
+import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
@@ -204,24 +205,32 @@ export default function ProductList() {
   // 在产品库和装箱单之间切换时保留本次勾选，成功导出装箱单后由装箱单页清除。
   const [labelLoading, setLabelLoading] = useState(false);
 
-  // 每个 SKU 一个独立 PDF（页面 40×30），多个时后端打包成 zip。
-  // 后端只画 13 位合法 EAN-13 的 SKU，其余跳过。
-  const downloadLabels = async () => {
+  // 每个 SKU 一个独立 PDF（页面 40×30），多选打包成 zip。
+  // 浏览器里直接出（src/utils/labelPdf.ts），不依赖后端部署；条码不合法的 SKU 跳过。
+  const downloadLabels = () => {
     const skus = Array.from(selectedSkus);
     if (!skus.length || labelLoading) return;
     setLabelLoading(true);
     setError('');
     try {
-      const blob = await downloadProductLabels(skus, { mode: 'single' });
-      const isZip = blob.type.includes('zip');
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = isZip ? `标签_${skus.length}个SKU.zip` : `${skus[0]}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+      // 勾选里只有 SKU，产品名要从列表里按 SKU 反查（多规格产品一个品对应多个 SKU）
+      const nameBySku = new Map<string, string>();
+      products.forEach((p) => {
+        const name = p.product_name || '';
+        skuVariants(p.sku || '').forEach((s) => nameBySku.set(s, name));
+      });
+      const bundle = buildLabelBundle(
+        skus.map((sku) => ({ sku, name: nameBySku.get(sku) || '' })),
+        { size: '40x30' },
+      );
+      if (!bundle.count) {
+        setError('选中的 SKU 都不是合法的 EAN-13 条码，生成不了标签');
+        return;
+      }
+      saveLabelBundle(bundle);
+      if (bundle.skipped.length) {
+        setError(`${bundle.skipped.length} 个 SKU 不是合法 EAN-13 已跳过，其余 ${bundle.count} 张已生成`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成产品标签失败');
     } finally {

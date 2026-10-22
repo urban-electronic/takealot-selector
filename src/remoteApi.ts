@@ -594,6 +594,10 @@ export const cloudBrowserFrame = async (session: string) => {
  * mode='sheet' 才返回 A4 拼版（45 张/页，带裁切角标）。
  * 传 skus 走列表页批量；传 productIds 走详情页——后端会把该产品的每个 SKU 都拆成一个文件。
  * 只有 13 位合法 EAN-13 的 SKU 才会被画出来，其余后端跳过。
+ *
+ * 注意：页面上的「下载标签」已经改走 `src/utils/labelPdf.ts`（浏览器里直接出 PDF），
+ * 不依赖后端部署。这里保留是因为后端接口还在（供脚本/其它客户端用）；
+ * 两边版式参数一致，改一处记得对一下另一处。
  */
 export const downloadProductLabels = async (
   skus: string[],

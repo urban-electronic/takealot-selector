@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
-import { getFxRates, downloadProductLabels } from '../remoteApi';
+import { getFxRates } from '../remoteApi';
 import { openUrl } from '../api';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
@@ -15,6 +15,7 @@ import { toNumber } from '../utils/number';
 import { copyText } from '../utils/clipboard';
 import { skuVariants } from '../utils/variants';
 import { isEan13 } from '../utils/ean';
+import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
 
 export default function ProductDetail() {
@@ -55,24 +56,21 @@ export default function ProductDetail() {
   const labelVariants = product ? skuVariants(product.sku) : [];
   const labelCount = labelVariants.filter(isEan13).length;
 
-  const downloadLabels = async () => {
+  const downloadLabels = () => {
     if (!product || labelLoading || !labelCount) return;
     setLabelLoading(true);
     try {
-      // 传 id 而不是 sku：后端会把该产品的每个 SKU 拆成一个文件，前端不用重复实现拆分
-      const blob = await downloadProductLabels([], { productIds: [product.id], mode: 'single' });
-      // 多个 SKU 后端会打包成 zip；只有一个就直接是 pdf
-      const isZip = blob.type.includes('zip');
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = isZip
-        ? `${product.sku || product.id}_标签_${labelCount}个.zip`
-        : `${labelVariants.find(isEan13) || product.sku || product.id}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+      // 浏览器里直接出 PDF（src/utils/labelPdf.ts），不走后端：
+      // 标签是打印前必须拿到手的东西，不该被后端部署卡住。
+      const bundle = buildLabelBundle(
+        labelVariants.map((sku) => ({ sku, name: product.product_name || '' })),
+        { size: '40x30' },
+      );
+      if (!bundle.count) {
+        setError('这些 SKU 都没有合法的 EAN-13 条码，生成不了标签');
+        return;
+      }
+      saveLabelBundle(bundle);
     } catch (e) {
       setError(e instanceof Error ? e.message : '生成产品标签失败');
     } finally {
