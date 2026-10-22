@@ -140,8 +140,12 @@ def test_erp_rejects_mixed_sea_air(db):
     assert '海运和空运' in error.value.detail
 
 
-def test_box_number_matches_the_template_users_hand_edit(tmp_path):
-    """C 列（自定义箱号）必须是数字 1、2、3，和用户真跑通过的那份模板一致。"""
+def test_only_required_columns_are_written(tmp_path):
+    """只写模板里带 `*` 的列，C 列「自定义箱号」留空。
+
+    标识号已经说明是哪个箱子了，再填一遍纯属重复；而且填进去的号跟 OMS 生成的
+    箱唛号（`INH1501522-001`）不是一回事，容易看混。
+    """
     from services.inbound_excel import TEMPLATE, SHEET
     dest = tmp_path / 'inbound.xlsx'
     generate_inbound([(1, [('0012345678901', 3)]),
@@ -152,14 +156,12 @@ def test_box_number_matches_the_template_users_hand_edit(tmp_path):
             if name != SHEET:
                 assert original.read(name) == final.read(name)
         root = ET.fromstring(final.read(SHEET))
-    for row, number in [(2, 1), (3, 2)]:
-        cell = root.find(f'.//m:c[@r="C{row}"]', ns)
-        # 没有 t="inlineStr" 才是数字；写成文本 "01" 会和用户那份模板类型不一致
-        assert cell.attrib.get('t') is None
-        assert int(cell.find('m:v', ns).text) == number
+    assert root.find('.//m:c[@r="C2"]', ns) is None
+    assert root.find('.//m:c[@r="C3"]', ns) is None
     assert root.find('.//m:c[@r="I2"]/m:is/m:t', ns).text == '0012345678901'
     assert root.find('.//m:c[@r="A2"]/m:v', ns).text == '1'
     assert root.find('.//m:c[@r="B2"]/m:v', ns).text == '1'
+    assert root.find('.//m:c[@r="J2"]/m:v', ns).text == '3'
 
 
 def test_mixed_box_shares_one_identifier(tmp_path):
@@ -187,72 +189,11 @@ def test_mixed_box_shares_one_identifier(tmp_path):
 
     # 6 行明细：箱 1 两行、箱 2 一行、箱 3 三行
     assert [text(f'A{r}') for r in range(2, 8)] == [1, 1, 2, 3, 3, 3]
-    assert [text(f'C{r}') for r in range(2, 8)] == [1, 1, 2, 3, 3, 3]
     assert [text(f'I{r}') for r in range(2, 8)] == ['sku-a', 'sku-b', 'sku-c', 'sku-d', 'sku-e', 'sku-f']
     assert [text(f'J{r}') for r in range(2, 8)] == [17, 6, 5, 16, 31, 15]
     assert all(text(f'B{r}') == 1 for r in range(2, 8))
-
-
-def _sheet_cells(path):
-    ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-    with ZipFile(path) as book:
-        root = ET.fromstring(book.read('xl/worksheets/sheet1.xml'))
-
-    def read(ref):
-        node = root.find(f'.//m:c[@r="{ref}"]', ns)
-        if node is None:
-            return None
-        if node.attrib.get('t') == 'inlineStr':
-            text = node.find('m:is/m:t', ns)
-            return None if text is None else text.text
-        value = node.find('m:v', ns)
-        return None if value is None else value.text
-
-    return read
-
-
-def test_packing_list_expands_by_carton_and_writes_box_number(tmp_path):
-    """装箱单要按箱展开，A 列（箱唛）只写在每箱第一行。
-
-    照抄鲲鹏那份 `KPLDJ_海运装箱单_8箱.xlsx`：一箱混装 2 个 SKU 时，
-    第 1 行写 INH1501522-001 + 箱数 1，第 2 行箱唛和箱数都留空。
-    每行都写 1 的话物流会把箱数累加成 2 箱。
-    """
-    from services import packing_excel as px
-    product = dict(sku='9902367061100', name_zh='皮革黑色包', name_en='Leather bag', unit='个',
-                   weight='0.3', material='皮革', brand='', battery='', electric='否',
-                   magnetic='否', image_file='', template_row=4)
-    other = dict(product, sku='9902388560071', name_zh='漏斗', name_en='Funnel', template_row=5)
-    dest = tmp_path / 'packing.xlsx'
-    px.generate(
-        [(product, '1', '17'), (other, '1', '6')], '2026-10-23', 'CK-01', '海', '约堡仓', dest,
-        boxes=[('INH1501522-001', [('9902367061100', '17'), ('9902388560071', '6')]),
-               ('INH1501522-002', [('9902388560071', '5')])],
-    )
-    read = _sheet_cells(dest)
-    assert read('A4') == 'INH1501522-001'
-    assert read('D4') == '1'
-    assert read('E4') == '17'
-    assert read('B5') == '9902388560071'
-    assert read('A5') in (None, '')      # 同一箱的后续行不重复写箱唛号
-    assert read('D5') in (None, '')      # 箱数只在第一行算一次
-    assert read('E5') == '6'
-    assert read('A6') == 'INH1501522-002'
-    assert read('D6') == '1'
-
-
-def test_packing_list_without_cartons_keeps_sku_aggregate(tmp_path):
-    """没有逐箱清单时保持原样：一个 SKU 一行，D 列写箱数、E 列写每箱件数。"""
-    from services import packing_excel as px
-    product = dict(sku='9902367061100', name_zh='皮革黑色包', name_en='Leather bag', unit='个',
-                   weight='0.3', material='皮革', brand='', battery='', electric='否',
-                   magnetic='否', image_file='', template_row=4)
-    dest = tmp_path / 'packing.xlsx'
-    px.generate([(product, '3', '10')], '2026-10-23', 'CK-01', '海', '', dest)
-    read = _sheet_cells(dest)
-    assert read('A4') == 'CK-01'         # 没有箱号时退回唛头
-    assert read('D4') == '3'
-    assert read('E4') == '10'
+    # C 列（自定义箱号）不需要，一行都不该有
+    assert all(root.find(f'.//m:c[@r="C{r}"]', ns) is None for r in range(2, 8))
 
 
 def _sheet_cells(path):
