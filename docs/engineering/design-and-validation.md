@@ -145,6 +145,19 @@ not "clean", it is unmeasured — the product detail page was absent from the
 contrast run until it was added, while the layout and text-overlap audits already
 covered it.
 
+The same "measured vs. assumed" rule applies to the value being measured, not just to
+whether a page was measured at all. The contrast audit used to compare the computed
+`color` against the background and skip only nodes whose own `opacity` was exactly
+0 — but `opacity` multiplies down the ancestor chain, so a `.6`-opacity price
+(`color` untouched, 11.84:1 on paper) renders at 3.65:1 and passed for twenty
+rounds. The audit now blends the foreground with the background by the product of
+the chain's opacity before computing the ratio (CONTRAST-OPACITY-01). Inactive
+controls (`disabled` / `aria-disabled="true"`) are the one exception WCAG 2.1
+1.4.3 grants; they are counted in their own column instead of being silently
+scored as if they were not dimmed. De-emphasis that relies on transparency alone
+is also a signal only sighted users receive: the stale reference price now carries
+the same `staleNote()` text marker as the tooltip and the batch panel.
+
 The same "measured vs. assumed" rule applies to the HTTP contract between
 `src/remoteApi.ts` and `backend/`: a path and a verb are plain strings, so `tsc`
 cannot see a typo, and a 404/405 looks exactly like any other rejected call. Two

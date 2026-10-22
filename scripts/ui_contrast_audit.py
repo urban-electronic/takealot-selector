@@ -27,6 +27,11 @@
 判定口径
 --------
     正文文字：< 4.5:1 记不达标；>=18.66px 且加粗、或 >=24px 的文字按 3:1（WCAG 2.1 AA）。
+    有效对比度：祖先链上的 opacity 相乘后与背景混合再算比值。`opacity: .6` 弱化的
+        12.5px 正文实际只有 3.65:1，按计算样式的 color 直算是 11.84:1——只看 color
+        等于把这处不达标判成通过。
+    停用控件：`disabled` / `aria-disabled="true"` 内的文字按 WCAG 1.4.3 例外单列计数，
+        不计失败；但仍出现在汇总的「停用控件文字」列里，不从分母消失。
     控件：高度 < 28px 记为触达目标过小（WCAG 2.5.8 建议 24px，本项目取更严的 28px）。
     背景：祖先背景近似，不覆盖所有透明混合、hover、焦点、弹窗状态。
     未成功加载标题与关键fixture行、未知请求、低对比均退出非0。
@@ -84,24 +89,42 @@ AUDIT = r"""
   };
   const ratio = (fg,bg) => { const l1=lum(fg), l2=lum(bg); const a=Math.max(l1,l2), b=Math.min(l1,l2); return (a+0.05)/(b+0.05); };
   const cls = el => el.tagName.toLowerCase() + (typeof el.className==='string' && el.className ? '.'+el.className.trim().split(/\s+/).slice(0,2).join('.') : '');
+  // 祖先链上 opacity 是相乘的：`opacity: .6` 弱化的文字，计算样式里的 color 一点没变，
+  // 真正画到屏幕上的颜色是「前景 × α + 背景 × (1-α)」。原来只看自身 opacity 是否等于 0，
+  // 于是 0.6 透明度的过期参考价按 11.84:1 判过，实际只有 3.65:1。
+  const alphaChain = el => {
+    let a = 1, n = el;
+    while (n && n !== document.documentElement) { a *= +getComputedStyle(n).opacity; n = n.parentElement; }
+    return a;
+  };
+  const blend = (fg, bg, a) => [ fg[0]*a + bg[0]*(1-a), fg[1]*a + bg[1]*(1-a), fg[2]*a + bg[2]*(1-a) ];
+  // 非活动控件按 WCAG 2.1 1.4.3 例外单列：它不计失败，但必须计数出现在报告里，
+  // 不能像以前那样「量了但按未弱化算」，也不能悄悄从分母里消失。
+  const inactive = el => !!el.closest('[disabled],[aria-disabled="true"]');
 
   const lowContrast = [];
+  const inactiveLowContrast = [];
   const fontSizes = {};
   document.querySelectorAll('body *').forEach(el => {
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return;
     const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) return;
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    const alpha = alphaChain(el);
+    if (alpha < 0.01) return;
     const own = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('');
     if (!own) return;
     const fs = px(cs.fontSize);
     fontSizes[fs] = (fontSizes[fs] || 0) + 1;
     const fg = rgb(cs.color); const bg = effBg(el);
     if (fg && bg) {
-      const cr = ratio(fg, bg);
+      const cr = ratio(alpha >= 0.999 ? fg : blend(fg, bg, alpha), bg);
       const need = (fs >= 24 || (fs >= 18.66 && +cs.fontWeight >= 700)) ? 3 : 4.5;
-      if (cr < need) lowContrast.push({ cls: cls(el), fs, ratio: Math.round(cr*100)/100, need,
-        text: own.slice(0,28), color: cs.color, bg: `rgb(${bg[0]},${bg[1]},${bg[2]})` });
+      if (cr < need) {
+        const node = { cls: cls(el), fs, ratio: Math.round(cr*100)/100, need, alpha: Math.round(alpha*100)/100,
+          text: own.slice(0,28), color: cs.color, bg: `rgb(${bg[0]},${bg[1]},${bg[2]})` };
+        (inactive(el) ? inactiveLowContrast : lowContrast).push(node);
+      }
     }
   });
 
@@ -125,6 +148,7 @@ AUDIT = r"""
     vw: document.documentElement.clientWidth, vh: document.documentElement.clientHeight,
     headerH: hh, fontSizes,
     lowContrast, lowContrastCount: lowContrast.length,
+    inactiveLowContrast, inactiveLowContrastCount: inactiveLowContrast.length,
     controls: { heights: controls.heights, tooSmall: controls.tooSmall, tooSmallCount: controls.tooSmall.length },
     ths,
   };
@@ -202,22 +226,25 @@ async def main():
         json.dump(report, f, ensure_ascii=False, indent=1)
 
     # 汇总：一行一个路由，直接可贴进评审
-    total_low = total_small = 0
-    print(f"{'route|width':28s} {'低对比文字':>10s} {'<28px控件':>10s} {'顶栏高':>6s}")
+    total_low = total_small = total_inactive = 0
+    print(f"{'route|width':28s} {'低对比文字':>10s} {'停用控件文字':>12s} {'<28px控件':>10s} {'顶栏高':>6s}")
     for key in sorted(report):
         v = report[key]
         if "error" in v:
             print(f"{key:28s} {'ERROR':>10s}")
             continue
         total_low += v["lowContrastCount"]
+        total_inactive += v.get("inactiveLowContrastCount", 0)
         total_small += v["controls"]["tooSmallCount"]
-        print(f"{key:28s} {v['lowContrastCount']:>10d} {v['controls']['tooSmallCount']:>10d} {v.get('headerH', 0):>6d}")
-    print(f"{'TOTAL':28s} {total_low:>10d} {total_small:>10d}")
+        print(f"{key:28s} {v['lowContrastCount']:>10d} {v.get('inactiveLowContrastCount', 0):>12d} "
+              f"{v['controls']['tooSmallCount']:>10d} {v.get('headerH', 0):>6d}")
+    print(f"{'TOTAL':28s} {total_low:>10d} {total_inactive:>12d} {total_small:>10d}")
     print("saved", os.path.abspath(path))
     measured = sum('error' not in value for value in report.values())
     expected = len(ROUTES) * len(VIEWPORTS)
     print(json.dumps({'environment':'isolated fixtures', 'expected':expected, 'measured':measured,
-                     'errors':expected-measured, 'blocked_requests':len(request_errors)}, ensure_ascii=False))
+                     'errors':expected-measured, 'blocked_requests':len(request_errors),
+                     'inactive_low_contrast':total_inactive}, ensure_ascii=False))
     if measured != expected or request_errors or total_low:
         raise RuntimeError('视觉审计未通过；错误/未测量页面不得视为零问题')
 

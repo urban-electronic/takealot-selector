@@ -940,10 +940,14 @@ export default function ProductList() {
               border: '0.5px solid var(--color-border)', background: 'var(--surface-muted)',
             }}
           >
-            {/* 弱化按**单个市场**判，不按整格：原来只有打头的那个市场过期时整格才变淡，
-                于是「新加坡价是新的、国内到手价是两周前且已过期」这行看起来完全正常。 */}
-            <span style={{ fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums', opacity: leadEntry.stale ? 0.6 : 1 }}>
+            {/* 过期按**单个市场**判，不按整格：原来只有打头的那个市场过期时整格才变淡，
+                于是「新加坡价是新的、国内到手价是两周前且已过期」这行看起来完全正常。
+                标记用 `staleNote()` 的文字而不是降 opacity：0.6 透明度把 12.5px 的
+                #1f2937 混成 3.65:1（低于 4.5 门槛），既难读、又只有看得见的人能收到信号；
+                文字标记与批量面板、悬停卡同一口径。 */}
+            <span style={{ fontSize: 12.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
               {money(lead)}
+              {staleNote(leadEntry) ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 11 }}>{staleNote(leadEntry)}</span> : null}
             </span>
             {rest.length > 0 && (
               <span aria-hidden="true" style={{ width: 1, height: 11, background: 'var(--color-border)' }} />
@@ -951,10 +955,11 @@ export default function ProductList() {
             {rest.map((code) => (
               <span
                 key={code}
-                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums', opacity: prices[code]!.stale ? 0.6 : 1 }}
+                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)', fontVariantNumeric: 'tabular-nums' }}
               >
                 {tag(code)}
                 {money(code)}
+                {staleNote(prices[code])}
               </span>
             ))}
           </span>
@@ -1217,7 +1222,7 @@ export default function ProductList() {
                             </td>
                           );
                         })}
-                        <td style={{ fontVariantNumeric: 'tabular-nums', color: prices.SG ? 'var(--color-text)' : 'var(--color-text-secondary)', opacity: prices.SG?.stale ? 0.6 : 1 }}>
+                        <td style={{ fontVariantNumeric: 'tabular-nums', color: prices.SG ? 'var(--color-text)' : 'var(--color-text-secondary)' }}>
                           {prices.SG ? formatMarketPrice('SG', prices.SG) : '未采集'}
                           {prices.SG?.at ? <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}> · {prices.SG.at}</span> : null}
                           {/* 这一列只读，但用户是照着它决定国内价填多少的：旧价不标出来，

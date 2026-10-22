@@ -369,8 +369,13 @@ for (const raw of ['not-json', '[1,2]', 'null', '"x"', undefined, null]) {
 
   const list = fs.readFileSync(path.resolve(__dirname, '../src/pages/ProductList.tsx'), 'utf8');
   check(list.includes('staleNote(prices.SG)'), '批量录入面板的新加坡价也要标「已过期」');
-  check(/opacity: prices\[code\]!\.stale \? 0\.6 : 1/.test(list),
-    '列表方框按单个市场弱化，不能只看打头那个（否则非打头市场过期完全看不出来）');
+  check(/staleNote\(prices\[code\]\)/.test(list),
+    '列表方框按单个市场标「已过期」，不能只看打头那个（否则非打头市场过期完全看不出来）');
+  check(/staleNote\(leadEntry\)/.test(list), '打头的那个市场也要标，不能只靠悬停卡');
+  // 弱化过期价曾经用 `opacity: .6`：计算样式里的 color 没变，实际像素被混成 3.65:1，
+  // 低于 AA 的 4.5:1，而且只有看得见的人能收到信号。标记改用文字，弱化就不许再回来。
+  check(!/opacity: (prices\[code\]!\.|leadEntry\.|prices\.SG\?)stale/.test(list),
+    '价格文字不许再用 opacity 弱化过期态（实测 3.65:1，低于 4.5 门槛）');
   check(!/entry\.stale \? ' · 已过期' : ''/.test(list), '悬停卡不许再自己拼一份标记文案');
   check(!/opacity: leadEntry\.stale \? 0\.6 : 1,/.test(list), '整格弱化的旧写法必须去掉');
 }

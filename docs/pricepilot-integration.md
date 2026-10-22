@@ -1388,3 +1388,25 @@ WorkBuddy；基线 `f58ff3521d`。
 - 复现：给弹窗强行加 `minWidth:2000`，审计在 1280/390/320 报 13 条
   「market price dialog outside viewport / table lacks local scroll / action clipped」（已还原）。
 - 复测：版式审计 99 个面 0 失败、`undeclared_api` 为空；全量 selfcheck 33 步。
+
+### CONTRAST-OPACITY-01 对比度审计开始算 opacity，过期参考价改用文字标记（2026-10-22）
+
+WorkBuddy；基线 `98876342a8`。
+
+- 症状：`ui_contrast_audit.py` 只跳过「自身 `opacity` 等于 0」的节点，其余一律按
+  计算样式里的 `color` 直算比值。而 `opacity` 在祖先链上是相乘的：`opacity: .6`
+  弱化的文字，`color` 一个字都没变，真正画出来的像素是「前景 × α + 背景 × (1-α)」。
+  列表「参考价」方框里的过期价（`R3,156`，12.5px）因此被按 11.84:1 判过，实测
+  只有 3.65:1，低于 AA 的 4.5:1——审计连报 20 轮「0 处低对比」。
+- 改动：
+  1. `ui_contrast_audit.py` 增加 `alphaChain()`，把祖先链 opacity 相乘后与背景混合
+     再算比值；`disabled` / `aria-disabled="true"` 内的文字按 WCAG 2.1 1.4.3 例外
+     单列成 `inactiveLowContrastCount`（不计失败，但出现在汇总的「停用控件文字」列，
+     不从分母消失）。此前这类文字是按未弱化算的——既不是通过，也不是豁免。
+  2. `ProductList` 三处过期价弱化（列表打头市场、列表其余市场、批量面板 SG 列）
+     去掉 `opacity: .6`，改用 `staleNote()` 的文字标记，与悬停卡、批量面板同一口径。
+     顺带解决「只有看得见的人能收到过期信号」：透明度对低视力用户等于没有信号。
+- 复现：把 `opacity: leadEntry.stale ? 0.6 : 1` 加回列表打头市场，
+  `scripts/test-contrast-audit.py` 退出 1，`/products` 三档各报 2 处低对比（已还原）。
+- 复测：对比度审计 33/33 面 0 处低对比（停用控件文字 69 处单列）；版式审计 99 个面
+  0 失败（加长后的单元格未越界）；`test-market-prices` 133 → 135 断言。
