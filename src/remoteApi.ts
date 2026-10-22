@@ -460,7 +460,21 @@ export const migrateToRemote = (tables: Array<{ table: string; rows: unknown[] }
     body: JSON.stringify(tables),
   });
 
-export const exportInboundTemplate = async (shipmentIds: string[]): Promise<Blob> => {
+export type InboundSummary = {
+  cartons: number;
+  pieces: number;
+  rows: number;
+  /** OMS 箱唛一张只放得下 5 行 SKU，超出的箱会多印一页且那一页没有箱号 */
+  overflow: Array<{ box_no: string; skus: number; overflow: number }>;
+};
+
+/**
+ * 生成 OMS（鲲鹏 JF WMS）建入库单要导入的 xlsx。
+ *
+ * 按**箱**生成：标识号相同的行 = 同一个箱子。箱子数据来自逐箱清单，
+ * 所以装箱时录的「第几箱装了什么」会原样变成 OMS 的入库单，不用再手录一遍。
+ */
+export const exportInboundTemplate = async (shipmentIds: string[]): Promise<{ blob: Blob; summary: InboundSummary | null }> => {
   const res = await fetch(`${getBaseUrl()}/api/inventory/shipments/inbound-template`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': getApiKey(), 'X-Store-ID': getActiveStoreId() },
@@ -474,7 +488,12 @@ export const exportInboundTemplate = async (shipmentIds: string[]): Promise<Blob
     } catch { /* 保留默认错误 */ }
     throw new Error(detail);
   }
-  return await res.blob();
+  let summary: InboundSummary | null = null;
+  const raw = res.headers.get('X-Inbound-Summary');
+  if (raw) {
+    try { summary = JSON.parse(raw) as InboundSummary; } catch { /* 老后端没有这个头，按空处理 */ }
+  }
+  return { blob: await res.blob(), summary };
 };
 
 export const upsertPackingProduct = async (data: PackingUpsertInput): Promise<{ ok: boolean }> => {

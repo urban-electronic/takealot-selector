@@ -106,12 +106,17 @@ export default function Inventory() {
     if (selectedShipmentIds.length === 0) { setError('请先勾选至少一个有效装箱单'); return; }
     setExportingInbound(true); setError('');
     try {
-      const blob = await exportInboundTemplate(selectedShipmentIds);
+      const { blob, summary } = await exportInboundTemplate(selectedShipmentIds);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url; link.download = `入仓_${selectedShipmentIds.length}个装箱单.xlsx`;
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-      setMessage(`已按选择顺序生成 ${selectedShipmentIds.length} 个装箱单对应的入仓文件`);
+      // 按箱生成：summary 里是 OMS 真正会建出来的箱数和件数
+      const detail = summary ? `${summary.cartons} 箱、${summary.pieces} 件` : `${selectedShipmentIds.length} 个装箱单`;
+      const overflow = summary?.overflow?.length
+        ? `；注意 ${summary.overflow.map(o => `箱 ${o.box_no} 有 ${o.skus} 个 SKU`).join('、')}，OMS 箱唛只放得下 5 行，会多印一页且那一页没有箱号`
+        : '';
+      setMessage(`已生成 OMS 入仓文件：${detail}${overflow}`);
     } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setExportingInbound(false); }
   };

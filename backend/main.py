@@ -52,6 +52,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 自定义响应头跨域默认读不到，前端要靠它拼「导出了几箱几件」的提示
+    expose_headers=["X-Inbound-Summary"],
 )
 
 # ---- API Key 鉴权（可选）----

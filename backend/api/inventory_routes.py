@@ -2,6 +2,7 @@
 """库存余额、人工调整和发货历史。"""
 
 import datetime as dt
+import json
 import re
 import uuid
 from typing import Optional
@@ -15,9 +16,9 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     InventoryAdjustment, ProcurementRecord, Product,
-    Shipment, ShipmentLine, ShipmentAllocation, Store, SystemSettings,
+    Shipment, ShipmentCarton, ShipmentCartonItem, ShipmentLine, ShipmentAllocation, Store, SystemSettings,
 )
-from services.inbound_excel import generate_inbound
+from services.inbound_excel import MAX_SKUS_PER_BOX, generate_inbound
 from services.operation_log import record_operation
 from api.store_routes import get_store_id
 
@@ -312,15 +313,22 @@ class InboundExportIn(BaseModel):
 
 @router.post("/shipments/inbound-template")
 def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    """生成 OMS（鲲鹏 JF WMS）建入库单要导入的 xlsx。
+
+    数据源是**逐箱清单**（shipment_cartons / shipment_carton_items），不是
+    ShipmentLine —— 后者只记「A 有 3 箱 × 10 件」，答不了「第 3 箱装了什么」，
+    而 OMS 建入库单要的恰恰是后者。没有逐箱记录的老单据才退回按行一箱。
+    """
     if not data.shipment_ids:
         raise HTTPException(status_code=400, detail="请至少选择一个装箱单")
-    rows = []
+    boxes = []          # [(箱序, [(sku, 每箱数量), ...]), ...]，箱序跨单据连续
+    warnings = []       # OMS 箱唛放不下的箱
     shipment_numbers = []
     shipping_modes = set()
-    for identifier, shipment_id in enumerate(data.shipment_ids, start=1):
+    for shipment_id in data.shipment_ids:
         shipment = db.query(Shipment).filter(Shipment.id == shipment_id, Shipment.store_id == store_id).first()
         if not shipment:
-            raise HTTPException(status_code=404, detail=f"第 {identifier} 个发货记录不存在")
+            raise HTTPException(status_code=404, detail="所选发货记录不存在")
         if shipment.status not in ("confirmed", "clearance", "exported", "transit"):
             raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 已撤回，不能生成入仓文件")
         if "海" in (shipment.shipping or ""):
@@ -329,19 +337,55 @@ def export_inbound_template(data: InboundExportIn, db: Session = Depends(get_db)
             shipping_modes.add("空")
         if len(shipping_modes) > 1:
             raise HTTPException(status_code=400, detail="海运和空运请分别生成入仓模板")
-        lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == shipment.id).order_by(ShipmentLine.sku).all()
-        if not lines:
-            raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 没有产品明细")
-        rows.extend((identifier, line) for line in lines)
+        cartons = (db.query(ShipmentCarton)
+                   .filter(ShipmentCarton.shipment_id == shipment.id)
+                   .order_by(ShipmentCarton.seq).all())
+        if cartons:
+            for carton in cartons:
+                items = (db.query(ShipmentCartonItem)
+                         .filter(ShipmentCartonItem.carton_id == carton.id)
+                         .order_by(ShipmentCartonItem.sku).all())
+                if not items:
+                    continue
+                boxes.append((len(boxes) + 1, [(i.sku, i.quantity) for i in items]))
+                if len(items) > MAX_SKUS_PER_BOX:
+                    warnings.append({
+                        "box_no": carton.box_no or f"{len(boxes):02d}",
+                        "skus": len(items),
+                        "overflow": len(items) - MAX_SKUS_PER_BOX,
+                    })
+        else:
+            # 逐箱清单是后加的，老单据没有。按「一行一个箱子」兜底，至少能导入。
+            lines = db.query(ShipmentLine).filter(ShipmentLine.shipment_id == shipment.id).order_by(ShipmentLine.sku).all()
+            if not lines:
+                raise HTTPException(status_code=400, detail=f"{shipment.shipment_no} 没有产品明细")
+            for line in lines:
+                boxes.append((len(boxes) + 1, [(line.sku, line.total_quantity)]))
         shipment_numbers.append(shipment.shipment_no)
+    if not boxes:
+        raise HTTPException(status_code=400, detail="所选装箱单没有可导入的箱子")
     import tempfile
     from pathlib import Path
     with tempfile.TemporaryDirectory() as temp_dir:
         output = Path(temp_dir) / "inbound.xlsx"
-        generate_inbound(rows, output)
+        generate_inbound(boxes, output)
         content = output.read_bytes()
+    summary = {
+        "cartons": len(boxes),
+        "pieces": sum(q for _, items in boxes for _, q in items),
+        "rows": sum(len(items) for _, items in boxes),
+        "overflow": warnings,
+    }
     filename = f"inbound_{shipment_numbers[0]}_{len(shipment_numbers)}lists.xlsx"
-    return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # 前端要拿它拼提示语。ensure_ascii 把中文转成 \uXXXX，头里只留 ASCII。
+            "X-Inbound-Summary": json.dumps(summary, ensure_ascii=True),
+        },
+    )
 
 
 class VoidIn(BaseModel):

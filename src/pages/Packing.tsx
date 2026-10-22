@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { createPortal } from 'react-dom';
 import { useApi } from '../DataSourceContext';
 import {
   getPackingProducts,
@@ -118,6 +117,10 @@ function needsChineseReview(label: string): boolean {
 const PACKING_DRAFT_KEY = 'packingDraftV1';
 const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 
+// OMS（鲲鹏 JF WMS）的箱唛一张只放得下 5 行 SKU：表头 + 5 行刚好贴到 100mm 页底，
+// 第 6 行起会另起一页，而那一页没有箱号也没有条码。装的时候就提示，别等印完才发现。
+const MAX_SKUS_PER_BOX = 5;
+
 type PackingLines = Record<string, { cartons: string; count: string }>;
 type PackingExportForm = { date: string; mark: string; shipping: string; address: string; record_shipment?: boolean };
 type PackingDraft = {
@@ -179,7 +182,6 @@ export default function Packing() {
   // OMS 入库单号（如 INH1501522）。填了它，箱号就是 OMS 的箱唛号 INH1501522-001，
   // 与 OMS「入库单管理」打印的箱唛逐箱对应；不填就还是 C01、C02。
   const [inboundNo, setInboundNo] = useState(savedDraft.inboundNo);
-  const [printOpen, setPrintOpen] = useState(false);
 
   // 事后查箱：箱子封上以后就只剩「某天一共几箱」这一个印象，
   // 「昨天第 5 箱装的是什么」只能回查这张表。
@@ -190,9 +192,6 @@ export default function Packing() {
   const [cartonQueryTotal, setCartonQueryTotal] = useState(0);
   const [cartonQueryLoading, setCartonQueryLoading] = useState(false);
   const [cartonQueryError, setCartonQueryError] = useState('');
-  const [cartonQueryPicked, setCartonQueryPicked] = useState<Set<string>>(new Set());
-  // 重印用：带着记录里的 seq/total，箱唛上的「第 N 箱 / 共 M 箱」不会被重排
-  const [reprintRows, setReprintRows] = useState<PackingCartonRecord[]>([]);
 
   // 导出设置
   const [exportForm, setExportForm] = useState<PackingExportForm>({ date: todayStr(), mark: '', shipping: '', address: '', ...savedDraft.exportForm, record_shipment: false });
@@ -420,10 +419,6 @@ export default function Packing() {
     return prefix ? `${prefix}-${String(index + 1).padStart(3, '0')}` : `C${String(index + 1).padStart(2, '0')}`;
   };
 
-  // 100×100 的明细区只放得下约 6 行大字号，混装箱按行数降档，别把后几行裁掉
-  const labelClass = (rows: number) =>
-    `carton-label${rows >= 7 ? ' is-dense' : rows >= 4 ? ' is-compact' : ''}`;
-
   // 「一箱一个 SKU」是常态：按箱数自动展开成 C01..Cn，不用手填一遍。
   // 混装（一箱多 SKU）只能人工加箱、逐行选 SKU 填数量。
   const expandCartons = () => {
@@ -508,7 +503,6 @@ export default function Packing() {
       const res = await getPackingCartons({ date, sku: sku.trim(), limit: 500 });
       setCartonQueryRows(res.cartons || []);
       setCartonQueryTotal(res.total_cartons || 0);
-      setCartonQueryPicked(new Set());
     } catch (e) {
       setCartonQueryError((e as Error)?.message || '查询失败');
       setCartonQueryRows([]);
@@ -526,15 +520,6 @@ export default function Packing() {
     void runCartonQuery(d, '');
   };
 
-  const toggleCartonPick = (key: string) => {
-    setCartonQueryPicked(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
   // 同一票货的箱放一起，否则按日期查出来是一长条，看不出哪几箱是一趟的。
   const cartonQueryGroups = useMemo(() => {
     const map = new Map<string, { shipment_no: string; date: string; mark: string; rows: PackingCartonRecord[] }>();
@@ -548,14 +533,6 @@ export default function Packing() {
     });
     return Array.from(map.values());
   }, [cartonQueryRows]);
-
-  const printPickedCartons = () => {
-    const picked = cartonQueryRows.filter(r => cartonQueryPicked.has(cartonKey(r)));
-    if (!picked.length) return;
-    // 两个 overlay 同时挂 body 会一起进打印流，先关掉草稿那份
-    setPrintOpen(false);
-    setReprintRows(picked);
-  };
 
   const totalCartons = useMemo(
     () => selectedRows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0),
@@ -745,18 +722,20 @@ export default function Packing() {
       await loadProducts();
       setExportForm(prev => ({ ...prev, record_shipment: false }));
       // 没展开逐箱清单就导出时，箱子是后端按「一箱一个 SKU」自动展开的，
-      // 前端手里没有，草稿又被清空了 —— 「打印明细贴」按钮是灰的，用户会以为印不了。
-      // 这里直接把去查/印的入口给出来。
+      // 前端手里没有，草稿又被清空了 —— 这时候最容易漏掉「去 OMS 建入库单」这一步。
+      // 直接把入口给出来，并默认勾上刚导出的这一票。
       const autoExpanded = !payload.cartons;
       const expandedCount = rows.reduce((sum, p) => sum + (parseInt(lines[p.sku]?.cartons || '0', 10) || 0), 0);
       const okMsg = exportForm.record_shipment
         ? '导出成功，已登记发货并扣库存'
-        : '导出成功，装箱单已留档，库存未变化，可在 ERP 模板窗口继续套入';
+        : '导出成功，装箱单已留档，库存未变化';
       const fullMsg = autoExpanded ? `${okMsg}；逐箱清单已按「一箱一个 SKU」自动展开 ${expandedCount} 箱` : okMsg;
       setMsg(fullMsg);
-      setMsgAction(autoExpanded
-        ? { for: fullMsg, label: '去印明细贴', onClick: () => { setMsgAction(null); openCartonQuery(); } }
-        : null);
+      setMsgAction({
+        for: fullMsg,
+        label: '导出 OMS 入仓模板',
+        onClick: () => { setMsgAction(null); openErpTemplate(true); },
+      });
     } catch (e: any) {
       setError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
@@ -764,16 +743,19 @@ export default function Packing() {
     }
   };
 
-  const openErpTemplate = async () => {
+  const openErpTemplate = async (preselectNewest = false) => {
     setTemplateOpen(true);
     setTemplateLoading(true);
     setTemplateError('');
     setSelectedShipmentIds([]);
     try {
       const rows = await getShipments();
-      setTemplateShipments(rows
+      const usable = rows
         .filter(row => row.status === 'confirmed' || row.status === 'clearance' || row.status === 'exported')
-        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.shipment_no.localeCompare(a.shipment_no)));
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.shipment_no.localeCompare(a.shipment_no));
+      setTemplateShipments(usable);
+      // 刚从装箱页导出的那一票就排在最前，默认勾上它，省得再找一遍
+      if (preselectNewest && usable.length) setSelectedShipmentIds([usable[0].id]);
     } catch (e: any) {
       setTemplateError(typeof e === 'string' ? e : e.message || '装箱单记录加载失败');
     } finally {
@@ -796,7 +778,7 @@ export default function Packing() {
     setTemplateExporting(true);
     setTemplateError('');
     try {
-      const blob = await exportInboundTemplate(chosen.map(row => row.id));
+      const { blob, summary } = await exportInboundTemplate(chosen.map(row => row.id));
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -806,8 +788,15 @@ export default function Packing() {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
       setTemplateOpen(false);
-      const totalItems = chosen.reduce((sum, row) => sum + row.total_quantity, 0);
-      setMsg(`ERP 模板已生成：${chosen.length} 张装箱单、${chosen.length} 个箱子、${totalItems} 件商品`);
+      // 按箱生成：一箱一个标识号，同一箱的 SKU 共用标识号 —— OMS 导入后
+      // 建出来的箱子数就是 summary.cartons，箱唛也照这个印。
+      const detail = summary
+        ? `${summary.cartons} 箱、${summary.pieces} 件、${summary.rows} 行 SKU`
+        : `${chosen.length} 张装箱单`;
+      const overflow = summary?.overflow?.length
+        ? `；${summary.overflow.map(o => `箱 ${o.box_no} 装了 ${o.skus} 个 SKU`).join('、')}，OMS 箱唛一张只放得下 5 行，这几箱会多印一页且那一页没有箱号`
+        : '';
+      setMsg(`OMS 入仓文件已生成：${detail}。到 OMS「入库单 → 导入」上传，生成入库单后直接打箱唛${overflow}`);
     } catch (e: any) {
       setTemplateError(typeof e === 'string' ? e : e.message || 'ERP 模板生成失败');
     } finally {
@@ -890,8 +879,8 @@ export default function Packing() {
           <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); }}>
             新增产品
           </button>
-          <button className="btn btn-outline" onClick={openErpTemplate}>
-            ERP 模板
+          <button className="btn btn-outline" onClick={() => openErpTemplate()}>
+            OMS 入仓
           </button>
           <button className="btn btn-outline" onClick={openCartonQuery} title="查某天装了哪些箱，或某个 SKU 在哪几箱">
             查箱子
@@ -1153,6 +1142,8 @@ export default function Packing() {
         <small className="packing-carton-hint">
           箱子封上就分不出哪箱是什么了，这里记下「第几箱装了什么」。
           一箱一个 SKU 点「按 SKU 展开」就行；混装就新建一箱、逐行加产品。
+          这份清单会原样变成 OMS 入库单：导出装箱单后点「导出 OMS 入仓模板」，
+          在 OMS 里导入就能建入库单、打箱唛，不用再手录一遍 SKU。
         </small>
         {/* 箱唛号 = 入库单号 + 3 位箱序，与 OMS「入库单管理」里打印的箱唛逐箱对应。
             不填也能用，只是箱号退回 C01、C02。 */}
@@ -1177,7 +1168,6 @@ export default function Packing() {
             按 SKU 展开
           </button>
           <button className="btn btn-outline btn-sm" onClick={addCarton}>+ 新建一箱</button>
-          <button className="btn btn-outline btn-sm" onClick={() => { setReprintRows([]); setPrintOpen(true); }} disabled={!cartons.length}>打印明细贴</button>
         </div>
         {cartons.length === 0 ? (
           <div className="packing-carton-empty">
@@ -1195,6 +1185,13 @@ export default function Packing() {
                     <input value={c.note} onChange={e => patchCarton(i, { note: e.target.value })} placeholder="如：大箱 / 易碎" />
                   </label>
                   <span className="packing-carton-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
+                  {/* OMS 的箱唛一张只放得下 5 行 SKU，第 6 行起会另起一页且那页没有箱号。
+                      装的时候就提示，别等打印出来才发现有一页认不出是哪箱。 */}
+                  {c.items.length > MAX_SKUS_PER_BOX && (
+                    <span className="packing-carton-overflow" title={`OMS 箱唛一张只放得下 ${MAX_SKUS_PER_BOX} 行 SKU，这箱 ${c.items.length} 个，会多印一页且那一页没有箱号`}>
+                      {c.items.length} 个 SKU，超出箱唛 5 行
+                    </span>
+                  )}
                   <button className="packing-remove-btn" onClick={() => removeCarton(i)} title="删除这一箱">×</button>
                 </div>
                 {c.items.map((it, j) => (
@@ -1311,7 +1308,6 @@ export default function Packing() {
             {cartonQueryRows.length > 0 && (
               <div className="carton-query-body">
                 {cartonQueryGroups.map(g => {
-                  const pickedCount = g.rows.filter(r => cartonQueryPicked.has(cartonKey(r))).length;
                   return (
                     <div className="carton-query-group" key={g.shipment_no}>
                       <div className="carton-query-group-head">
@@ -1319,26 +1315,13 @@ export default function Packing() {
                         <span>{g.date}</span>
                         {g.mark ? <span className="carton-query-mark">{g.mark}</span> : null}
                         <span className="carton-query-group-count">{g.rows.length} 箱</span>
-                        <button
-                          className="btn btn-outline btn-sm"
-                          onClick={() => setCartonQueryPicked(prev => {
-                            const next = new Set(prev);
-                            const all = pickedCount === g.rows.length;
-                            g.rows.forEach(r => { if (all) next.delete(cartonKey(r)); else next.add(cartonKey(r)); });
-                            return next;
-                          })}
-                        >
-                          {pickedCount === g.rows.length ? '取消本票' : '全选本票'}
-                        </button>
                       </div>
                       <div className="carton-query-list">
                         {g.rows.map(r => {
                           const key = cartonKey(r);
-                          const checked = cartonQueryPicked.has(key);
                           const pieces = r.items.reduce((s, it) => s + it.quantity, 0);
                           return (
-                            <label className={`carton-query-row${checked ? ' is-picked' : ''}`} key={key}>
-                              <input type="checkbox" checked={checked} onChange={() => toggleCartonPick(key)} />
+                            <div className="carton-query-row" key={key}>
                               <span className="carton-query-no">{r.box_no || `C${String(r.seq).padStart(2, '0')}`}</span>
                               <span className="carton-query-seq">第 {r.seq} 箱 / 共 {r.total} 箱</span>
                               <span className="carton-query-items">
@@ -1351,7 +1334,7 @@ export default function Packing() {
                                 ))}
                               </span>
                               <span className="carton-query-pieces">{pieces} 件</span>
-                            </label>
+                            </div>
                           );
                         })}
                       </div>
@@ -1362,12 +1345,9 @@ export default function Packing() {
             )}
 
             <div className="carton-query-foot">
-              <span>已选 {cartonQueryPicked.size} 箱</span>
+              <span>{cartonQueryRows.length ? `${cartonQueryRows.length} 箱` : ''}</span>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-outline btn-sm" onClick={() => setCartonQueryPicked(new Set())} disabled={!cartonQueryPicked.size}>清空选择</button>
-                <button className="btn btn-primary btn-sm" onClick={printPickedCartons} disabled={!cartonQueryPicked.size}>
-                  重印选中明细贴
-                </button>
+                <button className="btn btn-outline btn-sm" onClick={() => setCartonQueryOpen(false)}>关闭</button>
               </div>
             </div>
           </div>
@@ -1542,9 +1522,10 @@ export default function Packing() {
       {templateOpen && (
         <div className="packing-modal-mask">
           <div className="packing-modal" style={{ maxWidth: 720 }}>
-            <h3 style={{ margin: '0 0 8px' }}>导出 ERP 入仓模板</h3>
+            <h3 style={{ margin: '0 0 8px' }}>导出 OMS 入仓文件</h3>
             <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-              选择已留档的装箱单，海运、空运分别生成。每张单对应 1 箱；标识号为 1、2…，自定义箱号为 01、02…（ERP 要求至少 2 个字符）。生成模板不扣库存。
+              按<b>箱</b>生成，数据来自逐箱清单：标识号相同的行 = 同一个箱子，箱子数和每箱件数就是装箱时录的那份。
+              在 OMS「入库单」里导入这份文件，建完单直接打箱唛，不用再手录 SKU。海运、空运请分别生成。生成文件不扣库存。
             </p>
             {templateError && <div className="alert alert-error" style={{ marginBottom: 10 }}>{templateError}</div>}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: 'var(--text-muted)' }}>
@@ -1575,108 +1556,13 @@ export default function Packing() {
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
               <button className="btn" onClick={() => setTemplateOpen(false)} disabled={templateExporting}>取消</button>
               <button className="btn btn-primary" onClick={handleExportErpTemplate} disabled={templateLoading || templateExporting || selectedShipmentIds.length === 0}>
-                {templateExporting ? '生成中…' : '下载填好的模板'}
+                {templateExporting ? '生成中…' : '下载 OMS 入仓文件'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 箱内明细贴：贴在箱子侧面/封口，与 OMS 打印的箱唛配套。
-          用 HTML 打印而不是生成 PDF —— 必须能印中文，而前端那个零依赖 PDF 生成器
-          只支持 ASCII（中文会变 ?）。
-          挂到 body 而不是留在 #root 里：打印时要把 #root 整块 display:none，
-          否则应用那一长条布局会跟着分页，8 张标签能印出 14 页。 */}
-      {printOpen && createPortal(
-        <div className="carton-print-overlay">
-          <div className="carton-print-toolbar">
-            <strong>箱内明细贴预览 · {cartons.length} 张</strong>
-            <small>100×100mm 热敏纸、缩放 100%，一张一页；箱唛号与 OMS 箱唛一一对应</small>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-primary" onClick={() => window.print()}>打印</button>
-              <button className="btn btn-outline" onClick={() => setPrintOpen(false)}>关闭</button>
-            </div>
-          </div>
-          <div className="carton-print-sheet">
-            {cartons.map((c, i) => (
-              <div className={labelClass(c.items.filter(it => (it.sku || '').trim()).length)} key={i}>
-                <div className="carton-label-head">
-                  <span className="carton-label-no">{c.box_no || boxNoFor(i)}</span>
-                  <span className="carton-label-seq">第 {i + 1} 箱 / 共 {cartons.length} 箱</span>
-                </div>
-                <div className="carton-label-meta">
-                  <span>{exportForm.date || todayStr()}</span>
-                  <span>{cartonPieces(c)} 件 · {c.items.filter(it => (it.sku || '').trim()).length} 个 SKU</span>
-                  {c.note ? <span className="carton-label-note">{c.note}</span> : null}
-                </div>
-                <div className="carton-label-items">
-                  {c.items.filter(it => (it.sku || '').trim()).map((it, j) => {
-                    const product = products.find(p => p.sku === it.sku);
-                    return (
-                      <div className="carton-label-item" key={j}>
-                        <div className="carton-label-text">
-                          <strong>{product?.name_zh || product?.name_en || it.sku}</strong>
-                          <small>{it.sku}</small>
-                        </div>
-                        <div className="carton-label-qty">×{it.quantity || 0}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="carton-label-foot">
-                  {[exportForm.mark, exportForm.shipping].filter(Boolean).join(' · ') || '　'}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>,
-        document.body,
-      )}
-
-      {/* 明细贴重印：从历史记录出图，箱唛号与「第 N 箱 / 共 M 箱」照抄当时的值，
-          不能按本次选中的张数重排 —— 重排后同一箱会有两个箱号，与 OMS 箱唛对不上。 */}
-      {reprintRows.length > 0 && createPortal(
-        <div className="carton-print-overlay">
-          <div className="carton-print-toolbar">
-            <strong>明细贴重印 · {reprintRows.length} 张</strong>
-            <small>箱唛号与「第几箱 / 共几箱」沿用装箱时的记录，与 OMS 箱唛一一对应</small>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-primary" onClick={() => window.print()}>打印</button>
-              <button className="btn btn-outline" onClick={() => setReprintRows([])}>关闭</button>
-            </div>
-          </div>
-          <div className="carton-print-sheet">
-            {reprintRows.map(r => (
-              <div className={labelClass(r.items.length)} key={cartonKey(r)}>
-                <div className="carton-label-head">
-                  <span className="carton-label-no">{r.box_no || `C${String(r.seq).padStart(2, '0')}`}</span>
-                  <span className="carton-label-seq">第 {r.seq} 箱 / 共 {r.total} 箱</span>
-                </div>
-                <div className="carton-label-meta">
-                  <span>{r.shipment_date}</span>
-                  <span>{r.items.reduce((s, it) => s + it.quantity, 0)} 件 · {r.items.length} 个 SKU</span>
-                  {r.note ? <span className="carton-label-note">{r.note}</span> : null}
-                </div>
-                <div className="carton-label-items">
-                  {r.items.map((it, j) => (
-                    <div className="carton-label-item" key={j}>
-                      <div className="carton-label-text">
-                        <strong>{it.name_zh || it.name_en || it.sku}</strong>
-                        <small>{it.sku}</small>
-                      </div>
-                      <div className="carton-label-qty">×{it.quantity}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className="carton-label-foot">
-                  {r.mark || '　'}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>,
-        document.body,
-      )}
     </div>
   );
 }
