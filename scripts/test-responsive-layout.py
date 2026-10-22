@@ -1,15 +1,19 @@
 """Real Chromium layout smoke; isolated fixture API, never touches production."""
 import argparse
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _audit_server import vite_server  # noqa: E402  （必须先插 sys.path）
 
 # 约翰内斯堡全年 UTC+2、无夏令时，所以这里不用 zoneinfo（Windows 上要额外装 tzdata）。
 # 调价页的「今日改价 N/M」按平台所在时区切天，fixture 必须给出当天日期才会渲染这个计数。
 JNB_TODAY = (datetime.now(timezone.utc) + timedelta(hours=2)).date().isoformat()
 
-BASE = 'http://127.0.0.1:5173'
+BASE = 'http://127.0.0.1:5173'  # 默认值；__main__ 会换成现挑的空闲端口（见 _audit_server.py）
 PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳包 / Travel storage bag with a long product title', chinese_product_name='收纳包', sku='TEST-001', selection_status='数据待补充', product_image_url=None, product_image_path=None, takealot_url='https://catalog.example.invalid/product/this-is-a-deliberately-long-product-link-for-layout-validation', recorded_at='2026-10-15', purchase_quantity=1, fee_category='Home', fee_category_confirmed=False, is_archived=False)
 # Optional numeric values used by the existing detail view; fixtures are never saved.
 for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny','length_mm','width_mm','height_mm','actual_weight_kg','packaging_cost_per_unit_cny','inbound_listing_fee_cny','outbound_operation_fee_cny','last_mile_delivery_fee_cny','other_fee_cny','fulfillment_fee_zar','success_fee_rate','total_cost_zar','profit_zar','profit_margin']:
@@ -72,11 +76,13 @@ PAGES = [('/', '运营工作台'),('/products','产品列表'),('/inventory','�
 def main():
     cli=argparse.ArgumentParser();cli.add_argument('--observe',action='store_true');cli.add_argument('--screenshots');args=cli.parse_args()
     if args.screenshots: Path(args.screenshots).mkdir(parents=True,exist_ok=True)
+    from urllib.parse import urlsplit
+    base_netloc=urlsplit(BASE).netloc
     failures=[];unknown=[];errors=[]
     with sync_playwright() as p:
         browser=p.chromium.launch(headless=True)
         context=browser.new_context()
-        context.add_init_script("localStorage.setItem('api_base_url', 'http://127.0.0.1:5173')")
+        context.add_init_script(f"localStorage.setItem('api_base_url', '{BASE}')")
         # 需要模拟「这个接口读失败」时把路径放进来（见文件末尾的降级界面检查）。
         failing=set()
         def intercept(route):
@@ -91,7 +97,7 @@ def main():
                 if url.path in DATA:
                     route.fulfill(json=DATA[url.path]);return
                 unknown.append(route.request.method+' '+url.path);route.fulfill(status=404,json={'detail':'Fixture endpoint not declared'});return
-            if url.netloc=='127.0.0.1:5173': route.continue_()
+            if url.netloc==base_netloc: route.continue_()
             else: route.abort()
         context.route('**/*',intercept)
         page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
@@ -274,17 +280,8 @@ def main():
     print(json.dumps(report,ensure_ascii=False,indent=2))
     if not args.observe: assert not failures and not errors and not unknown,report
 if __name__=='__main__':
-    import subprocess, time
-    from urllib.request import build_opener, ProxyHandler
-    server=subprocess.Popen(['node','node_modules/vite/bin/vite.js','--host','127.0.0.1','--port','5173'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    try:
-        for attempt in range(80):
-            try:
-                build_opener(ProxyHandler({})).open(BASE,timeout=1).close();break
-            except OSError:
-                if server.poll() is not None: raise RuntimeError('Vite test server failed to start')
-                time.sleep(.1)
-        else: raise RuntimeError('Vite test server did not become ready')
+    # 端口现挑：本机可能同时有另一份工作副本在跑 selfcheck，写死端口会互相探到/杀掉对方
+    # 的服务（表现为随机 ERR_CONNECTION_REFUSED 或「按钮找不到」）。
+    with vite_server(Path(__file__).resolve().parents[1]) as base:
+        globals()['BASE']=base
         main()
-    finally:
-        server.terminate();server.wait(timeout=10)

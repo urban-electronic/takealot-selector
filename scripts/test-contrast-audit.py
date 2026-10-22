@@ -16,45 +16,26 @@
 import asyncio
 import os
 import runpy
-import subprocess
+import sys
 import tempfile
-import time
 from pathlib import Path
-from urllib.request import ProxyHandler, build_opener
 
 ROOT = Path(__file__).resolve().parent.parent
-# 与 test-responsive-layout.py 的 5173 分开：两个套件各自起服务，谁也不依赖执行顺序。
-PORT = 5183
-BASE = f'http://127.0.0.1:{PORT}'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _audit_server import vite_server  # noqa: E402  （必须先插 sys.path）
 
-
-def wait_ready(server, attempts=200):
-    for _ in range(attempts):
-        try:
-            build_opener(ProxyHandler({})).open(BASE, timeout=1).close()
-            return
-        except OSError:
-            if server.poll() is not None:
-                raise RuntimeError('Vite 测试服务启动失败（端口被占用或依赖缺失）')
-            time.sleep(0.1)
-    raise RuntimeError('Vite 测试服务在 20 秒内未就绪')
+# 端口不再写死：本机可能同时有另一份工作副本在跑 selfcheck，固定端口会互相探到/杀掉
+# 对方的服务（表现为随机 ERR_CONNECTION_REFUSED 或「元素找不到」）。见 _audit_server.py。
 
 
 def main():
-    server = subprocess.Popen(
-        ['node', 'node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', str(PORT), '--strictPort'],
-        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait_ready(server)
+    with vite_server(ROOT) as base:
         # BASE 在审计模块被 exec 的那一刻从环境变量读，所以必须先设再 run_path。
-        os.environ['AUDIT_BASE_URL'] = BASE
+        os.environ['AUDIT_BASE_URL'] = base
         audit = runpy.run_path(str(Path(__file__).with_name('ui_contrast_audit.py')))
         with tempfile.TemporaryDirectory() as out:
             audit['main'].__globals__['OUT'] = out
             asyncio.run(audit['main']())
-    finally:
-        server.terminate()
-        server.wait(timeout=10)
 
 
 if __name__ == '__main__':
