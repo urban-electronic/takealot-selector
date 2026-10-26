@@ -74,12 +74,15 @@ def browser_display():
         return ':99'
 
 @asynccontextmanager
-async def quote_context(wait=True):
+async def quote_context(wait=True, wait_seconds=None):
+    """拿采集浏览器。wait_seconds 给交互式调用用：宁可 25 秒后说「忙」，
+    也不要让用户在新建产品页上干等 90 秒——采集循环每 5 分钟就占一次锁。"""
     held = False
+    limit = LOCK_WAIT_SECONDS if wait_seconds is None else wait_seconds
     if wait:
-        held = await _acquire_lock(LOCK_WAIT_SECONDS)
+        held = await _acquire_lock(limit)
         if not held:
-            raise CollectorBusy(f'采集浏览器被上一个任务占用超过 {LOCK_WAIT_SECONDS} 秒，本轮跳过')
+            raise CollectorBusy(f'采集浏览器被上一个任务占用超过 {limit} 秒，本轮跳过')
     elif not _lock.acquire(blocking=False):
         raise CollectorBusy('采集浏览器忙，请稍后再打开')
     else:

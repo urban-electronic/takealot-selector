@@ -262,13 +262,18 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
     try:
         breadcrumbs = await page.evaluate("""
             () => {
+                const JUNK = /^(share|report this product|write a review|reviews?|add to cart|buy now|back to top|see all)$/i;
                 const clean = (list) => {
                     const out = [];
                     for (const raw of list) {
                         const text = String(raw || '').replace(/\\s+/g, ' ').trim();
                         if (!text || text.length > 60) continue;
+                        // 面包屑容器里常混着「Share / Report this product」这类操作链接，
+                        // 它们是按钮不是品类，混进分类路径会把 Fee 匹配带偏。
+                        if (JUNK.test(text)) continue;
                         if (!out.length && /^home$/i.test(text)) continue;
                         if (out[out.length - 1] !== text) out.push(text);
+                        if (out.length >= 8) break;
                     }
                     return out;
                 };
@@ -297,7 +302,10 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
                 // ② 面包屑导航（不同改版用过不同 data-ref / class）
                 const nav = document.querySelector('[data-ref="breadcrumbs"], nav[aria-label*="readcrumb" i], [class*="breadcrumb"]');
                 if (nav) {
-                    const list = clean(Array.from(nav.querySelectorAll('a, span')).map(n => n.textContent));
+                    // 只用链接：span 会跟锚点重复，还会把按钮文案带进来。
+                    let nodes = Array.from(nav.querySelectorAll('a'));
+                    if (!nodes.length) nodes = Array.from(nav.querySelectorAll('span'));
+                    const list = clean(nodes.map(n => n.textContent));
                     if (list.length > 1) return list.join(' > ');
                 }
                 return null;
@@ -510,17 +518,22 @@ async def _scrape_with_profile_browser(url: str, normalized_url: str) -> Tuple[O
 
     page = None
     try:
-        async with quote_context() as context:
+        # 交互式调用：最多等 25 秒锁。等满 90 秒对「新建产品」页面来说等于卡死。
+        async with quote_context(wait_seconds=25) as context:
             page = await context.new_page()
             response = await page.goto(normalized_url, wait_until="domcontentloaded", timeout=45000)
             if response is not None and response.status >= 400:
                 return None, f"profile browser HTTP {response.status}"
-            try:
-                await page.wait_for_function(PRODUCT_READY_JS, timeout=20000)
-            except Exception:
-                # 商品可能只有部分字段（缺货、无图）；仍然提取，能拿到多少算多少。
-                pass
+            # 先按当前状态取一次：大多数页面 domcontentloaded 时标题/图片/面包屑都在，
+            # 固定等 20 秒是白等。只有价格还缺时才补等价格区块。
             data = await _extract_data(page, url, normalized_url)
+            if data.get("actual_sale_price_zar") is None:
+                try:
+                    await page.wait_for_selector('[data-ref="price"]', timeout=8000)
+                except Exception:
+                    # 商品可能缺货或只有部分字段；仍然用已经取到的资料。
+                    pass
+                data = await _extract_data(page, url, normalized_url)
             if not _has_product_data(data):
                 return None, "profile browser returned no product data"
             return data, ""
