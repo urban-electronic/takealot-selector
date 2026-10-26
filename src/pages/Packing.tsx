@@ -185,6 +185,9 @@ export default function Packing() {
   // 提示条上的直达按钮。带 `for` 是为了自动过期：别处 setMsg 换了文案，按钮就自己消失，
   // 不然会留下一个指向旧动作的按钮。
   const [msgAction, setMsgAction] = useState<{ for: string; label: string; onClick: () => void } | null>(null);
+  // Action feedback replaces the previous action; a later list-read error stays separate.
+  const actionError = (text: string) => { setError(text); setMsg(''); setMsgAction(null); };
+  const actionNotice = (text: string) => { setMsg(text); setError(''); setMsgAction(null); };
   const [catalogStats, setCatalogStats] = useState<{ total: number; noSku: number; duplicates: number } | null>(null);
 
   // 产品库筛选
@@ -739,17 +742,17 @@ export default function Packing() {
         .map(s => idBySku.get(s))
         .filter((x): x is string => !!x);
       if (ids.length === 0) {
-        setMsg('选品库中未找到这些 SKU，请用“从选品库导入”手动搜索添加');
+        actionNotice('选品库中未找到这些 SKU，请用“从选品库导入”手动搜索添加');
         setImportMissing([]);
         return;
       }
       const res = await importFromProducts(ids);
-      await loadProducts();
       // 同一个接口、同一套三档计数：这里以前自己拼了一句「新增 N 条，跳过 M 条，失败 K 条」，
       // 既把「已导入但缺图」吞掉（用户不知道要补图），失败也不点名 SKU。
-      setMsg(describeImportResult(res, '一键导入完成：'));
+      actionNotice(describeImportResult(res, '一键导入完成：'));
+      await loadProducts();
     } catch (e: any) {
-      setError(`一键导入失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`一键导入失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
       setOneClickImporting(false);
     }
@@ -778,9 +781,10 @@ export default function Packing() {
         default_count: editForm.default_count ?? null,
       });
       setEditSku(null);
+      actionNotice('装箱产品已保存');
       await loadProducts();
     } catch (e: any) {
-      setError(`保存失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`保存失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     }
   };
 
@@ -794,9 +798,10 @@ export default function Packing() {
         next.delete(deleteSku);
         return next;
       });
+      actionNotice('装箱产品已删除');
       await loadProducts();
     } catch (e: any) {
-      setError(`删除失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`删除失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     }
   };
 
@@ -809,23 +814,23 @@ export default function Packing() {
       const base64 = result.split(',')[1] || '';
       try {
         await uploadPackingImage(sku, base64);
-        setMsg('图片上传成功');
+        actionNotice('图片上传成功');
         await loadProducts();
       } catch (e: any) {
-        setError(`图片上传失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+        actionError(`图片上传失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
       }
     };
-    reader.onerror = () => setError('读取图片失败');
+    reader.onerror = () => actionError('读取图片失败');
     reader.readAsDataURL(file);
   };
 
   const clearImage = async (sku: string) => {
     try {
       await uploadPackingImage(sku, '', true);
-      setMsg('已移除图片');
+      actionNotice('已移除图片');
       await loadProducts();
     } catch (e: any) {
-      setError(`移除图片失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`移除图片失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     }
   };
 
@@ -833,13 +838,13 @@ export default function Packing() {
   const handleExport = async () => {
     const rows = exportableRows;
     if (rows.length === 0) {
-      setError(cartonsManual
+      actionError(cartonsManual
         ? '勾选的产品还没装进任何一箱，请先在逐箱清单里补上件数'
         : '请至少勾选 1 个产品，并填写有效的箱数和每箱件数（≥1）后再导出');
       return;
     }
     if (selectedRows.length !== rows.length) {
-      setError(cartonsManual
+      actionError(cartonsManual
         ? '部分勾选产品还没装进任何一箱，已自动跳过这些行'
         : '部分勾选产品箱数/每箱件数无效（需 ≥1 的正整数），已自动跳过这些行');
     }
@@ -847,12 +852,12 @@ export default function Packing() {
     if (cartonCoverage.unpacked.length) {
       const detail = cartonCoverage.unpacked.slice(0, 3)
         .map(p => p.name_zh || p.sku).join('；');
-      setError(`这些产品还没装进任何一箱：${detail}。补上件数，或点「按产品资料重排」重来`);
+      actionError(`这些产品还没装进任何一箱：${detail}。补上件数，或点「按产品资料重排」重来`);
       return;
     }
     // 头程印错一行，货代就可能按错的渠道走。宁可多一步，也不默认一个值。
     if (!exportForm.shipping) {
-      setError('请选择运输方式（空运 / 海运）后再导出');
+      actionError('请选择运输方式（空运 / 海运）后再导出');
       return;
     }
     setExporting(true);
@@ -911,7 +916,6 @@ export default function Packing() {
       const sp = new URLSearchParams(searchParams);
       sp.delete('import');
       setSearchParams(sp, { replace: true });
-      await loadProducts();
       setExportForm(prev => ({ ...prev, record_shipment: false }));
       // 导完草稿就清空了，最容易漏掉「去 OMS 建入库单」这一步。
       // 直接把入口给出来，并默认勾上刚导出的这一票。
@@ -920,14 +924,15 @@ export default function Packing() {
         ? '导出成功，已登记发货并扣库存'
         : '导出成功，装箱单已留档，库存未变化';
       const fullMsg = `${okMsg}${boxNote}`;
-      setMsg(fullMsg);
+      actionNotice(fullMsg);
       setMsgAction({
         for: fullMsg,
         label: '导出 OMS 入仓模板',
         onClick: () => { setMsgAction(null); openErpTemplate(true); },
       });
+      await loadProducts();
     } catch (e: any) {
-      setError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`导出失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
       setExporting(false);
     }
@@ -986,7 +991,7 @@ export default function Packing() {
       const overflow = summary?.overflow?.length
         ? `；${summary.overflow.map(o => `箱 ${o.box_no} 装了 ${o.skus} 个 SKU`).join('、')}，OMS 箱唛一张只放得下 5 行，这几箱会多印一页且那一页没有箱号`
         : '';
-      setMsg(`OMS 入仓文件已生成：${detail}。到 OMS「入库单 → 导入」上传，生成入库单后直接打箱唛${overflow}`);
+      actionNotice(`OMS 入仓文件已生成：${detail}。到 OMS「入库单 → 导入」上传，生成入库单后直接打箱唛${overflow}`);
     } catch (e: any) {
       setTemplateError(typeof e === 'string' ? e : e.message || 'ERP 模板生成失败');
     } finally {
@@ -1001,15 +1006,15 @@ export default function Packing() {
     setError('');
     try {
       const res = await syncPackingImagesFromProducts(200);
-      await loadProducts();
       const failNote = res.failed.length ? `，失败 ${res.failed.length} 条（${res.failed.slice(0, 3).map(f => `${f.sku}:${f.reason}`).join('；')}${res.failed.length > 3 ? '…' : ''}）` : '';
       if (res.updated === 0 && res.failed.length === 0) {
-        setMsg('未找到可匹配的图片：选品库中没有这些 SKU 的图片记录，或装箱单库已无待补图');
+        actionNotice('未找到可匹配的图片：选品库中没有这些 SKU 的图片记录，或装箱单库已无待补图');
       } else {
-        setMsg(`SKU 图片匹配完成：成功补图 ${res.updated} 条（本批处理 ${res.total_pending} 条待补图）${failNote}`);
+        actionNotice(`SKU 图片匹配完成：成功补图 ${res.updated} 条（本批处理 ${res.total_pending} 条待补图）${failNote}`);
       }
+      await loadProducts();
     } catch (e: any) {
-      setError(`图片匹配失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`图片匹配失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
       setSyncingImages(false);
     }
@@ -1019,10 +1024,10 @@ export default function Packing() {
     setSyncingVariants(true); setMsg(''); setError('');
     try {
       const res = await syncPackingVariantsFromTakealot(30);
+      actionNotice(`官网规格核对完成：检查 ${res.groups_checked} 组，确认 ${res.matched} 个 SKU 规格，匹配 ${res.images} 张独立图片；${res.unresolved.length} 组需人工确认。`);
       await loadProducts();
-      setMsg(`官网规格核对完成：检查 ${res.groups_checked} 组，确认 ${res.matched} 个 SKU 规格，匹配 ${res.images} 张独立图片；${res.unresolved.length} 组需人工确认。`);
     } catch (e: any) {
-      setError(`官网规格核对失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      actionError(`官网规格核对失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally { setSyncingVariants(false); }
   };
 
@@ -1061,8 +1066,8 @@ export default function Packing() {
     setError('');
     try {
       const res = await importFromProducts(ids);
+      actionNotice(describeImportResult(res));
       await loadProducts();
-      setMsg(describeImportResult(res));
       setImportSelected(new Set());
       setImportOpen(false);
     } catch (e: any) {

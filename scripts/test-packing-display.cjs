@@ -13,6 +13,8 @@ for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Ev
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 if (!dom.window.URL.createObjectURL) dom.window.URL.createObjectURL = () => 'blob:stub';
 if (!dom.window.URL.revokeObjectURL) dom.window.URL.revokeObjectURL = () => {};
+globalThis.URL = dom.window.URL;
+document.addEventListener('click', e => { if (e.target.closest?.('a[download]')) e.preventDefault(); });
 
 const React = require('react');
 const { act } = React;
@@ -22,6 +24,8 @@ const file = path.resolve(__dirname, '../src/pages/Packing.tsx');
 
 let catalog = [];
 let packingReads = 0;
+let packingReadFails = false;
+let imageSyncFails = false;
 // 「从选品库导入」弹层读的就是 api.getProducts。默认空，用例里按需改：
 // 读失败 / 有候选产品 / 导入结果的三档计数都要能分别构造出来。
 let importCatalog = [];
@@ -39,7 +43,7 @@ const api = {
   getProduct: async () => ({}),
 };
 const remote = {
-  getPackingProducts: async () => { packingReads += 1; return catalog.map(r => ({ ...r })); },
+  getPackingProducts: async () => { packingReads += 1; if (packingReadFails) throw new Error('列表读取失败'); return catalog.map(r => ({ ...r })); },
   getInventory: async () => [],
   syncPackingProductsFromCatalog: async () => ({ ok: true, total_products: 3, packing_products: catalog.length, imported: 0, skipped_no_sku: 0, duplicate_sku: 0 }),
   upsertPackingProduct: async () => { writes.push('upsert'); return { ok: true }; },
@@ -49,7 +53,7 @@ const remote = {
     if (importThrows) throw new Error('网络中断');
     return importResult;
   },
-  syncPackingImagesFromProducts: async () => ({ ok: true, updated: 0, total_pending: 0, failed: [] }),
+  syncPackingImagesFromProducts: async () => { if (imageSyncFails) throw new Error('匹配接口 500'); return { ok: true, updated: 0, total_pending: 0, failed: [] }; },
   syncPackingVariantsFromTakealot: async () => ({ ok: true, groups_checked: 0, matched: 0, images: 0, unresolved: [] }),
   exportPacking: async (payload) => { exported.push(payload); return { ok: true }; },
   getPackingCartons: async () => ({ date: '', total_cartons: 0, cartons: [] }),
@@ -289,6 +293,7 @@ const root = createRoot(host);
   const blocked = host.querySelector('.alert-error');
   check(blocked && blocked.textContent.includes('运输方式'),
     `the blocked export must say why, got ${blocked && blocked.textContent}`);
+  check(!host.querySelector('.alert-success'), 'a blocked export clears the previous import success banner');
 
   // 模板 G2 是「头程（空/海）」，只能是下拉里的两项之一，不能再是自由文本。
   const shippingSelect = host.querySelector('.packing-export-grid select');
@@ -302,12 +307,27 @@ const root = createRoot(host);
 
   await act(async () => { exportBtn.click(); await Promise.resolve(); await Promise.resolve(); });
   check(exported.length === 1, `export must be called once, got ${exported.length}`);
+  check(!host.querySelector('.alert-error'), 'successful retry clears the previous validation error');
   check(exported[0].shipping === '海运', `the chosen shipping method must reach the backend, got ${exported[0].shipping}`);
   const payload = exported[0] || {};
   check(JSON.stringify(payload.items) === JSON.stringify([{ sku: '114', cartons: '1', count: '12' }]),
     `export items must carry cartons=1 / count=12, got ${JSON.stringify(payload.items)}`);
   check(JSON.stringify(payload.cartons) === JSON.stringify([{ box_no: 'C01', note: '', items: [{ sku: '114', quantity: '12' }] }]),
     `export cartons must carry quantity=12, got ${JSON.stringify(payload.cartons)}`);
+
+  const syncImages = [...host.querySelectorAll('button')].find(b => b.textContent === '按SKU匹配选品库图片');
+  check(!!host.querySelector('.alert-success'), 'the fixture must reach actual export success, not just submit its payload');
+  imageSyncFails = true;
+  await act(async () => { syncImages.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(!host.querySelector('.alert-success'), 'a later action failure removes the previous export success');
+  check(host.querySelector('.alert-error')?.textContent.includes('匹配接口 500'), 'the current action failure remains visible');
+  check(![...host.querySelectorAll('.alert button')].some(b => b.textContent === '导出 OMS 入仓模板'), 'the previous success action expires with its message');
+  imageSyncFails = false;
+  packingReadFails = true;
+  await act(async () => { syncImages.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(!!host.querySelector('.alert-success'), 'successful mutation feedback survives a separate list refresh failure');
+  check(host.querySelector('.alert-error')?.textContent.includes('列表读取失败'), 'list refresh failure is not erased by the successful action');
+  packingReadFails = false;
 
   check(writes.length === 0, 'rendering and reloading never writes to the backend');
   await act(async () => root.unmount());

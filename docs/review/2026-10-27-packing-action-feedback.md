@@ -1,0 +1,9 @@
+# PACK-BANNER-EXCLUSIVE-01
+
+- Priority P2; R3; owner Codex. Baseline main deeb7ae429e470484aaf0f9b0af8c117e6e8200a.
+- Trigger: import succeeds, then export is rejected for missing shipping method. The previous import success banner remains alongside the current error. Other edit/delete/image/export failure branches share the same independent message/error states.
+- Fix: actionError/actionNotice replace the previous action feedback and expire its CTA. Edit/delete now report their own success. Publish mutation success before reloading the list, so a separate refresh failure remains visible alongside a confirmed write result. No business request payload, stock mutation or price behavior changed.
+- Same-condition verification: test-packing-display.cjs passes 74 isolated DOM assertions; the baseline implementation with the same test fails “a blocked export clears the previous import success banner”. Covers validation failure, successful retry, export success followed by image-sync failure, old CTA expiry, and successful action followed by list-read failure.
+- Test fixture correction: use the JSDOM URL implementation for the stubbed file download and prevent anchor navigation. Previously Node's URL.createObjectURL rejected the mock response after payload submission; the old suite asserted only that submission occurred and never confirmed the success branch.
+- TypeScript --noEmit and git diff --check pass. Full latest-head CI pending at submission; no rendered layout, deployment or real session/business acceptance inferred from isolated tests.
+- G2/H4: require current-head full CI; no unverified production writes or credentials used. Rollback: revert this focused change. Name correction, real quote return and the authorized 369-piece correction remain separate, unverified business tasks.
