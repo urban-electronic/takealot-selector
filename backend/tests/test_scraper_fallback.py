@@ -232,3 +232,19 @@ def test_html_parser_is_shared_by_every_source():
     assert data['product_name'] == 'Zenty Mouse Trap'
     assert data['actual_sale_price_zar'] == 699.0
     assert data['tsin'] == 'PLID103613893'
+
+
+def test_breadcrumb_list_becomes_category_path():
+    """分类路径优先用网站自己声明的 BreadcrumbList，不靠关键词猜。
+
+    2026-10-27 实测 PLID100615298：旧的关键词法一个分类都没命中，页面分类
+    一直是空的，Fee 品类只能靠人工。
+    """
+    html = '''<html><head><script type="application/ld+json">
+    {"@type":"BreadcrumbList","itemListElement":[
+      {"@type":"ListItem","position":1,"name":"Home"},
+      {"@type":"ListItem","position":2,"name":"Sports & Outdoor"},
+      {"@type":"ListItem","position":3,"name":"Face Masks"}]}
+    </script></head><body><main><h1>Mask</h1></main></body></html>'''
+    data = scraper._parse_product_html(html, URL, URL)
+    assert data['takealot_category_path'] == 'Sports & Outdoor > Face Masks'

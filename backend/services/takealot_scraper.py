@@ -256,34 +256,51 @@ async def _extract_data(page, url: str, normalized_url: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 5. 提取分类路径
+    # 5. 提取分类路径。优先 JSON-LD 的 BreadcrumbList（网站自己声明的层级），
+    #    其次面包屑导航。原来只按关键词猜 .pdp 里的链接，改版或英文分类名不
+    #    在关键词表里就直接空着——2026-10-27 实测 PLID100615298 就是这样。
     try:
         breadcrumbs = await page.evaluate("""
             () => {
-                const pdp = document.querySelector('.pdp');
-                if (!pdp) return null;
-                const links = pdp.querySelectorAll('a[href^="/"]');
-                const categories = [];
-                const seen = new Set();
-                const keywords = [
-                    'computers', 'electronics', 'home', 'kitchen', 'sport',
-                    'fashion', 'baby', 'toys', 'garden', 'automotive',
-                    'camping', 'beauty', 'health', 'office', 'books',
-                    'appliances', 'gaming', 'music', 'pets', 'liquor',
-                    'stationery', 'luggage', 'data storage', 'drives',
-                    'storage', 'computer components', 'tv', 'audio',
-                    'cameras', 'musical instruments', 'diy',
-                ];
-                for (const link of links) {
-                    const text = link.textContent.trim();
-                    const href = link.getAttribute('href');
-                    if (!text || !href || text.length > 50) continue;
-                    if (keywords.some(kw => text.toLowerCase().includes(kw)) && !seen.has(text)) {
-                        seen.add(text);
-                        categories.push(text);
+                const clean = (list) => {
+                    const out = [];
+                    for (const raw of list) {
+                        const text = String(raw || '').replace(/\\s+/g, ' ').trim();
+                        if (!text || text.length > 60) continue;
+                        if (!out.length && /^home$/i.test(text)) continue;
+                        if (out[out.length - 1] !== text) out.push(text);
                     }
+                    return out;
+                };
+                // ① JSON-LD BreadcrumbList
+                for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+                    try {
+                        const stack = [JSON.parse(s.textContent)];
+                        while (stack.length) {
+                            const node = stack.pop();
+                            if (!node || typeof node !== 'object') continue;
+                            if (Array.isArray(node)) { stack.push(...node); continue; }
+                            const types = [].concat(node['@type'] || []);
+                            if (types.includes('BreadcrumbList') && Array.isArray(node.itemListElement)) {
+                                const names = node.itemListElement.map(e => {
+                                    if (!e || typeof e !== 'object') return '';
+                                    const item = e.item;
+                                    return e.name || (item && typeof item === 'object' ? item.name : '');
+                                });
+                                const list = clean(names);
+                                if (list.length > 1) return list.join(' > ');
+                            }
+                            stack.push(...Object.values(node));
+                        }
+                    } catch (e) {}
                 }
-                return categories.length > 0 ? categories.join(' > ') : null;
+                // ② 面包屑导航（不同改版用过不同 data-ref / class）
+                const nav = document.querySelector('[data-ref="breadcrumbs"], nav[aria-label*="readcrumb" i], [class*="breadcrumb"]');
+                if (nav) {
+                    const list = clean(Array.from(nav.querySelectorAll('a, span')).map(n => n.textContent));
+                    if (list.length > 1) return list.join(' > ');
+                }
+                return null;
             }
         """)
         if breadcrumbs:
@@ -728,6 +745,20 @@ def _structured_product_fields(soup) -> Dict[str, Any]:
             types = value.get("@type", [])
             if isinstance(types, str):
                 types = [types]
+            if "BreadcrumbList" in types:
+                names = []
+                for entry in value.get("itemListElement") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    item = entry.get("item")
+                    name = entry.get("name") or (item.get("name") if isinstance(item, dict) else "")
+                    if isinstance(name, str) and name.strip():
+                        names.append(name.strip())
+                # 首层通常是 "Home"，对 Fee 品类匹配没有信息量。
+                if names and names[0].lower() == "home":
+                    names = names[1:]
+                if len(names) > 1:
+                    fields["takealot_category_path"] = " > ".join(names)
             if "Product" in types:
                 if isinstance(value.get("name"), str):
                     fields["product_name"] = value["name"].strip()
