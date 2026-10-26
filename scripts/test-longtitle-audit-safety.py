@@ -37,6 +37,10 @@ class Browser:
     async def evaluate(self, script):
         if script == audit['LAYOUT_JS']:
             return {'overlaps':[], 'cellBreaks':[], 'pageOverflow':0, 'longNames':[]}
+        # 桩可以给一串记录，按 Tab 次数轮转——真实页面上一次 Tab 一个元素，
+        # 只有轮转才测得出「一部分量得到、一部分量不到」的混合情形。
+        if isinstance(self.focus, list):
+            return self.focus[self.tabs % len(self.focus)]
         return self.focus
     async def screenshot(self, path): self.shots.append((Path(path).name, self.tabs))
     async def close(self): pass
@@ -55,8 +59,12 @@ class AuditTests(unittest.TestCase):
         self.assertIs(audit['MAIN'].DATA, audit['DATA'])
 
     def run_audit(self, focus=Browser.focus, navigation_error=False):
-        if focus is not None:
-            focus = dict(Browser.focus, ringColor='rgb(0,0,0)', bg='rgb(255,255,255)', **focus)
+        def fill(record):
+            return dict(Browser.focus, ringColor='rgb(0,0,0)', bg='rgb(255,255,255)', **record)
+        if isinstance(focus, list):
+            focus = [fill(record) for record in focus]
+        elif focus is not None:
+            focus = fill(focus)
         fn = audit['run']
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as output:
             with patch.object(Browser, 'focus', focus), patch.object(Browser, 'shots', []), \
@@ -85,15 +93,51 @@ class AuditTests(unittest.TestCase):
     def test_valid_ring_and_default_screenshot_order(self):
         status, output, shots = self.run_audit()
         self.assertEqual(status, 0)
-        self.assertIn('"measured": 12', output)
+        self.assertIn('"measured": 18', output)
         defaults = [(name, tabs) for name, tabs in shots if not name.endswith('_focus.png')]
-        self.assertEqual(len(defaults), 12)
+        self.assertEqual(len(defaults), 18)
         self.assertTrue(all(tabs == 0 for _, tabs in defaults), 'default screenshots precede keyboard interaction')
 
     def test_all_navigation_errors_fail(self):
         status, output, _ = self.run_audit(navigation_error=True)
         self.assertEqual(status, 1)
         self.assertIn('"measured": 0', output)
-        self.assertIn('"errors": 12', output)
+        self.assertIn('"errors": 18', output)
+
+    # ---- 焦点落在控件内部子部件上（日期框的日历按钮等）----
+    # 宿主元素的 outline 读不到，但浏览器把圈画在图标自己身上（截图核对过）。
+    # 这类记录必须单列：既不能算通过，也不能算失败——从报告里消失才是漏测。
+    def summary(self, output):
+        import json
+        line = [l for l in output.splitlines() if l.startswith('{"environment"')]
+        self.assertEqual(len(line), 1, 'audit must print exactly one machine-readable summary')
+        return json.loads(line[0])
+
+    def test_subcontrol_focus_is_counted_not_passed(self):
+        # 一次量得到、一次量不到，交替出现：真实页面就是这样（日期框的日/月/年字段
+        # 与日历按钮各自一个 Tab 停点）。
+        status, output, _ = self.run_audit([
+            {'tag':'button', 'ringSource':'outline:solid', 'ringVisible':True, 'ringRatio':3.1},
+            {'tag':'input', 'hostFocus':False, 'ringSource':'none', 'ringVisible':False, 'ringRatio':None},
+        ])
+        self.assertEqual(status, 0, 'sub-control focus is not a missing ring')
+        self.assertGreater(self.summary(output)['focus_unmeasurable_subcontrol'], 0,
+                           'unmeasurable focus must stay visible in the summary')
+        self.assertIn('子部件焦点(量不到)', output)
+
+    def test_all_focus_inside_subcontrols_cannot_pass(self):
+        # 全部记录都落在子部件里 = 一个能测的都没有，必须失败，而不是「没有失败就是通过」。
+        status, output, _ = self.run_audit({'tag':'input', 'hostFocus':False,
+                                            'ringSource':'none', 'ringVisible':False, 'ringRatio':None})
+        self.assertEqual(status, 1)
+        self.assertIn('未采到可测量的焦点元素', output)
+
+    def test_subcontrol_flag_cannot_mask_a_missing_ring_on_a_real_control(self):
+        # hostFocus=True 的记录必须照旧按「没有圈」判失败，不许被子部件那条口子放过。
+        status, _, _ = self.run_audit([
+            {'tag':'button', 'hostFocus':True, 'ringSource':'outline:solid', 'ringVisible':True, 'ringRatio':3.1},
+            {'tag':'button', 'hostFocus':True, 'ringSource':'none', 'ringVisible':False, 'ringRatio':None},
+        ])
+        self.assertEqual(status, 1)
 
 if __name__ == '__main__': unittest.main()

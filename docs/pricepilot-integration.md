@@ -1726,3 +1726,37 @@ WorkBuddy；基线 `8f3a1df552`。
   调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 只读不写，属禁止区）；
   `test-packing-oms.py` 对非 GET 请求一律回 `{'ok': true}`（导出类接口的假 200 仍无法区分
   「声明漏了」与「本来就该成功」，要区分得逐条声明写接口，超出本轮预算）。
+
+### AUDIT-LONGTITLE-02 / AUDIT-FOCUS-SHADOW-01 / FLEET-ADVICE-01（2026-10-26）
+
+- 优先级 P1；基线远端 main `3b3c2b27c6`、后端 build `3b3c2b27c6e6`（无漂移），自检 37/37 全绿之后主动排查。
+- 复现：
+  ①`scripts/ui_longtitle_focus_audit.py` 的路由表只有 `/products`、`/auto-pricing` 与两个详情页，
+  而**库存页（`row.name_en`）和装箱页（`p.name_en`）同样在表格单元格里渲染英文品名**——正是 #125
+  报的「长英文标题跨列重叠」那种形态。更别扭的是 `test-responsive-layout.py` 的 fixture 早就给
+  这两页喂了长名字（`/api/inventory` 的 `name_en`、`/api/packing/products` 的 `name_en`），
+  路由表却没列：数据备好了，页面一次都没量过。
+  ②把这两条路由加进去后审计立刻报 `/packing` 三档全部「焦点圈不可见 ratio=None」。逐条查：
+  是 `input[type=date]`（装箱单日期）——Chromium 把日/月/年字段和日历按钮放在 shadow DOM 里，
+  Tab 会逐个停进去；此时 `document.activeElement` 仍是这个 input，但 `:focus` 不再匹配它，
+  浏览器把焦点圈画在**图标自己**身上（两种状态各截图核对过：输入态是输入框整圈高亮，
+  子部件态是日历图标外一圈黑框）。所以宿主元素的 `outline` 读不到是必然的，判成「圈缺失」是假阳性。
+  ③`describeFleet` 在「被网站挡住」时固定劝「把间隔调到 120 分钟」，而按钮靠 `suggestedInterval`
+  才出现。用户照做之后间隔已经是 120，`suggestedInterval` 变成 null → **状态条上挂着一句永远做不完
+  的指令、一个可点的按钮都没有**，看起来就像按钮坏了。
+- 改动：①路由表补 `/inventory`（`库存管理`）、`/packing`（`装箱单`），组合数 12→18；
+  ②`FOCUS_JS` 多报一个 `hostFocus = el.matches(':focus')`：为 false 的记录单列成
+  「子部件焦点（量不到）」，既不进失败也不进通过，汇总行与 json（`focus_unmeasurable_subcontrol`）
+  都写出来；同时新增「一条可测量的都没有 → 失败」，避免整页都落进子部件时被当成通过；
+  ③`buyboxStatus` 抽 `THROTTLE_INTERVAL_MINUTES=120`，`canWiden = throttled && interval < 120`：
+  还能调才建议调（并给按钮），已经到 120 就改成「间隔已是 120 分钟（最慢档），等网站验证解除」。
+- 验证：全量 selfcheck 37 步全绿（145.8s；longtitle 12.2s→17.5s，18/18 量到、0 重叠、0 越界、
+  0 横溢、子部件焦点 3 条单列）；`test-longtitle-audit-safety.py` 7→10 例（混合样本不判失败、
+  全子部件必须失败、`hostFocus=true` 的无圈照旧失败）；`test-longtitle-focus.cjs` 加 `matches` 桩
+  与两条 `hostFocus` 断言；`test-buybox-copy.cjs` 246→252 断言。
+  反向探针（均已还原）：去掉子部件区分 → 安全套件 2 红；删掉「一个可测的都没有」→ 2 红；
+  路由退回 4 条 → 2 红；`canWiden = throttled`（间隔已 120 仍建议改）→ 文案断言转红。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
+  调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
+  `TAB_LIMIT=60` 仍可能截断焦点采样（本机实测各页 56~59 个停点，暂未触顶），
+  真要防它得把「已到上限」也单列，超出本轮 3 处预算。

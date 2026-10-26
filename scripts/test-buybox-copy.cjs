@@ -215,6 +215,22 @@ check(fleetBad.action.includes('启动本机采集器'), 'cloud path points at t
 check(!fleetLocal.action.includes('启动本机采集器'), 'an already-online collector is not told to start itself');
 check(fleetLocal.action.includes('120 分钟'), 'local path still suggests a longer interval');
 
+// 用户照着「把间隔调到 120 分钟」做完之后：间隔已经是 120，按钮靠 suggestedInterval
+// 才出现（此时必须为 null），文案也不能再重复那句已经做完的指令——否则状态条上
+// 挂着一句永远做不完的话，点不到任何东西，看起来就像按钮坏了。
+const rowsWidened = [
+  { monitor: { status: 'success', enabled: true, interval_minutes: 120, last_success_at: ago(2 * MIN) } },
+  { monitor: { status: 'error', error_code: 'site_challenge', enabled: true, interval_minutes: 120, last_success_at: ago(30 * MIN) } },
+];
+const fleetWidened = describeFleet(rowsWidened, ctx());
+check(fleetWidened.suggestedInterval === null, '间隔已是 120 时不再建议改间隔（也就没有按钮）');
+check(!fleetWidened.action.includes('把间隔调到'), '间隔已是 120 时不再劝用户调间隔');
+check(fleetWidened.action.includes('等网站验证解除'), '间隔已是 120 时说明还能做什么');
+check(fleetWidened.action.includes('120 分钟'), '间隔已是 120 时把当前档位写出来');
+const fleetWidenedLocal = describeFleet(rowsWidened, ctx({ collectorSource: 'local_collector' }));
+check(!fleetWidenedLocal.action.includes('启动本机采集器'), '本机采集器在线时仍不劝它启动');
+check(!fleetWidenedLocal.action.includes('把间隔调到'), '本机采集器路径同样不再重复已做完的指令');
+
 const fleetHealthy = describeFleet([
   { monitor: { status: 'success', enabled: true, last_success_at: ago(2 * MIN) } },
   { monitor: { status: 'success', enabled: true, last_success_at: ago(4 * MIN) } },

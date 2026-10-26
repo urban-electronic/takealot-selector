@@ -536,6 +536,14 @@ export interface FleetView {
 const THROTTLED = new Set(['site_challenge', 'rate_limited', 'http_forbidden']);
 
 /**
+ * 被挡住时建议把间隔拉到的档位（分钟）。
+ *
+ * 与调价页 `AutoPricing` 的间隔下拉（5/10/15/30/60/120）最慢一档一致——
+ * 建议一个下拉里选不到的值，用户照着做都做不到。
+ */
+const THROTTLE_INTERVAL_MINUTES = 120;
+
+/**
  * 这个错误码是不是「被网站挡住」（只能等 / 加长间隔，不能立刻重试）。
  *
  * 后端 `services/buybox_monitor.THROTTLED_CODES` 是同一组码，前端只在这一处判。
@@ -636,13 +644,22 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const reason = dominant && dominant !== 'unknown' ? errorCopy(dominant).title : '采集未取得报价';
   const throttled = dominant ? isThrottled(dominant) : false;
   const interval = Math.max(1, Number(monitors.find(m => m.interval_minutes)?.interval_minutes) || 5);
-  const suggestedInterval = throttled && interval < 120 ? 120 : null;
+  // 「把间隔调到 120 分钟」只在**还能调**的时候说。间隔已经是 120 之后，状态条
+  // 原来还在重复同一句，而按钮靠 suggestedInterval 才出现（此时是 null）——
+  // 用户看到一条永远做不完的指令，点不到任何东西，只会以为按钮坏了。
+  const canWiden = throttled && interval < THROTTLE_INTERVAL_MINUTES;
+  const suggestedInterval = canWiden ? THROTTLE_INTERVAL_MINUTES : null;
 
-  const advice = throttled
-    ? isCloud
-      ? '启动本机采集器，或把间隔调到 120 分钟'
-      : '把间隔调到 120 分钟'
-    : '';
+  const advice = !throttled
+    ? ''
+    : canWiden
+      ? isCloud
+        ? `启动本机采集器，或把间隔调到 ${THROTTLE_INTERVAL_MINUTES} 分钟`
+        : `把间隔调到 ${THROTTLE_INTERVAL_MINUTES} 分钟`
+      : isCloud
+        // 已经是最慢档：能做的只有等，或者换一台机器/在维护工具里人工过验证。
+        ? `间隔已是 ${interval} 分钟（最慢档），等网站验证解除；也可以启动本机采集器`
+        : `间隔已是 ${interval} 分钟（最慢档），等网站验证解除`;
 
   if (running) return none('info', `正在采集 ${running} 个 SKU`, '');
   if (failing && failing === total) {

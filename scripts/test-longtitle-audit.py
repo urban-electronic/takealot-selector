@@ -1,6 +1,6 @@
 """长标题布局 + 焦点圈对比度审计的真实执行入口：本机 Vite + 隔离 fixture + 真实 Chromium。
 
-为什么需要这个文件：`scripts/ui_longtitle_focus_audit.py` 是审计本体——12 个
+为什么需要这个文件：`scripts/ui_longtitle_focus_audit.py` 是审计本体——18 个
 「路由 × 宽度」组合，每组 Tab 最多 60 次逐个量 document.activeElement 的焦点圈
 颜色与背景，按 WCAG 2.1 算比值，<3:1 判失败；同时按**绘制矩形**判文字互相重叠与
 表格单元格越界。但它此前只被 `scripts/test-longtitle-audit-safety.py` 用**假浏览器**

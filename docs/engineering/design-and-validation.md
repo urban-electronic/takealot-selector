@@ -118,7 +118,7 @@ Use existing focused commands as applicable:
 | Shared visual styles | `npm run check:visual` |
 | Browser audit harness | `npm run test:audit-safety` |
 | Contrast / control-size in a real browser | `scripts/test-contrast-audit.py` |
-| Long-title overlap / cell overflow / focus-ring contrast | `scripts/test-longtitle-audit.py` |
+| Long-title overlap / cell overflow / focus-ring contrast (18 route×width) | `scripts/test-longtitle-audit.py` |
 | Layout and overflow in a real browser | `scripts/test-responsive-layout.py` |
 | Frontend HTTP calls (path + verb) | `scripts/test-api-contract.cjs` |
 | Frontend compilation | `npm run build` |
@@ -138,9 +138,20 @@ but measures stub numbers. `scripts/test-contrast-audit.py` is the real run; kee
 it in the gate. The same was true of the long-title / focus-ring audit for a long
 time: `scripts/test-longtitle-audit-safety.py` exercised `ui_longtitle_focus_audit.py`
 with a stub browser that always returned zero overlaps and a 3.1:1 ring, so the
-12 route×width combinations and the ~690 focus-ring samples it is built for had
+route×width combinations and the ~690 focus-ring samples it is built for had
 never been taken. `scripts/test-longtitle-audit.py` is the real run (AUDIT-LONGTITLE-01);
-a safety suite proves the failure paths, it does not prove the page. Collapsed UI must be opened before measuring it — `details`
+a safety suite proves the failure paths, it does not prove the page. Its route list
+is itself part of the coverage: it only held `/products`, `/auto-pricing` and the two
+detail pages while `/inventory` and `/packing` render `name_en` in table cells too —
+the exact shape of the #125 overlap report — even though the shared fixture already
+supplied long names for both (AUDIT-LONGTITLE-02, 12 → 18 combinations).
+A measurement is only a failure when the script can actually see the thing that has
+focus: `input[type=date]` keeps its day/month/year fields and calendar button in a
+shadow tree, so tabbing into them leaves `document.activeElement` on the input while
+`:focus` no longer matches it and Chromium draws the ring on the icon itself. Those
+records are counted in their own "sub-control focus (unmeasurable)" column — not a
+pass, not a failure — and a page whose samples are *all* sub-control focus fails,
+because then nothing was measured (AUDIT-FOCUS-SHADOW-01). Collapsed UI must be opened before measuring it — `details`
 elements such as the per-row decision card render nothing while closed, so a
 fixture without the data behind them (here `rule.plan`) measures an empty box and
 still reports a clean result. This applies to **both** browser suites: the layout
