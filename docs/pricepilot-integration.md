@@ -1800,3 +1800,36 @@ WorkBuddy；基线 `8f3a1df552`。
   调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
   `test-packing-oms.py` 对非 GET 请求一律回假 200（导出类接口的假 200 仍无法区分「声明漏了」
   与「本来就该成功」，要区分得逐条声明写接口并造出真实响应体，超出本轮预算）。
+
+### AUDIT-WRITE-FIXTURE-01 / STORE-SYNC-COPY-01（2026-10-27）
+
+- 优先级 P2；基线远端 main `9e7acd3b29`、后端 build `9e7acd3b2943`（无漂移），自检 37/37 全绿之后主动排查。
+- 复现：
+  ①`scripts/test-packing-oms.py` 的拦截器对**任何非 GET** 一律回 `200 {'ok': true}`（AUDIT-FIXTURE-03
+  只修了「未声明的读接口」，写接口那条捷径留着）。于是两件事永远看不见：页面把写请求打到错路径
+  （后端 404）也照样「成功」；`POST /api/packing/sync-from-products` 的响应被 `Packing.loadProducts()`
+  直接读 `total_products` / `skipped_no_sku` / `duplicate_sku`，回个空壳这三个数全是 `undefined`，
+  「另有 N 条产品缺少 SKU，M 条 SKU 重复」那条告警条（`catalogStats.noSku > 0`）**从未渲染过一次**——
+  而它正是 PACK-DUP-01 修好的重复 SKU 计数的唯一出口。同文件 `DATA` 里还留着一条按 **GET**
+  声明的 `/api/packing/sync-from-products`（`skipped_no_sku: 0`），从来没有被匹配到过，
+  读的人会以为同步响应已经声明好了。
+  ②`src/pages/Stores.tsx` 的多店库存总览对 `import` / `api` 两档同步方式直接渲染
+  「每 N 分钟」：`backend/api/store_routes.py` 只把 `sync_interval_minutes` 校验（>=15）后落库，
+  **没有任何调度器读它**，同一页的表单里也写着「库存自动同步尚未开放」。表格说「每 60 分钟」，
+  表单说「未开放」，同一个页面两套说法。
+- 改动：①写请求改成逐条声明（`WRITES`，键为 `(方法, 路径)`，值是后端的真实响应形状：
+  `page-open`、`sync-from-products`；`POST /api/packing/export` 单独回 xlsx 字节流，
+  因为页面拿 `res.blob()` 落盘）；未声明的写请求与读请求一样记进 `undeclared` 并在收尾判失败；
+  删掉那条按 GET 声明的死条目，注释指向 `WRITES`。新增三条断言钉住「标题显示产品库 N 条」
+  与「告警条同时点名缺 SKU 与重复 SKU」。②`Stores.tsx` 抽出 `syncNote` 逐档说清实际行为
+  （`import`：按导入的文件更新；`api`：仅读商品资料，库存未自动同步），间隔改为
+  「间隔设定 N 分钟，暂不自动执行」；`syncLabel` 的 `api` 档从「API 自动同步」改成「API 读取」。
+- 验证：`test-packing-oms.py` 33→36 检查（写接口全声明后 `undeclared_api` 为空）；
+  `test-store-switcher.cjs` 25→28 断言（新增「不许渲染成『每 N 分钟』」「必须注明暂不自动执行」
+  「API 档必须说清库存未自动同步」三条源码守卫）。反向探针（均已还原）：
+  `skipped_no_sku/duplicate_sku` 改回 0 → 告警条断言转红（`实得 0`）；
+  `Stores.tsx` 单元格改回旧文案 → `test-store-switcher.cjs:105` 转红。
+  全量 selfcheck 37/37 全绿（146.9s）、后端 pytest 全过（未动后端）。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
+  调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
+  `sync_interval_minutes` 这个「只存不用」的字段本身（要不要真接调度属于功能决策，不是文案问题）。

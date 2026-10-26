@@ -82,7 +82,9 @@ mark = data.mark.strip() or data.inbound_no.strip() or 'KPLDJ'
 
 - `scripts/test-packing-oms.py`：9 组断言（原 8 组 + 日期/唛头）。新增
   「空行下拉不能是空的」「唛头自动同入库单号」「日期默认做单那天」三条，
-  320px 不横向溢出仍然通过。
+  320px 不横向溢出仍然通过。**（2026-10-27 起是 10 组：多了一组「装箱库同步统计」，
+  见 AUDIT-WRITE-FIXTURE-01；写接口也不再是「任何非 GET 一律回 `{'ok': true}`」，
+  而是逐条声明响应体。）**
 - `backend/tests/test_packing_export_workflow.py` 新增 `test_mark_falls_back_to_inbound_no_then_kpl_dj`：
   断言 `INH1501522` → `KPLDJ` → 手填 `CK-01` 的优先级，并核对**留档的唛头和印上去的一致**。
 - 后端装箱相关 pytest 全过；`tsc --noEmit` 通过。

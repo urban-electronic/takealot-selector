@@ -10,7 +10,17 @@ const emptyForm = (): StoreForm => ({
   sync_method: 'manual', sync_interval_minutes: 60, allow_negative_inventory_shipments: false,
 });
 
-const syncLabel: Record<string, string> = { manual: '手动维护', import: '文件导入', api: 'API 自动同步' };
+const syncLabel: Record<string, string> = { manual: '手动维护', import: '文件导入', api: 'API 读取' };
+
+// 同步间隔只是一个**保存下来的设定值**：backend/api/store_routes.py 只校验（>=15）
+// 并落库，没有任何调度器读它去跑同步（表单里那句「库存自动同步尚未开放」就是这个意思）。
+// 表格原来对 import/api 直接写「每 N 分钟」，读起来就是「每 N 分钟自动同步一次」，
+// 与表单自相矛盾，所以这里逐档说清实际会发生什么。
+const syncNote: Record<string, string> = {
+  manual: '按操作实时记录',
+  import: '按导入的文件更新',
+  api: '仅读商品资料，库存未自动同步',
+};
 
 export default function Stores({ onStoresChanged }: Props) {
   const [stores, setStores] = useState<Store[]>([]);
@@ -108,7 +118,7 @@ export default function Stores({ onStoresChanged }: Props) {
           return <tr key={store.id} className={store.status !== 'active' ? 'store-paused-row' : ''}>
             <td><strong>{store.name}</strong><small>{store.owner_name || '未设置负责人'} · {store.platform}</small></td>
             <td><span className={store.status === 'active' ? 'store-status active' : 'store-status'}>{store.status === 'active' ? '运营中' : '已暂停'}</span></td>
-            <td>{syncLabel[store.sync_method] || store.sync_method}<small>{store.sync_method === 'manual' ? '按操作实时记录' : `每 ${store.sync_interval_minutes} 分钟`}</small>{store.allow_negative_inventory_shipments && <small className="store-risk-text">允许负库存发货</small>}</td>
+            <td>{syncLabel[store.sync_method] || store.sync_method}<small>{syncNote[store.sync_method] || ''}</small>{store.sync_method !== 'manual' && <small>间隔设定 {store.sync_interval_minutes} 分钟，暂不自动执行</small>}{store.allow_negative_inventory_shipments && <small className="store-risk-text">允许负库存发货</small>}</td>
             <td>{row?.sku_count ?? 0}</td><td>{row?.purchased ?? 0}</td><td>{row?.adjusted ?? 0}</td><td>{row?.shipped ?? 0}</td>
             <td><strong className={(row?.available ?? 0) < 0 ? 'stock-danger' : 'stock-value'}>{row?.available ?? 0}</strong></td>
             <td><strong className={(row?.exception_count ?? 0) ? 'stock-danger' : ''}>{row?.exception_count ?? 0}</strong></td>

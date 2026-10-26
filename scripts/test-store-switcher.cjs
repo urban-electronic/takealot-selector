@@ -97,4 +97,14 @@ check(!appSource.includes('setActiveStore(activeRows[0].id)'),
 check(!appSource.includes('setActiveStoreId(activeRows[0].id)'),
   '不得静默改写 localStorage 中实际生效的店铺 id');
 
+// ---- 同步间隔不许被说成正在执行的计划 ---------------------------------------
+// backend/api/store_routes.py 只把 sync_interval_minutes 校验后存下来，
+// 没有任何调度器读它（库存自动同步尚未开放）。表格里写「每 N 分钟」会被读成
+// 「每 N 分钟自动同步一次」，与同一页表单里的说明自相矛盾。
+const storesSource = fs.readFileSync(path.resolve(__dirname, '../src/pages/Stores.tsx'), 'utf8');
+check(!/`每 \$\{[^}]*sync_interval_minutes[^}]*\} 分钟`/.test(storesSource),
+  '同步间隔不得渲染成「每 N 分钟」（后端没有任何调度器在读它）');
+check(storesSource.includes('暂不自动执行'), '同步间隔必须注明「暂不自动执行」');
+check(storesSource.includes('库存未自动同步'), 'API 读取档必须说清库存未自动同步');
+
 console.log(`test-store-switcher: ${checks} 条断言通过`);

@@ -6,6 +6,11 @@
 
 这条用例钉死「串起来」的那几处：
 
+  0) 写接口的响应体逐条声明（不再「任何非 GET 一律回 {'ok': true}」）：装箱单库同步
+     回来的 `total_products` / `skipped_no_sku` / `duplicate_sku` 页面是直接读的，
+     缺字段时「N 条产品缺少 SKU，M 条 SKU 重复」那条告警条永远不渲染 —— 而它正是
+     重复 SKU 计数的唯一出口。未声明的写请求与读请求一样记进 `undeclared` 并判失败；
+
   1) 只填「箱数 × 每箱件数」，逐箱清单**自动**长出来（2 箱 × 10 件 + 3 箱 × 5 件 = 5 箱），
      不用点按钮，也不用把同一份数量再抄一遍；自动模式下逐箱清单是只读的；
   2) 填 OMS 入库单号后，箱号变成 OMS 的箱唛号（INH1501522-001），
@@ -62,7 +67,9 @@ SHIPMENTS = [dict(id='ship-1', shipment_no='PK-20261022-001', shipment_date='202
 DATA = {
     '/api/stores': [STORE],
     '/api/packing/products': PACKS,
-    '/api/packing/sync-from-products': {'ok': True, 'total_products': len(PACKS), 'skipped_no_sku': 0, 'duplicate_sku': 0},
+    # 注意：/api/packing/sync-from-products 是 POST，响应形状在下面的 WRITES 里。
+    # 这里曾按 GET 声明过一条（skipped_no_sku 填 0），从来没被匹配到过 ——
+    # 读的人会以为同步响应已经声明好了，实际走的是「非 GET 一律 200」那条捷径。
     '/api/inventory': [],
     '/api/inventory/shipments': SHIPMENTS,
     '/api/inventory/adjustments': [],
@@ -105,6 +112,18 @@ def run():
     # 而下面的断言只看「箱数/箱号/日期」这些不依赖那几支接口的东西 —— 于是报告照样
     # 全绿，实际量的是一张缺数据的页面。声明漏了必须点名失败，不能静默降级。
     undeclared = []
+    # 允许的写请求：键是 (方法, 路径)，值就是后端的真实响应形状。
+    # 形状不对（少字段）会让页面读到 undefined 并静默少显示一块 —— 那正是
+    # 「fixture 比后端宽容」的典型形态，所以这里照后端字段逐个写全。
+    WRITES = {
+        ('POST', '/api/buybox/page-open'): {'queued': 0, 'skipped': 0, 'price_changed': False},
+        ('POST', '/api/packing/sync-from-products'): {
+            'ok': True, 'total_products': len(PACKS), 'packing_products': len(PACKS), 'imported': 0,
+            # 故意给非零：缺 SKU / SKU 重复的告警条只有 >0 才渲染，
+            # 全填 0 等于这条分支永远不被看见。
+            'skipped_no_sku': 1, 'duplicate_sku': 1,
+        },
+    }
     # 断言条数自己数，别再手写一个数字 —— 加了两条却忘了改，报告就成了假的。
     # 名字不能叫 checked：下面「入仓模板弹层」那段有个同名 Locator。
     assertions = 0
@@ -124,8 +143,23 @@ def run():
             from urllib.parse import urlsplit, parse_qs
             url = urlsplit(route.request.url)
             if url.path.startswith('/api/'):
+                # 写请求必须逐条声明。以前这里对任何非 GET 一律回 {'ok': true}：
+                # 页面把写请求打到错路径（后端 404）、或后端返回 500，审计都照样
+                # 看到「成功」；而 sync-from-products 的响应被页面直接读
+                # （total_products / skipped_no_sku / duplicate_sku），回个空壳
+                # 会让「N 条产品缺少 SKU」那条告警永远不出现、也从没被断言过。
+                write = (route.request.method, url.path)
+                if write in WRITES:
+                    route.fulfill(json=WRITES[write])
+                    return
+                if write == ('POST', '/api/packing/export'):
+                    # 导出的是一条真实文件流：页面拿 res.blob() 落盘。
+                    route.fulfill(status=200, body=b'PK\x03\x04fixture',
+                                  content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                    return
                 if route.request.method != 'GET':
-                    route.fulfill(status=200, json={'ok': True})
+                    undeclared.append(route.request.method + ' ' + url.path)
+                    route.fulfill(status=404, json={'detail': 'fixture endpoint not declared'})
                     return
                 if url.path == '/api/packing/cartons':
                     qs = parse_qs(url.query)
@@ -145,6 +179,19 @@ def run():
 
         page.goto(BASE + '/packing', wait_until='networkidle')
         page.wait_for_timeout(600)
+
+        # 0) 装箱单库同步回来的统计要真读得到：缺 SKU / SKU 重复的产品没法作为
+        #    独立装箱产品，后端在 sync 响应里报数，页面靠这两个数决定要不要出告警条。
+        #    fixture 以前对写请求一律回 {'ok': true}，这两个数恒为 undefined，
+        #    告警条从未渲染过，这条分支也就从没被验证。
+        hero = page.locator('.packing-hero').inner_text()
+        check(f'产品库 {len(PACKS)} 条' in hero, f'标题应显示产品库 {len(PACKS)} 条，实得 {hero!r}')
+        warn = page.locator('.alert').filter(has_text='缺少 SKU')
+        check(warn.count() == 1, f'缺 SKU/重复 SKU 的告警条应出现一次，实得 {warn.count()}')
+        if warn.count():
+            wtxt = warn.first.inner_text()
+            check('1 条产品缺少 SKU' in wtxt and '1 条 SKU 重复' in wtxt,
+                  f'告警要同时点名缺 SKU 与重复 SKU，实得 {wtxt!r}')
 
         # 勾两个产品：第一个 2 箱 × 10 件，第二个 3 箱 × 5 件
         boxes = page.locator('.packing-table-scroll input[type=checkbox]')
