@@ -13,7 +13,7 @@ from api.store_routes import get_store_id
 from services.operations_planner import plan
 from services.replenishment_economics import logistics, profitable_plan
 from services.shipment_planning import with_shipments
-from services.seller_operations_sync import eligible, status as sync_status
+from services.seller_operations_sync import eligible, eligible_ids, status as sync_status
 
 router = APIRouter(prefix='/api/operations', tags=['operations'])
 
@@ -124,9 +124,9 @@ def recommendations(source, profile, products, saved):
 
 @router.get('/alerts')
 def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
-    saved = profiles(db, store); result = []
+    saved = profiles(db, store); result = []; can_replenish = eligible_ids(db, store)
     for product in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
-        if not eligible(db, store, product): continue
+        if product.id not in can_replenish: continue
         if product.id not in saved: continue
         output = runtime_plan(db, store, product, saved[product.id], purchases_for(db, store, product.id))
         for mode, field in [('air', 'air_quantity'), ('sea', 'sea_quantity')]:
@@ -138,9 +138,9 @@ def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
 
 @router.get('/overview')
 def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
-    saved = profiles(db, store); rows = []
+    saved = profiles(db, store); rows = []; can_replenish = eligible_ids(db, store)
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
-        if not eligible(db, store, p): continue
+        if p.id not in can_replenish: continue
         profile = saved.get(p.id)
         rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
             # 英文标题单独给一份：列表主名是中文，核对规格/对账时仍然要看平台原文。

@@ -50,3 +50,52 @@ def test_split_receipts_cannot_exceed_the_single_purchase_quantity():
         payload['allocations'][1]['quantity']=81
         with pytest.raises(HTTPException):save_profile('p',Profile(**payload),db,'a')
         assert sum(a['quantity']for a in get_profile('p',db,'a')['profile']['allocations'])==100
+
+
+def test_overview_and_alerts_do_not_check_eligibility_once_per_product():
+    """补货列表的 SQL 条数不能随商品数增长（ELIGIBLE-N1）。
+
+    overview/alerts 原来在商品循环里调 eligible()，一个商品一条查询（本地库 329
+    个商品时分别是 318 / 317 条），而这两个接口都是补货页的首屏请求。
+
+    这里用 3 个和 60 个商品各跑一次比条数；同时断言资格判断没被改坏——
+    只有已购买/已上架、或有不含取消的有效采购记录的商品才算可补货。
+    """
+    from sqlalchemy import event
+    from api.operations_routes import overview
+
+    def run(products):
+        engine = create_engine('sqlite://')
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        # 这批商品故意不设 link_status：只有这种商品才会让 eligible() 去查采购记录，
+        # 全设成「已购买」的话旧实现根本不查库，条数对比就成了假绿（本用例第一版
+        # 正是这样通过的，反向探针一跑才发现）。
+        for i in range(products):
+            pid = f'p{i}'
+            db.add(Product(id=pid, store_id='a', product_name=pid))
+            db.add(ProcurementRecord(id=f'rec{i}', store_id='a', product_id=pid, quantity=5, status='in_transit'))
+        # 三种边界：靠链接状态（应算）、已取消采购（不算）、数量 0（不算）
+        db.add(Product(id='bought', store_id='a', product_name='bought', link_status='已购买'))
+        db.add(Product(id='cancelled', store_id='a', product_name='cancelled'))
+        db.add(ProcurementRecord(id='no', store_id='a', product_id='cancelled', quantity=5, status='cancelled'))
+        db.add(Product(id='zero', store_id='a', product_name='zero'))
+        db.add(ProcurementRecord(id='z', store_id='a', product_id='zero', quantity=0, status='in_transit'))
+        db.commit()
+        statements = []
+
+        @event.listens_for(engine, 'before_cursor_execute')
+        def record(conn, cursor, statement, params, context, executemany):
+            statements.append(statement)
+
+        rows = overview(db, 'a')['rows']
+        todo = alerts(db, 'a')
+        db.close()
+        return len(statements), {r['id'] for r in rows}, todo
+
+    few, few_ids, _ = run(3)
+    many, many_ids, many_alerts = run(60)
+    assert len(few_ids) == 4 and len(many_ids) == 61, (len(few_ids), len(many_ids))
+    assert 'p0' in many_ids and 'bought' in many_ids
+    assert 'cancelled' not in many_ids and 'zero' not in many_ids
+    assert many_alerts == [] and many <= few + 2, f'SQL 条数随商品数增长：3 个商品 {few} 条，60 个商品 {many} 条'

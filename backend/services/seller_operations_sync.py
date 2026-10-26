@@ -22,6 +22,23 @@ def eligible(db, store, product):
         ProcurementRecord.product_id == product.id, ProcurementRecord.status != 'cancelled',
         ProcurementRecord.quantity > 0).first() is not None
 
+def eligible_ids(db, store):
+    """一次算出全店可补货的商品 id（ELIGIBLE-N1）。
+
+    eligible() 是单商品判断，放进商品循环里就是 N 条查询：补货总览 318 条、
+    待办 317 条，两个都是补货页的首屏请求，商品数涨上去页面跟着变慢。
+    这里换成两条聚合查询，循环里只做集合判断。
+
+    结果允许包含已归档或其他店铺的商品 id——调用方遍历的本来就是本店未归档的
+    商品，多出来的 id 不会命中，也就不影响判断。
+    """
+    ids = {pid for (pid,) in db.query(Product.id).filter(
+        Product.store_id == store, Product.link_status.in_(('已购买', '已上架'))).all()}
+    ids |= {pid for (pid,) in db.query(ProcurementRecord.product_id).filter(
+        ProcurementRecord.store_id == store, ProcurementRecord.status != 'cancelled',
+        ProcurementRecord.quantity > 0).distinct().all()}
+    return ids
+
 def status(db, store):
     if store != DEFAULT_STORE_ID:
         return {'status': 'unconfigured', 'error': '本店尚未绑定独立卖家接口，不使用其他店铺的数据'}
@@ -94,8 +111,9 @@ def apply_snapshot(db, offers, sales, now=None):
             timestamp = sale_timestamp(s.get('order_date'))
             latest_sale[sku] = max(latest_sale.get(sku, 0), timestamp)
     updated = 0; unmatched = 0
+    can_replenish = eligible_ids(db, DEFAULT_STORE_ID)
     for p in products:
-        if not eligible(db, DEFAULT_STORE_ID, p): continue
+        if p.id not in can_replenish: continue
         skus = sku_sets[p.id]
         if not skus or any(owners[sku] != 1 or len(offer_map[sku]) != 1 for sku in skus):
             unmatched += 1; continue

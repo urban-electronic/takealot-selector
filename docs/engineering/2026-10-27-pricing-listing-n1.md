@@ -65,7 +65,7 @@ for p in db.query(Product).filter(...).all():
   `SQL 条数随商品数增长：3 个商品 12 条，60 个商品 69 条`。恢复后 15 例通过。
 - 调价相关套件 57 例通过（`test_pricing_routes` / `test_buybox_monitor` / `test_collector_bridge`）。
 
-## 同类的下一处（未做）
+## 同类的下一处
 
 补货页的两个接口是同一个病，但走的是另一个 helper（`seller_operations_sync.eligible()`
 逐商品查采购记录）：
@@ -75,5 +75,5 @@ for p in db.query(Product).filter(...).all():
 | `GET /api/operations/overview` | 318 | 66.1ms |
 | `GET /api/operations/alerts` | 317 | 63.5ms |
 
-改法是把 `eligible()` 换成一次查全店的 `eligible_ids()`，供这两处循环使用（`eligible()`
-本身还有另外两个单商品调用点，语义不动）。按「一个 PR 一个缺陷」留到下一轮。
+已按「一个 PR 一个缺陷」单独处理，见 [补货列表逐商品查资格](2026-10-27-eligible-n1.md)
+（318 → 6、317 → 5）。
