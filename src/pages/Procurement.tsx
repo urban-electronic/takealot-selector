@@ -50,6 +50,9 @@ export default function Procurement() {
     try {
       const data = await api.listProcurementRecords();
       setRecords(data);
+      // 读成功就把上一次的失败提示收掉：这条横幅原来只写不清，用户改对之后
+      // 重试成功、列表也刷新了，屏幕上仍挂着「保存失败」。
+      setError('');
     } catch (e: any) {
       setError(e.toString());
     } finally {
@@ -199,6 +202,7 @@ export default function Procurement() {
       const updated = await api.updateProcurementRecord(record.id, { notes: nextNote });
       setRecords(prev => prev.map(row => row.id === record.id ? updated : row));
       setNoteDrafts(prev => { const next = { ...prev }; delete next[record.id]; return next; });
+      setError('');
     } catch (e: any) {
       setError(typeof e === 'string' ? e : e.message || '备注保存失败');
     } finally {
@@ -217,6 +221,7 @@ export default function Procurement() {
     try {
       const updated = await api.updateProcurementRecord(record.id, { status });
       setRecords(prev => prev.map(row => row.id === record.id ? updated : row));
+      setError('');
     } catch (e: any) {
       setError(typeof e === 'string' ? e : e.message || '采购状态更新失败');
     }

@@ -575,6 +575,26 @@ async function fleetScenario(rowsFixture, inspect) {
   }
   check(!status.isThrottled('collector_unavailable'), 'collector_unavailable self-heals, so it is retryable not blocked');
   check(!status.isThrottled(undefined), 'a missing error code is never treated as blocked');
+  // 建议间隔只能从**被挡住的那几行**读。一屏里各 SKU 的间隔本来就可以不同（新行默认
+  // 5 分钟，批量调过的 120 分钟）。原来取的是「第一行有 interval 的」，第一行恰好是
+  // 120 时状态条写「间隔已是 120 分钟（最慢档）」——而被挡住的那行其实还在 5 分钟，
+  // 于是唯一有用的一件事（调长间隔）被说成「已经做完了」，按钮也不出现。
+  {
+    const healthy = { product_id: 'p1', offer_id: 'o1', monitor: { status: 'success', enabled: true, interval_minutes: 120, buybox_price: 100, last_success_at: new Date().toISOString() } };
+    const blockedLow = { product_id: 'p2', offer_id: 'o2', monitor: { status: 'error', enabled: true, error_code: 'site_challenge', interval_minutes: 5 } };
+    const fleet = status.describeFleet([healthy, blockedLow], { now: Date.now() });
+    check(fleet.blocked === 1, 'the throttled row is counted as blocked');
+    check(fleet.suggestedInterval === 120, 'a blocked row still at 5 minutes can still be widened');
+    check(!/已是/.test(fleet.action), 'the bar must not claim the interval is already at its slowest');
+  }
+  // 反过来：被挡住的行都到了最慢档，就不要再劝「把间隔调到 120 分钟」——那条指令
+  // 点下去什么都不会变（FLEET-ADVICE-01 的原意）。
+  {
+    const blocked = (id, minutes) => ({ product_id: id, offer_id: 'o', monitor: { status: 'error', enabled: true, error_code: 'site_challenge', interval_minutes: minutes } });
+    const fleet = status.describeFleet([blocked('a', 120), blocked('b', 240)], { now: Date.now() });
+    check(fleet.suggestedInterval === null, 'nothing to widen when every blocked row is already slow');
+    check(/已是/.test(fleet.action), 'the bar says the interval is already at its slowest');
+  }
   // 失败行的集合与「重试哪些行」必须同源：describeFleet 数出来的行数，
   // 和 retryGroups 交出去的 items 总数，必须永远相等。
   {

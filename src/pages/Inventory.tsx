@@ -68,8 +68,14 @@ export default function Inventory() {
     finally { adjustmentPending.current = false; setSavingAdjustment(false); }
   };
 
+  // 撤回会不会动库存：只有这两种状态扣过库存——confirmed 记在「已发货」，
+  // transit 记在「海外在途」。按钮文案、确认提示、撤回后是否恢复装箱草稿
+  // 都用这一个判据，三处各写一份的话必然漂：原来按钮只认 confirmed，
+  // transit 那行写着「撤回记录」，点下去却把库存退回来、还跳去装箱页恢复草稿。
+  const deductsStock = (status: string) => status === 'confirmed' || status === 'transit';
+
   const withdrawShipment = async (shipment: ShipmentRecord) => {
-    const affectsInventory = shipment.status === 'confirmed' || shipment.status === 'transit';
+    const affectsInventory = deductsStock(shipment.status);
     const prompt = affectsInventory
       ? `确认撤回 ${shipment.shipment_no}？库存会自动返还，并恢复为可修改草稿。`
       : `确认撤回装箱单 ${shipment.shipment_no}？库存不会变化。`;
@@ -179,7 +185,7 @@ export default function Inventory() {
           <td>{row.status !== 'void' ? <input type="checkbox" checked={selectedShipmentIds.includes(row.id)} onChange={e => setSelectedShipmentIds(prev => e.target.checked ? [...prev, row.id] : prev.filter(id => id !== row.id))} /> : null}</td>
           <td className="mono">{row.shipment_no}</td><td>{row.shipment_date}</td><td>{row.total_skus}</td><td>{row.total_quantity}</td><td>{row.shipping || '-'}</td>
           <td><span className={row.status === 'void' ? 'status-void' : 'status-confirmed'}>{row.status === 'transit' ? '已发货 · 海外在途' : row.status === 'confirmed' ? '已发货' : row.status === 'clearance' ? '老库存清理·不扣库存' : row.status === 'exported' ? '仅导出·未扣库存' : '已撤回'}</span></td>
-          <td>{row.status === 'confirmed' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回并修改</button> : row.status !== 'void' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>撤回记录</button> : <span className="muted">{row.void_reason}</span>}</td>
+          <td>{row.status !== 'void' ? <button className="btn btn-sm" onClick={() => withdrawShipment(row)}>{deductsStock(row.status) ? '撤回并修改' : '撤回记录'}</button> : <span className="muted">{row.void_reason}</span>}</td>
         </tr>)}</tbody>
       </table></div></>}
 

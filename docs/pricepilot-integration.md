@@ -1905,3 +1905,37 @@ WorkBuddy；基线 `8f3a1df552`。
 - 详见 `docs/engineering/2026-10-27-pricing-listing-n1.md`、`2026-10-27-eligible-n1.md`、
   `2026-10-27-response-compression-reverted.md`。
 
+### FLEET-INTERVAL-01 / INV-VOID-LABEL-01 / PROC-ERR-STALE-01（2026-10-27，自检轮）
+
+- 优先级 P2；开工时远端 main `47d3cc877f`、后端 build `47d3cc877f07`，两者一致（无部署漂移），
+  全量 selfcheck 37/37、无跳过。三处都是「界面说的和实际做的不是一件事」，全绿状态下看不见，
+  但用户照做就会走错。
+- 复现（①）：`describeFleet` 里 `const interval = monitors.find(m => m.interval_minutes)?.interval_minutes`
+  ——取的是**第一行有间隔的** SKU，而不是被挡住的那几行。一屏里间隔本来就可以不同（新行默认 5 分钟，
+  批量改过的 120）。第一行恰好是 120 时，`canWiden = throttled && interval < 120` 为假，状态条写
+  「间隔已是 120 分钟（最慢档），等网站验证解除」，而被挡住的那行其实还在 5 分钟：结论不成立，
+  唯一有用的动作（调长间隔）也不会以按钮出现。FLEET-ADVICE-01 修的是「已经是 120 还在劝」，这次
+  修的是「它问错了行」。
+- 改动（①）：`blockedRows` 先算成数组（`blocked` 取它的长度），建议间隔改成这几行
+  `interval_minutes` 的**最小值**——只要还有一行低于最慢档就还能调；都到档才算「已是最慢档」。
+- 复现（②）：`Inventory.tsx` 的撤回按钮对 `transit`（已发货 · 海外在途）写「撤回记录」，
+  而 `withdrawShipment` 里 `affectsInventory` 把 `transit` 算作扣过库存：点下去库存会返还、
+  还会跳到装箱页恢复草稿。用户以为只是删一条记录，实际动了库存。
+- 改动（②）：抽 `deductsStock(status)`（`confirmed` / `transit`），按钮文案、确认提示、
+  是否恢复草稿三处共用；`clearance` / `exported` 从来没扣过库存，仍然写「撤回记录」。
+- 复现（③）：`Procurement.tsx` 的页面级错误横幅只写不清——`handleSubmit` 成功路径只做
+  `resetForm() + loadRecords()`，`saveInlineNote` / `changeProcurementStatus` 成功也不清。
+  保存失败后把问题改对、重试成功、列表都刷新了，屏幕上仍挂着上一次的「保存失败」，
+  用户只能靠刷新页面确认到底存进去了没有。
+- 改动（③）：`loadRecords()` 读成功即 `setError('')`（保存成功后本来就会重新读一次列表），
+  两处内联写入的成功分支各补一句。
+- 验证：`test-buybox-status.cjs` 加 5 条断言（混档时仍建议加宽、都到档时不再劝加宽），
+  改前 `a blocked row still at 5 minutes can still be widened` 转红；
+  `test-inventory-actions.cjs` 10→12（fixture 补一张 transit 单和一张 exported 单，
+  断言前者「撤回并修改」、后者「撤回记录」），改回旧文案转红；
+  `test-procurement-identity.cjs` 13→16（失败一次再成功一次，断言红色横幅消失），改前转红。
+  三处探针均已还原；tsc 通过；全量 selfcheck 37/37（153.6s）。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
+  调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
+  `retryFailed(minutes)` 把建议间隔一并写给「非被挡住」的批次（按钮文案说的是整页间隔，
+  语义上分不清是有意还是漏写，改动会动到批量接口的入参，留待确认）。

@@ -13,7 +13,8 @@ const React=require('react');
 const {act}=React;
 const {createRoot}=require('react-dom/client');
 let calls=[],finish;
-const api={getInventory:async()=>[{product_id:'p',sku:'TEST',name:'Test',available:5}],getShipments:async()=>[],getInventoryAdjustments:async()=>[],getOperationLogs:async()=>[],createInventoryAdjustment:body=>{calls.push(body);return new Promise((resolve,reject)=>{finish={resolve,reject};});}};
+const shipment=(id,status)=>({id,shipment_no:id,shipment_date:'2026-10-20',total_skus:1,total_quantity:1,shipping:'海运',status,void_reason:'',lines:[{sku:'TEST',name_zh:'Test',cartons:1,count_per_carton:1,total_quantity:1,domestic_quantity:1,legacy_quantity:0}]});
+const api={getInventory:async()=>[{product_id:'p',sku:'TEST',name:'Test',available:5}],getShipments:async()=>[shipment('S-TRANSIT','transit'),shipment('S-EXPORTED','exported')],getInventoryAdjustments:async()=>[],getOperationLogs:async()=>[],createInventoryAdjustment:body=>{calls.push(body);return new Promise((resolve,reject)=>{finish={resolve,reject};});}};
 const file=path.resolve(__dirname,'../src/pages/Inventory.tsx');
 const compiled=new Module(file,module);compiled.filename=file;compiled.paths=Module._nodeModulePaths(path.dirname(file));
 // 未显式 mock 的相对导入按真实 .ts/.tsx 编译，避免新增一个模块就让整组测试失败。
@@ -48,6 +49,13 @@ const quantity=value=>{const el=document.querySelector('input[placeholder="数�
  await act(async()=>finish.resolve({}));
  assert.equal(calls.length,2,'explicit retry is allowed');
  assert.equal(document.querySelector('input[placeholder="数量"]'),null,'success clears editor');
+ // 撤回按钮的文案必须与它实际做的事一致：confirmed 和 transit 都扣过库存，
+ // 撤回会返还库存并跳去装箱页恢复草稿；原来只认 confirmed，transit 那行写着
+ // 「撤回记录」，用户以为只是删条记录，点下去库存却变了。
+ act(()=>click(button('装箱 / 发货记录')));
+ const rowButton=no=>document.querySelector(`tr:nth-child(${no}) .btn.btn-sm`).textContent;
+ assert.equal(rowButton(1),'撤回并修改','a transit shipment deducts stock, so withdrawing restores it');
+ assert.equal(rowButton(2),'撤回记录','an exported-only shipment never deducted stock');
  act(()=>root.unmount());
- console.log('10 inventory interaction assertions passed');
+ console.log('12 inventory interaction assertions passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

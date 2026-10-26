@@ -619,9 +619,10 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const errored = failedRows.filter(r => !hasUsableQuote(r?.monitor)).map(r => r?.monitor || {});
   const failing = errored.length;
   const refreshing = failedRows.length - failing;
-  const blocked = failedRows.filter(
+  const blockedRows = failedRows.filter(
     r => !hasUsableQuote(r?.monitor) && isThrottled(r?.monitor?.error_code)
-  ).length;
+  );
+  const blocked = blockedRows.length;
   const retryable = failing - blocked;
   const newest = monitors.reduce((max, m) => {
     const at = Date.parse(m.last_success_at || '');
@@ -643,7 +644,13 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
   const reason = dominant && dominant !== 'unknown' ? errorCopy(dominant).title : '采集未取得报价';
   const throttled = dominant ? isThrottled(dominant) : false;
-  const interval = Math.max(1, Number(monitors.find(m => m.interval_minutes)?.interval_minutes) || 5);
+  // 建议间隔只能从**被挡住的那几行**读。一屏里各 SKU 的间隔本来就可以不同（新行默认
+  // 5 分钟，批量改过的 120 分钟），而原来取的是「第一行有 interval 的」：第一行恰好是
+  // 120 时，状态条写「间隔已是 120 分钟（最慢档），等网站验证解除」——被挡住的那行
+  // 其实还在 5 分钟。用户拿到一条不成立的结论，唯一有用的一件事（调长间隔）也不会
+  // 出现在按钮上。取最小值：只要还有一行低于最慢档就还能调；都到档了才算「已是最慢档」。
+  const blockedIntervals = blockedRows.map(r => Math.max(1, Number(r?.monitor?.interval_minutes) || 5));
+  const interval = blockedIntervals.length ? Math.min(...blockedIntervals) : 5;
   // 「把间隔调到 120 分钟」只在**还能调**的时候说。间隔已经是 120 之后，状态条
   // 原来还在重复同一句，而按钮靠 suggestedInterval 才出现（此时是 null）——
   // 用户看到一条永远做不完的指令，点不到任何东西，只会以为按钮坏了。
