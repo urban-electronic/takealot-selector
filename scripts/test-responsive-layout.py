@@ -166,6 +166,25 @@ def main():
                     if modal.evaluate('e=>e.scrollWidth>e.clientWidth+1'):failures.append(f'{width}: packing form content overflows')
                     if args.screenshots and width in (390,1280):page.screenshot(path=str(Path(args.screenshots)/f'packing-edit-{width}.png'))
                     page.get_by_role('button',name='取消',exact=True).click()
+                    # 从选品库导入：筛选行原来是写死两列的 grid（minmax 220 + minmax 160 +
+                    # gap = 388px 下限），而 320px 屏上弹窗内容区只有 246px —— 筛选框和
+                    # 「全部类目」被切掉 140px，弹窗只设了 overflow-y 也没法横向滚。
+                    # 这个弹层从来没被任何宽度量过（审计只开编辑弹层），所以它一直「0 处问题」。
+                    page.get_by_role('button',name='新增产品',exact=True).click()
+                    imp=page.get_by_role('dialog',name='从选品库导入',exact=True)
+                    imp.wait_for()
+                    if imp.evaluate('e=>e.scrollWidth>e.clientWidth+1'):
+                        failures.append(f'{width}: import dialog content overflows ({imp.evaluate("e=>e.scrollWidth")}>{imp.evaluate("e=>e.clientWidth")})')
+                    ib=imp.bounding_box()
+                    if ib['x']<0 or ib['y']<0 or ib['x']+ib['width']>width+1 or ib['y']+ib['height']>height+1:
+                        failures.append(f'{width}: import dialog outside viewport {ib}')
+                    for label in ('导入到装箱单','取消'):
+                        b=imp.get_by_role('button',name=label,exact=True).bounding_box()
+                        if b['x']<0 or b['y']<0 or b['x']+b['width']>width+1 or b['y']+b['height']>height+1:
+                            failures.append(f'{width}: import dialog action {label} clipped')
+                    if args.screenshots and width in (390,1280):page.screenshot(path=str(Path(args.screenshots)/f'packing-import-{width}.png'))
+                    page.keyboard.press('Escape')
+                    if imp.count():failures.append(f'{width}: import dialog Escape failed')
                     if (width,height)==(390,680):
                         page.locator('.packing-table-scroll input[type=checkbox]').first.check()
                         page.locator('.primary-nav').get_by_role('link',name='库存',exact=True).click()

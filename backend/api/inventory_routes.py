@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +26,17 @@ from api.store_routes import get_store_id
 router = APIRouter(prefix="/api/inventory", tags=["inventory"])
 
 from services.shipment_reconciliation import ReconcileIn, preview as preview_manifest, apply as apply_manifest
+
+
+def today_local() -> str:
+    """业务时区（UTC+8）的今天，用于 `occurred_at` 这种「用户看得见的日期」。
+
+    `occurred_at` 直接显示在库存调整列表里（Inventory.tsx 的「日期」列），
+    拿容器日期去填就是错的：容器是 UTC，北京时间 00:00–08:00 的操作会被记成
+    前一天，跨天盘点/撤销的对账日期整体错位一天。与 procurement 的
+    `_now_str()`、前端的 `todayLocal()` 同一个口径，不依赖容器 TZ 配置。
+    """
+    return datetime.now(timezone(timedelta(hours=8))).date().isoformat()
 
 
 @router.post('/reconciliation/preview')
@@ -239,7 +251,7 @@ def create_adjustment(data: AdjustmentIn, db: Session = Depends(get_db), store_i
         quantity_delta=data.quantity_delta,
         reason=data.reason.strip() or "人工调整",
         notes=data.notes.strip(),
-        occurred_at=data.occurred_at or dt.date.today().isoformat(),
+        occurred_at=data.occurred_at or today_local(),
     )
     db.add(row)
     record_operation(db, store_id, "inventory", row.id, "adjust", f"{sku} 库存调整 {data.quantity_delta:+d}", {
@@ -276,7 +288,7 @@ def reverse_adjustment(adjustment_id: str, db: Session = Depends(get_db), store_
     reversal = InventoryAdjustment(
         id=str(uuid.uuid4()), store_id=store_id, sku=original.sku, quantity_delta=reversal_delta,
         reason="撤销库存调整", notes=f"撤销记录 {original.id}",
-        occurred_at=dt.date.today().isoformat(),
+        occurred_at=today_local(),
     )
     db.add(reversal)
     db.flush()

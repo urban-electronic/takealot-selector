@@ -22,10 +22,19 @@ const file = path.resolve(__dirname, '../src/pages/Packing.tsx');
 
 let catalog = [];
 let packingReads = 0;
+// 「从选品库导入」弹层读的就是 api.getProducts。默认空，用例里按需改：
+// 读失败 / 有候选产品 / 导入结果的三档计数都要能分别构造出来。
+let importCatalog = [];
+let importReadFails = false;
+let importResult = { ok: true, imported: 0, skipped: 0, failed: [], image_failed: [] };
+let importThrows = false;
 const writes = [];
 const exported = [];
 const api = {
-  getProducts: async () => [],
+  getProducts: async () => {
+    if (importReadFails) throw new Error('HTTP 500');
+    return importCatalog;
+  },
   getImageUrl: (x) => x,
   getProduct: async () => ({}),
 };
@@ -36,7 +45,10 @@ const remote = {
   upsertPackingProduct: async () => { writes.push('upsert'); return { ok: true }; },
   deletePackingProduct: async () => { writes.push('delete'); return { ok: true }; },
   uploadPackingImage: async () => { writes.push('upload'); return { ok: true }; },
-  importFromProducts: async () => ({ ok: true, imported: 0, skipped: 0, failed: [] }),
+  importFromProducts: async () => {
+    if (importThrows) throw new Error('网络中断');
+    return importResult;
+  },
   syncPackingImagesFromProducts: async () => ({ ok: true, updated: 0, total_pending: 0, failed: [] }),
   syncPackingVariantsFromTakealot: async () => ({ ok: true, groups_checked: 0, matched: 0, images: 0, unresolved: [] }),
   exportPacking: async (payload) => { exported.push(payload); return { ok: true }; },
@@ -200,6 +212,72 @@ const root = createRoot(host);
   await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' })); });
   check(!host.querySelector('[aria-label="编辑装箱产品"]'), 'Escape closes the edit dialog');
   check(document.body.style.overflow !== 'hidden', 'closing the edit dialog restores scrolling');
+
+  // ---- 从选品库导入：读失败 ≠ 产品库是空的；失败提示要写在弹层里 ----------------
+  // 两个真实的坑：
+  //   a) 读 /api/products 失败时 catch 里 setImportResults([])，弹层照样显示
+  //      「未找到匹配的选品产品」——用户以为选品库空了，转去别处找产品；
+  //   b) 导入失败写的是页面顶部的 error，而弹层还开着，那条提示在遮罩后面，
+  //      用户看到的就是「点了没反应」。
+  const importBtn = [...host.querySelectorAll('button')].find(b => b.textContent.trim() === '新增产品');
+  check(!!importBtn, 'the packing page has a 「新增产品」 entry point');
+  const openImport = async () => {
+    await act(async () => { importBtn.click(); await Promise.resolve(); await Promise.resolve(); });
+    return host.querySelector('[aria-label="从选品库导入"]');
+  };
+  const escKey = async () => act(async () => {
+    document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }));
+  });
+
+  importReadFails = true;
+  let imp = await openImport();
+  check(!!imp, '「新增产品」 opens the import dialog');
+  check(!!imp && imp.textContent.includes('选品库读取失败'),
+    `a failed read must be named, got ${imp && imp.textContent.slice(0, 80)}`);
+  check(!!imp && !imp.textContent.includes('未找到匹配的选品产品'),
+    'a failed read must not be presented as an empty catalog');
+  check(!!imp && [...imp.querySelectorAll('button')].some(b => b.textContent.trim() === '重试'),
+    'a failed read offers a retry');
+  check(document.body.style.overflow === 'hidden', 'the import dialog locks background scrolling');
+  await escKey();
+  check(!host.querySelector('[aria-label="从选品库导入"]'), 'Escape closes the import dialog');
+  check(document.body.style.overflow !== 'hidden', 'closing the import dialog restores scrolling');
+
+  importReadFails = false;
+  importCatalog = [{ id: 'np1', sku: 'NEW-1', product_name: 'New bag', chinese_product_name: '新包', fee_category: '包袋', shipping_method: '' }];
+  imp = await openImport();
+  check(!!imp && imp.textContent.includes('NEW-1'), 'the dialog lists catalog candidates');
+  const candidate = imp && [...imp.querySelectorAll('input[type=checkbox]')][0];
+  check(!!candidate && !candidate.disabled, 'a candidate with an unused SKU is selectable');
+  await act(async () => { candidate.click(); await Promise.resolve(); });
+
+  // 导入失败：弹层不关，错误必须出现在弹层内部
+  importThrows = true;
+  const importSubmit = [...imp.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('导入到装箱单'));
+  await act(async () => { importSubmit.click(); await Promise.resolve(); await Promise.resolve(); });
+  imp = host.querySelector('[aria-label="从选品库导入"]');
+  check(!!imp, 'a failed import keeps the dialog open so the selection is not lost');
+  const inlineError = imp && imp.querySelector('.alert-error');
+  check(!!inlineError && inlineError.textContent.includes('导入失败'),
+    `the import error must be shown inside the dialog, got ${inlineError && inlineError.textContent}`);
+  check(!!inlineError && inlineError.textContent.includes('网络中断'),
+    'the import error must carry the reason');
+
+  // 导入成功但部分产品缺图 / 部分没导进来：三档计数要分开说，不能混成「失败 N 条」
+  importThrows = false;
+  importResult = {
+    ok: true, imported: 2, skipped: 1,
+    failed: [{ sku: 'EMPTY', reason: 'SKU 为空，无法作为装箱单主键' }],
+    image_failed: [{ sku: 'NEW-1', reason: '图片抓取失败：CDN 403' }],
+  };
+  await act(async () => { importSubmit.click(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  check(!host.querySelector('[aria-label="从选品库导入"]'), 'a successful import closes the dialog');
+  const done = host.textContent.replace(/\s+/g, ' ');
+  check(done.includes('已导入但图片没抓到') && done.includes('NEW-1'),
+    'an image failure must be described as "already imported", naming the SKU');
+  check(done.includes('没有导入') && done.includes('EMPTY'),
+    'a real import failure must be described separately, naming the SKU');
+  check(!/失败 1 条/.test(done), 'the old catch-all 「失败 N 条」 wording must be gone');
 
   // 导出 payload：默认值必须原样进 items 与 cartons（后端拿它生成装箱单与箱唛）
   const exportBtn = host.querySelector('.packing-export-btn');

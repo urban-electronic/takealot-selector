@@ -260,17 +260,34 @@ export default function Packing() {
   const [deleteSku, setDeleteSku] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ sku: string; x: number; y: number } | null>(null);
 
-  // 三个弹层都写了 aria-modal="true"，那就得能被 Esc 关掉、关掉之前背后不滚动 ——
-  // 产品列表、补货页的弹层都是这么做的，这里一个都没做：键盘用户关不掉，
-  // 窄屏上手指划的其实是背后的装箱表。按「最上面那层」关：确认删除 > 编辑产品 > 查箱子。
-  const openDialog = deleteSku ? 'delete' : editSku ? 'edit' : cartonQueryOpen ? 'query' : '';
+  // 从选品库导入弹层
+  const [importOpen, setImportOpen] = useState(false);
+  const [importSearch, setImportSearch] = useState('');
+  const [importCategory, setImportCategory] = useState('');
+  const [importResults, setImportResults] = useState<Product[]>([]);
+  const [importSearching, setImportSearching] = useState(false);
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
+  const [importing, setImporting] = useState(false);
+  // 弹层里自己的两条提示。页面顶部的 error 在遮罩后面，弹层开着时根本看不见 ——
+  // 导入失败原来是 setError，用户看到的就是「点了没反应，弹层还在」。
+  const [importError, setImportError] = useState('');
+  // 读选品库失败 ≠ 产品库是空的。原来 catch 里 setImportResults([])，
+  // 弹层照常显示「未找到匹配的选品产品」，用户只能去别处翻。
+  const [importReadError, setImportReadError] = useState('');
+
+  // 四个弹层都写了 aria-modal="true"（导入那个原来连 role 都没有），那就得能被 Esc
+  // 关掉、关掉之前背后不滚动 —— 产品列表、补货页的弹层都是这么做的，这里一个都没做：
+  // 键盘用户关不掉，窄屏上手指划的其实是背后的装箱表。
+  // 按「最上面那层」关：确认删除 > 编辑产品 > 查箱子 > 从选品库导入。
+  const openDialog = deleteSku ? 'delete' : editSku ? 'edit' : cartonQueryOpen ? 'query' : importOpen ? 'import' : '';
   useEffect(() => {
     if (!openDialog) return;
     const close = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (openDialog === 'delete') setDeleteSku(null);
       else if (openDialog === 'edit') setEditSku(null);
-      else setCartonQueryOpen(false);
+      else if (openDialog === 'query') setCartonQueryOpen(false);
+      else setImportOpen(false);
     };
     const previous = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -280,15 +297,6 @@ export default function Packing() {
       document.removeEventListener('keydown', close);
     };
   }, [openDialog]);
-
-  // 从选品库导入弹层
-  const [importOpen, setImportOpen] = useState(false);
-  const [importSearch, setImportSearch] = useState('');
-  const [importCategory, setImportCategory] = useState('');
-  const [importResults, setImportResults] = useState<Product[]>([]);
-  const [importSearching, setImportSearching] = useState(false);
-  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
-  const [importing, setImporting] = useState(false);
 
   // 按 SKU 从选品库匹配图片
   const [syncingImages, setSyncingImages] = useState(false);
@@ -410,22 +418,26 @@ export default function Packing() {
   }, [loading, urlImportSkus, products, searchParams, setSearchParams]);
 
   // 打开弹层即加载完整选品库，搜索和类目在前端筛选，避免遗漏未被搜索到的类目。
+  const loadImportCandidates = useCallback(async () => {
+    setImportSearching(true);
+    setImportReadError('');
+    try {
+      const results = await api.getProducts();
+      setImportResults(results || []);
+    } catch (e: any) {
+      // 读失败必须说出来：以前这里吞掉异常，弹层照样显示「未找到匹配的选品产品」，
+      // 用户会以为选品库是空的，转头去别处找产品。
+      setImportResults([]);
+      setImportReadError(`选品库读取失败：${typeof e === 'string' ? e : e?.message || '未知错误'}。这不是「产品库为空」，请重试。`);
+    } finally {
+      setImportSearching(false);
+    }
+  }, [api]);
+
   useEffect(() => {
     if (!importOpen) return;
-    let cancelled = false;
-    (async () => {
-      setImportSearching(true);
-      try {
-        const results = await api.getProducts();
-        if (!cancelled) setImportResults(results || []);
-      } catch {
-        if (!cancelled) setImportResults([]);
-      } finally {
-        if (!cancelled) setImportSearching(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [api, importOpen]);
+    void loadImportCandidates();
+  }, [importOpen, loadImportCandidates]);
 
   const importCategories = useMemo(() => Array.from(new Set(
     importResults.map(p => p.fee_category).filter((v): v is string => Boolean(v)),
@@ -1012,23 +1024,48 @@ export default function Packing() {
     } finally { setSyncingVariants(false); }
   };
 
+  // 导入结果必须分三档说清楚，因为它们要做的事完全不同：
+  //   - 新增/跳过：产品在库里了，什么都不用做；
+  //   - 图片没抓到：**产品已经导入了**，只是缺图，去装箱单库手动上传；
+  //   - 失败：产品真的没进来，要处理（比如 SKU 为空）。
+  // 原来只有一句「新增 N 条，跳过 M 条，失败 K 条」，把后两档混成一个数字，
+  // 用户看到「失败 1 条」会以为那条没导入，重新导一次又被算成「跳过 1 条」。
+  const describeImportResult = (res: {
+    imported: number; skipped: number;
+    failed?: Array<{ sku: string; reason: string }>;
+    image_failed?: Array<{ sku: string; reason: string }>;
+  }) => {
+    const label = (row: { sku: string }) => row.sku || '（无 SKU）';
+    const brief = (rows: Array<{ sku: string; reason: string }>) =>
+      rows.slice(0, 3).map(r => `${label(r)}:${r.reason}`).join('；') + (rows.length > 3 ? '…' : '');
+    const imageFailed = res.image_failed || [];
+    const failed = res.failed || [];
+    return `导入完成：新增 ${res.imported} 条，跳过 ${res.skipped} 条（SKU 已存在）`
+      + (imageFailed.length
+        ? `；${imageFailed.length} 条已导入但图片没抓到（可在装箱单库里手动上传）：${brief(imageFailed)}`
+        : '')
+      + (failed.length ? `；${failed.length} 条没有导入：${brief(failed)}` : '');
+  };
+
   // 从选品库导入执行
   const confirmImport = async () => {
     const ids = Array.from(importSelected);
     if (ids.length === 0) {
-      setError('请先勾选要导入的选品产品');
+      setImportError('请先勾选要导入的选品产品');
       return;
     }
     setImporting(true);
+    setImportError('');
     setError('');
     try {
       const res = await importFromProducts(ids);
       await loadProducts();
-      setMsg(`导入完成：新增 ${res.imported} 条，跳过 ${res.skipped} 条${res.failed.length ? `，失败 ${res.failed.length} 条` : ''}`);
+      setMsg(describeImportResult(res));
       setImportSelected(new Set());
       setImportOpen(false);
     } catch (e: any) {
-      setError(`导入失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
+      // 弹层还开着，页面顶部的 error 在遮罩后面，写在那里等于没有提示。
+      setImportError(`导入失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
       setImporting(false);
     }
@@ -1052,7 +1089,7 @@ export default function Packing() {
           </span>
         </div>
         <div className="packing-hero-actions">
-          <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); }}>
+          <button className="btn btn-outline" onClick={() => { setImportOpen(true); setImportSearch(''); setImportCategory(''); setImportError(''); }}>
             新增产品
           </button>
           <button className="btn btn-outline" onClick={() => openErpTemplate()}>
@@ -1681,12 +1718,14 @@ export default function Packing() {
       {/* 从选品库导入弹层 */}
       {importOpen && (
         <div className="packing-modal-mask">
-          <div className="packing-modal" style={{ maxWidth: 720 }}>
+          <div className="packing-modal packing-import-modal" role="dialog" aria-modal="true" aria-label="从选品库导入" style={{ maxWidth: 720 }}>
             <h3 style={{ margin: '0 0 12px' }}>从选品库导入</h3>
             <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-subtle)' }}>
               勾选选品产品后导入装箱单库（SKU 已存在则自动跳过，不会覆盖已有编辑；图片自动抓取转存）。
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(160px, 240px)', gap: 8, marginBottom: 10 }}>
+            {/* 筛选行在窄屏必须换行：两个下限加起来 388px，320px 的弹窗内容区只有
+                246px，不换行就横向溢出 140 多像素（筛选框和「全部类目」都被切掉）。 */}
+            <div className="packing-import-filters">
               <input
                 type="text"
                 placeholder="搜索 SKU / 中文品名 / 英文品名 / TSIN / 类目"
@@ -1700,17 +1739,25 @@ export default function Packing() {
                 {importCategories.map(category => <option key={category} value={category}>{category}</option>)}
               </select>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: 'var(--text-muted)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 13, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
               <span>产品库 {importResults.length} 条 · 当前结果 {filteredImportResults.length} 条 · 可导入 {selectableImportResults.length} 条</span>
               <button className="btn btn-outline" style={{ marginLeft: 'auto', padding: '3px 9px' }} disabled={selectableImportResults.length === 0} onClick={() => {
                 setImportSelected(prev => new Set([...prev, ...selectableImportResults.map(p => String(p.id))]));
               }}>选择当前全部</button>
             </div>
+            {importReadError && (
+              <div className="alert alert-error" style={{ marginBottom: 8 }}>
+                {importReadError}
+                <button className="btn btn-outline" style={{ marginLeft: 8, padding: '3px 9px' }} disabled={importSearching} onClick={() => void loadImportCandidates()}>重试</button>
+              </div>
+            )}
             {importSearching && <div style={{ fontSize: 13, color: 'var(--text-subtle)', marginBottom: 8 }}>正在加载完整产品库...</div>}
             {!importSearching && filteredImportResults.length === 0 ? (
-              <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 20 }}>未找到匹配的选品产品</div>
+              <div style={{ textAlign: 'center', color: 'var(--text-subtle)', padding: 20 }}>
+                {importReadError ? '选品库没有读出来，先重试（不是「没有匹配的产品」）' : '未找到匹配的选品产品'}
+              </div>
             ) : (
-              <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: 4 }}>
+              <div className="packing-import-table" style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--color-border)', borderRadius: 4 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--color-border)', textAlign: 'left' }}>
@@ -1754,7 +1801,8 @@ export default function Packing() {
                 </table>
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+            {importError && <div className="alert alert-error" style={{ marginTop: 12 }} role="alert">{importError}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 13, color: 'var(--text-subtle)', marginRight: 'auto', alignSelf: 'center' }}>
                 已选 {importSelected.size} 项
               </span>

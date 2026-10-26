@@ -45,16 +45,23 @@ import { todayLocal } from '../utils/datetime';   // YYYY-MM-DD，Asia/Shanghai
 
 ## 4. 服务端要落「用户看得见的日期」时，显式写 UTC+8
 
-`procurement_routes._now_str()` 是唯一一处：`recorded_at` 是给用户看的采购日期，
-前端取前 10 位当日期显示，库存对账还拿它做字符串比较。
+两处（都是直接显示给用户的业务日期）：
+
+| 位置 | 字段 | 前端怎么用 |
+| --- | --- | --- |
+| `procurement_routes._now_str()` | `recorded_at` | 取前 10 位当采购日期显示，库存对账拿它做字符串比较 |
+| `inventory_routes.today_local()` | `occurred_at`（人工调整 / 撤销调整） | 库存调整列表的「日期」列 |
 
 ```python
-datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")  # _now_str
+datetime.now(timezone(timedelta(hours=8))).date().isoformat()             # today_local
 ```
 
-容器时区是 UTC，裸 `datetime.now()` 会让北京时间 00:00–08:00 的记录写成前一天。
-`backend/tests/test_procurement_recorded_at.py` 同时钉住「偏差 < 60 秒」和
-「函数体里不许出现裸 `datetime.now()`」——开发机本身是东八区，只看时间差抓不到。
+容器时区是 UTC，裸 `datetime.now()` / `date.today()` 会让北京时间 00:00–08:00 的记录
+写成前一天。`test_procurement_recorded_at.py` 与 `test_inventory_occurred_at.py` 都同时钉住
+「与北京时间的偏差」和「实现里不许出现裸 `datetime.now()` / `date.today()`」——
+开发机本身是东八区，只看时间差抓不到，撤回修复也不会转红（INV-DATE-01 就是这么漏的：
+采购那边修了，库存这边漏到 2026-10-26）。
 
 ## 5. 南非时间只用于调价
 

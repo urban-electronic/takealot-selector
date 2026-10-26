@@ -1662,3 +1662,34 @@ WorkBuddy；基线 `8f3a1df552`。
 - 未做：`leadtimeDays` 只采集与展示、不参与决策——缺「本店自己的配送时效」这个数，硬写推断
   规则只会变成新的误判；`takealot_buybox` 按 `fastest` → `best_price` 找卡位，而 Buybox 归属
   是现货最低价，改它要回答「守最快卡卖高价 vs 压到最低价抢 Buybox」，属业务取舍，留给人决定。
+
+### PACK-IMPORT-MODAL-01 / PACK-IMPORT-COUNT-01 / INV-DATE-01（2026-10-26）
+
+- 优先级 P1；本轮自检全绿后主动排查，基线 `1ff037f68258`。
+- 复现（四处都在「界面说了算、但其实说错了」这一类）：
+  ①`Packing` 的「从选品库导入」弹层筛选行写死 `minmax(220px) + minmax(160px)`（下限 388px），
+  320px 屏上弹层内容区只有 246px，实测内容宽 406px、被切掉 112px，且弹层只设了
+  `overflow-y` 没法横向滚；这个弹层从来没被任何宽度量过（版式审计只开编辑弹层）；
+  ②同一个弹层读 `/api/products` 失败时 `catch { setImportResults([]) }`，界面照常显示
+  「未找到匹配的选品产品」——读失败被讲成「产品库是空的」；导入失败写的是页面顶部的
+  `error`，而弹层还开着，提示在遮罩后面，用户看到的是「点了没反应」；它也是本页唯一
+  没有 `role="dialog"`、Esc 关不掉的弹层（其余三个 PACK-MODAL-01 已修）；
+  ③`import_from_products` 把「产品已导入、只是图片没抓到」记进 `failed`，空 SKU 又同时
+  `skipped += 1` + `failed.append` —— 一个产品被报成「跳过 1 条、失败 1 条」，而
+  「失败 1 条」会让用户重导一次、再被算成「跳过 1 条」；失败原因（`sku:reason`）一个字都不显示；
+  ④`create_adjustment` / `reverse_adjustment` 的 `occurred_at` 用 `dt.date.today()`（容器 UTC），
+  北京时间 00:00–08:00 的调整会被记成前一天 —— 与采购 `recorded_at`（PROC-TIME-01）同一个坑，
+  当时只修了采购那边；撤销记录没有前端传日期，一直吃这个默认值。
+- 改动：①`packing-import-filters` 抽成 CSS 类，≤480px 单列，产品表加横向滚动容器；
+  ②新增 `importReadError`（读失败点名 + 重试按钮）与 `importError`（行内提示），
+  弹层补 `role="dialog" aria-modal`，纳入 `openDialog` 的 Esc/滚动锁；
+  ③后端把三个计数拆成互斥的 `imported/skipped/failed/image_failed`，空 SKU 只记 failed，
+  前端 `describeImportResult()` 分三档说清（已导入但缺图 / 没有导入 / 跳过），并点名 SKU 与原因；
+  ④新增 `inventory_routes.today_local()`（显式 UTC+8），两处 `occurred_at` 改用它。
+- 验证：`test-packing-display.cjs` 40→62 断言（读失败文案、行内错误、三档计数各有断言）；
+  新增 `backend/tests/test_packing_import_counts.py`（4 例）与 `test_inventory_occurred_at.py`（4 例）；
+  版式审计在 `/packing` 三档宽度新增「导入弹层不溢出 / 不出视口 / 按钮不被裁 / Esc 可关」。
+  反向探针：恢复两列 grid → 审计 `390/320: import dialog content overflows (406>364 / 406>294)` 退出 1；
+  恢复旧的计数与文案 → 对应用例 2 红；改回 `dt.date.today()` → 实现守卫 1 红（均已还原）。
+- 未做：`ExportIn.shipping` 默认值仍是 `'空'`（前端已强制选空运/海运，只有直接调 API 才会吃到；
+  改成 `''` 会让历史调用落一个空白的 G2，属留档口径，留给人决定）。

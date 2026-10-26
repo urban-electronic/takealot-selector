@@ -645,9 +645,18 @@ def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str)
 def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     """选品 products 批量导入装箱单库（幂等：SKU 已存在则跳过，不覆盖云端已有编辑）。
     字段映射 + Takealot 图片自动抓取转存 SHA256；图片失败不阻断导入。
+
+    返回三个**互斥**的计数，前端据此给三句不同的话：
+      - `imported` / `skipped`：产品在库里了（新增 / 已存在）；
+      - `failed`：真的没导进来（SKU 为空、选品产品不存在）；
+      - `image_failed`：产品已经导入，只是图片没抓到，要手动补图。
+    `image_failed` 原来混在 `failed` 里，用户看到「失败 1 条」会以为那条没进来，
+    再导一次又被算成「跳过 1 条」；空 SKU 原来同时 `skipped += 1` 和进 `failed`，
+    一个产品被报成「跳过 1 条、失败 1 条」。
     """
     imported = skipped = 0
     failed = []
+    image_failed = []
     for pid in data.product_ids:
         prod = db.query(Product).filter(Product.id == pid, Product.store_id == store_id, Product.is_archived == False).first()
         if prod is None:
@@ -657,8 +666,8 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
         name_zh = (prod.chinese_product_name or '').strip()
         name_en = (prod.product_name or '').strip()
         if not sku:
-            skipped += 1
-            failed.append({'sku': sku, 'reason': 'SKU 为空'})
+            # 只有「没导入」这一种结果，不能再同时算一次 skipped。
+            failed.append({'sku': '', 'reason': 'SKU 为空，无法作为装箱单主键'})
             continue
         if _find(db, store_id, sku):
             skipped += 1
@@ -683,12 +692,13 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
             try:
                 p.image_file = _fetch_takealot_image(image_url)
             except Exception as e:
+                # 产品照样入库，只是缺图 —— 不能记进 failed，否则用户会以为没导进来。
                 p.image_file = ''
-                failed.append({'sku': sku, 'reason': f'图片抓取失败：{e}'})
+                image_failed.append({'sku': sku, 'reason': f'图片抓取失败：{e}'})
         db.add(p)
         imported += 1
     db.commit()
-    return {'ok': True, 'imported': imported, 'skipped': skipped, 'failed': failed}
+    return {'ok': True, 'imported': imported, 'skipped': skipped, 'failed': failed, 'image_failed': image_failed}
 
 
 # ---- 4.6 POST /api/packing/sync-images-from-products（按 SKU 从选品库匹配图片） ----

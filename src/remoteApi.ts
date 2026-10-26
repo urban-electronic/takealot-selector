@@ -516,8 +516,16 @@ export const uploadPackingImage = (sku: string, dataBase64: string, remove = fal
     body: JSON.stringify({ sku, data: dataBase64, remove }),
   });
 
-export const importFromProducts = (productIds: string[]): Promise<{ ok: boolean; imported: number; skipped: number; failed: Array<{ sku: string; reason: string }> }> =>
-  request<{ ok: boolean; imported: number; skipped: number; failed: Array<{ sku: string; reason: string }> }>('/api/packing/import-from-products', {
+type PackingImportResult = {
+  ok: boolean; imported: number; skipped: number;
+  /** 真的没导进来（如 SKU 为空）。 */
+  failed: Array<{ sku: string; reason: string }>;
+  /** 产品已导入、只是图片没抓到 —— 和 failed 分开，否则用户会重复导入。 */
+  image_failed: Array<{ sku: string; reason: string }>;
+};
+
+export const importFromProducts = (productIds: string[]): Promise<PackingImportResult> =>
+  request<PackingImportResult>('/api/packing/import-from-products', {
     method: 'POST',
     body: JSON.stringify({ product_ids: productIds }),
   });

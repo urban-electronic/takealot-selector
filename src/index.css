@@ -1659,6 +1659,23 @@ table tbody tr:hover {
   overflow-y: auto;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
 }
+
+/* 从选品库导入：搜索框 + 类目下拉。两个下限加起来 388px，而 320px 屏上
+ * 弹窗内容区只有 246px —— 原来写死 minmax(220px) + minmax(160px)，筛选框
+ * 和「全部类目」被切掉一半，还没法横向滚（弹窗只设了 overflow-y）。
+ * 窄屏必须改成单列，让两行各自占满。 */
+.packing-import-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 240px);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.packing-import-filters select { width: 100%; box-sizing: border-box; }
+@media (max-width: 480px) {
+  .packing-import-filters { grid-template-columns: 1fr; }
+  /* 5 列的产品表格同理：窄屏给横向滚动，别把「运输方式」列裁掉。 */
+  .packing-import-table { overflow-x: auto; }
+}
 .packing-modal label {
   display: block;
   font-size: 12px;
