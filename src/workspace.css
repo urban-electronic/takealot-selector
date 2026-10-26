@@ -26,7 +26,7 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .container > .operations-note { padding: 0 0 16px; color: var(--text-muted); }
 
 /* Navigation never compresses labels into vertical text. */
-.app-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 20px; height: 68px; padding-inline: 24px; }
+.app-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 20px; height: var(--app-header-h); padding-inline: 24px; }
 .app-brand, .header-tools { min-width: 0; }
 .app-brand h1 { font-size: 16px; }
 .app-header .primary-nav { min-width: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
@@ -39,8 +39,7 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .create-eyebrow { color: #3a5a8c; }
 .create-flow-chip { color: #52657f; background: #f4f7fb; border-color: var(--surface-border); box-shadow: none; }
 .container table thead th,
-.packing-table-scroll .product-table thead th,
-.operations-workspace .data-table th { background: var(--table-head-bg); color: var(--table-head-fg); font-weight: 600; }
+.packing-table-scroll .product-table thead th { background: var(--table-head-bg); color: var(--table-head-fg); font-weight: 600; }
 .container table td { line-height: 1.55; }
 .container :is(.card-title, .dashboard-panel-title h2, .store-editor-title h2, .store-table-title h2) { font-size: 17px; line-height: 1.45; }
 .btn:focus-visible, .price-refresh-button:focus-visible, .price-refresh-status:focus-visible { outline-color: #5182ce; }
@@ -57,8 +56,10 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 }
 :is(.dashboard-heading, .inventory-heading, .stores-heading, .create-page-heading, .page-heading) p { color: var(--text-muted); font-size: 13px; margin: 6px 0 0; line-height: 1.65; }
 .page-actions, .packing-hero-actions { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 0; }
-.btn, .operations-workspace .btn { border-radius: var(--radius-control); white-space: nowrap; line-height: 1.45; min-height: 36px; padding: 8px 14px; font-size: 13px; }
-.btn-sm, .operations-workspace .btn-sm { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+/* 按钮的尺寸/圆角/字号由下面的「视觉统一层 v2」统一给，这里只留它没管的换行规则。
+   注意 .operations-workspace .btn 这个选择器特异性更高，之前它把 operations 页面的
+   圆角(9px)/内边距/字号(13px) 又拉回一套，和别处对不上——v2 里已经把它并进同一组。 */
+.btn, .operations-workspace .btn { white-space: nowrap; }
 .card, .dashboard-panel, .store-editor, .store-table-card, .packing-library-card, .packing-summary-column > .card, .operations-workspace .card {
   border-color: var(--surface-border); border-radius: var(--radius-panel); box-shadow: 0 2px 8px rgba(30,50,80,.035);
 }
@@ -95,12 +96,22 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .packing-eyebrow { font-size: var(--fs-caption); letter-spacing: .1em; margin-bottom: 5px; }
 .packing-subtitle { margin-top: 7px; font-size: 13px; color: var(--text-muted); gap: 4px 12px; }
 .packing-hero-actions .btn { min-height: 36px; }
-.packing-summary-banner { padding: 20px; border: 1px solid #d6e2f3; border-radius: 16px; background: #eaf1fb; color: #304967; }
+.packing-summary-banner { padding: 20px; border: 1px solid #d6e2f3; border-radius: var(--r-xl); background: #eaf1fb; color: #304967; }
 .packing-summary-banner::after { display: none; }
 .packing-summary-banner strong { font-size: 28px; color: #273b55; }
 .packing-summary-banner span, .packing-summary-banner small { color: var(--text-muted); }
-.packing-export-btn { background: #304d78; border-color: #304d78; }
-.packing-export-btn:hover { background: #253e63; }
+/* 装箱页的"导出 Excel"是这一页的主操作，之前单独染成 #304d78 的平涂深蓝，
+   和全站的蓝色渐变主按钮不是一个东西。主操作只留一种长相。 */
+.packing-export-btn {
+  background-color: #2059b7;
+  background-image: linear-gradient(180deg, #2864cc 0%, #2059b7 100%);
+  border-color: #1e56b4;
+}
+.packing-export-btn:hover {
+  background-color: #235fc4;
+  background-image: linear-gradient(180deg, #2b68d1 0%, #235fc4 100%);
+  border-color: #1a4fa8;
+}
 .packing-export-grid input { min-height: 36px; }
 .packing-library-card { padding: 20px !important; }
 .packing-table-scroll { min-height: 240px; }
@@ -139,6 +150,531 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 .seller-assist-dialog { width: min(1100px,100%); max-height: calc(100dvh - 32px); border-radius: var(--radius-panel); }
 body:has(.packing-modal-mask, .app-modal-backdrop) { overflow: hidden; }
 .replenishment-panel-heading { position: sticky; top: -24px; z-index: 4; padding: 14px 0; background: var(--color-bg); }
+
+/* ============================================================================
+   视觉统一层 v2 —— 2026-10-27
+   ----------------------------------------------------------------------------
+   这一层不新增功能，只把"同一件事被写成几种样子"收敛掉。改之前的实测情况：
+
+     · 页面标题有 6 套写法（.dashboard-heading / .page-heading / .inventory-heading
+       / .stores-heading / .packing-hero / 裸 div），字号 24~30px 不等，
+       其中 .page-heading 根本没有样式定义，靠浏览器默认的 2em；
+     · 卡片一律 #fff + 1px 边 + 同一个阴影，主面板和内嵌块看不出层级；
+     · 控件高度 32/34/36 混用，圆角 6/8/10/12/14/18 混用；
+     · 筛选条里 select 有边框、旁边的 multi-select 触发器只有一条几乎看不见的
+       #e5e7eb 边，两个控件并排像"一个能点一个不能点"；
+     · 表格数字不用等宽，同一列的 8.9 / 104.88 / 1 199 小数位对不齐。
+
+   原则：表面分四层、圆角分四档、间距走 4 的倍数、颜色只有一个强调色，
+   动效统一 120/180ms 同一条缓动。下面按这个顺序逐块覆盖。
+   ========================================================================== */
+
+/* ---- 1. 画布：白底一堆白卡 → 冷调纸面 + 顶部两团极淡的光 ---------------------
+   只加 3~4% 的冷色，够让白卡浮起来，又不至于让长表格看着发蓝。 */
+body {
+  background-color: var(--surface-page);
+  background-image:
+    radial-gradient(1100px 460px at 6% -12%, #e5f0fd 0%, rgba(229, 240, 253, 0) 62%),
+    radial-gradient(900px 420px at 97% -16%, #eef4ff 0%, rgba(238, 244, 255, 0) 58%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* 数字一律等宽：表格、统计卡、价格这些地方，1 和 8 占同样宽度，
+   一列数字才能对齐成一条线。中文正文不受影响（等宽只作用于数字字形）。 */
+.data-table, .inventory-table, .stat-card, .dashboard-panel,
+.packing-summary-card, .price-cell, input[type='number'] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 2. 头部：一条平涂深蓝 → 有方向的渐变 + 右上角一点冷光 ------------------ */
+.app-header {
+  height: var(--app-header-h);
+  padding: 0 var(--sp-5);
+  gap: var(--sp-6);
+  /* 底色和渐变必须分开写。用 `background:` 简写会顺手把 background-color
+     重置成透明 —— 对比度审计按 backgroundColor 取背景，只看渐变就等于
+     "白字压在白底上"（实测 1.09:1，直接判失败）；而且渲染路径一旦不支持
+     渐变，头就会整条露白。所以：color 兜底，image 叠在上面。 */
+  background-color: #0b2a54;
+  background-image:
+    radial-gradient(620px 150px at 88% -50%, rgba(96, 165, 250, .32), rgba(96, 165, 250, 0) 72%),
+    linear-gradient(112deg, #0a2141 0%, #123a6e 54%, #0c2b52 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, .09);
+  box-shadow: 0 14px 34px -26px rgba(6, 26, 52, .95);
+}
+
+.app-brand { gap: var(--sp-2); }
+.app-header h1 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: .01em;
+}
+
+.app-header nav { gap: 2px; }
+.app-header nav a {
+  padding: 7px 14px;
+  border-radius: var(--r-sm);
+  color: #c2d4ec;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
+}
+.app-header nav a:hover {
+  background: rgba(255, 255, 255, .10);
+  color: #fff;
+}
+/* 激活态用"半透明白 + 一圈内描边"，比整块实心更轻，也不会把 7 个导航项
+   里最亮的那一块变成视觉焦点（焦点应该在页面内容上）。 */
+.app-header nav a.active {
+  color: #fff;
+  background-color: rgba(255, 255, 255, .14);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, .20), rgba(255, 255, 255, .09));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
+}
+
+.header-create-button {
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  background-color: #f2c23c;
+  background-image: linear-gradient(180deg, #ffd873 0%, #f2c23c 100%);
+  color: #1f2d45;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), 0 8px 18px -12px rgba(242, 194, 60, .95);
+  transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.header-create-button:hover {
+  background-color: #f7cb4d;
+  background-image: linear-gradient(180deg, #ffdf8a 0%, #f7cb4d 100%);
+  color: #17233a;
+}
+
+.store-switcher { color: #9db4d2; font-size: var(--fs-caption); letter-spacing: .02em; }
+.store-switcher select {
+  height: 32px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .08);
+  color: #eaf1fa;
+  font-size: var(--fs-label);
+  transition: border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.store-switcher select:hover { border-color: rgba(255, 255, 255, .34); background: rgba(255, 255, 255, .13); }
+
+.management-menu-trigger {
+  border-radius: var(--r-sm);
+  font-size: var(--fs-label);
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+/* ---- 3. 页面骨架与标题：六套写法收敛成一套 --------------------------------- */
+.container { padding: var(--sp-6) clamp(16px, 2.4vw, 40px) var(--sp-7); }
+
+.dashboard-heading,
+.page-heading,
+.inventory-heading,
+.stores-heading,
+.packing-hero,
+.product-list-header,
+.create-page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  margin: 2px 0 var(--sp-5);
+}
+
+.dashboard-heading h1,
+.page-heading h1,
+.inventory-heading h1,
+.stores-heading h1,
+.packing-hero h1,
+.product-list-header h2,
+.create-page-heading h1 {
+  font-size: var(--fs-page-title);
+  line-height: 1.24;
+  font-weight: 700;
+  letter-spacing: -.018em;
+  color: var(--text-strong);
+}
+
+.dashboard-heading p,
+.page-heading p,
+.inventory-heading p,
+.stores-heading p,
+.packing-hero p {
+  margin: 6px 0 0;
+  font-size: var(--fs-body);
+  line-height: 1.55;
+  color: var(--text-muted);
+  max-width: 82ch;
+}
+
+/* 页面标题下面的"眉标"（如 KUNPENG · PACKING LIST）：统一成小号宽字距的
+   说明文字，不再各页自己定字号和颜色。 */
+.packing-hero .packing-eyebrow,
+.create-page-heading .eyebrow {
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
+/* ---- 4. 表面层级 ----------------------------------------------------------
+   主面板：白底 + 发丝边 + 一档阴影。原来 18px 圆角配 3px 的浅影，
+   卡片边缘几乎是虚的；现在描边收到 #e6eef7（比原来的 #d6e3f3 更淡），
+   阴影换成带方向的冷色投影，形状靠"投影的方向"立住，而不是靠加深描边。 */
+.card,
+.dashboard-panel,
+.store-editor,
+.store-table-card,
+.operations-workspace .card {
+  background: var(--surface-panel);
+  border: 1px solid var(--line-hairline);
+  border-radius: var(--r-xl);
+  box-shadow: var(--elev-1);
+}
+
+/* 内嵌块（卡片里的子区块、只读汇总）：浅底 + 更小的圆角，一眼能看出
+   "这块属于上面那张卡"，而不是另一张并列的卡。 */
+.packing-summary-card,
+.dashboard-kpi,
+.stat-card {
+  background: var(--surface-panel);
+  border: 1px solid var(--line-hairline);
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-1);
+}
+
+.card-title,
+.dashboard-panel-title h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  color: var(--text-strong);
+}
+
+/* ---- 5. 按钮 --------------------------------------------------------------
+   高度走 --control-h（36），小号走 --control-h-compact（28），
+   不再用 padding 撑高度 —— 那样同一行的按钮会因为字号不同而高低不齐。 */
+.btn,
+.operations-workspace .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control-h);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-md);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  letter-spacing: .002em;
+  line-height: 1;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.btn:active:not(:disabled) { transform: translateY(.5px); }
+
+.btn-primary {
+  background-color: #2059b7;
+  background-image: linear-gradient(180deg, #2864cc 0%, #2059b7 100%);
+  border: 1px solid #1e56b4;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 6px 16px -12px rgba(37, 99, 200, .95);
+}
+.btn-primary:hover {
+  background-color: #235fc4;
+  background-image: linear-gradient(180deg, #2b68d1 0%, #235fc4 100%);
+  border-color: #1a4fa8;
+}
+.btn-success {
+  background-color: #196b45;
+  background-image: linear-gradient(180deg, #217a52 0%, #196b45 100%);
+  border: 1px solid #1b6b4a;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2);
+}
+.btn-success:hover {
+  background-color: #1c704b;
+  background-image: linear-gradient(180deg, #247f56 0%, #1c704b 100%);
+}
+
+.btn-outline {
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  color: #2b4668;
+  box-shadow: 0 1px 1px rgba(17, 42, 74, .03);
+}
+.btn-outline:hover { background: #f5f9ff; border-color: #b7cfea; }
+
+.btn-danger {
+  background: #fff;
+  border: 1px solid #efc9cf;
+  color: #a8323f;
+}
+.btn-danger:hover { background: #fff5f6; border-color: #e3b0b8; }
+
+.btn-sm,
+.operations-workspace .btn-sm {
+  height: var(--control-h-compact);
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-label);
+}
+.btn-lg { height: 42px; padding: 0 var(--sp-6); font-size: 15px; border-radius: var(--r-md); }
+
+/* ---- 6. 输入控件 ----------------------------------------------------------
+   筛选条里 select 有边、旁边的 multi-select 触发器几乎没边，是这一轮
+   最刺眼的一处不一致。这里把所有可输入控件的描边、高度、焦点环统一。 */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']),
+select,
+textarea {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: #fff;
+  color: var(--text-body);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+              background-color var(--dur) var(--ease);
+}
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):hover,
+select:hover,
+textarea:hover {
+  border-color: #b7cfea;
+}
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 106, 224, .16);
+}
+/* 键盘焦点必须看得见，光晕不算：16% 透明度的圈压在白底上只有 1.2:1，
+   远低于 WCAG 2.2 要求的 3:1（长标题/焦点圈审计会把 Tab 走一遍逐个量）。
+   所以鼠标走光晕、键盘走实心描边 —— --accent #2f6ae0 对白底 4.93:1。
+   另外别在这里写 `outline: none`：它会把 :focus 和 :focus-visible 一起清掉，
+   键盘用户就彻底看不到自己在哪一格了。 */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+
+.filters-bar { gap: 10px; margin-bottom: var(--sp-4); }
+.filters-bar select,
+.filters-bar input { min-height: var(--control-h); }
+
+/* 多选触发器：原来是 32px 高 + #e5e7eb 边，跟旁边的 36px select 站一起
+   像"一个能点一个不能点"。现在同高同边，悬停/展开的反馈也一致。 */
+.multi-select-trigger {
+  min-height: var(--control-h);
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: #fff;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.multi-select-trigger:hover { border-color: #b7cfea; }
+.multi-select-trigger.open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 106, 224, .16);
+}
+/* 已选条件从"实心蓝块配白字"改成浅蓝底深蓝字：一条筛选里有三四个蓝块，
+   会盖过表格本身。 */
+.multi-chip {
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+}
+
+/* ---- 7. 表格 --------------------------------------------------------------
+   表头：从"一块平灰"改成带一点上浅下深的渐变，配一条明显的下描边，
+   表头和内容之间才有分隔。行：发丝线分隔 + 悬停极浅的蓝。 */
+.data-table,
+.inventory-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.data-table thead th,
+.inventory-table thead th {
+  background-color: #f5f8fd;
+  background-image: linear-gradient(180deg, #f9fbfe 0%, #f1f6fc 100%);
+  color: var(--table-head-fg);
+  font-size: var(--table-head-fs);
+  font-weight: 600;
+  letter-spacing: .03em;
+  padding: var(--table-head-pad-y) var(--table-head-pad-x);
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+
+.data-table tbody td,
+.inventory-table tbody td {
+  border-bottom: 1px solid #eef3f9;
+  vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td,
+.inventory-table tbody tr:last-child td { border-bottom: 0; }
+
+.data-table tbody tr:hover td,
+.inventory-table tbody tr:hover td { background: #f7fafd; }
+
+/* 选中行：浅蓝底 + 左侧一道强调线，比整行加深更明确，也不影响阅读对比度。 */
+.data-table tbody tr.is-selected td,
+.data-table tbody tr.selected td { background: var(--accent-soft); }
+
+/* ---- 8. 状态胶囊 ----------------------------------------------------------
+   高度、圆角、字重统一；底色仍由各状态的语义色决定（见 types.ts 的
+   LINK_STATUS_MAP，那边已经逐态核过 4.5:1）。 */
+.status-badge,
+.status-confirmed,
+.status-void,
+.branch-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: .01em;
+  line-height: 1;
+}
+
+/* ---- 9. 提示条 ------------------------------------------------------------
+   圆角收到 14，左侧加一道 3px 的语义色竖条：告警/成功/失败三种提示
+   在长页面里能靠"左边那条颜色"一眼分辨，不用读文字。 */
+.alert,
+.product-task-banner,
+.refresh-detail-panel,
+.image-recovery-bar {
+  border-radius: var(--r-lg);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) calc(var(--sp-4) - 1px);
+  border-left-width: 3px;
+}
+.alert-error { border-left-color: #c4404c; }
+.alert-success { border-left-color: #196b45; }
+.alert-warning { border-left-color: #d9a520; }
+.alert-info { border-left-color: var(--accent); }
+
+/* ---- 10. 统计卡 -----------------------------------------------------------
+   首页用 .stat-card 大卡，库存页却把同一批数字写成一行裸文字（"80 可用库存
+   20 国内采购在途 …"）。两处数字是同一类信息，只是页面不同——这里把库存页
+   的 KPI 收进同一种"浅表面 + 小标签 + 大数字"的块里，并用 column-reverse
+   把标签翻到数字上面，和首页 KPI 卡的阅读顺序一致（不用改 TSX 结构）。 */
+.stat-card {
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+              transform var(--dur) var(--ease);
+}
+.stat-card:hover {
+  border-color: var(--accent-line);
+  box-shadow: var(--elev-2);
+  transform: translateY(-1px);
+}
+.stat-card .stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  line-height: 1.15;
+}
+.stat-card .stat-label {
+  font-size: var(--fs-label);
+  color: var(--text-muted);
+  letter-spacing: .01em;
+}
+
+.inventory-kpis { gap: var(--sp-3); }
+.inventory-kpis > span {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  gap: 1px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-hairline);
+  border-radius: var(--r-lg);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+.inventory-kpis > span strong {
+  font-size: 20px;
+  line-height: 1.2;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+.inventory-kpis > span.warning strong { color: var(--danger-strong); }
+
+/* ---- 11. 浮层 ------------------------------------------------------------ */
+.multi-select-dropdown,
+.management-menu-panel,
+.product-context-menu,
+.packing-modal,
+.seller-assist-dialog {
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line-hairline);
+  box-shadow: var(--elev-3);
+}
+
+/* ---- 12. 焦点与滚动 ------------------------------------------------------
+   焦点圈统一 2px 实色 + 2px 间隙。原来各处 offset 在 1~3px 之间跳，
+   键盘 Tab 的时候圈会忽远忽近。 */
+a:focus-visible,
+button:focus-visible,
+.btn:focus-visible,
+.multi-select-trigger:focus-visible,
+.app-header nav a:focus-visible {
+  outline: 2px solid #4f86e8;
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+/* 顶栏是深底：深蓝焦点圈压在 #0b2a54 上只有 2.89:1，等于没有。
+   深底上的焦点圈统一换成浅蓝 #9ec2ff（对 #0b2a54 8.0:1）——
+   店铺下拉、管理工具、新建产品这三个都在头里，之前只有导航项做了替换。 */
+.app-header nav a:focus-visible,
+.store-switcher select:focus-visible,
+.management-menu-trigger:focus-visible,
+.header-create-button:focus-visible {
+  outline-color: #9ec2ff;
+}
+
+* { scrollbar-width: thin; scrollbar-color: #c9d8e9 transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #ccdaea;
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: var(--r-pill);
+}
+::-webkit-scrollbar-thumb:hover { background: #b0c5dc; background-clip: content-box; }
+
+/* ---- 13. 窄屏 ------------------------------------------------------------
+   头部高度是固定的 64px，导航项在 1100px 以下本来就会缩小字号；
+   这里只补一条：窄屏下按钮不再强行 36px 高，避免和图标挤成一团。 */
+@media (max-width: 640px) {
+  .btn { height: 32px; padding: 0 var(--sp-3); font-size: var(--fs-body); }
+  .dashboard-heading h1,
+  .page-heading h1,
+  .inventory-heading h1,
+  .stores-heading h1,
+  .packing-hero h1,
+  .product-list-header h2 { font-size: 22px; }
+}
+
 
 @media (max-width: 1360px) {
   .app-header { grid-template-columns: auto minmax(0, 1fr); height: auto; gap: 8px 20px; padding: 10px 20px 8px; }
