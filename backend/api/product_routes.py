@@ -712,7 +712,9 @@ async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id
         raise HTTPException(404, '本店卖家资料没有此商品，请选择官网售价或人工填写；原售价保留')
     if result is None:
         try:
-            result = await asyncio.wait_for(scrape_product(p.takealot_url), timeout=45)
+            # 80 秒：官网读取现在有三段（curl_cffi → 临时浏览器 → 持久化浏览器），
+            # 前两段被验证挡住时，第三段才是真正能拿到数据的那一段。
+            result = await asyncio.wait_for(scrape_product(p.takealot_url), timeout=80)
         except asyncio.TimeoutError:
             raise HTTPException(504, '官网读取超时，请稍后重试或选择本店报价；原售价保留')
         except Exception as error:

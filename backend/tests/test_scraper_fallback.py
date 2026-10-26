@@ -17,10 +17,18 @@ def _blocked_browser():
     """浏览器阶段也失败。这三个用例要证明的是「官网所有抓取步骤都失败后回落到卖家表」，
     必须把渲染器一起挡掉：只 patch curl_cffi 时，装了 Chromium 的机器会真的打开线上
     商品页拿到价格，于是 data_source='takealot'、warnings 为空，用例红；
-    而 CI 里数据中心 IP 被 Cloudflare 挡住时同一个用例又「绿」——那是网络凑巧，不是断言成立。"""
+    而 CI 里数据中心 IP 被 Cloudflare 挡住时同一个用例又「绿」——那是网络凑巧，不是断言成立。
+
+    2026-10-20 起还有第三个来源（持久化浏览器），同样要挡：它会用本机真实 profile
+    去开线上页面，不挡就是「测试依赖网络和本机浏览器状态」。
+    """
+    import contextlib
+    stack = contextlib.ExitStack()
     async def rendered(*args, **kwargs):
         return None, 'blocked'
-    return patch.object(scraper, '_try_scrape_with_browser', rendered)
+    stack.enter_context(patch.object(scraper, '_try_scrape_with_browser', rendered))
+    stack.enter_context(patch.object(scraper, '_scrape_with_profile_browser', rendered))
+    return stack
 
 
 def test_blocked_product_uses_exact_seller_catalog_without_fake_price():
@@ -190,3 +198,37 @@ def test_current_product_markup_ignores_ad_price_and_navigation():
 def test_generic_empty_shell_has_no_product_fields():
     soup = BeautifulSoup('<title>Takealot.com: Online Shopping</title><script type="application/ld+json">{"@type":"ViewAction"}</script>', 'lxml')
     assert scraper._page_product_fields(soup) == {}
+
+
+def test_profile_browser_is_the_last_source_before_the_catalog():
+    """临时浏览器被验证挡住时，用持久化浏览器再读一次——这是能拿到
+    图片/价格/标题/类别的唯一现实路径（不绕过验证，只是换一个已在用的浏览器）。"""
+    async def rendered(*args, **kwargs):
+        return None, 'blocked'
+    async def profile(url, normalized):
+        return {'product_name': 'Zenty Electronic High-Voltage Mouse Trap',
+                'actual_sale_price_zar': 699.0,
+                'product_image_url': 'https://media.takealot.com/covers_images/a.jpg',
+                'takealot_category_path': 'Garden > Pest Control',
+                'variants': [{'sku': '9902591488780', 'label': 'Zenty', 'image_url': ''}]}, ''
+    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=(None, 'curl_cffi HTTP 403')), \
+         patch.object(scraper, '_try_scrape_with_browser', rendered), \
+         patch.object(scraper, '_scrape_with_profile_browser', profile):
+        result = asyncio.run(scraper.scrape_product(URL))
+    assert result['success'] and result['data_source'] == 'takealot'
+    assert result['actual_sale_price_zar'] == 699.0
+    assert result['product_image_url'].endswith('a.jpg')
+    assert result['takealot_category_path'] == 'Garden > Pest Control'
+    assert [item['sku'] for item in result['variants']] == ['9902591488780']
+
+
+def test_html_parser_is_shared_by_every_source():
+    """curl_cffi 和持久化浏览器用的是同一份解析，字段不会各写一套。"""
+    html = '''<html><head><title>Zenty Mouse Trap | Shop Today</title>
+    <meta property="og:image" content="https://media.takealot.com/covers_images/x.jpg"></head>
+    <body><main><h1>Zenty Mouse Trap</h1>
+    <div class="price-buybox"><span>R 699</span></div></main></body></html>'''
+    data = scraper._parse_product_html(html, URL, URL)
+    assert data['product_name'] == 'Zenty Mouse Trap'
+    assert data['actual_sale_price_zar'] == 699.0
+    assert data['tsin'] == 'PLID103613893'

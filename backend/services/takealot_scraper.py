@@ -475,6 +475,51 @@ async def _try_scrape_with_browser(p, launcher_name: str, launcher, url: str, no
             await browser.close()
 
 
+async def _scrape_with_profile_browser(url: str, normalized_url: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """用**持久化浏览器**（采集循环用的那个 profile）再读一次商品页。
+
+    为什么需要这一步：`_try_scrape_with_browser` 每次都是临时启动一个干净的
+    浏览器，官网验证一眼就能认出来；而这个 profile 是平时正常浏览留下的会话，
+    同一个页面往往能直接打开。这里不伪装指纹、不换 IP、不解验证码——只是换
+    一个已经在用的浏览器。
+
+    它和采集循环共用同一把浏览器锁，所以宁可如实报「忙」，也不并发开同一个
+    profile（那会撞 SingletonLock，两边一起坏）。
+    """
+    try:
+        from services.quote_browser import CollectorBusy, quote_context
+    except ImportError:
+        return None, "profile browser unavailable"
+
+    page = None
+    try:
+        async with quote_context() as context:
+            page = await context.new_page()
+            response = await page.goto(normalized_url, wait_until="domcontentloaded", timeout=45000)
+            if response is not None and response.status >= 400:
+                return None, f"profile browser HTTP {response.status}"
+            try:
+                await page.wait_for_function(PRODUCT_READY_JS, timeout=20000)
+            except Exception:
+                # 商品可能只有部分字段（缺货、无图）；仍然提取，能拿到多少算多少。
+                pass
+            data = await _extract_data(page, url, normalized_url)
+            if not _has_product_data(data):
+                return None, "profile browser returned no product data"
+            return data, ""
+    except CollectorBusy:
+        return None, "profile browser busy (collection in progress)"
+    except Exception as error:
+        # 只报类型：异常正文可能带路径或凭据。
+        return None, f"profile browser error: {type(error).__name__}"
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+
 def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict[str, Any]], str]:
     """使用 curl_cffi 模拟浏览器 TLS 指纹抓取（最快方案）"""
     try:
@@ -506,130 +551,141 @@ def _scrape_with_curl_cffi(url: str, normalized_url: str) -> Tuple[Optional[Dict
         if "Just a moment" in text or "Checking your browser" in text:
             return None, "curl_cffi Cloudflare blocked"
 
-        soup = BeautifulSoup(text, "lxml")
-
-        data = {
-            "normalized_url": normalized_url,
-            "tsin": None,
-            "product_name": None,
-            "product_image_url": None,
-            "actual_sale_price_zar": None,
-            "in_stock_price": None,
-            "takealot_category_path": None,
-            "competing_sellers_count": None,
-            "stock_remaining": None,
-            "review_count": None,
-            "rating_value": None,
-            "variants": [],
-        }
-
-        # TSIN
-        plid_match = re.search(r'PLID(\d+)', url, re.IGNORECASE)
-        if plid_match:
-            data["tsin"] = f"PLID{plid_match.group(1)}"
-
-        # 产品名称: <title>
-        title_tag = soup.find("title")
-        if title_tag and "takealot" in title_tag.text.lower():
-            parts = title_tag.text.split("|")
-            if parts:
-                data["product_name"] = parts[0].strip()
-
-        # 产品图片
-        img = soup.select_one('img[src*="media.takealot.com/covers_images"]')
-        if img and img.get("src"):
-            data["product_image_url"] = img["src"].replace("s-thumbnail", "s-pdpxl")
-
-        variants = []
-        for script in soup.find_all('script'):
-            text_value = script.string or script.get_text() or ''
-            if not text_value.strip().startswith(('{', '[')):
-                continue
-            try:
-                variants.extend(_variants_from_payload(json.loads(text_value)))
-            except Exception:
-                continue
-        data["variants"] = list({item['sku']: item for item in variants}.values())
-
-        # 售价: [class*="price-buybox"]
-        price_el = soup.select_one('[class*="price-buybox"]')
-        if price_el:
-            price_match = re.search(r'[\d,]+\.?\d*', price_el.text.replace(" ", ""))
-            if price_match:
-                try:
-                    data["actual_sale_price_zar"] = float(price_match.group(0).replace(",", ""))
-                except (ValueError, TypeError):
-                    pass
-
-        # 分类路径
-        pdp = soup.select_one(".pdp")
-        if pdp:
-            cats = []
-            seen = set()
-            keywords = [
-                "computers", "electronics", "home", "kitchen", "sport",
-                "fashion", "baby", "toys", "garden", "automotive",
-                "camping", "beauty", "health", "office", "books",
-                "appliances", "gaming", "music", "pets", "liquor",
-                "stationery", "luggage", "data storage", "drives",
-            ]
-            for a in pdp.find_all("a", href=True):
-                text = a.text.strip()
-                if not text or len(text) > 50:
-                    continue
-                if any(kw in text.lower() for kw in keywords) and text not in seen:
-                    seen.add(text)
-                    cats.append(text)
-            if cats:
-                data["takealot_category_path"] = " > ".join(cats)
-
-        # in_stock_price 回退到 buybox 价格
-        if data["actual_sale_price_zar"] is not None:
-            data["in_stock_price"] = data["actual_sale_price_zar"]
-
-        # 竞品卖家数: 从 .more-buying-choices 文本提取 "X offers"
-        offer_el = soup.select_one('[class*="more-buying-choices"]')
-        if offer_el:
-            offer_match = re.search(r'(\d+)\s*offers?', offer_el.text, re.IGNORECASE)
-            if offer_match:
-                data["competing_sellers_count"] = int(offer_match.group(1))
-        # 备用: 计数 seller 链接
-        if data["competing_sellers_count"] is None:
-            seller_links = soup.select('a[href*="/seller/"]')
-            if seller_links:
-                data["competing_sellers_count"] = len(seller_links)
-
-        # 剩余库存: aside 区域 "Only X left"
-        aside = soup.select_one("aside")
-        stock_src = aside.text if aside else soup.body.text if soup.body else ""
-        stock_match = re.search(r'Only\s*(\d+)\s*left', stock_src, re.IGNORECASE)
-        if stock_match:
-            data["stock_remaining"] = int(stock_match.group(1))
-
-        # 评价数与评分
-        review_link = soup.select_one('a[href*="Reviews"]')
-        if review_link:
-            count_match = re.search(r'(\d+)\s*Reviews?', review_link.text, re.IGNORECASE) \
-                or re.search(r'\((\d+)\)', review_link.text)
-            if count_match:
-                data["review_count"] = int(count_match.group(1))
-
-        rating_el = soup.select_one('[class*="rating"], [data-rating]')
-        if rating_el:
-            rating_text = rating_el.get("data-rating", "") or rating_el.text or ""
-            rating_match = re.search(r'(\d+\.?\d*)', rating_text)
-            if rating_match:
-                try:
-                    data["rating_value"] = float(rating_match.group(1))
-                except (ValueError, TypeError):
-                    pass
-
-        data.update(_page_product_fields(soup))
-        data.update(_structured_product_fields(soup))
-        return data, ""
+        return _parse_product_html(text, url, normalized_url), ""
 
     except Exception as e:
         return None, f"curl_cffi error: {str(e)}"
+
+
+def _parse_product_html(text: str, url: str, normalized_url: str) -> Dict[str, Any]:
+    """把已经拿到的商品页 HTML 解析成结构化资料。
+
+    抽出来是因为「拿到 HTML」有三个来源：curl_cffi、临时浏览器，以及复用
+    已登录的持久化浏览器（前两个被官网验证挡住时）。解析只留一份，三个来源
+    出来的字段才不会各写一套、互相漂。
+    """
+    soup = BeautifulSoup(text, "lxml")
+
+    data = {
+        "normalized_url": normalized_url,
+        "tsin": None,
+        "product_name": None,
+        "product_image_url": None,
+        "actual_sale_price_zar": None,
+        "in_stock_price": None,
+        "takealot_category_path": None,
+        "competing_sellers_count": None,
+        "stock_remaining": None,
+        "review_count": None,
+        "rating_value": None,
+        "variants": [],
+    }
+
+    # TSIN
+    plid_match = re.search(r'PLID(\d+)', url, re.IGNORECASE)
+    if plid_match:
+        data["tsin"] = f"PLID{plid_match.group(1)}"
+
+    # 产品名称: <title>
+    title_tag = soup.find("title")
+    if title_tag and "takealot" in title_tag.text.lower():
+        parts = title_tag.text.split("|")
+        if parts:
+            data["product_name"] = parts[0].strip()
+
+    # 产品图片
+    img = soup.select_one('img[src*="media.takealot.com/covers_images"]')
+    if img and img.get("src"):
+        data["product_image_url"] = img["src"].replace("s-thumbnail", "s-pdpxl")
+
+    variants = []
+    for script in soup.find_all('script'):
+        text_value = script.string or script.get_text() or ''
+        if not text_value.strip().startswith(('{', '[')):
+            continue
+        try:
+            variants.extend(_variants_from_payload(json.loads(text_value)))
+        except Exception:
+            continue
+    data["variants"] = list({item['sku']: item for item in variants}.values())
+
+    # 售价: [class*="price-buybox"]
+    price_el = soup.select_one('[class*="price-buybox"]')
+    if price_el:
+        price_match = re.search(r'[\d,]+\.?\d*', price_el.text.replace(" ", ""))
+        if price_match:
+            try:
+                data["actual_sale_price_zar"] = float(price_match.group(0).replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+
+    # 分类路径
+    pdp = soup.select_one(".pdp")
+    if pdp:
+        cats = []
+        seen = set()
+        keywords = [
+            "computers", "electronics", "home", "kitchen", "sport",
+            "fashion", "baby", "toys", "garden", "automotive",
+            "camping", "beauty", "health", "office", "books",
+            "appliances", "gaming", "music", "pets", "liquor",
+            "stationery", "luggage", "data storage", "drives",
+        ]
+        for a in pdp.find_all("a", href=True):
+            text = a.text.strip()
+            if not text or len(text) > 50:
+                continue
+            if any(kw in text.lower() for kw in keywords) and text not in seen:
+                seen.add(text)
+                cats.append(text)
+        if cats:
+            data["takealot_category_path"] = " > ".join(cats)
+
+    # in_stock_price 回退到 buybox 价格
+    if data["actual_sale_price_zar"] is not None:
+        data["in_stock_price"] = data["actual_sale_price_zar"]
+
+    # 竞品卖家数: 从 .more-buying-choices 文本提取 "X offers"
+    offer_el = soup.select_one('[class*="more-buying-choices"]')
+    if offer_el:
+        offer_match = re.search(r'(\d+)\s*offers?', offer_el.text, re.IGNORECASE)
+        if offer_match:
+            data["competing_sellers_count"] = int(offer_match.group(1))
+    # 备用: 计数 seller 链接
+    if data["competing_sellers_count"] is None:
+        seller_links = soup.select('a[href*="/seller/"]')
+        if seller_links:
+            data["competing_sellers_count"] = len(seller_links)
+
+    # 剩余库存: aside 区域 "Only X left"
+    aside = soup.select_one("aside")
+    stock_src = aside.text if aside else soup.body.text if soup.body else ""
+    stock_match = re.search(r'Only\s*(\d+)\s*left', stock_src, re.IGNORECASE)
+    if stock_match:
+        data["stock_remaining"] = int(stock_match.group(1))
+
+    # 评价数与评分
+    review_link = soup.select_one('a[href*="Reviews"]')
+    if review_link:
+        count_match = re.search(r'(\d+)\s*Reviews?', review_link.text, re.IGNORECASE) \
+            or re.search(r'\((\d+)\)', review_link.text)
+        if count_match:
+            data["review_count"] = int(count_match.group(1))
+
+    rating_el = soup.select_one('[class*="rating"], [data-rating]')
+    if rating_el:
+        rating_text = rating_el.get("data-rating", "") or rating_el.text or ""
+        rating_match = re.search(r'(\d+\.?\d*)', rating_text)
+        if rating_match:
+            try:
+                data["rating_value"] = float(rating_match.group(1))
+            except (ValueError, TypeError):
+                pass
+
+    data.update(_page_product_fields(soup))
+    data.update(_structured_product_fields(soup))
+
+    return data
 
 
 def _page_product_fields(soup) -> Dict[str, Any]:
@@ -847,6 +903,20 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         except Exception:
             errors.append("Browser runtime unavailable")
             diagnostic('browser_runtime', 'unavailable')
+
+    # 第三步：复用**已经在用**的持久化浏览器（采集循环那个 profile）。
+    # 前两步都是临时启动的干净浏览器，被官网验证挡住时必定失败；而这个 profile
+    # 里有正常浏览留下的会话，同一个页面通常能直接打开。这不是绕过验证——
+    # 不伪装指纹、不换 IP、不解验证码，只是用同一个浏览器再看一次。
+    if not complete():
+        data, err = await _scrape_with_profile_browser(url, normalized_url)
+        if _has_product_data(data):
+            retain(data)
+            if complete():
+                return finish_official()
+        if err:
+            errors.append(err)
+        diagnostic('profile_browser', err)
 
     # 卖家表只在官网各抓取步骤完成后补缺，不能提前截断官网渲染。
     catalog = _catalog_fallback(url)
