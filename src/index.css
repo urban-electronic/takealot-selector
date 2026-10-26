@@ -2295,6 +2295,10 @@ table tbody tr:hover { background: #f8fafc; }
 .operations-product { width:240px; max-width:240px; }
 .product-link { display:flex; align-items:center; width:230px; min-height:var(--control-h-min); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left; color:var(--link-strong); background:none; border:0; padding:0; font:inherit; cursor:pointer; }
 .row-subtitle, .operations-workspace .data-table small { display:block; font-size:var(--fs-caption); color:var(--text-subtle); margin-top:2px; line-height:1.4; }
+/* 英文标题：补货表原来只有中文名，核对规格时分不清是哪个变体。
+ * 单行省略，宽度跟商品列一致——长标题不能把 240px 的列撑开或换行成三行。 */
+.operations-workspace .operations-product .product-en { display:block; max-width:100%; margin-top:1px; color:var(--text-muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mode-pill, .status-pill { display:inline-block; padding:3px 7px; border-radius:4px; background:#f1f5f9; color:var(--text-muted); font-size:11px; white-space:nowrap; }
 .mode-pill.sea { background:#eff6ff; color:#2563eb; }
 .mode-pill.air { background:#fff7ed; color:#c2410c; }

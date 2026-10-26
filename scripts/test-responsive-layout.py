@@ -71,7 +71,7 @@ DATA = {
     # 设置页会读本店卖家名（调价判断 Buybox 持位的依据），漏声明就会 404 后静默降级。
     '/api/integrations/takealot-seller/identity':{'name':'','source':'','candidates':[]},
     '/api/packing/products':[PACK], '/api/packing/sync-from-products':{'ok':True,'total_products':1,'skipped_no_sku':0,'duplicate_sku':0},
-    '/api/operations/alerts':[], '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
+    '/api/operations/alerts':[], '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', english_name='Travel storage bag with a deliberately long English product title', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
     '/api/automatic-pricing':{'configured':False,'rows':[PRICING]},
     '/api/buybox/page-open':{'queued':0,'skipped':0,'price_changed':False},
     '/api/products/seller-assist/preview':{'fillable':1,'items':[dict(id=PRODUCT['id'],product_no=1,name=PRODUCT['product_name'],token='fixture-only',changes=[dict(field='product_name',label='标题',value=PRODUCT['product_name'])],differences=[],warnings=['请核对实际规格与商品身份'],manual=['重量'])]},
@@ -129,6 +129,19 @@ def main():
                     if b['height']>44:failures.append(f'{width}: vertical navigation label')
                     if width<=700 and (b['x']<0 or b['x']+b['width']>width+1):failures.append(f'{width}: hidden primary navigation entry')
                 if details['scroll']>width+2: failures.append(f'{width} {path}: overflow {details}')
+                if path=='/replenishment':
+                    # 补货表原来只有中文名，核对规格时分不清是哪个变体。英文标题必须
+                    # 真的渲染出来；长标题要「单行 + 省略号」，不能换行成三行、也不能
+                    # 溢出到右边的列（scrollWidth 会因为省略号仍然大于 clientWidth，
+                    # 所以判据看的是溢出裁切和右边界，不是 scrollWidth）。
+                    en=page.locator('.operations-product .product-en').first
+                    if not en.count(): failures.append(f'{width}: replenishment product cell has no English title')
+                    else:
+                        box=en.evaluate("""e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect(),
+                            c=e.closest('td').getBoundingClientRect();
+                            return {wrap:s.whiteSpace,overflow:s.overflowX,right:r.right,cellRight:c.right,height:r.height,line:parseFloat(s.lineHeight)||0}}""")
+                        if box['wrap']!='nowrap' or box['overflow']!='hidden': failures.append(f'{width}: English title is not single-line truncated {box}')
+                        if box['right']>box['cellRight']+1: failures.append(f'{width}: English title spills out of the product column {box}')
                 if path=='/products' and (width,height) in ((1280,720),(390,480),(320,568)):
                     page.get_by_role('button',name='核对本店资料',exact=True).click()
                     preview=page.locator('.seller-assist-dialog');preview.wait_for()

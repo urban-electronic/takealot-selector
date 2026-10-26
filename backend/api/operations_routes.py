@@ -137,6 +137,8 @@ def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         if not eligible(db, store, p): continue
         profile = saved.get(p.id)
         rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
+            # 英文标题单独给一份：列表主名是中文，核对规格/对账时仍然要看平台原文。
+            english_name=p.product_name or '',
             sku=p.sku, profile=profile, plan=runtime_plan(db, store, p, profile, purchases_for(db, store, p.id)) if profile else None))
     rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('sea_quantity', 0), -(r['plan'] or {}).get('pre_sea_shortage', 0)))
     return {'rows': rows, 'sync': sync_status(db, store)}

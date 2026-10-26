@@ -28,7 +28,7 @@ export default function Replenishment() {
     return () => { active = false; document.removeEventListener('keydown', escape); document.body.style.overflow = old; };
   }, [selected]);
   const all: any[] = overview?.rows || [];
-  const rows = all.filter(r => (!onlyAction || r.plan?.air_quantity > 0 || r.plan?.sea_quantity > 0 || r.plan?.blocked?.length) && (!hideEmpty || r.plan?.velocity > 0) && (level === 'all' || r.plan?.level === level) && `${r.name} ${r.sku} ${r.product_no}`.toLowerCase().includes(search.toLowerCase()));
+  const rows = all.filter(r => (!onlyAction || r.plan?.air_quantity > 0 || r.plan?.sea_quantity > 0 || r.plan?.blocked?.length) && (!hideEmpty || r.plan?.velocity > 0) && (level === 'all' || r.plan?.level === level) && `${r.name} ${r.english_name || ''} ${r.sku} ${r.product_no}`.toLowerCase().includes(search.toLowerCase()));
   const schedule = rows.flatMap(r => (r.plan?.schedule || []).filter((s: any) => mode === 'all' || s.mode === mode).map((s: any) => ({ ...s, product: r }))).sort((a,b) => a.purchase_date.localeCompare(b.purchase_date) || a.mode.localeCompare(b.mode) || a.product.name.localeCompare(b.product.name));
   const dataset = view === 'schedule' ? schedule : rows;
   const pages = Math.max(1, Math.ceil(dataset.length / 25)); const activePage = Math.min(page, pages);
@@ -53,10 +53,12 @@ export default function Replenishment() {
     if (p.economics?.available && p.economics[m].profit_margin < p.economics.minimum_margin) return '利润不足';
     return p[m+'_quantity'] ? num(p[m+'_quantity'], 0) : (m === 'air' ? '无需再补' : '已覆盖');
   };
-  const name = (r: any) => <><button className="product-link" title={r.name} onClick={() => setSelected(r.id)}>{r.name}</button><small className="row-subtitle">{r.sku || r.product_no}{r.plan?.stale ? ' · 库存待更新' : ''}{r.plan?.overdue?.length ? ' · 到货延期' : ''}</small></>;
+  // 主名用中文（运营看的是中文），英文标题单独一行：核对规格、跟供应商对账时
+  // 要靠平台原文，只有中文名时经常分不清是哪个变体。
+  const name = (r: any) => <><button className="product-link" title={r.name} onClick={() => setSelected(r.id)}>{r.name}</button>{r.english_name && r.english_name !== r.name && <small className="row-subtitle product-en" title={r.english_name}>{r.english_name}</small>}<small className="row-subtitle">{r.sku || r.product_no}{r.plan?.stale ? ' · 库存待更新' : ''}{r.plan?.overdue?.length ? ' · 到货延期' : ''}</small></>;
   const exportRows = () => {
     const cell = (v: unknown) => '"'+String(v ?? '').replace(/^[=+@-]/,"'").replace(/"/g,'""')+'"';
-    const values = view === 'schedule' ? [['商品','SKU','方式','采购日期','发运日期','预计到货','覆盖至','数量','性质','估算总经营成本ZAR'],...schedule.map(s => [s.product.name,s.product.sku,s.mode==='sea'?'海运':'空运',s.purchase_date,s.departure_date,s.arrival_date,s.coverage_until,s.quantity,s.conditional?'后续待复核':'当前建议',s.estimated_cost_zar])] : [['商品','SKU','库存','日均销量','可售天数','当前海运','限量应急空运','首批海运前缺口'],...rows.map(r=>[r.name,r.sku,r.plan?.stock,num(r.plan?.velocity),num(r.plan?.cover_days,0),r.plan?.sea_quantity,r.plan?.air_quantity,r.plan?.pre_sea_shortage])];
+    const values = view === 'schedule' ? [['商品','英文标题','SKU','方式','采购日期','发运日期','预计到货','覆盖至','数量','性质','估算总经营成本ZAR'],...schedule.map(s => [s.product.name,s.product.english_name || '',s.product.sku,s.mode==='sea'?'海运':'空运',s.purchase_date,s.departure_date,s.arrival_date,s.coverage_until,s.quantity,s.conditional?'后续待复核':'当前建议',s.estimated_cost_zar])] : [['商品','英文标题','SKU','库存','日均销量','可售天数','当前海运','限量应急空运','首批海运前缺口'],...rows.map(r=>[r.name,r.english_name || '',r.sku,r.plan?.stock,num(r.plan?.velocity),num(r.plan?.cover_days,0),r.plan?.sea_quantity,r.plan?.air_quantity,r.plan?.pre_sea_shortage])];
     const url=URL.createObjectURL(new Blob(['\ufeff'+values.map(r=>r.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='补货发运计划.csv';a.click();URL.revokeObjectURL(url);
   };
   const close = () => { setSelected(''); refresh().catch(e=>setError(e.message)); };
