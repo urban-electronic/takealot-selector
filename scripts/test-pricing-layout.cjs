@@ -170,6 +170,17 @@ const root = createRoot(host);
   check(rulesText.includes('暂停试涨24小时'), 'the rollback says it also pauses the trial for 24 hours');
   check(rulesText.includes('不超过21天'), 'the tight-stock threshold is stated as 21 days');
   check(!rulesText.includes('短于空运周期'), 'the panel no longer implies the threshold follows the per-product air days');
+  // 7) 领先差额缩放与价格战熔断是 2026-10-23 加的两个判定，面板一个字都没提。
+  //    用户看到的症状是「这一行本来每轮都在降，忽然六小时不动了」——面板里
+  //    找不到对应规则，只会判成故障。数字必须和 automatic_pricing.py 的默认值
+  //    一致（DEFAULT_LEAD_PCT / LEAD_CAP / DEFAULT_WAR_DROP_STREAK /
+  //    DEFAULT_WAR_DROP_TOTAL_PCT / DEFAULT_WAR_PAUSE_HOURS）。
+  check(rulesText.includes('0.5%'), 'the panel says the lead difference scales with price');
+  check(rulesText.includes('单笔最多R50'), 'the lead difference has a stated cap');
+  check(rulesText.includes('连续跟降4次'), 'the breaker states its streak trigger');
+  check(rulesText.includes('累计让利已达8%'), 'the breaker states its cumulative-drop trigger');
+  check(rulesText.includes('停手6小时'), 'the breaker states how long it pauses');
+  check(rulesText.includes('持位提价与缺货试涨照常'), 'the breaker says it only stops following drops, not raising');
 
   check(writes === 0, 'rendering the table never writes to the backend');
   await act(async () => root.unmount());

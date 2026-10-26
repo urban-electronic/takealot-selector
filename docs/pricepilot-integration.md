@@ -1632,3 +1632,33 @@ WorkBuddy；基线 `8f3a1df552`。
 
 - 2026-10-23 接续 main a3721987：保留逐箱权威数量与唛头回退；头部校验/留档使用最终解析的 mark。
   新增默认/入库单号/手填带空格三类重试回归用例。仅编译检查完成；本机 pytest 环境缺失，本次用例待最新 head CI，不沿用旧通过结果。
+
+### PRICING-LEAD-STEP-01 / PRICE-WAR-BREAKER-01 / DELIVERY-LEADTIME-01（2026-10-23；2026-10-26 补记）
+
+- 优先级 P1；Codex 提交，本轮只补记录（原提交只写了 `docs/pricing/`，本索引零记录，
+  于是「领先差额改成了按价格缩放」这件事在集成日志里查不到）。基线 `8d6a44d19f0a`。
+- 复现（改动前的三处错）：①领先差额写死 R1，与价格无关——R150 上是 0.67%，R3000 上 0.03%，
+  对手跟一个 R1 就抹平，双方各让 R2 后位置回到原样，唯一的结果是价格单向下行；②连续跟降没有
+  任何刹车，单轮最优解永远是「再降一点」，一路降到利润底价，而位置仍在对方手里；③采集器把卡片
+  文案读进了 `deliveryLabel` 却没解析成天数，三类报价的 `leadtimeDays` 全是 `None`，引擎把
+  「时效位」当成「价格位」，靠降价去抢一个由配送速度决定的展示位。
+- 改动：`_lead_amount()` 按 `DEFAULT_LEAD_PCT=0.5%` 缩放、`LEAD_CAP=50` 封顶，`lead_amount`
+  仍作下限，`lead_pct` 填 0 退回旧的「永远 R1」；三处调用（`_winnable()`、守位 `climb`、抢位
+  `compete`）收敛到这一个函数。`_war()` 在 `drop_streak>=4` 或「`drop_streak>=2` 且这段累计让利
+  `>=8%`」时熔断 6 小时，只停「跟降」，持位提价与缺货试涨照常；计数在 `process()` 维护
+  （`plan()` 仍是纯函数），`war_until` 到期清零并 `war_count+=1`——不清零会每轮重新触发、
+  规则永远停在「熔断中」。`parse_leadtime()` 只解析明确的送达承诺：区间取上界、跨年按明年、
+  `Ships in` 与 working/business days 一律返回 `None`，原文保留在 `deliveryLabel`。
+- 面板（UI-COPY-04，本轮）：`AutoPricing` 的「调价与试涨规则」面板原来一个字都没提这两条，
+  用户看到的症状是「这一行本来每轮都在降，忽然六小时不动了」，在面板里找不到对应规则，只能
+  判成故障。已补「领先差额」「价格战熔断」两条，并写明熔断期间持位提价与缺货试涨照常。
+- 审计（AUDIT-PLAN-FIELDS-01，本轮）：版式审计 fixture 的 `plan` 补 `lead_amount` /
+  `leader_leadtime` / `war`，并点名要求决策卡片上真出现「领先差额 / 对手时效 / 价格战熔断」
+  三个 chip。这三个 chip 是 10-23 加的，fixture 没跟上，99 个组合从头到尾没量过，
+  报的却是「0 处问题」——和 AUDIT-DETAIL-01 是同一类假通过。
+- 验证：`test_automatic_pricing.py` 熔断 6 例、`test_pricing_guardrails.py::test_lead_amount_scales_with_price`、
+  `test_delivery_leadtime.py` 13 例；本轮实测后端全量 594 passed / 1 skipped；
+  反向探针：删掉 fixture 三个字段后版式审计三档全报 `decision card missing chip`（已还原）。
+- 未做：`leadtimeDays` 只采集与展示、不参与决策——缺「本店自己的配送时效」这个数，硬写推断
+  规则只会变成新的误判；`takealot_buybox` 按 `fastest` → `best_price` 找卡位，而 Buybox 归属
+  是现货最低价，改它要回答「守最快卡卖高价 vs 压到最低价抢 Buybox」，属业务取舍，留给人决定。

@@ -39,9 +39,14 @@ RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last
             # 决策卡片和「今日改价」都只从 rule.plan 渲染。没有 plan 时这一整块不出现，
             # 审计照样报「0 处问题」——等于这一屏从没被量过。这里给一份真实形状的
             # 决策（最长的原因文案 + 紧张档 + 剔除异常报价 + 配额计数），把卡片撑开。
+            # 三个后加的字段（领先差额 / 对手时效 / 熔断标记）也必须在：它们在卡片上
+            # 各是一个 span，缺了就少三个节点，而审计只会报「0 处问题」——
+            # 上一轮加这两条文案时 fixture 没跟上，等于从没量过。
             plan=dict(regime='compete', current=269, floor=200, ceiling=320, cheapest=255, gap_pct=5.2,
                       live_count=3, dark_count=1, sole_seller=False, pressure='tight', cover_days=12.4,
                       outliers=2, confidence='high', risk='high',
+                      lead_amount=5, leader_leadtime=2, war='open',
+                      
                       reason='3 个竞品有现货，最低 R 255；本店不在持位，按一次最多降 15% 走一步：269 → 255，够不着就分几轮走。库存紧张（约 12 天）时不跟降。'))
 PRICING = dict(product_id=PRODUCT['id'], offer_id='test-offer', sku='TEST-001', name=PRODUCT['product_name'], group='未分类', stock=10, price=269, suggested_min=200, rule=RULE, monitor=dict(status='error', enabled=False, interval_minutes=5, error_code='site_challenge', error='网站要求本人验证', last_success_at=None))
 PRICING['monitor'].update(buybox_price=269,last_success_at='2026-10-15T14:00:00Z',price_ownership=dict(state='matched',own_price=269,own_price_source='official_live',own_price_asof='2026-10-15T14:00:01Z',identity_verified=False))
@@ -225,6 +230,13 @@ def main():
                         for chip in card.locator('span').all():
                             b=chip.bounding_box()
                             if b and (b['x']<box['x']-1 or b['x']+b['width']>box['x']+box['width']+1): failures.append(f'{width}: decision chip outside card {b}')
+                        # fixture 少一个 plan 字段，卡片上就少一个 chip，而审计照样报
+                        # 「0 处问题」——2026-10-23 新增的领先差额/对手时效/熔断标记
+                        # 就这样整整一轮没被量过。这里点名要求这三个 chip 真在页面上：
+                        # 把「fixture 漏字段」变成红，而不是变成更少的检查点。
+                        text=card.inner_text()
+                        for label in ('领先差额','对手时效','价格战熔断'):
+                            if label not in text: failures.append(f'{width}: decision card missing chip {label}')
                     if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: opened details causes page overflow')
                     row.locator('summary').click()
                     if card.is_visible(): failures.append(f'{width}: details did not collapse')
