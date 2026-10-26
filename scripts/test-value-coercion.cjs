@@ -36,7 +36,7 @@ Module.prototype.require = function patched(request) {
 };
 
 const srcDir = path.resolve(__dirname, '../src');
-const { toNumber, toAmount } = compileModule(path.join(srcDir, 'utils/number.ts'));
+const { toNumber, toAmount, toneOf } = compileModule(path.join(srcDir, 'utils/number.ts'));
 const { applySettled, failureSummary, reasonText } = compileModule(path.join(srcDir, 'utils/settle.ts'));
 const { formatPrice, formatPercent } = compileModule(path.join(srcDir, 'types.ts'));
 
@@ -82,6 +82,32 @@ equal(formatPrice(0), 'R 0.00', 'formatPrice 0 必须显示 0.00');
 equal(formatPercent('0.25'), '25.00%', 'formatPercent 接受字符串');
 equal(formatPercent(null), '-', 'formatPercent 缺失显示 -');
 equal(formatPrice(138.18), 'R 138.18', '最低价保留两位小数（不再 toFixed(0) 抹成 138）');
+
+// --- toneOf：判色前必须先问「这个数存在吗」 ---
+// 详情页利润行原来是 `(product.profit_zar ?? 0) >= 0 ? 绿 : 红`，缺成本的产品
+// 显示「利润 -」却是绿色，看起来像「利润是正的、只是没显示」；同一张表里
+// 「利润率 -」是灰色，两行自相矛盾。缺失必须是中性态，不能被当成 0 判成「好」。
+const profitGood = (amount) => amount >= 0;
+equal(toneOf(null, profitGood), 'neutral', '利润缺失 -> 中性（不许判成好/差）');
+equal(toneOf(undefined, profitGood), 'neutral', '利润 undefined -> 中性');
+equal(toneOf('', profitGood), 'neutral', '利润空串 -> 中性');
+equal(toneOf('abc', profitGood), 'neutral', '利润非法值 -> 中性');
+equal(toneOf(0, profitGood), 'good', '利润 0 是真实数据，按 >=0 判好');
+equal(toneOf(-5, profitGood), 'bad', '亏损 -> 差');
+equal(toneOf('120.00', profitGood), 'good', '字符串金额照常判色');
+const marginGood = (amount) => amount >= 0.25;
+equal(toneOf(null, marginGood), 'neutral', '利润率缺失 -> 中性');
+equal(toneOf(0.25, marginGood), 'good', '利润率 25% 达标');
+equal(toneOf(0.2499, marginGood), 'bad', '利润率 24.99% 未达标');
+
+// 详情页两行必须共用同一个判据：只修一行会再次出现「绿 - / 灰 -」并排。
+const detailSource = fs.readFileSync(path.resolve(srcDir, 'pages/ProductDetail.tsx'), 'utf8');
+ok(/color:\s*PROFIT_TONE\[toneOf\(product\.profit_zar,/.test(detailSource),
+  '利润行的颜色必须走 toneOf（缺失不得判成成功色）');
+ok(/color:\s*PROFIT_TONE\[toneOf\(product\.profit_margin,/.test(detailSource),
+  '利润率行的颜色必须走同一个 toneOf');
+ok(!/\(product\.profit_zar \?\? 0\)/.test(detailSource),
+  '利润行不得再用 `?? 0` 把缺失当成 0 判色');
 
 // --- settle：分区降级 ---
 const failures = [];

@@ -33,6 +33,17 @@ export default function Stores({ onStoresChanged }: Props) {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
+  // 与设置页同一判据：同一次操作的成败不能同时挂在屏幕上（「店铺设置已保存」
+  // 与「暂停失败」并排出现时，用户不知道这次到底成没成）。另外暂停/恢复原来
+  // 只重载列表、什么都不说，上一条成功提示（说的是别的事）就一直留在那儿。
+  // 注意 load() 自己失败时仍会单独报错——「保存成功、但列表没读回来」是真的
+  // 两件事，不该互相盖掉。
+  const notice = (text: string) => { setMessage(text); setError(''); };
+  const fail = (e: unknown) => {
+    setError(e instanceof Error ? e.message : String(e));
+    setMessage('');
+  };
+
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
@@ -56,22 +67,26 @@ export default function Stores({ onStoresChanged }: Props) {
   };
 
   const save = async () => {
-    if (!form.name.trim()) { setError('请填写店铺名称'); return; }
+    if (!form.name.trim()) { fail('请填写店铺名称'); return; }
     setSaving(true); setError(''); setMessage('');
     try {
       if (editingId) await updateStore(editingId, form);
       else await createStore(form);
-      setMessage(editingId ? '店铺设置已保存' : '新店铺已建立，可以开始录入该店库存');
+      notice(editingId ? '店铺设置已保存' : '新店铺已建立，可以开始录入该店库存');
       setEditingId(null); setShowCreate(false); setForm(emptyForm()); await load();
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e: unknown) { fail(e); }
     finally { setSaving(false); }
   };
 
   const toggleStatus = async (store: Store) => {
     const next = store.status === 'active' ? 'paused' : 'active';
     if (next === 'paused' && !window.confirm(`暂停“${store.name}”后，它不会出现在顶部店铺切换中。历史数据仍会保留，是否继续？`)) return;
-    try { await updateStore(store.id, { status: next }); await load(); }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    try {
+      await updateStore(store.id, { status: next });
+      notice(next === 'paused' ? `已暂停「${store.name}」，它不再出现在顶部店铺切换中` : `已恢复「${store.name}」`);
+      await load();
+    }
+    catch (e: unknown) { fail(e); }
   };
 
   return <div className="page stores-page">

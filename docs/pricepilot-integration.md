@@ -1988,3 +1988,36 @@ WorkBuddy；基线 `8f3a1df552`。
 - 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡）；
   调价参数语义（禁止区）；`--sp-1` / `--surface-inset` / `--surface-raised` 三个令牌
   定义了没人用（令牌刻度本身完整，删了反而破坏「四层表面」的表述，留待视觉层定稿）。
+
+### KPI-TONE-01 / BANNER-EXCLUSIVE-01（2026-10-27，自检轮）
+
+- 优先级 P2；开工时远端 main `baeb42fd19`、后端 build `baeb42fd19c9`，两者一致（无部署漂移），
+  全量 selfcheck 38/38、无跳过（155.3s）。两处都是「全绿时看不见、出错或数据缺失时才说话」的
+  显示口径问题。
+- 复现（①）：`src/pages/ProductDetail.tsx` 利润行判色写的是
+  `(product.profit_zar ?? 0) >= 0 ? 成功色 : 危险色`。缺成本的产品 `profit_zar` 为 null，
+  `formatPrice` 显示「-」，但颜色先被 `?? 0` 拉成 0 再判正负 → 绿色「-」，读起来像
+  「利润是正的、只是没显示」。同一张表下面两行的利润率已经做了 null 判断（灰色），
+  于是缺数据的产品出现「利润 -（绿）/ 利润率 -（灰）」两行自相矛盾。
+- 改动（①）：`src/utils/number.ts` 新增 `toneOf(value, isGood)` → `'neutral' | 'good' | 'bad'`，
+  先问「这个数存在吗」再谈好坏；`ProductDetail.tsx` 两行共用 `PROFIT_TONE[toneOf(...)]`，
+  删掉 `?? 0` 写法。
+- 复现（②）：`Settings.tsx` 的成功提示（`message`）与错误提示（`error`）是两块独立状态，
+  只有「导出到云端」同时清两者；汇率 / 品类启停 / 费率 / 映射规则 / API 配置五个动作
+  在失败时只 `setError`，上一条绿条「汇率已更新」还挂在屏幕上，绿红并排出现，
+  用户不知道这次到底成没成。`Stores.tsx` 同类，且暂停/恢复店铺成功后**什么都不说**，
+  上一条「店铺设置已保存」（说的是别的事）就一直留着。
+- 改动（②）：两页各加 `notice()` / `fail()` 一对（写一条就清另一条），所有动作统一走它；
+  `toggleStatus` 补上「已暂停「X」，它不再出现在顶部店铺切换中」/「已恢复「X」」。
+  `load()` 的读失败仍单独报错——「保存成功、但列表没读回来」是真的两件事，不该互相盖掉。
+- 验证：`test-value-coercion.cjs` 36→49 条断言（新增 10 条 `toneOf` 三态 + 3 条详情页源码守卫），
+  `test-fee-categories.cjs` 18→32（新增 14 条：notice/fail 存在 + 6 个处理函数逐个禁止直接写横幅），
+  `test-store-switcher.cjs` 28→34（新增 6 条，含「暂停/恢复必须给出结果提示」）。
+  三条反向探针分别把利润判色改回 `?? 0`、把汇率失败分支改回 `setError`、把 `toggleStatus`
+  改回只 `setError` 且不提示 → 对应套件各自转红，已全部还原。tsc 通过；全量 selfcheck 38/38（155.4s）。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡）；
+  调价参数语义（禁止区）；`Packing.tsx` 的 `msg` / `error` 也有同类「成功与失败同时挂着」的
+  可能（5 处 `setError` 都不清 `msg`），本轮预算已满，未动；`src/remoteApi.ts` 的
+  `downloadProductLabels` 零调用点，但注释写明「保留是因为后端接口还在（供脚本/其它客户端用）」，
+  属有意保留，不动。
+

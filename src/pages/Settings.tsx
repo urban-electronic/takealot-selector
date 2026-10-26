@@ -36,6 +36,16 @@ export default function Settings() {
   const [ruleCategory, setRuleCategory] = useState('');
   const [rulePriority, setRulePriority] = useState('0');
 
+  // 成功提示与错误提示是两块独立的状态，同时挂出来就是两句互相打脸的话：
+  // 「汇率已更新」还在屏幕上，紧接着「品类费率保存失败」的红条又冒出来，
+  // 用户不知道这次到底成没成。每个动作只允许留下自己那一条
+  // （采购页 PROC-ERR-STALE-01 是同一个判据）。
+  const notice = (text: string) => { setMessage(text); setError(''); };
+  const fail = (e: unknown) => {
+    setError(e instanceof Error ? e.message : String(e));
+    setMessage('');
+  };
+
   useEffect(() => {
     Promise.all([api.getSettings(), api.getFeeCategories()])
       .then(([s, f]: [Record<string, string>, FeeCategory[]]) => {
@@ -101,9 +111,9 @@ export default function Settings() {
   const handleSaveExchange = async () => {
     try {
       await api.updateSettings({ cny_per_zar: exchangeRate });
-      setMessage('汇率已更新');
-    } catch (e: any) {
-      setError(e.message);
+      notice('汇率已更新');
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -113,9 +123,9 @@ export default function Settings() {
       setFeeCategories((prev) =>
         prev.map((f) => (f.id === fc.id ? { ...f, active: !f.active } : f))
       );
-      setMessage(`品类「${fc.name}」已${fc.active ? '停用' : '启用'}`);
-    } catch (e: any) {
-      setError(e.message);
+      notice(`品类「${fc.name}」已${fc.active ? '停用' : '启用'}`);
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -125,9 +135,9 @@ export default function Settings() {
       setFeeCategories((prev) =>
         prev.map((f) => (f.id === fc.id ? { ...f, success_fee_rate: newRate } : f))
       );
-      setMessage(`品类「${fc.name}」费率已更新为 ${(newRate * 100).toFixed(0)}%`);
-    } catch (e: any) {
-      setError(e.message);
+      notice(`品类「${fc.name}」费率已更新为 ${(newRate * 100).toFixed(0)}%`);
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -140,12 +150,12 @@ export default function Settings() {
         priority: parseInt(rulePriority) || 0,
         created_by_user: true,
       });
-      setMessage('映射规则已添加');
+      notice('映射规则已添加');
       setRulePattern('');
       setRuleCategory('');
       setRulePriority('0');
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -158,8 +168,8 @@ export default function Settings() {
     try {
       localStorage.setItem('api_base_url', baseUrl);
       localStorage.setItem('api_key', key);
-    } catch (e) {
-      setError('API 配置保存失败：浏览器存储不可用');
+    } catch {
+      fail('API 配置保存失败：浏览器存储不可用');
       return;
     }
     // 保存后立即读回验证，避免"点了保存但没落库"
@@ -172,15 +182,15 @@ export default function Settings() {
       verified = false;
     }
     if (!verified) {
-      setError('API 配置未生效，请重试（必要时清理浏览器缓存后刷新）');
+      fail('API 配置未生效，请重试（必要时清理浏览器缓存后刷新）');
       return;
     }
-    setMessage('API 配置已保存并生效');
+    notice('API 配置已保存并生效');
   };
 
   const handleExportToCloud = async () => {
     const baseUrl = apiBaseUrl || localStorage.getItem('api_base_url') || 'https://takealot-selector-production.up.railway.app';
-    if (!baseUrl) { setError('请先设置远程库 API 地址'); return; }
+    if (!baseUrl) { fail('请先设置远程库 API 地址'); return; }
     setExporting(true);
     setError('');
     setMessage('');
@@ -209,9 +219,9 @@ export default function Settings() {
       const rulesPart = skipped.includes('fee_mapping_rules')
         ? 'fee_mapping_rules: 未同步（本地读取失败，云端原值保留）'
         : `fee_mapping_rules: ${imported.fee_mapping_rules || 0}`;
-      setMessage(`导出成功！products: ${imported.products || 0}, fee_categories: ${imported.fee_categories || 0}, ${rulesPart}, system_settings: ${imported.system_settings || 0}`);
-    } catch (e: any) {
-      setError(`导出失败: ${e.message}`);
+      notice(`导出成功！products: ${imported.products || 0}, fee_categories: ${imported.fee_categories || 0}, ${rulesPart}, system_settings: ${imported.system_settings || 0}`);
+    } catch (e) {
+      fail(`导出失败: ${(e as Error).message}`);
     } finally {
       setExporting(false);
     }

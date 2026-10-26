@@ -11,7 +11,7 @@ import { FALLBACK_FX, MARKET_META, MARKET_ORDER, formatMarketPrice, formatZarPri
 import type { MarketCode, MarketPrices } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { beijingDateTime } from '../utils/datetime';
-import { toNumber } from '../utils/number';
+import { toneOf } from '../utils/number';
 import { copyText } from '../utils/clipboard';
 import { skuVariants, variantLabels } from '../utils/variants';
 import { isAgencyStoreName } from '../utils/agencyStore';
@@ -312,6 +312,17 @@ export default function ProductDetail() {
 
   const status = SELECTION_STATUS_MAP[product.selection_status];
   const skuCount = (editData.sku || product.sku || '').split(/[\s,，;；]+/).filter(Boolean).length;
+
+  // 利润与利润率的颜色判据（见 utils/number.toneOf）。
+  // 缺数据时 formatPrice / formatPercent 显示「-」，如果先 `?? 0` 再判正负，
+  // 这个「-」会被涂成成功色（绿）——读起来像「利润是正的，只是没显示」。
+  // 原来只有利润率行做了这层判断，利润行漏了，于是同一张表里
+  // 缺成本的产品「利润 -」（绿）与「利润率 -」（灰）两行自相矛盾。
+  const PROFIT_TONE: Record<'neutral' | 'good' | 'bad', string> = {
+    neutral: 'var(--color-text-secondary)',
+    good: 'var(--color-success)',
+    bad: 'var(--color-danger)',
+  };
 
   return (
     <div className="product-detail-page">
@@ -894,14 +905,14 @@ export default function ProductDetail() {
             </tr>
             <tr>
               <td style={{ fontWeight: 700 }}>利润 (ZAR)</td>
-              <td style={{ fontWeight: 700, fontSize: 18, color: (product.profit_zar ?? 0) >= 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+              <td style={{ fontWeight: 700, fontSize: 18, color: PROFIT_TONE[toneOf(product.profit_zar, (amount) => amount >= 0)] }}>
                 {formatPrice(product.profit_zar, 'ZAR')}
               </td>
             </tr>
             <tr>
               <td style={{ fontWeight: 700 }}>利润率</td>
               {/* 缺数据不能当成 0%：?? 0 会把"没算出来"渲染成红色低毛利 */}
-              <td style={{ fontWeight: 700, fontSize: 22, color: product.profit_margin == null ? 'var(--color-text-secondary)' : (toNumber(product.profit_margin) ?? 0) >= 0.25 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+              <td style={{ fontWeight: 700, fontSize: 22, color: PROFIT_TONE[toneOf(product.profit_margin, (amount) => amount >= 0.25)] }}>
                 {formatPercent(product.profit_margin)}
               </td>
             </tr>

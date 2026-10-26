@@ -149,6 +149,30 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0))
     check(page.includes('不代表分类路径不匹配'), '「无推荐」要说明它不是「分类不匹配」的结论');
   }
 
+  // 设置页同一次操作的成败不许同时挂在屏幕上：成功提示与错误提示是两块独立
+  // 状态，原来「汇率已更新」成功后紧接着一个保存失败，屏幕上会并排出现
+  // 绿条和红条，用户不知道这次到底成没成（采购页 PROC-ERR-STALE-01 同一判据）。
+  // 守卫按「处理函数体」逐个看：允许清空（setError('')），不允许直接写文案。
+  {
+    const settings = fs.readFileSync(path.resolve(__dirname, '../src/pages/Settings.tsx'), 'utf8');
+    const bodyOf = (name) => {
+      const start = settings.indexOf(`const ${name} = `);
+      if (start < 0) return '';
+      const end = settings.indexOf('\n  };', start);
+      return end < 0 ? '' : settings.slice(start, end);
+    };
+    check(settings.includes('const notice = '), '设置页必须提供 notice()：成功时清掉旧错误');
+    check(settings.includes('const fail = '), '设置页必须提供 fail()：失败时清掉旧成功提示');
+    for (const name of ['handleSaveExchange', 'handleToggleCategory', 'handleUpdateFeeRate',
+                        'handleAddMappingRule', 'handleSaveApiUrl', 'handleExportToCloud']) {
+      const body = bodyOf(name);
+      check(body.length > 0, `${name} 必须仍然存在`);
+      const direct = body.match(/(?:setError|setMessage)\((?!'')/g) || [];
+      check(direct.length === 0,
+        `${name} 不得直接写横幅（${direct.join('、')}），必须走 notice()/fail()，否则成败会同时显示`);
+    }
+  }
+
   console.log(`test-fee-categories: ${checks} checks passed`);
 })().catch((error) => {
   console.error(error);

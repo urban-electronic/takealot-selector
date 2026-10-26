@@ -107,4 +107,28 @@ check(!/`每 \$\{[^}]*sync_interval_minutes[^}]*\} 分钟`/.test(storesSource),
 check(storesSource.includes('暂不自动执行'), '同步间隔必须注明「暂不自动执行」');
 check(storesSource.includes('库存未自动同步'), 'API 读取档必须说清库存未自动同步');
 
+// ---- 同一次操作的成败不许同时挂在屏幕上 -------------------------------------
+// 保存成功留下绿条「店铺设置已保存」，紧接着暂停另一家店失败又冒红条，
+// 两句并排出现时用户不知道这次到底成没成。暂停/恢复原来还什么都不说，
+// 上一条成功提示（说的是别的事）就一直留在那儿。
+{
+  const bodyOf = (name) => {
+    const start = storesSource.indexOf(`const ${name} = async`);
+    if (start < 0) return '';
+    const end = storesSource.indexOf('\n  };', start);
+    return end < 0 ? '' : storesSource.slice(start, end);
+  };
+  check(storesSource.includes('const notice = ') && storesSource.includes('const fail = '),
+    '店铺页必须提供 notice()/fail()：一个动作只留一条横幅');
+  for (const name of ['save', 'toggleStatus']) {
+    const body = bodyOf(name);
+    check(body.length > 0, `${name} 必须仍然存在`);
+    const direct = body.match(/(?:setError|setMessage)\((?!'')/g) || [];
+    check(direct.length === 0,
+      `${name} 不得直接写横幅（${direct.join('、')}），必须走 notice()/fail()`);
+  }
+  check(/notice\(next === 'paused'/.test(bodyOf('toggleStatus')),
+    '暂停/恢复必须给出结果提示，不能只重载列表');
+}
+
 console.log(`test-store-switcher: ${checks} 条断言通过`);

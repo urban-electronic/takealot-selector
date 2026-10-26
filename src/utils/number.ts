@@ -28,3 +28,19 @@ export function toNumber(value: unknown): number | null {
 export function toAmount(value: unknown): number {
   return toNumber(value) ?? 0;
 }
+
+/**
+ * 数值型指标的「好 / 差 / 没数据」三态。
+ *
+ * 背景：`(product.profit_zar ?? 0) >= 0` 这种写法会把**缺失**当成 0，
+ * 于是「没算出来」被染成成功色（绿），读起来像「利润是正的、只是没显示」。
+ * 同一张表里「利润 -」（绿）和「利润率 -」（灰）还会自相矛盾。
+ *
+ * 所以判色必须先问「这个数存在吗」，存在才谈好坏：
+ * 缺失/非法 → 'neutral'，交给调用方用中性色，不要用「坏」色冒充。
+ */
+export function toneOf(value: unknown, isGood: (amount: number) => boolean): 'neutral' | 'good' | 'bad' {
+  const amount = toNumber(value);
+  if (amount == null) return 'neutral';
+  return isGood(amount) ? 'good' : 'bad';
+}
