@@ -20,6 +20,10 @@ Maintain the existing operator application; user instructions take precedence.
   a task requirement.
 - Reproduce a defect before changing it; rerun the same trigger and affected core
   flow afterward. Distinguish isolated tests, deployment and real business evidence.
+- Review judgments follow the [code review standard](docs/engineering/code-review-standard.md);
+  PR descriptions use [its template](.github/pull_request_template.md). Cite checklist ids
+  (A1…H4) with a P0–P3 level, never a bare "looks fine". `node scripts/review-brief.cjs`
+  lists the checks and commands that apply to the current diff.
 - Before merging, review the latest PR head and its `PR Check` result. A failed,
   missing or stale result is not a passing gate. Use targeted local tests during
   implementation; the PR/release workflow runs the integrated frontend checks.
