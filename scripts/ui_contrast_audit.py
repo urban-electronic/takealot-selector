@@ -33,7 +33,11 @@
     停用控件：`disabled` / `aria-disabled="true"` 内的文字按 WCAG 1.4.3 例外单列计数，
         不计失败；但仍出现在汇总的「停用控件文字」列里，不从分母消失。
     控件：高度 < 28px 记为触达目标过小（WCAG 2.5.8 建议 24px，本项目取更严的 28px）。
-    背景：祖先背景近似，不覆盖所有透明混合、hover、焦点、弹窗状态。
+    背景：元素**自身**的 `background-image` 渐变按全部色标参与判定，取对比度最差的
+        一档（半透明色标先与下层底色混合）。只看 `background-color` 会把白字压在
+        主按钮浅色标上的情况按 5.9:1 判过 —— 实测只有 4.11:1。祖先的装饰性渐变
+        仍用其兜底色近似（body 那两团光只画在左上角，按色标算会把正常文字误判）。
+        祖先背景仍是近似，不覆盖 hover / 焦点 / 弹窗打开后的重绘状态。
     未成功加载标题与关键fixture行、未知请求、低对比均退出非0。
 """
 import asyncio
@@ -78,14 +82,47 @@ AUDIT = r"""
   const px = v => parseFloat(v) || 0;
   const lum = ([r,g,b]) => { const f=c=>{c/=255;return c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4)}; return 0.2126*f(r)+0.7152*f(g)+0.0722*f(b); };
   const rgb = s => { const m=(s||'').match(/[\d.]+/g); if(!m) return null; return [ +m[0],+m[1],+m[2], m[3]!==undefined? +m[3]:1 ]; };
-  const effBg = el => {
+  const opaque = c => c[3] > 0.95;
+  // `background-color` 是渐变不生效时的兜底色。本项目所有渐变都刻意配了一个匹配的
+  // 兜底色（见 workspace.css 的 .app-header 注释），但**元素自身的渐变会盖住兜底色**：
+  // 主按钮兜底 #2059b7、渐变 0% 色标却更浅，只看兜底就会把白字按 5.9:1 判过，
+  // 而压在浅色标上实测只有 4.11:1（docs/review/2026-10-27-button-gradient-contrast.md）。
+  // 所以：元素自己的渐变按全部色标取最差一档；祖先的装饰性渐变（body 那两团只画在
+  // 左上角的光）仍用它的兜底色近似，否则会把正常文字误判成 4.50:1。
+  const gradientStops = cs => {
+    const img = cs.backgroundImage;
+    if (!img || img.indexOf('gradient') < 0) return null;
+    const cols = (img.match(/rgba?\([^)]*\)/g) || []).map(rgb).filter(c => c && c[3] > 0.01);
+    return cols.length ? cols : null;
+  };
+  const solidBg = el => {
     let n = el;
     while (n && n !== document.documentElement) {
       const c = rgb(getComputedStyle(n).backgroundColor);
-      if (c && c[3] > 0.95) return c;
+      if (c && opaque(c)) return c;
       n = n.parentElement;
     }
     return [255,255,255,1];
+  };
+  const bgCache = new Map();
+  const effBgs = el => {
+    if (!el) return [[255,255,255,1]];
+    const hit = bgCache.get(el);
+    if (hit) return hit;
+    const cs = getComputedStyle(el);
+    const stops = gradientStops(cs);
+    let out = null;
+    if (stops) {
+      const solid = stops.filter(opaque);
+      if (solid.length) out = solid;
+      // 全是半透明色标（如 .app-header nav a.active 的白色提亮层）：与下层底色混合后再算
+      else { const b = solidBg(el.parentElement); out = stops.map(s => blend(s, b, s[3])); }
+    } else {
+      const c = rgb(cs.backgroundColor);
+      out = (c && opaque(c)) ? [c] : [solidBg(el.parentElement)];
+    }
+    bgCache.set(el, out);
+    return out;
   };
   const ratio = (fg,bg) => { const l1=lum(fg), l2=lum(bg); const a=Math.max(l1,l2), b=Math.min(l1,l2); return (a+0.05)/(b+0.05); };
   const cls = el => el.tagName.toLowerCase() + (typeof el.className==='string' && el.className ? '.'+el.className.trim().split(/\s+/).slice(0,2).join('.') : '');
@@ -116,9 +153,15 @@ AUDIT = r"""
     if (!own) return;
     const fs = px(cs.fontSize);
     fontSizes[fs] = (fontSizes[fs] || 0) + 1;
-    const fg = rgb(cs.color); const bg = effBg(el);
-    if (fg && bg) {
-      const cr = ratio(alpha >= 0.999 ? fg : blend(fg, bg, alpha), bg);
+    const fg = rgb(cs.color); const bgs = effBgs(el);
+    if (fg && bgs.length) {
+      // 渐变底有多档，取对比度最差的那一档——白字压在浅色标上才是真实的最坏情况。
+      let cr = Infinity, bg = bgs[0];
+      for (const cand of bgs) {
+        const painted = alpha >= 0.999 ? fg : blend(fg, cand, alpha);
+        const r = ratio(painted, cand);
+        if (r < cr) { cr = r; bg = cand; }
+      }
       const need = (fs >= 24 || (fs >= 18.66 && +cs.fontWeight >= 700)) ? 3 : 4.5;
       if (cr < need) {
         const node = { cls: cls(el), fs, ratio: Math.round(cr*100)/100, need, alpha: Math.round(alpha*100)/100,

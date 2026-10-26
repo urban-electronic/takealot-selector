@@ -1939,3 +1939,52 @@ WorkBuddy；基线 `8f3a1df552`。
   调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
   `retryFailed(minutes)` 把建议间隔一并写给「非被挡住」的批次（按钮文案说的是整页间隔，
   语义上分不清是有意还是漏写，改动会动到批量接口的入参，留待确认）。
+
+### VISUAL-TOKENS-V2 / UI-GRADIENT-CONTRAST-01（2026-10-27，补记）
+
+- 基线 `47d3cc877f` 之后并入两笔视觉改动，原提交零文档，这里补记：
+  ①`ee594e49` 视觉统一层 v2：`src/ui-tokens.css` 收成唯一令牌来源（文字色阶 / 字号刻度 /
+  控件高度 / 表头度量 / 间距 4px 七档 / 圆角 / 三层阴影 / 四层表面 / 强调色 / 动效），
+  `workspace.css` 增加一层覆盖（552 行），把三套互相覆盖的样式收敛成一套。
+  ②`f2fada9d`（PR #184）主按钮/成功按钮渐变加深：审计只读 `background-color`，
+  渐变浅色标上 13px 白字实测 4.11:1（success 顶档 3.52:1、hover 3.17:1），
+  加深蓝色/绿色渐变两个色标及其兜底色后 6 条渐变 606 个采样点全部 ≥4.5:1，
+  由 `scripts/test-button-gradient.cjs` 静态钉住。详见
+  `docs/review/2026-10-27-button-gradient-contrast.md`。
+- 注意：PR #184 的 review 自己指出「浏览器对比度审计读 `backgroundColor`、忽略
+  `backgroundImage`」，但当时只改了 CSS，**审计本体仍是瞎的** —— 见下一条。
+
+### CONTRAST-GRADIENT-01 / GUARD-GRADIENT-01 / DOC-STEP-COUNT-02（2026-10-27，自检轮）
+
+- 优先级 P2；开工时远端 main `ac4e434290`、后端 build `ac4e434290ac`，两者一致（无部署漂移），
+  全量 selfcheck 38/38、无跳过。三处都是「门禁写着通过，但它其实没量到」。
+- 复现（①）：`scripts/ui_contrast_audit.py` 的 `effBg()` 只取 `backgroundColor`。
+  元素自身的渐变会盖住兜底色，于是「兜底 #2059b7 深蓝、渐变 0% 色标 #eef4ff 浅色」的按钮
+  被按兜底色算成 5.9:1 判过，压在浅色标上的白字实际只有 1.1:1。
+  与 PR #184 手工加深 CSS 不同，这次修的是**判据本身**：元素自身的 `background-image`
+  渐变按全部色标参与判定、取最差一档；半透明色标先与下层底色混合。
+- 改动（①）：`effBg` → `solidBg`（只按 `backgroundColor` 向上找）+ `effBgs`（自身渐变优先），
+  测量循环对每个候选底色算一次取最小值；`bgCache` 按元素缓存，33 面耗时 23.5s→23.7s。
+- 边界（重要）：**祖先的装饰性渐变仍用兜底色近似**。`body` 的
+  `radial-gradient(... #e5f0fd 0%, transparent 62%)` 只画在左上角 6% 处，按色标算会把
+  「库存页三个 tab + 装箱页 eyebrow」误报成 4.50:1（实测 4.4996，差 0.0004）。试过一版
+  「祖先渐变也按色标算」，33 面直接报 12 处假阳性，已回退到按元素自身判。
+- 复现（②）：`check-visual-consistency.cjs` 第 12 组遇到 `linear-gradient` 一律 `continue`
+  （注释写「渐变/图床底无法静态判定」），于是渐变规则从没被静态核过——与 ① 是同一个盲点。
+- 改动（②）：新增第 12b 组，只取渐变函数括号内的色标（`decl` 里的 `border-color` /
+  `box-shadow` 也是色值，混进来会算出 1:1），对「同一规则里既有渐变又有显式文字色」的
+  5 条规则按最差色标核对比度；带覆盖面锁（`total >= 5`）与突变自测（把 `.btn-primary` 的
+  `color: #fff` 改成 `#2864cc` 必须转红）。文字色靠父类继承的
+  （`.packing-export-btn` 从 `.btn` 继承白字）静态看不出来，仍由 ①与 `test-button-gradient.cjs` 覆盖。
+- 复现（③）：`docs/engineering/code-review-standard.md` 写「37 步 / 27 个前端套件」，
+  而 PR #184 新增 `test-button-gradient.cjs` 后实测是 38 步 / 28 个（`--list | wc -l` = 38）。
+  上一轮刚把 24 改成 27，加套件时又没跟上。
+- 改动（③）：该文档改 38 步 / 28 个（2 + 28 + 7 = 37，加 pytest = 38），并写明「加套件的同时
+  顺手改这一行」；`scripts/review-brief.cjs` 里同一句过期注释同步（该脚本本来就现算，只注释错）。
+- 验证：`test-contrast-audit.py` 33 面 0 低对比（停用控件文字 75 处单列不变）；
+  反向探针把 `.btn-primary` 渐变 0% 色标改成 `#eef4ff`（兜底色仍深蓝）→ 审计报 24 处
+  `a.btn.btn-primary 1.1:1`、退出 1，已还原；守卫探针把 `.btn-primary` 的 `color: #fff`
+  改成 `#2864cc` → 第 12b 组 `deepStrictEqual` 转红，已还原。全量 selfcheck 38/38（154.8s）。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡）；
+  调价参数语义（禁止区）；`--sp-1` / `--surface-inset` / `--surface-raised` 三个令牌
+  定义了没人用（令牌刻度本身完整，删了反而破坏「四层表面」的表述，留待视觉层定稿）。

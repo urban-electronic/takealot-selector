@@ -14,7 +14,7 @@ const root = path.resolve(__dirname, '..');
 const stagedOnly = process.argv.includes('--staged');
 
 // selfcheck 的步数是扫目录算出来的，不是常量。这里跟着扫一遍，免得交底里写死的数字
-// 在加了套件之后继续说谎（标准文档里那个「24 个前端套件」就是这么漂的：实际 27 个）。
+// 在加了套件之后继续说谎（标准文档里那个「24 个前端套件」就是这么漂的：现在是 28 个）。
 function selfcheckSteps() {
   const names = fs.readdirSync(path.join(root, 'scripts'));
   const count = (re) => names.filter((f) => re.test(f)).length;

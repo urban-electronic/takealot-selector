@@ -264,7 +264,68 @@ const outlineColorOf = (ruleSource) => {
   }
 }
 
+// --- 12b. 渐变底上的文字：按渐变自己的色标算，不再整条跳过 -------------------------
+// 上面第 12 组遇到 `linear-gradient` 直接 continue（「渐变/图床底无法静态判定」）。
+// 但渐变恰恰是最容易翻车的地方：主按钮兜底色 #2059b7、渐变 0% 色标更浅，只看兜底色
+// 会把白字按 5.9:1 判过，实测只有 4.11:1（docs/review/2026-10-27-button-gradient-contrast.md）。
+// 这里只处理「同一条规则里既有渐变又有显式文字色」的情况——文字色靠父类继承的
+// （.packing-export-btn 从 .btn 继承白字）静态看不出来，由 scripts/test-button-gradient.cjs
+// 与浏览器审计 scripts/ui_contrast_audit.py 负责，两边合起来才覆盖完整。
+{
+  // 只取渐变函数括号内的色标：decl 里的 border-color / box-shadow 也是色值，混进来会算出 1:1。
+  const gradientStops = (decl) => {
+    const out = [];
+    for (const fn of decl.matchAll(/(?:linear|radial)-gradient\(([^;]*?)\)(?=[,;\s]|$)/g)) {
+      for (const c of fn[1].matchAll(/#[0-9a-fA-F]{3,8}\b/g)) out.push(c[0]);
+    }
+    return out;
+  };
+  const validate = (css, file) => {
+    const bad = [];
+    let checked = 0;
+    for (const { selector, decl } of cssRules(css)) {
+      if (!/gradient/i.test(decl)) continue;
+      const fg = resolveColor((decl.match(/(?<![-\w])color:\s*([^;}]+)/) || [])[1]);
+      const stops = gradientStops(decl);
+      if (!fg || !stops.length) continue;
+      const size = Number((decl.match(/font-size:\s*([\d.]+)px/) || [])[1] || 13);
+      const weight = Number((decl.match(/font-weight:\s*(\d+)/) || [])[1] || 400);
+      const need = size >= 24 || (size >= 18.66 && weight >= 700) ? 3 : 4.5;
+      let worst = null;
+      for (const stop of stops) {
+        const r = contrast(fg, stop);
+        if (!worst || r < worst.r) worst = { r, stop };
+      }
+      checked += 1;
+      if (worst.r < need) bad.push(`  ${file}  ${selector}\n      ${fg} on ${worst.stop} -> ${fmt(worst.r)}:1（需 ${need}:1）`);
+    }
+    return { bad, checked };
+  };
+
+  const runCheck = (css, file) => {
+    const { bad, checked } = validate(css, file);
+    assert.deepEqual(bad, [], `渐变底上的文字对比度必须达标（只看 background-color 会漏掉浅色标）:\n${bad.join('\n')}`);
+    return checked;
+  };
+
+  let total = 0;
+  for (const [file, css] of [['src/index.css', indexCss], ['src/workspace.css', workspaceCss], ['src/ui-tokens.css', tokensCss]]) {
+    total += runCheck(css, file);
+  }
+  // 覆盖面锁：解析器一旦退化（比如改了渐变写法就匹配不到），total 会掉到 0 而上面照样通过。
+  assert.ok(total >= 5, `渐变+显式文字色的规则只解析到 ${total} 条（应 >=5），解析器可能已失效`);
+
+  // 突变自测：把主按钮文字改成它自己渐变里的浅色标，校验必须失败。
+  const mutant = workspaceCss.replace(
+    /\.btn-primary\s*\{[^}]*\}/,
+    (block) => block.replace(/(?<![-\w])color:\s*#fff\b/, 'color: #2864cc'),
+  );
+  assert.notEqual(mutant, workspaceCss, '突变自测没生效：.btn-primary 里找不到 color: #fff');
+  assert.throws(() => runCheck(mutant, 'mutant'), /渐变底上的文字对比度/, '突变自测失败：文字与渐变同色时校验器竟然通过，等于没有设卡');
+}
+
 // --- 13. 渲染层：状态徽标必须取 LINK_STATUS_MAP.text，不得写死白字 ---------------
+
 {
   for (const rel of ['src/pages/ProductList.tsx', 'src/pages/ProductDetail.tsx']) {
     const src = read(rel);
@@ -311,4 +372,4 @@ const outlineColorOf = (ruleSource) => {
   assert.match(block, /transition-duration:\s*0?\.01ms\s*!important/, 'reduced-motion 下必须把 transition-duration 压到近零');
 }
 
-console.log('视觉一致性检查通过：字号下限、文字对比度黑名单、控件尺寸、表头度量、令牌引入顺序、状态配色（含对比度计算与白字突变自测）、占位提示、焦点圈、静态全量扫描、渲染层白字禁令、组件裸色值禁令、reduced-motion 兜底 共 15 组约束均满足。');
+console.log('视觉一致性检查通过：字号下限、文字对比度黑名单、控件尺寸、表头度量、令牌引入顺序、状态配色（含对比度计算与白字突变自测）、占位提示、焦点圈、静态全量扫描、渐变底文字（含突变自测）、渲染层白字禁令、组件裸色值禁令、reduced-motion 兜底 共 16 组约束均满足。');
