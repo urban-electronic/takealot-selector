@@ -1,9 +1,9 @@
 """长标题布局 + 焦点圈对比度审计的真实执行入口：本机 Vite + 隔离 fixture + 真实 Chromium。
 
 为什么需要这个文件：`scripts/ui_longtitle_focus_audit.py` 是审计本体——18 个
-「路由 × 宽度」组合，每组 Tab 最多 60 次逐个量 document.activeElement 的焦点圈
-颜色与背景，按 WCAG 2.1 算比值，<3:1 判失败；同时按**绘制矩形**判文字互相重叠与
-表格单元格越界。但它此前只被 `scripts/test-longtitle-audit-safety.py` 用**假浏览器**
+「路由 × 宽度」组合，每组按 Tab 走完一整圈（焦点回到第一个可聚焦元素为止，硬上限
+FOCUS_HARD_CAP 只防死循环），逐个量 document.activeElement 的焦点圈颜色与背景，
+按 WCAG 2.1 算比值，<3:1 判失败；同时按**绘制矩形**判文字互相重叠与表格单元格越界。但它此前只被 `scripts/test-longtitle-audit-safety.py` 用**假浏览器**
 调用过：那个套件验证的是「失败路径会不会判失败」，喂进去的 `overlaps` 恒为空、
 `ringRatio` 恒为 3.1。也就是说真实页面上的长标题重叠和焦点圈对比度，从来没在任何
 门禁里量过一次——脚本放着不跑，和没有这个脚本是一样的，而报告上仍然写着
@@ -11,7 +11,7 @@
 
 这里把它接进 selfcheck（`scripts/test-*.py` 会被自动纳入），用的是审计本体的同一份
 判据，没有放宽任何断言：未测到的页面、被拦下的请求、任何一处重叠/越界/焦点圈不足
-3:1 都算失败。
+3:1、以及焦点采样没走完一圈（触到硬上限）都算失败。
 
 隔离性：只连 127.0.0.1 的 Vite（`ui_contrast_audit.local_origin` 会拒绝其它主机），
 `/api/*` 由审计本体从 `test-responsive-layout.py` 的 `DATA` 派生，写请求与非本机请求

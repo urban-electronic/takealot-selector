@@ -1760,3 +1760,43 @@ WorkBuddy；基线 `8f3a1df552`。
   调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
   `TAB_LIMIT=60` 仍可能截断焦点采样（本机实测各页 56~59 个停点，暂未触顶），
   真要防它得把「已到上限」也单列，超出本轮 3 处预算。
+  （更正：那句「56~59 个停点」是 60 次上限下的**重复计数**——真实一圈只有 14~44 个
+  可聚焦元素，循环走了约 1.4 圈；已由 FOCUS-CAP-01 改成「走完一圈就停、触上限判失败」。）
+
+### FOCUS-CAP-01 / AUDIT-LONGTITLE-03 / PROC-SEARCH-ERR-01（2026-10-26）
+
+- 优先级 P1；基线远端 main `2d04fbcfe9`、后端 build `2d04fbcfe9e3`（无漂移），自检 37/37 全绿之后主动排查。
+- 复现：
+  ①`scripts/ui_longtitle_focus_audit.py` 的焦点采样写死「Tab 至多 60 次」。实测本机各页一圈
+  只有 14~44 个可聚焦元素（`/products` 44、`/auto-pricing` 36、`/inventory` 19、`/packing` 36、
+  详情页 14、`/replenishment` 22、`/procurement` 17），60 次意味着**同一批元素被反复量了约 1.4 圈**，
+  报告里的「焦点采样 56~59」和「子部件焦点 24」都是重复计数（去重后子部件其实是 3 条）；
+  反过来，一旦某页长出 60 个以上可聚焦元素，后面的就静默不量、报告照样写「0 处焦点问题」。
+  ②同一段代码有 CSS 过渡抢拍问题：`.procurement-note-cell input` 带 `transition: box-shadow .15s`，
+  Tab 之后立刻读 `getComputedStyle` 拿到的是过渡**起点**（`rgba(0,0,0,0) 0 0 0 0`），
+  于是同一个输入框「有没有焦点圈」取决于读得多快——先后两次探针分别报「圈缺失」和「1.14:1」。
+  ③路由表仍缺 `/replenishment` 与 `/procurement`：前者品名是 `chinese_product_name or
+  product_name`（后端 `operations_routes`），中文名没填就会把整条英文标题塞进单元格的按钮里；
+  后者按 `productLabels()` 把录入时的原始英文标题渲染进 `td`——正是 #125 的形态，从没被量过。
+  ④采购页产品搜索的 `catch` 只 `setSearchResults([])`：接口失败时下拉不出现，用户看到的就是
+  「搜不到这个序列号」，于是要么放弃关联、要么以为产品不存在，而且没有任何提示。
+- 改动：①采样改成「一直 Tab 到焦点回到第一个可聚焦元素」为止，`FOCUS_HARD_CAP=400` 只防死循环，
+  触到上限还没走完一圈就**判失败**；元素身份用 `FOCUS_JS` 里的 WeakMap 编号（`elId`），
+  不用 tag+文案——表格里一排「编辑」按钮会被当成「回到第一个元素」而提前收工。②采样前注入
+  `*{transition:none!important}`，量稳定态。③路由表补 `/replenishment`、`/procurement`
+  （18→24 组），fixture 给这两页喂长英文名。④`Procurement` 新增 `searchError`，读失败时行内
+  `role="alert"` 点名原因（序列号仍可手填、已有产品关联不会被改动）。
+- 连带修复：新增的两条路由当场抓到真问题——`.procurement-note-cell input:focus` 的焦点圈是
+  10% 透明度阴影，实测 **1.14:1**（WCAG 2.2 非文字要求 3:1），键盘用户停在这一格看不出在哪。
+  改成 `outline: 2px solid #4f8edc; outline-offset: 1px`（对白底 3.47:1），保留原来那层淡阴影。
+- 验证：全量 selfcheck 37 步全绿（147.1s；longtitle 17.2s→20.7s，24/24 量到、0 重叠、0 越界、
+  0 焦点不足、子部件 3 条单列、采样截断 0）；`test-longtitle-audit-safety.py` 10→12 例
+  （新增「触上限没走完一圈必须失败」「走完一圈就停、同一元素不重复计数」）；
+  `test-longtitle-focus.cjs` 加元素身份 3 条断言；`test-procurement-identity.cjs` 10→13 断言。
+  反向探针（均已还原）：删掉截断判失败 → 安全套件 1 红；焦点圈退回 10% 阴影 → 审计
+  `/procurement` 三档全报 `ratio=1.14` 退出 1；搜索 catch 不报错 → 新断言在
+  `test-procurement-identity.cjs` 转红。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
+  调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
+  `test-packing-oms.py` 对非 GET 请求一律回假 200（导出类接口的假 200 仍无法区分「声明漏了」
+  与「本来就该成功」，要区分得逐条声明写接口并造出真实响应体，超出本轮预算）。

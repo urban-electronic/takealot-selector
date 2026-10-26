@@ -129,6 +129,20 @@ const fireSubmit = async () => {
   check(created.length === 1, 'the record is written once the identity is consistent');
   check(created[0].product_id === '' && created[0].product_no === 2002, 'the saved record carries the new serial with no stale product link');
 
+  // 产品搜索读失败 ≠ 没有匹配的产品：以前 catch 里只 setSearchResults([])，下拉不出现，
+  // 用户看到的就是「搜不到这个序列号」。必须把失败原因说出来（PROC-SEARCH-ERR-01）。
+  // 上一步保存成功后表单已关闭，重新打开一张空白表单再测搜索。
+  await act(async () => { host.querySelector('button.btn-primary').click(); });
+  const freshSerial = host.querySelector('form input[type="text"]');
+  api.searchProductsByNo = async () => { throw new Error('接口 502'); };
+  await act(async () => { type(freshSerial, '3003'); });
+  await act(async () => { await new Promise(r => setTimeout(r, 350)); });
+  const searchAlert = host.querySelector('form [role="alert"]');
+  check(!!searchAlert, 'a failed product search must be reported, not rendered as "no match"');
+  check(searchAlert.textContent.includes('产品搜索失败') && searchAlert.textContent.includes('接口 502'),
+        'the search failure names the reason');
+  check(!host.querySelector('form div[style*="cursor: pointer"]'), 'a failed search shows no fake result rows');
+
   await act(async () => root.unmount());
   clearTimeout(watchdog);
   console.log(`PASS ${checks} Procurement identity assertions (jsdom, isolated API)`);

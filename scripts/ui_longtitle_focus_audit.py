@@ -27,18 +27,27 @@
 3. 表格单元格 containment：td/th 内所有后代元素不得越出单元格左右边界 1px；
 4. 页面级横向溢出：scrollWidth <= clientWidth + 2；
 5. 长标题元素形态：英文名元素的折行/clamp 状态与单元格剩余宽度；
-6. 焦点圈：Tab 至多 60 次，逐个取 document.activeElement 的 outline/box-shadow
-   颜色与所在背景，按 WCAG 2.1 公式算对比度，<3:1（WCAG 2.2 非文字）即失败；
+6. 焦点圈：一直按 Tab 直到焦点回到第一个可聚焦元素（走完一圈），逐个取
+   document.activeElement 的 outline/box-shadow 颜色与所在背景，按 WCAG 2.1
+   公式算对比度，<3:1（WCAG 2.2 非文字）即失败。硬上限 FOCUS_HARD_CAP 次只作
+   防死循环用：触到上限还没走完一圈，说明后半段可聚焦元素一个都没量到，判失败
+   （FOCUS-CAP-01：原来写死「至多 60 次」且不认圈，于是同一批元素被反复量
+   1.4 圈、报告里的「焦点采样 56~59」其实是重复计数；一旦某个页面长出 60 个
+   以上可聚焦元素，后面的就静默不量了，报告照样写「0 处焦点问题」）。
    焦点落在控件内部子部件上时（`input[type=date]` 的日/月/年字段与日历按钮在
    shadow DOM 里，Tab 会逐个停进去）宿主元素的 outline 读不到，而浏览器其实把圈
    画在图标自己身上——这类记录单列成「子部件焦点（量不到）」，既不算通过也不算
    失败；从分母里消失才是漏测。
 7. 截图：每路由每宽度默认态一张 + 焦点态一张，存 ui_audit_out/longtitle/。
 
-覆盖的路由（2026-10-26 扩）：`/products`、`/auto-pricing`、`/inventory`、`/packing`
-与两个详情页。后两条是补上的——库存页（`row.name_en`）与装箱页（`p.name_en`）都在
-表格单元格里渲染英文品名，正是 #125 报的那类「长英文标题跨列」；fixture 早就给了
-这两页的长名字，路由表却没列，于是这两处一次都没被量过。
+覆盖的路由（2026-10-26 扩到 8 条 × 3 档宽度 = 24 组）：`/products`、`/auto-pricing`、
+`/inventory`、`/packing`、`/replenishment`、`/procurement` 与两个详情页。
+- `/inventory`（`row.name_en`）与 `/packing`（`p.name_en`）在表格单元格里渲染英文品名，
+  正是 #125 报的那类「长英文标题跨列」；fixture 早就给了这两页的长名字，路由表却没列，
+  于是这两处一次都没被量过（AUDIT-LONGTITLE-02）。
+- `/replenishment` 的品名是 `chinese_product_name or product_name`（后端
+  `operations_routes`）：中文名没填的产品会把整条英文标题塞进单元格的按钮里；
+  `/procurement` 的品名是录入时抄下的原始英文标题（AUDIT-LONGTITLE-03）。
 
 任一失败 → 退出码 1；未成功测量的页面不得视为零问题。
 """
@@ -100,6 +109,12 @@ DATA["/api/inventory"].append(dict(DATA["/api/inventory"][0], product_id=p2["id"
                                    name=p2["chinese_product_name"], name_en=LONG_EN_BAGS, sku="TEST-002"))
 DATA["/api/packing/products"].append(dict(DATA["/api/packing/products"][0], sku="TEST-002",
                                           name=p2["chinese_product_name"], name_en=LONG_EN_BAGS))
+# 补货页的品名是 `chinese_product_name or product_name`（后端 operations_routes），
+# 中文名没填的产品就会把整条英文标题塞进表格单元格的按钮里——正是 #125 的形态。
+DATA["/api/operations/overview"]["rows"][0]["name"] = LONG_EN_BAGS
+# 采购记录的品名是录入时抄下来的原始英文标题，表格里按 productLabels() 再加工。
+DATA["/api/procurement"][0]["product_name"] = LONG_EN_CAMERA
+DATA["/api/procurement"][0]["product_id"] = p1["id"]
 DATA["/api/products/stats/dashboard"] = dict(total=2, qualified=0, not_recommended=0,
                                              pending=0, data_incomplete=2, avg_profit_margin=0)
 
@@ -109,11 +124,15 @@ ROUTES = [
     ("/auto-pricing", "Buybox与自动调价", ["TEST-001", "TEST-002"]),
     ("/inventory", "库存管理", ["TEST-001", "TEST-002"]),
     ("/packing", "装箱单", ["TEST-001"]),
+    ("/replenishment", "补货计划", ["6PCS Vacuum Cleaner Bags"]),
+    ("/procurement", "采购记录", ["4K运动相机"]),
     ("/products/fixture-product", "4K Thump action camera", []),
     ("/products/fixture-product-2", "6PCS Vacuum Cleaner Bags", []),
 ]
 VIEWPORTS = [("w1280", 1280, 800), ("w1366", 1366, 900), ("w1440", 1440, 900)]
-TAB_LIMIT = 60
+# 只作防死循环的硬上限：正常页面按 Tab 走完一圈就会回到第一个元素，脚本据此停止。
+# 触到上限说明没走完一圈 —— 那是覆盖不全，必须判失败，不能当成「量完了、没问题」。
+FOCUS_HARD_CAP = 400
 
 LAYOUT_JS = r"""
 () => {
@@ -220,6 +239,13 @@ FOCUS_JS = r"""
   const ratio = (fg,bg) => { const l1=lum(fg), l2=lum(bg); const a=Math.max(l1,l2), b=Math.min(l1,l2); return (a+0.05)/(b+0.05); };
   const el = document.activeElement;
   if (!el || el === document.body) return null;
+  // 元素身份：靠 tag+文本判「回到第一个元素」会被同文案的按钮（表格里一排「编辑」）
+  // 骗过去，提前收工等于漏测。这里用 WeakMap 给每个元素发一个稳定编号（不动 DOM）。
+  const store = (typeof window !== 'undefined' ? window : globalThis);
+  store.__faIds = store.__faIds || new WeakMap();
+  store.__faSeq = store.__faSeq || 0;
+  let elId = store.__faIds.get(el);
+  if (elId === undefined) { elId = ++store.__faSeq; store.__faIds.set(el, elId); }
   const cs = getComputedStyle(el);
   // 焦点是否真的落在这个宿主元素上。`input[type=date]` 这类控件的内部子部件
   // （日/月/年字段、日历按钮）在 Chromium 里是 shadow DOM，Tab 会逐个停进去，
@@ -235,7 +261,7 @@ FOCUS_JS = r"""
   }
   const bgEl = el.parentElement || el;
   const bg = effBg(bgEl);
-  const out = { tag: el.tagName.toLowerCase(), cls: (typeof el.className==='string'?el.className:'').slice(0,50),
+  const out = { elId, tag: el.tagName.toLowerCase(), cls: (typeof el.className==='string'?el.className:'').slice(0,50),
                 ringSource: source, ringColor: ring ? `rgb(${ring[0]},${ring[1]},${ring[2]})` : null,
                 bg: `rgb(${bg[0]},${bg[1]},${bg[2]})`,
                 hostFocus,
@@ -277,6 +303,11 @@ async def run():
                     await page.wait_for_load_state("networkidle", timeout=20000)
                     for marker in markers:
                         await page.get_by_text(marker, exact=False).first.wait_for(timeout=8000)
+                    # 焦点圈的 CSS 过渡会让测量变成抢拍：`.procurement-note-cell input` 带
+                    # `transition: box-shadow .15s`，Tab 之后立刻读到的是过渡起点（alpha=0 的
+                    # 空阴影），于是「有没有圈」取决于读得多快——时红时绿都是假象。
+                    # 采样前停掉过渡，量用户停留后看到的稳定态。
+                    await page.add_style_tag(content='*, *::before, *::after { transition: none !important; }')
                     layout = await page.evaluate(LAYOUT_JS)
                     if not isinstance(layout, dict) or not isinstance(layout.get("overlaps"), list):
                         raise ValueError("页面未产生有效测量")
@@ -285,16 +316,31 @@ async def run():
                     await page.screenshot(path=str(shot))  # Default state, before Tab changes focus/scroll.
                     focus_records = []
                     focus_shot = False
-                    for _ in range(TAB_LIMIT):
+                    first_sig = None
+                    wrapped = False
+                    for _ in range(FOCUS_HARD_CAP):
                         await page.keyboard.press("Tab")
                         fr = await page.evaluate(FOCUS_JS)
-                        if fr:
-                            focus_records.append(fr)
-                            if not focus_shot:
-                                await page.screenshot(path=str(OUT / f"{route_path.strip('/').replace('/', '_') or 'home'}_{label}_focus.png"))
-                                focus_shot = True
+                        if not fr:
+                            continue
+                        # 回到第一个可聚焦元素 = 走完一圈，可以停了。
+                        # elId 来自 FOCUS_JS 的 WeakMap 编号；假浏览器桩没给时退回
+                        # tag+cls+text（安全套件只关心失败路径）。
+                        sig = fr.get("elId")
+                        if sig is None:
+                            sig = (fr.get("tag"), fr.get("cls"), fr.get("text"))
+                        if first_sig is None:
+                            first_sig = sig
+                        elif sig == first_sig:
+                            wrapped = True
+                            break
+                        focus_records.append(fr)
+                        if not focus_shot:
+                            await page.screenshot(path=str(OUT / f"{route_path.strip('/').replace('/', '_') or 'home'}_{label}_focus.png"))
+                            focus_shot = True
 
-                    report[key] = {"layout": layout, "focus": focus_records}
+                    report[key] = {"layout": layout, "focus": focus_records,
+                                   "focus_truncated": bool(focus_records) and not wrapped}
                 except Exception as exc:  # noqa: BLE001
                     report[key] = {"error": str(exc)[:200]}
                 await page.close()
@@ -302,7 +348,7 @@ async def run():
         await browser.close()
 
     # ---- 汇总与判定 ----
-    total_overlap = total_break = total_focus_low = total_sub_focus = 0
+    total_overlap = total_break = total_focus_low = total_sub_focus = total_truncated = 0
     for key, value in sorted(report.items()):
         if "error" in value:
             failures.append(f"{key}: ERROR {value['error']}")
@@ -310,6 +356,7 @@ async def run():
             continue
         lay = value["layout"]
         focus = value["focus"]
+        truncated = bool(value.get("focus_truncated"))
         # 焦点在控件内部子部件上（日期框的日历按钮等）时，宿主元素的 outline
         # 不是浏览器实际画的那个圈，量出来的「无圈」是假阳性。这类记录单列，
         # 既不进失败也不进通过——从分母里消失才是真正的漏测。
@@ -319,13 +366,17 @@ async def run():
                      not isinstance(f.get('ringRatio'), (int, float)) or f['ringRatio'] < 3]
         if not measurable:
             failures.append(f"{key}: 未采到可测量的焦点元素（焦点全落在控件内部子部件上），不能判定焦点通过")
+        if truncated:
+            failures.append(f"{key}: 焦点采样未走完一圈（已按上限 {FOCUS_HARD_CAP} 次停止），"
+                            f"后面还有可聚焦元素没量到——覆盖不全不能算通过")
+        total_truncated += 1 if truncated else 0
         total_overlap += len(lay["overlaps"])
         total_break += len(lay["cellBreaks"])
         total_focus_low += len(focus_low)
         total_sub_focus += len(sub_focus)
         print(f"{key:44s} 重叠={len(lay['overlaps']):2d} 越界单元格={len(lay['cellBreaks']):2d} "
               f"页面横溢={lay['pageOverflow']:3d}px 焦点缺失/不足3:1={len(focus_low):2d} "
-              f"焦点采样={len(focus):2d} 其中子部件={len(sub_focus):2d}")
+              f"焦点采样={len(focus):2d} 其中子部件={len(sub_focus):2d} 截断={'是' if truncated else '否'}")
         for o in lay["overlaps"][:5]:
             failures.append(f"{key}: 文字重叠 {o['a']}({o['aText']}) x {o['b']}({o['bText']}) {o['ix']}x{o['iy']}px")
         for c in lay["cellBreaks"][:5]:
@@ -333,7 +384,8 @@ async def run():
         if lay["pageOverflow"] > 2:
             failures.append(f"{key}: 页面横向溢出 {lay['pageOverflow']}px")
         for f in focus_low[:5]:
-            failures.append(f"{key}: 焦点圈不可见或不足3:1 ratio={f.get('ringRatio')} ({f.get('cls', '')})")
+            failures.append(f"{key}: 焦点圈不可见或不足3:1 ratio={f.get('ringRatio')} "
+                            f"<{f.get('tag')} class={f.get('cls', '')!r} text={f.get('text', '')!r}>")
         # 长标题形态（仅记录，不判定：clamp/折行都是合法形态）
         for ln in lay["longNames"]:
             if "camera" in ln["text"].lower() or "Vacuum" in ln["text"]:
@@ -343,12 +395,13 @@ async def run():
     measured = sum(1 for v in report.values() if "error" not in v)
     expected = len(ROUTES) * len(VIEWPORTS)
     print(f"{'TOTAL':44s} 重叠={total_overlap} 越界={total_break} 焦点缺失/不足3:1={total_focus_low} "
-          f"子部件焦点(量不到)={total_sub_focus}")
+          f"子部件焦点(量不到)={total_sub_focus} 采样截断={total_truncated}")
     print(json.dumps({"environment": "isolated fixtures (long-title variant)",
                       "base": os.environ.get('AUDIT_REVISION', 'unrecorded; set AUDIT_REVISION'),
                       "titles": [LONG_EN_CAMERA, LONG_EN_BAGS],
                       "expected": expected, "measured": measured, "errors": expected - measured,
                       "focus_unmeasurable_subcontrol": total_sub_focus,
+                      "focus_truncated": total_truncated,
                       "blocked_requests": len(request_errors)}, ensure_ascii=False))
     with open(OUT.parent / "longtitle_audit.json", "w", encoding="utf-8") as f:
         json.dump({"report": report, "failures": failures, "request_errors": request_errors[:50]},

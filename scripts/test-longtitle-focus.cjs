@@ -32,4 +32,19 @@ assert.equal(focus({outlineStyle:'none',boxShadow:'rgb(0,0,0) 0px 0px 0px 2px'})
 // 汇总单列（既不算通过也不算失败），不能当成「圈缺失」。
 assert.equal(focus({outlineStyle:'none'}).hostFocus,true,'普通控件上焦点就在宿主元素上');
 assert.equal(focus({outlineStyle:'none'},false).hostFocus,false,'子部件焦点必须被标出来');
-console.log('PASS focus measurement: visible, missing, zero-width, transparent, translucent, shadow and sub-control fixtures');
+// 元素身份（elId）：采样循环靠它判「焦点回到第一个元素」= 走完一圈就停。同一元素
+// 每次必须拿到同一个编号，否则要么提前收工（漏测后半页），要么永远走不完一圈。
+{
+  const base = {backgroundColor:'rgb(255,255,255)',color:'rgb(0,0,0)',outlineStyle:'solid',
+                outlineWidth:'2px',outlineColor:'rgb(0,0,0)',boxShadow:'none'};
+  const style = () => base;
+  const make = text => ({tagName:'BUTTON',className:'fixture',textContent:text,
+                         parentElement:{parentElement:{}},matches:()=>true});
+  const doc = el => ({activeElement:el, body:{}, documentElement:{}});
+  const first = make('保存');
+  const a = measure(doc(first), style), b = measure(doc(first), style);
+  assert.equal(typeof a.elId,'number','焦点记录必须带元素编号');
+  assert.equal(a.elId,b.elId,'同一元素必须拿到同一个编号（否则一圈走不完）');
+  assert.notEqual(a.elId, measure(doc(make('删除')), style).elId,'不同元素不能共用编号');
+}
+console.log('PASS focus measurement: visible, missing, zero-width, transparent, translucent, shadow, sub-control and element-identity fixtures');

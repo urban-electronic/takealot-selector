@@ -27,6 +27,7 @@ class Browser:
     async def new_page(self): self.tabs = 0; return self
     async def route(self, *args): pass
     async def add_init_script(self, *args): pass
+    async def add_style_tag(self, **kwargs): pass
     async def goto(self, *args, **kwargs):
         if self.navigation_error: raise RuntimeError('fixture navigation unavailable')
     def get_by_role(self, *args, **kwargs): return Locator()
@@ -39,6 +40,13 @@ class Browser:
             return {'overlaps':[], 'cellBreaks':[], 'pageOverflow':0, 'longNames':[]}
         # 桩可以给一串记录，按 Tab 次数轮转——真实页面上一次 Tab 一个元素，
         # 只有轮转才测得出「一部分量得到、一部分量不到」的混合情形。
+        # 也可以给可调用对象，按 Tab 次数生成记录：用来模拟「永远回不到第一个元素」
+        # 的页面（超过硬上限还没走完一圈）。
+        # 注意取的是类字典里的原始对象：函数放进类属性后会变成 bound method，
+        # 调用时会多塞一个 self 进去。
+        raw = type(self).__dict__.get('focus')
+        if callable(raw):
+            return raw(self.tabs)
         if isinstance(self.focus, list):
             return self.focus[self.tabs % len(self.focus)]
         return self.focus
@@ -60,8 +68,12 @@ class AuditTests(unittest.TestCase):
 
     def run_audit(self, focus=Browser.focus, navigation_error=False):
         def fill(record):
-            return dict(Browser.focus, ringColor='rgb(0,0,0)', bg='rgb(255,255,255)', **record)
-        if isinstance(focus, list):
+            return dict({'tag':'button', 'cls':'test', 'ringSource':'outline:solid',
+                         'ringVisible':True, 'ringRatio':3.1},
+                        ringColor='rgb(0,0,0)', bg='rgb(255,255,255)', **record)
+        if callable(focus):
+            focus = (lambda tabs, fn=focus: fill(fn(tabs)))
+        elif isinstance(focus, list):
             focus = [fill(record) for record in focus]
         elif focus is not None:
             focus = fill(focus)
@@ -93,16 +105,16 @@ class AuditTests(unittest.TestCase):
     def test_valid_ring_and_default_screenshot_order(self):
         status, output, shots = self.run_audit()
         self.assertEqual(status, 0)
-        self.assertIn('"measured": 18', output)
+        self.assertIn('"measured": 24', output)
         defaults = [(name, tabs) for name, tabs in shots if not name.endswith('_focus.png')]
-        self.assertEqual(len(defaults), 18)
+        self.assertEqual(len(defaults), 24)
         self.assertTrue(all(tabs == 0 for _, tabs in defaults), 'default screenshots precede keyboard interaction')
 
     def test_all_navigation_errors_fail(self):
         status, output, _ = self.run_audit(navigation_error=True)
         self.assertEqual(status, 1)
         self.assertIn('"measured": 0', output)
-        self.assertIn('"errors": 18', output)
+        self.assertIn('"errors": 24', output)
 
     # ---- 焦点落在控件内部子部件上（日期框的日历按钮等）----
     # 宿主元素的 outline 读不到，但浏览器把圈画在图标自己身上（截图核对过）。
@@ -139,5 +151,23 @@ class AuditTests(unittest.TestCase):
             {'tag':'button', 'hostFocus':True, 'ringSource':'none', 'ringVisible':False, 'ringRatio':None},
         ])
         self.assertEqual(status, 1)
+
+    # ---- 焦点采样必须走完一圈（FOCUS-CAP-01）----
+    # 原来写死「Tab 至多 60 次」：一个页面若有 60 个以上可聚焦元素，后面的静默不量，
+    # 报告照样写「0 处焦点问题」。现在按「焦点回到第一个元素」收工，触到硬上限判失败。
+    def test_truncated_sampling_cannot_pass(self):
+        status, output, _ = self.run_audit(lambda tabs: {'tag': f'button{tabs}'})
+        self.assertEqual(status, 1, '没走完一圈就停 = 覆盖不全，不能算通过')
+        self.assertIn('焦点采样未走完一圈', output)
+        self.assertEqual(self.summary(output)['focus_truncated'], 24)
+
+    def test_one_full_cycle_stops_and_is_not_double_counted(self):
+        # 三个可聚焦元素 → 走一圈就停，采样数必须正好 3（旧实现会把同一批元素反复量）。
+        status, output, _ = self.run_audit([
+            {'tag':'button', 'text':'甲'}, {'tag':'a', 'text':'乙'}, {'tag':'input', 'text':'丙'},
+        ])
+        self.assertEqual(status, 0)
+        self.assertIn('焦点采样= 3', output, '同一元素被重复计数会让采样数字虚高')
+        self.assertEqual(self.summary(output)['focus_truncated'], 0)
 
 if __name__ == '__main__': unittest.main()

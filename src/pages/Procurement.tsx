@@ -44,6 +44,7 @@ export default function Procurement() {
   const [productSearch, setProductSearch] = useState('');
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
 
   const loadRecords = useCallback(async () => {
     try {
@@ -88,13 +89,20 @@ export default function Procurement() {
 
   // search products by serial number
   useEffect(() => {
-    if (productSearch.length < 1) { setSearchResults([]); return; }
+    if (productSearch.length < 1) { setSearchResults([]); setSearchError(''); return; }
     const timer = setTimeout(async () => {
       setSearching(true);
       try {
         const results = await api.searchProductsByNo(productSearch.trim());
         setSearchResults(results);
-      } catch { setSearchResults([]); }
+        setSearchError('');
+      } catch (e: unknown) {
+        // 读失败 ≠ 没有匹配的产品。以前这里只 setSearchResults([])：下拉不出现，
+        // 用户看到的就是「搜不到这个序列号」，于是要么放弃关联（记录挂空），
+        // 要么以为产品不存在。现在把失败原因摆出来（PROC-SEARCH-ERR-01）。
+        setSearchResults([]);
+        setSearchError(e instanceof Error ? e.message : String(e));
+      }
       finally { setSearching(false); }
     }, 300);
     return () => clearTimeout(timer);
@@ -314,6 +322,11 @@ export default function Procurement() {
                   </div>
                 )}
                 {searching && <small style={{ color: 'var(--text-subtle)' }}>搜索中...</small>}
+                {searchError && (
+                  <small role="alert" style={{ color: 'var(--danger-strong)', display: 'block', marginTop: 4 }}>
+                    产品搜索失败：{searchError}。序列号仍可手填，已有的产品关联不会被改动。
+                  </small>
+                )}
                 {identityMismatch && (
                   <small role="alert" style={{ color: 'var(--warning-strong)', display: 'block', marginTop: 4 }}>
                     序列号已改为 {form.product_no.trim() || '（空）'}，当前仍关联原产品 #{linkedProductNo}。

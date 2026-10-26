@@ -118,7 +118,7 @@ Use existing focused commands as applicable:
 | Shared visual styles | `npm run check:visual` |
 | Browser audit harness | `npm run test:audit-safety` |
 | Contrast / control-size in a real browser | `scripts/test-contrast-audit.py` |
-| Long-title overlap / cell overflow / focus-ring contrast (18 route×width) | `scripts/test-longtitle-audit.py` |
+| Long-title overlap / cell overflow / focus-ring contrast (24 route×width) | `scripts/test-longtitle-audit.py` |
 | Layout and overflow in a real browser | `scripts/test-responsive-layout.py` |
 | Frontend HTTP calls (path + verb) | `scripts/test-api-contract.cjs` |
 | Frontend compilation | `npm run build` |
@@ -145,6 +145,22 @@ is itself part of the coverage: it only held `/products`, `/auto-pricing` and th
 detail pages while `/inventory` and `/packing` render `name_en` in table cells too —
 the exact shape of the #125 overlap report — even though the shared fixture already
 supplied long names for both (AUDIT-LONGTITLE-02, 12 → 18 combinations).
+`/replenishment` and `/procurement` were missing for the same reason and are now in
+too (AUDIT-LONGTITLE-03, 18 → 24 combinations); `/replenishment` renders
+`chinese_product_name or product_name`, so a product with no Chinese name puts the
+whole English title inside a table-cell button, and procurement rows carry the raw
+English title copied at entry.
+Sampling must also *finish*: pressing Tab a fixed 60 times both re-measured the same
+elements (a page here has 14–44 tab stops, so the old loop walked ~1.4 cycles and
+"56–59 samples" were duplicates) and would silently stop measuring once a page grew
+past 60 focusable elements. The loop now runs until focus returns to the first
+element and fails when it hits the hard cap without completing a cycle
+(FOCUS-CAP-01). Rings are read in their settled state: `transition: box-shadow .15s`
+means an immediate read after Tab sees the transition's *start* value, so the same
+input reports "no ring" or "1.14:1" depending on timing — transitions are disabled
+before sampling, and the measurement found a real defect that way
+(`.procurement-note-cell input` had a 10%-alpha ring, 1.14:1, now a 2px solid
+outline at 3.47:1).
 A measurement is only a failure when the script can actually see the thing that has
 focus: `input[type=date]` keeps its day/month/year fields and calendar button in a
 shadow tree, so tabbing into them leaves `document.activeElement` on the input while
