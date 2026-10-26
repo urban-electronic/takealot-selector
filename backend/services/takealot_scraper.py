@@ -923,9 +923,12 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         retain(data)
         if complete():
             return finish_official()
+    # 只有真的出错才记一条诊断：这一阶段拿到「有标题但没价格」的部分资料时 err 是空串，
+    # 而 diagnostic('') 会落成 no_product_content——把一个已经读到内容的阶段写成
+    # 「页面没有商品内容」，排查时正好把「被挡住」和「结构变了」两件事搅在一起。
     if err:
         errors.append(err)
-    diagnostic('http', err)
+        diagnostic('http', err)
 
     try:
         from playwright.async_api import async_playwright
@@ -943,7 +946,7 @@ async def scrape_product(url: str) -> Dict[str, Any]:
                             return finish_official()
                     if err:
                         errors.append(err)
-                    diagnostic(name, err)
+                        diagnostic(name, err)
         except Exception:
             errors.append("Browser runtime unavailable")
             diagnostic('browser_runtime', 'unavailable')
@@ -960,7 +963,7 @@ async def scrape_product(url: str) -> Dict[str, Any]:
                 return finish_official()
         if err:
             errors.append(err)
-        diagnostic('profile_browser', err)
+            diagnostic('profile_browser', err)
 
     # 卖家表只在官网各抓取步骤完成后补缺，不能提前截断官网渲染。
     catalog = _catalog_fallback(url)

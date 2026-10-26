@@ -1833,3 +1833,41 @@ WorkBuddy；基线 `8f3a1df552`。
 - 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
   调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
   `sync_interval_minutes` 这个「只存不用」的字段本身（要不要真接调度属于功能决策，不是文案问题）。
+### SCRAPE-PROFILE-FALLBACK-01 / SCRAPE-CATEGORY-BREADCRUMB-01 / SCRAPE-BUDGET-01 / SCRAPE-DIAG-NOISE-01（2026-10-27）
+
+- 优先级 P2；基线远端 main `9aec762e7e`、后端 build `2987faa04a8e`，自检 37/37 全绿、无跳过
+  （156.2s）之后主动排查。前两条是并行提交（Codex）的补记——那三次提交只写了 commit message，
+  `docs/` 里零记录，其中「三段抓取 + 各自预算」正是后面两条改动的背景。
+- 复现（补记部分）：
+  ①官网读取原来只有两段：`curl_cffi` 与临时启动的 Firefox/Chromium。两段都是**干净浏览器**，
+  被官网验证挡住时必定失败。实测 PLID100615298：curl_cffi 403、两个临时浏览器都落在验证页，
+  新建产品页的图片/标题/售价/分类全空，只留一句「官网安全验证未通过」。
+  ②分类路径原来在 `.pdp` 里按一张英文关键词表筛链接，分类名不在表里就永远为空
+  （PLID100615298 就是这样），Fee 品类只能人工选；改成 JSON-LD 的 `BreadcrumbList` →
+  面包屑导航两级来源后，同一页拿到真实层级。面包屑容器里混着 `Share` / `Report this product`
+  这类操作链接，第一版把它们也收进分类路径（`… > Cloth Masks > Share > Report this product`），
+  会把 Fee 匹配带偏，随后按 `<a>` 取文本 + 文案黑名单 + 最多 8 段收敛。
+- 复现（本轮两条）：
+  ①`POST /api/products/scrape-takealot` 直接 `await scrape_product(url)`，**没有任何超时**；而前端
+  这一路是 `AbortSignal.timeout(90000)`。被挡/网络慢时服务端最坏要跑 curl_cffi 30s + 两个临时
+  浏览器各约 15~78s + 持久化浏览器（等锁 25s + 导航 45s + 补等价格 8s），远超 90 秒。结果是
+  用户在新建产品页看到「请求等待超时，请稍后刷新列表确认结果，避免重复提交」——抓取请求没有
+  列表可刷新，也没说清官网读到哪一步；而服务端还在继续跑、把采集浏览器那把锁多占一分钟
+  （采集循环每 5 分钟就要用一次）。
+  ②`scrape_product` 的三个抓取阶段都在 `if err: errors.append(err)` 之后**无条件**调
+  `diagnostic(stage, err)`。阶段成功但只拿到部分资料时（有标题、没价格）返回的 `err` 是空串，
+  `diagnostic('')` 会落成 `no_product_content`——把一个已经读到内容的阶段记成「页面没有商品内容」，
+  排查时正好把「被验证挡住」和「页面结构变了」搅在一起，而这两件事的处理方式完全不同。
+- 改动：①`scraper_routes` 新增 `SCRAPE_BUDGET_SECONDS = 75`，用 `asyncio.wait_for` 包住
+  `scrape_product`；超时返回**可编辑的空结果**（`success=false` + 说明原因的 `warnings` +
+  指向「导入保存的网页」的下一步），而不是 502/504——前端拿到 `success=false` 会直接展开
+  保存网页导入面板，用户不必干等。75 秒覆盖正常路径，且收尾本身被 `quote_browser.CLEANUP_TIMEOUT`
+  限住，不会无限拖。②三个阶段的诊断记录都移进 `if err:`，只有真的出错才记一条。
+- 验证：`backend/tests/test_scraper_fallback.py` 20→22 例，两条新用例各自反向探针转红后还原
+  （把 `diagnostic` 挪回无条件调用 → `test_partial_stage_is_not_recorded_as_no_content` 红；
+  把 `wait_for` 撤成裸调用 → `test_route_reports_scrape_timeout_as_editable_result` 红）。
+  后端全量 pytest 606 passed / 1 skipped；全量 selfcheck 37/37 全绿。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
+  调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
+  `_parse_product_html` 里那段关键词猜分类的旧逻辑（现在只是 JSON-LD 与 Categories 表都缺失时的
+  兜底，`Home` 这类单段结果仍可能被当分类路径，改它要先有真实页面能复现）。

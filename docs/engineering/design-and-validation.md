@@ -100,6 +100,16 @@ permissions. This workflow never requests or transfers credentials.
   real store id from storage, so a placeholder row in the switcher makes the
   header name one store while every request goes to another (STORE-SWITCH-01).
   Show the entity actually in use, mark its state, and say what did not happen.
+- A client-side timeout is a server-side budget, not a suggestion. The scrape
+  endpoint had no bound of its own while the page aborted at 90 s, so the slow
+  path produced a message about refreshing a list that a scrape does not have —
+  and the request kept running, holding the shared collection browser. Bound the
+  work below the caller's deadline and return an editable result that names the
+  cause and the next step (SCRAPE-BUDGET-01). The same rule applies to the
+  diagnostic record: a stage that returned partial content is not a stage that
+  found no content, and recording it as `no_product_content` merges "blocked by
+  verification" with "markup changed", which need opposite responses
+  (SCRAPE-DIAG-NOISE-01).
 
 ## Validate only what the change affects
 

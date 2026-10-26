@@ -248,3 +248,40 @@ def test_breadcrumb_list_becomes_category_path():
     </script></head><body><main><h1>Mask</h1></main></body></html>'''
     data = scraper._parse_product_html(html, URL, URL)
     assert data['takealot_category_path'] == 'Sports & Outdoor > Face Masks'
+
+
+def test_partial_stage_is_not_recorded_as_no_content():
+    """读到内容但缺价格的阶段不许记成 no_product_content。
+
+    这一阶段成功时返回的 err 是空串，旧写法照样调 diagnostic('')，落成
+    no_product_content——排查时会把「页面结构变了」和「被验证挡住」混成一件事。
+    """
+    with patch.object(scraper, '_scrape_with_curl_cffi', return_value=({'product_name': 'Actual product'}, '')), _blocked_browser():
+        result = asyncio.run(scraper.scrape_product(URL))
+    stages = {item['stage'] for item in result['diagnostics']}
+    assert 'http' not in stages
+    assert 'no_product_content' not in {item['reason'] for item in result['diagnostics']}
+    # 真正失败的三个阶段照样要各记一条，别把诊断整段吞掉。
+    assert {'Firefox', 'Chromium', 'profile_browser'} <= stages
+
+
+def test_route_reports_scrape_timeout_as_editable_result():
+    """抓取超时要回可编辑结果 + 原因，而不是 500/504。
+
+    前端这一路 90 秒就断开（AbortSignal.timeout），断开后用户只看到
+    「请稍后刷新列表确认结果」——抓取请求没有列表可刷新。这里让服务端先收尾，
+    并且 success=false 会让前端直接展开「导入保存的网页」面板。
+    """
+    async def slow_scrape(url):
+        await asyncio.sleep(5)
+        return {'normalized_url': url, 'success': True}
+
+    with patch.object(routes, 'scrape_product', slow_scrape), \
+         patch.object(routes, 'SCRAPE_BUDGET_SECONDS', 0.01), \
+         patch.object(routes, 'match_fee_category', return_value={'fee_category': None, 'confidence': 'low'}):
+        result = asyncio.run(routes.scrape_takealot(routes.ScrapeRequest(url=URL), db=None))
+    assert result['success'] is False
+    assert result['normalized_url'] == URL
+    assert result['variants'] == []
+    assert '中止' in result['warnings'][0]
+    assert '导入保存的网页' in result['warnings'][0]

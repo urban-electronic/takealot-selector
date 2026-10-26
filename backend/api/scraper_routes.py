@@ -15,6 +15,15 @@ import asyncio
 
 router = APIRouter(prefix="/api/products", tags=["scraper"])
 
+# 交互式抓取的预算。前端这一路是 `AbortSignal.timeout(90000)`：90 秒一到浏览器就断开，
+# 用户看到的是「请求等待超时，请稍后刷新列表确认结果，避免重复提交」——可抓取请求并没有
+# 列表可刷新，也没说清官网读到哪一步；而服务端还会继续跑下去，把采集浏览器那把锁多占
+# 一分钟（采集循环每 5 分钟就要用一次）。这里在客户端放弃之前收尾，把原因如实写进
+# warnings：前端拿到 success=false 会直接展开「导入保存的网页」面板，用户不必干等。
+# 75 秒覆盖正常路径（curl_cffi 快速 403 → Firefox/Chromium 各约 15 秒 → 持久化浏览器
+# 约 15~30 秒）；收尾本身也被 quote_browser 的 CLEANUP_TIMEOUT 限住，不会无限拖。
+SCRAPE_BUDGET_SECONDS = 75
+
 
 class ScrapeRequest(BaseModel):
     # 同时兼容旧前端 productUrl 与新前端 url，避免部署先后造成抓取中断。
@@ -48,7 +57,21 @@ async def scrape_takealot(data: ScrapeRequest, db: Session = Depends(get_db), re
                 seller_warning = f'卖家 API 读取失败，改用现有资料来源：{_read_reason(error)}'
     if result is None:
         try:
-            result = await scrape_product(url)
+            result = await asyncio.wait_for(scrape_product(url), timeout=SCRAPE_BUDGET_SECONDS)
+        except asyncio.TimeoutError:
+            # 超时不是「服务器内部错误」，也不是「没找到商品」：它是「官网这次太慢」。
+            # 用可编辑的空结果 + 原因返回，前端会展开保存网页导入面板，用户还能继续。
+            result = {
+                'normalized_url': url,
+                'success': False,
+                'data_source': 'manual',
+                'variants': [],
+                'warnings': [
+                    f'官网读取超过 {SCRAPE_BUDGET_SECONDS} 秒已中止（可能被安全验证挡住或网络很慢），'
+                    '标题、图片、售价都没有拿到。可稍后重试；或等官网正常显示商品后按 Ctrl+S '
+                    '保存为「网页，仅 HTML」，用下方导入保存的网页直接读取。'
+                ],
+            }
         except Exception as error:
             # 抓取层抛异常时，原来会一路冒到全局处理器变成 500「服务器内部错误」，
             # 用户拿不到任何线索。这里按同一套归因给出可行动的原因。
