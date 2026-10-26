@@ -1871,3 +1871,37 @@ WorkBuddy；基线 `8f3a1df552`。
   调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 等只读不写，属禁止区）；
   `_parse_product_html` 里那段关键词猜分类的旧逻辑（现在只是 JSON-LD 与 Categories 表都缺失时的
   兜底，`Home` 这类单段结果仍可能被当分类路径，改它要先有真实页面能复现）。
+
+### PRICE-LISTING-N1 / ELIGIBLE-N1 / HTTP-COMPRESS-01（2026-10-27，补记 + 一次回退）
+
+- 优先级 P2；核对时远端 main `361f792bb6`、后端 build `361f792bb60b`，两者一致（无部署漂移）。
+  前两条是并行提交（Codex）的补记——它们只写了 commit message 与 `docs/engineering/`，
+  本文件零记录；第三条是一次**上线后又回退**的改动，值得单独留结论。
+- 复现（①）：`GET /api/automatic-pricing` 是调价页每 30 秒轮询的接口，而 `listing()` 在商品
+  循环里逐条查 `operations_profile`——本地库 329 个商品 = 339 条 SQL / 56.3ms，商品数涨上去
+  查询数线性涨。同一文件里规则/分组/监控早就是「前缀查一次 + 字典取」，只有档案这份漏在循环里。
+  改动：循环前一次前缀查询，`PROFILE_PREFIX` 提到 `operations_routes` 单一来源（两边各写一份
+  字符串的话，改一边另一边会静默读不到档案，列表变成没有报价的空行）。339→11 条、15.8ms。
+- 复现（②）：补货页首屏两个请求 `GET /api/operations/overview` 与 `/alerts` 都在循环里调
+  `eligible()`，每商品一条采购记录查询（318 / 317 条）。新增 `eligible_ids()` 用两条聚合查询
+  算出全店可补货 id，循环里只做集合判断；`eligible()` 保留给单商品路径（`get_profile`）。
+  318/317 → 6/5 条，66.1→9.1ms、63.5→8.5ms。
+- 复现（③，回退）：`GET /api/products` 一次返回全表 763.1 KB（分页在前端），服务端没有压缩，
+  于是按 content-type 分流写了 `SelectiveGZipMiddleware`（不用内置 `GZipMiddleware`，它会连
+  image-proxy 的 JPEG/PNG 一起压），本地 `gzip -5` 实测 763.1 KB → 109.9 KB / 6.2ms，7 例守卫
+  全绿后上线。上线后量**线上传输字节**才发现没有变化：Railway 边缘（`server: railway-hikari`）
+  对文本响应本来就 gzip——`/openapi.json` 92 184 → 约 13.3 KB、`/docs` 960 → 529 字节，且
+  `vary: accept-encoding` 在不带该请求头的请求上也存在（是边缘加的，不是应用）。应用层再压
+  一遍只是把同一件事做两次，还多 6~10ms CPU（列表页 17.7ms → 27.6ms），于是整体删除。
+- 怎么判断「平台是不是已经压过」：①把中间件停掉单独部署一版，同一 URL + 同一
+  `Accept-Encoding` 看响应头有没有 `Content-Encoding`；②`curl -o /dev/null -w "%{size_download}"`
+  （**不带** `--compressed`）量线上字节，和自己压出来的比，差 1% 以内就别自己压。
+  注意裸 `curl` 不发 `Accept-Encoding`，所以「线上响应头里没有 content-encoding」这个观察本身
+  就是假的——这次绕一圈的起点正是它。
+- 验证：两条 N+1 各自带「3 个商品与 60 个商品 SQL 条数不增长」的守卫用例，并同时断言行数与非空
+  价格（避免「删掉档案读取」也能变绿）；回退后后端 615 passed / 1 skipped、全量 selfcheck 37/37。
+- 教训：优化传输前量**线上真实传输量**，不是应用输出的字节数——本项目两者差 7 倍
+  （763 KB 输出 / 110 KB 传输，而后者在动手之前就已经是 110 KB）。
+- 详见 `docs/engineering/2026-10-27-pricing-listing-n1.md`、`2026-10-27-eligible-n1.md`、
+  `2026-10-27-response-compression-reverted.md`。
+

@@ -7,10 +7,20 @@
 //       node scripts/review-brief.cjs --staged   （只看暂存区）
 
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 const stagedOnly = process.argv.includes('--staged');
+
+// selfcheck 的步数是扫目录算出来的，不是常量。这里跟着扫一遍，免得交底里写死的数字
+// 在加了套件之后继续说谎（标准文档里那个「24 个前端套件」就是这么漂的：实际 27 个）。
+function selfcheckSteps() {
+  const names = fs.readdirSync(path.join(root, 'scripts'));
+  const count = (re) => names.filter((f) => re.test(f)).length;
+  // tsc + 视觉一致性 + 后端 pytest 三步是固定项，其余全按文件数。
+  return count(/^test-.*\.(cjs|mjs)$/) + count(/^test-.*\.py$/) + 3;
+}
 
 function git(args) {
   try {
@@ -172,7 +182,7 @@ function main() {
 
   // 验收口径固定提醒：本地验收不许用 --quick 顶替全量。
   if (level === 'R1' || level === 'R2') {
-    console.log('验收口径：本地跑全量 npm run check（37 步，含后端 pytest）；');
+    console.log(`验收口径：本地跑全量 npm run check（${selfcheckSteps()} 步，含后端 pytest）；`);
     console.log('          --quick 只用于中间迭代，不能当验收结果。');
     console.log('合并前：PR Check 两个 job 的 head SHA 必须等于当前 PR head。');
   } else {
