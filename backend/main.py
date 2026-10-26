@@ -59,7 +59,8 @@ app.add_middleware(
 # 只压文本类响应：商品列表一次返回全表（763 KB），压完 107 KB；图片代理原样透传
 # （见 services/http_compression.py）。放最外层，401/500 的 JSON 也一起压。
 from services.http_compression import SelectiveGZipMiddleware
-app.add_middleware(SelectiveGZipMiddleware)
+# [临时] 测边缘压缩：先不注册
+# app.add_middleware(SelectiveGZipMiddleware)
 
 # ---- API Key 鉴权（可选）----
 # 设置环境变量 API_KEY 后，所有 /api 请求必须携带 X-API-Key 请求头；
