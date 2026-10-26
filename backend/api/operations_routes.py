@@ -17,6 +17,12 @@ from services.seller_operations_sync import eligible, status as sync_status
 
 router = APIRouter(prefix='/api/operations', tags=['operations'])
 
+# 补货档案的 key 前缀。调价列表也读同一批档案（PRICE-LISTING-N1），
+# 前缀只留这一处，避免两边各写一份字符串、改一边另一边静默读不到。
+# 仍是字面量的调用点（逐个改动会扩大范围，暂不动）：settings_routes 的前缀白名单、
+# automatic_pricing / buybox_monitor / seller_operations_sync 里按商品取档案那几处。
+PROFILE_PREFIX = 'operations_profile'
+
 
 def runtime_plan(db, store, product, profile, purchases):
     profile, purchases = with_shipments(db, store, product, logistics(profile), purchases)
@@ -86,10 +92,10 @@ class Profile(BaseModel):
         return self
 
 def key(store, product):
-    return f'operations_profile:{store}:{product}'
+    return f'{PROFILE_PREFIX}:{store}:{product}'
 
 def profiles(db, store):
-    prefix = f'operations_profile:{store}:'
+    prefix = f'{PROFILE_PREFIX}:{store}:'
     return {r.key[len(prefix):]: logistics(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
 
 def purchases_for(db, store, product):

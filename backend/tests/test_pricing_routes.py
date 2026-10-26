@@ -247,3 +247,44 @@ def test_reconcile_keeps_the_reason_and_leaks_nothing(monkeypatch):
             routes.reconcile('one', 'one', db, DEFAULT_STORE_ID)
         detail = error.value.detail
         assert '连不上上游接口' in detail and '/private/path' not in detail, detail
+
+
+def test_listing_does_not_query_profiles_once_per_product(monkeypatch):
+    """列表的 SQL 条数不能随商品数增长（PRICE-LISTING-N1）。
+
+    原来在商品循环里逐条查补货档案：329 个商品就是 329 条等值查询。这个接口被
+    调价页每 30 秒轮询一次，商品数涨到几千时查询数跟着线性涨，页面只会越来越慢。
+
+    这里用 3 个和 60 个商品各跑一次比条数：只要有人把查询写回循环里，条数立刻
+    线性增长。同时断言每个商品的行还在——否则「把档案读取整个删掉」也能变绿。
+    """
+    from sqlalchemy import event
+    from api.operations_routes import PROFILE_PREFIX
+    monkeypatch.setattr(routes, 'configured_key', lambda db: 'test')
+
+    def run(products):
+        engine = create_engine('sqlite://')
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        for i in range(products):
+            pid = f'p{i}'
+            db.add(Product(id=pid, store_id=DEFAULT_STORE_ID, sku=pid, product_name=pid,
+                           takealot_url='https://www.takealot.com/x/PLID1'))
+            db.add(SystemSettings(key=f'{PROFILE_PREFIX}:{DEFAULT_STORE_ID}:{pid}',
+                                  value=json.dumps({'offers': [{'id': pid, 'sku': pid, 'price': 100, 'stock': 5}]})))
+        db.commit()
+        statements = []
+
+        @event.listens_for(engine, 'before_cursor_execute')
+        def record(conn, cursor, statement, params, context, executemany):
+            statements.append(statement)
+
+        rows = routes.listing(db, DEFAULT_STORE_ID)['rows']
+        db.close()
+        return len(statements), rows
+
+    few, few_rows = run(3)
+    many, many_rows = run(60)
+    assert len(few_rows) == 3 and len(many_rows) == 60, (len(few_rows), len(many_rows))
+    assert all(r['price'] == 100 and r['stock'] == 5 for r in many_rows)
+    assert many <= few + 2, f'SQL 条数随商品数增长：3 个商品 {few} 条，60 个商品 {many} 条'

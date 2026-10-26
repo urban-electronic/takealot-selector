@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Product, SystemSettings, DEFAULT_STORE_ID
 from api.store_routes import get_store_id
+from api.operations_routes import PROFILE_PREFIX
 from services.automatic_pricing import PREFIX
 from services.buybox_monitor import PREFIX as MONITOR_PREFIX
 from services.takealot_seller_api import configured_key
@@ -97,11 +98,16 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     groups = {r.key: json.loads(r.value).get('group', '') for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
     from services.collection_diagnostics import displayed_monitor
     monitors = {r.key: displayed_monitor(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
+    # 补货档案一次取全店（PRICE-LISTING-N1）。原来在商品循环里逐条查，
+    # 329 个商品就是 329 条等值查询，而这个接口被调价页每 30 秒轮询一次；
+    # 商品数涨到几千时查询数跟着线性涨，页面越用越慢。
+    profile_prefix = f'{PROFILE_PREFIX}:{store}:'
+    profiles = {r.key[len(profile_prefix):]: json.loads(r.value)
+                for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(profile_prefix)).all()}
     from services.product_names import chinese_name, variant_view
     rows = []
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
-        setting = db.query(SystemSettings).filter(SystemSettings.key == f'operations_profile:{store}:{p.id}').first()
-        profile = json.loads(setting.value) if setting else {}
+        profile = profiles.get(p.id, {})
         offers = profile.get('offers', [])
         # Existing hourly snapshots had IDs before per-SKU display was introduced.
         if not offers and len(profile.get('offer_ids', [])) == 1:
