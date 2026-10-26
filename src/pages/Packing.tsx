@@ -745,7 +745,9 @@ export default function Packing() {
       }
       const res = await importFromProducts(ids);
       await loadProducts();
-      setMsg(`一键导入完成：新增 ${res.imported} 条，跳过 ${res.skipped} 条${res.failed.length ? `，失败 ${res.failed.length} 条` : ''}`);
+      // 同一个接口、同一套三档计数：这里以前自己拼了一句「新增 N 条，跳过 M 条，失败 K 条」，
+      // 既把「已导入但缺图」吞掉（用户不知道要补图），失败也不点名 SKU。
+      setMsg(describeImportResult(res, '一键导入完成：'));
     } catch (e: any) {
       setError(`一键导入失败：${typeof e === 'string' ? e : e.message || '未知错误'}`);
     } finally {
@@ -1034,13 +1036,13 @@ export default function Packing() {
     imported: number; skipped: number;
     failed?: Array<{ sku: string; reason: string }>;
     image_failed?: Array<{ sku: string; reason: string }>;
-  }) => {
+  }, prefix = '导入完成：') => {
     const label = (row: { sku: string }) => row.sku || '（无 SKU）';
     const brief = (rows: Array<{ sku: string; reason: string }>) =>
       rows.slice(0, 3).map(r => `${label(r)}:${r.reason}`).join('；') + (rows.length > 3 ? '…' : '');
     const imageFailed = res.image_failed || [];
     const failed = res.failed || [];
-    return `导入完成：新增 ${res.imported} 条，跳过 ${res.skipped} 条（SKU 已存在）`
+    return `${prefix}新增 ${res.imported} 条，跳过 ${res.skipped} 条（SKU 已存在）`
       + (imageFailed.length
         ? `；${imageFailed.length} 条已导入但图片没抓到（可在装箱单库里手动上传）：${brief(imageFailed)}`
         : '')

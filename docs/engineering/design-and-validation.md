@@ -118,6 +118,7 @@ Use existing focused commands as applicable:
 | Shared visual styles | `npm run check:visual` |
 | Browser audit harness | `npm run test:audit-safety` |
 | Contrast / control-size in a real browser | `scripts/test-contrast-audit.py` |
+| Long-title overlap / cell overflow / focus-ring contrast | `scripts/test-longtitle-audit.py` |
 | Layout and overflow in a real browser | `scripts/test-responsive-layout.py` |
 | Frontend HTTP calls (path + verb) | `scripts/test-api-contract.cjs` |
 | Frontend compilation | `npm run build` |
@@ -134,7 +135,12 @@ console errors. JSDOM cannot certify layout, contrast or real browser focus.
 A harness that is never executed is worth nothing: `scripts/test-ui-audit-safety.py`
 drives the contrast audit with a fake browser, which proves the audit fails loudly
 but measures stub numbers. `scripts/test-contrast-audit.py` is the real run; keep
-it in the gate. Collapsed UI must be opened before measuring it — `details`
+it in the gate. The same was true of the long-title / focus-ring audit for a long
+time: `scripts/test-longtitle-audit-safety.py` exercised `ui_longtitle_focus_audit.py`
+with a stub browser that always returned zero overlaps and a 3.1:1 ring, so the
+12 route×width combinations and the ~690 focus-ring samples it is built for had
+never been taken. `scripts/test-longtitle-audit.py` is the real run (AUDIT-LONGTITLE-01);
+a safety suite proves the failure paths, it does not prove the page. Collapsed UI must be opened before measuring it — `details`
 elements such as the per-row decision card render nothing while closed, so a
 fixture without the data behind them (here `rule.plan`) measures an empty box and
 still reports a clean result. This applies to **both** browser suites: the layout

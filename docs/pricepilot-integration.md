@@ -1693,3 +1693,36 @@ WorkBuddy；基线 `8f3a1df552`。
   恢复旧的计数与文案 → 对应用例 2 红；改回 `dt.date.today()` → 实现守卫 1 红（均已还原）。
 - 未做：`ExportIn.shipping` 默认值仍是 `'空'`（前端已强制选空运/海运，只有直接调 API 才会吃到；
   改成 `''` 会让历史调用落一个空白的 G2，属留档口径，留给人决定）。
+
+### AUDIT-LONGTITLE-01 / PACK-IMPORT-MSG-01 / AUDIT-FIXTURE-03（2026-10-26）
+
+- 优先级 P1；自检 36/36 全绿、远端 main `eadb56c9a3` 与后端 build `eadb56c9a34a` 一致（无漂移）
+  之后主动排查，三处都属于「报告绿了、但其实没量到 / 没说清」。
+- 复现：
+  ①`scripts/ui_longtitle_focus_audit.py`（12 个「路由 × 宽度」组合、每组 Tab 最多 60 次逐个量
+  `document.activeElement` 的焦点圈颜色与背景、按 WCAG 2.1 算比值、<3:1 判失败；同时按绘制矩形判
+  文字互相重叠与单元格越界）此前**只被 `test-longtitle-audit-safety.py` 用假浏览器调用过**：桩里的
+  `overlaps` 恒为空、`ringRatio` 恒 3.1。也就是说真实页面上的长标题重叠与焦点圈对比度，从 #125
+  修完那次之后一次都没被门禁量过——脚本放着不跑，和没有这个脚本一样，而报告照样写「视觉一致性通过」。
+  ②「一键导入」（URL 带 `?import=` 且该 SKU 不在装箱单库时出现）与「从选品库导入」弹层打的是
+  **同一个** `POST /api/packing/import-from-products`，但前者的提示自己拼了一句
+  「新增 N 条，跳过 M 条，失败 K 条」：`image_failed` 这一档被整个吞掉（产品已导入、只是缺图，
+  用户不知道要去补图），真失败也不点名 SKU 与原因。同一个接口在同一页给出两套说法。
+  ③`scripts/test-packing-oms.py` 的 fixture 对未声明的 `/api` 路径直接回 404（`detail: fixture
+  endpoint not declared`）就算了：页面读不到数据会退化成空列表，而它的断言只看箱数/箱号/日期这些
+  不依赖那几支接口的东西，于是照样全绿——量的是一张缺数据的页面。
+- 改动：①新增 `scripts/test-longtitle-audit.py`（与 `test-contrast-audit.py` 同构：现挑空闲端口的
+  Vite + 隔离 fixture + 真实 Chromium，`OUT` 指向临时目录不落仓库），把审计本体原样接进 selfcheck，
+  未测到的页面/被拦请求/任何重叠/越界/焦点圈不足 3:1 一律非 0 退出；判据一行未放宽。
+  ②`Packing.describeImportResult()` 增加 `prefix` 参数，一键导入改用它（`一键导入完成：`），
+  两条路径共用同一套三档文案。③未声明接口记进 `undeclared` 并在收尾并入 `failures`，报告新增
+  `undeclared_api` 字段。
+- 验证：全量 selfcheck 37 步全绿（新增的 longtitle 套件自动纳入，12.2s）；
+  `test-packing-display.cjs` 62→66 断言（新增 4 条钉住一键导入的三档文案与旧文案不许回潮）；
+  反向探针：`*:focus{outline:none!important}` → longtitle 审计 `ratio=None` 退出 1；
+  一键导入改回旧文案 → 新断言在 `test-packing-display.cjs:333` 转红；删掉 fixture 的
+  `/api/stores` → packing-oms 报 `fixture 未声明的前端接口：GET /api/stores` 退出 1（均已还原）。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡，看不到真实页面）；
+  调价参数语义（`raise_step_pct` / `lead_pct` / `war_*` 只读不写，属禁止区）；
+  `test-packing-oms.py` 对非 GET 请求一律回 `{'ok': true}`（导出类接口的假 200 仍无法区分
+  「声明漏了」与「本来就该成功」，要区分得逐条声明写接口，超出本轮预算）。

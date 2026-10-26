@@ -311,5 +311,31 @@ const root = createRoot(host);
 
   check(writes.length === 0, 'rendering and reloading never writes to the backend');
   await act(async () => root.unmount());
+
+  // 「一键导入」（URL 带 ?import= 且该 SKU 不在装箱单库时出现）打的是**同一个**导入接口，
+  // 却自己拼了一句「新增 N 条，跳过 M 条，失败 K 条」：「已导入但缺图」这一档被整个吞掉，
+  // 用户不知道要去补图；真失败也不点名。同一个接口在同一页给出两套说法，必须共用一套。
+  const host2 = document.createElement('div');
+  document.body.appendChild(host2);
+  const root2 = createRoot(host2);
+  importCatalog = [{ id: 'p9', sku: 'MISSING-9', product_name: 'Fixture', chinese_product_name: '夹具' }];
+  importResult = {
+    ok: true, imported: 1, skipped: 0,
+    failed: [{ sku: '', reason: 'SKU 为空，无法作为装箱单主键' }],
+    image_failed: [{ sku: 'MISSING-9', reason: '图片抓取失败：CDN 403' }],
+  };
+  await act(async () => root2.render(React.createElement(MemoryRouter, { initialEntries: ['/packing?import=MISSING-9'] }, React.createElement(Page))));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  const oneClick = [...host2.querySelectorAll('button')].find(b => b.textContent.trim() === '一键导入');
+  check(!!oneClick, 'a SKU coming from the URL but absent from the packing library offers 一键导入');
+  await act(async () => { oneClick.click(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  const oneClickText = host2.textContent.replace(/\s+/g, ' ');
+  check(oneClickText.includes('已导入但图片没抓到') && oneClickText.includes('MISSING-9'),
+    `the one-click import must report an image failure as "already imported", got ${oneClickText.slice(0, 160)}`);
+  check(oneClickText.includes('没有导入') && oneClickText.includes('SKU 为空'),
+    'the one-click import must describe real failures separately and name the reason');
+  check(!/失败 1 条/.test(oneClickText), 'the one-click import must not fall back to the old 「失败 N 条」 wording');
+  await act(async () => root2.unmount());
+
   console.log(`PASS ${checks} packing display assertions (jsdom, isolated API)`);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

@@ -101,6 +101,10 @@ def carton_records(sku=''):
 def run():
     failures = []
     page_errors = []
+    # 未声明的 /api 路径以前直接回 404 就算了：页面读不到数据会退化成空列表，
+    # 而下面的断言只看「箱数/箱号/日期」这些不依赖那几支接口的东西 —— 于是报告照样
+    # 全绿，实际量的是一张缺数据的页面。声明漏了必须点名失败，不能静默降级。
+    undeclared = []
     # 断言条数自己数，别再手写一个数字 —— 加了两条却忘了改，报告就成了假的。
     # 名字不能叫 checked：下面「入仓模板弹层」那段有个同名 Locator。
     assertions = 0
@@ -130,6 +134,7 @@ def run():
                 if url.path in DATA:
                     route.fulfill(json=DATA[url.path])
                     return
+                undeclared.append(route.request.method + ' ' + url.path)
                 route.fulfill(status=404, json={'detail': 'fixture endpoint not declared'})
                 return
             route.continue_()
@@ -336,7 +341,13 @@ def run():
 
         browser.close()
 
-    report = {'checked': assertions, 'failures': failures, 'page_errors': page_errors}
+    # 声明漏了的接口一律算失败：它 404 之后页面只是少了块数据，UI 断言不会红。
+    missing = sorted(set(undeclared))
+    if missing:
+        failures.append('fixture 未声明的前端接口（页面会静默缺数据）：' + '、'.join(missing))
+
+    report = {'checked': assertions, 'failures': failures, 'page_errors': page_errors,
+              'undeclared_api': missing}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return failures, page_errors
 
