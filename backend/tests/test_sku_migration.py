@@ -129,17 +129,19 @@ def test_rename_is_archived_with_mapping():
         assert json.loads(record.detail)['shipment_lines'] == 1
 
 
-def test_packing_conflict_is_skipped_not_overwritten():
+def test_packing_conflict_aborts_instead_of_partial_migration():
     with fresh_db() as db:
         db.add(make_product(sku='NEW'))
         db.add(PackingProduct(store_id=DEFAULT_STORE_ID, sku='OLD', name='旧资料', weight='120'))
         db.add(PackingProduct(store_id=DEFAULT_STORE_ID, sku='NEW', name='新资料', weight='999'))
         db.commit()
-        result = migrate_sku(db, db.query(Product).filter_by(id='p1').one(), ['OLD'], ['NEW'])
-        db.commit()
-        assert 'packing_products' not in result['moved']
-        assert result['conflicts']
+        from services.sku_migration import SkuMigrationConflict
+        with pytest.raises(SkuMigrationConflict):
+            migrate_sku(db, db.query(Product).filter_by(id='p1').one(), ['OLD'], ['NEW'])
+        db.rollback()
+        assert db.query(PackingProduct).filter_by(sku='OLD').one().weight == '120'
         assert db.query(PackingProduct).filter_by(sku='NEW').one().weight == '999'
+        assert db.query(SkuRename).count() == 0
 
 
 def test_other_store_rows_are_untouched():
@@ -242,3 +244,47 @@ def test_apply_route_refuses_rename_when_new_sku_belongs_to_another_product(monk
         item = preview['items'][0]
         assert not any(c['field'] == 'sku' for c in item['changes'])
         assert any('已被其他产品使用' in w for w in item['warnings'])
+
+
+def test_apply_conflicting_packing_identity_rolls_back_every_change(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    import services.takealot_seller_api as service
+    from api.product_routes import AssistRequest, seller_assist
+    monkeypatch.setattr(service, 'configured_key', lambda db: 'fixture')
+    monkeypatch.setattr(service, '_load_offers', lambda key: [offer('NEW-SKU')])
+    request=lambda path:SimpleNamespace(url=SimpleNamespace(path=path))
+    with fresh_db() as db:
+        db.add(make_product(sku='OLD-SKU'))
+        db.add(PackingProduct(store_id=DEFAULT_STORE_ID,sku='OLD-SKU',name='Old',weight='120'))
+        db.add(PackingProduct(store_id=DEFAULT_STORE_ID,sku='NEW-SKU',name='Existing new',weight='999'))
+        db.add(InventoryAdjustment(store_id=DEFAULT_STORE_ID,sku='OLD-SKU',quantity_delta=5))
+        db.commit()
+        preview=seller_assist(AssistRequest(ids=['p1']),request('/preview'),db,DEFAULT_STORE_ID)
+        token=preview['items'][0]['token']
+        with pytest.raises(HTTPException) as caught:
+            seller_assist(AssistRequest(ids=['p1'],tokens={'p1':token}),request('/apply'),db,DEFAULT_STORE_ID)
+        assert caught.value.status_code == 409
+        db.expire_all()
+        assert db.query(Product).filter_by(id='p1').one().sku == 'OLD-SKU'
+        assert db.query(Product).filter_by(id='p1').one().width_mm is None
+        assert db.query(InventoryAdjustment).one().sku == 'OLD-SKU'
+        assert db.query(PackingProduct).filter_by(sku='OLD-SKU').one().weight == '120'
+        assert db.query(PackingProduct).filter_by(sku='NEW-SKU').one().weight == '999'
+        assert db.query(SkuRename).count() == 0
+
+
+def test_all_pairs_are_preflighted_before_first_write():
+    from services.sku_migration import SkuMigrationConflict
+    with fresh_db() as db:
+        db.add(make_product())
+        for sku in ('OLD-A','OLD-B','NEW-B'):
+            db.add(PackingProduct(store_id=DEFAULT_STORE_ID,sku=sku,name=sku))
+        db.add(InventoryAdjustment(store_id=DEFAULT_STORE_ID,sku='OLD-A',quantity_delta=3))
+        db.commit()
+        with pytest.raises(SkuMigrationConflict):
+            migrate_sku(db,db.query(Product).one(),['OLD-A','OLD-B'],['NEW-A','NEW-B'])
+        assert db.query(PackingProduct).filter_by(sku='OLD-A').count() == 1
+        assert db.query(PackingProduct).filter_by(sku='NEW-A').count() == 0
+        assert db.query(InventoryAdjustment).one().sku == 'OLD-A'
+        assert not db.query(SkuRename).count()
