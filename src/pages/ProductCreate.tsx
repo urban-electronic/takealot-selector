@@ -298,7 +298,7 @@ export default function ProductCreate() {
           <div className="two-col">
             <div>
               {productImage && (
-                <ProductImage src={api.getImageUrl(productImage)} className="image-preview" />
+                <ProductImage src={api.getImageUrl(productImage, 480)} className="image-preview" />
               )}
               <div className="form-group"><label>商品图片链接</label><input type="url" value={productImage} onChange={(e) => setProductImage(e.target.value)} placeholder="未获取时可粘贴图片链接" /></div>
             </div>

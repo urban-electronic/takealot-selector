@@ -34,7 +34,7 @@ function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallba
 
   useEffect(() => {
     if (!filename && fallbackUrl) {
-      setSrc(api.getImageUrl(fallbackUrl));
+      setSrc(api.getImageUrl(fallbackUrl, 160));
       setState('ok');
       return;
     }
@@ -63,7 +63,7 @@ function PackingImage({ filename, fallbackUrl, alt }: { filename: string; fallba
       .catch(() => {
         if (cancelled) return;
         if (fallbackUrl) {
-          setSrc(api.getImageUrl(fallbackUrl));
+          setSrc(api.getImageUrl(fallbackUrl, 160));
           setState('ok');
         } else {
           setState('failed');

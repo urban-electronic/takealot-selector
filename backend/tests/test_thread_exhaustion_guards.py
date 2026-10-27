@@ -124,7 +124,9 @@ def test_diag_runtime_endpoint_is_readable():
 def test_image_proxy_reports_502_when_threads_are_exhausted(monkeypatch):
     """线程起不来时返回 502 而不是 500：前端据此走直连兜底。"""
     class BrokenService:
-        async def fetch(self, url):
+        # 签名要与真实 fetch 一致（含 width）：桩少一个参数时，路由传 w 会抛
+        # TypeError，测试就变成在验另一件事（500 vs 502）。
+        async def fetch(self, url, width=0):
             raise RuntimeError("can't start new thread")
 
     monkeypatch.setattr(image_proxy, '_service', BrokenService())

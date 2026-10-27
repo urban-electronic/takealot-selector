@@ -411,15 +411,20 @@ export const searchProductsByNo = async (keyword: string): Promise<Product[]> =>
 /**
  * 远程模式图片地址：Takealot CDN 对浏览器/非白名单请求一律 403 防盗链，
  * 统一走后端 /api/image-proxy 代理（服务端带 Referer+UA 已验证可正常抓取）。
+ *
+ * `width` 让服务端等比缩小后再返回。列表一行只显示 68×68，按原图下载时一页
+ * 20 张合计 10MB+，跨境链路上要 20 多秒——这才是「打开巨慢」的原因，所以列表
+ * 必须传宽度。详情页/大图不传，取原图。
  */
-export const getImageUrl = (url: string): string => {
+export const getImageUrl = (url: string, width?: number): string => {
   if (!url) return url;
   if (!/^https?:\/\//i.test(url)) return url;
   const baseUrl = getBaseUrl();
   // <img> 标签无法带 X-API-Key 头，图片代理改用 query token 鉴权
   const key = (localStorage.getItem('api_key') || '').trim();
   const sep = key ? `&token=${encodeURIComponent(key)}` : '';
-  return `${baseUrl}/api/image-proxy?url=${encodeURIComponent(url)}${sep}`;
+  const size = width && width > 0 ? `&w=${Math.round(width)}` : '';
+  return `${baseUrl}/api/image-proxy?url=${encodeURIComponent(url)}${size}${sep}`;
 };
 
 // ---- Packing（装箱单，云端独立鲲鹏库） ----

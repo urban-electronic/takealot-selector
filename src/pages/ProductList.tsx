@@ -938,7 +938,7 @@ export default function ProductList() {
       case 'image':
         return p.product_image_url ? (
           <ProductImage
-            src={api.getImageUrl(p.product_image_url)}
+            src={api.getImageUrl(p.product_image_url, 160)}
             referrerPolicy="no-referrer"
             style={{ width: 68, height: 68, objectFit: 'cover', borderRadius: 4 }}
           />
@@ -1583,7 +1583,7 @@ export default function ProductList() {
                                 })} />
                                 <span className="branch-image" title={p.product_image_url || p.product_image_path || '无图片URL'}>
                                   {p.product_image_url || p.product_image_path ? (
-                                    <ProductImage src={api.getImageUrl(p.product_image_url || p.product_image_path || '')} referrerPolicy="no-referrer" />
+                                    <ProductImage src={api.getImageUrl(p.product_image_url || p.product_image_path || '', 160)} referrerPolicy="no-referrer" />
                                   ) : (
                                     <i>待补图</i>
                                   )}

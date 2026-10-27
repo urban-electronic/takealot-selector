@@ -14,6 +14,7 @@
 
 import asyncio
 import hmac
+import io
 import ipaddress
 import os
 import time
@@ -22,6 +23,11 @@ from urllib.parse import urlsplit, urlunsplit, unquote
 from fastapi import APIRouter, Query, Header, HTTPException
 from fastapi.responses import Response
 import httpx
+
+try:                       # 缩略图用；装不上时自动退化成原图，不影响功能
+    from PIL import Image
+except Exception:          # pragma: no cover - 依赖缺失时走降级分支
+    Image = None
 
 router = APIRouter(prefix="/api", tags=["image-proxy"])
 
@@ -47,6 +53,14 @@ POSITIVE_TTL_SECONDS = 30.0    # 正向微缓存时长（承接同屏/滚动重�
 POSITIVE_MAX_ENTRIES = 256     # 正向缓存条目上限，超出整体清空防增长
 POSITIVE_MAX_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+# 缩略图单独一套缓存：列表一页 20 张原图合计能到 10MB，跨境链路上要 20 秒；
+# 缩到 160px 宽后每张约 8-15KB，一页不到 300KB。缩略图小、复用率高，所以
+# 给它更长的 TTL 和独立的字节预算，避免被原图挤掉。
+THUMB_TTL_SECONDS = 3600.0
+THUMB_MAX_BYTES = 16 * 1024 * 1024
+THUMB_QUALITY = 82
+MAX_THUMB_WIDTH = 1200
 _CLIENT_LIMITS = httpx.Limits(max_connections=32, max_keepalive_connections=16)
 
 _UPSTREAM_HEADERS = {
@@ -112,6 +126,37 @@ def _retrieve_task_exception(task: "asyncio.Task") -> None:
         task.exception()
 
 
+def _resize_image(content: bytes, content_type: str, width: int) -> tuple[bytes, str]:
+    """把图片缩到指定宽度（只缩不放），转成 JPEG。
+
+    列表页每行只显示 68×68，却按原图下载：一页 20 张合计 10.8MB，跨境链路上
+    要 20 多秒，这才是「打开巨慢」的真正原因。缩到 160px 宽后每张约 10KB。
+
+    任何异常都退回原图：缩略图是优化，不是功能，宁可慢也不能让图变成破图。
+    """
+    if Image is None or width <= 0 or not content:
+        return content, content_type
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            if image.width <= width:
+                return content, content_type
+            ratio = width / float(image.width)
+            size = (width, max(1, int(round(image.height * ratio))))
+            if image.mode in ('RGBA', 'LA', 'P'):
+                # 透明底转 JPEG 会变黑，先铺白底——商品图基本都是白底。
+                rgba = image.convert('RGBA')
+                canvas = Image.new('RGB', rgba.size, (255, 255, 255))
+                canvas.paste(rgba, mask=rgba.split()[-1])
+                resized = canvas.resize(size, Image.LANCZOS)
+            else:
+                resized = image.convert('RGB').resize(size, Image.LANCZOS)
+            buffer = io.BytesIO()
+            resized.save(buffer, 'JPEG', quality=THUMB_QUALITY, optimize=True, progressive=True)
+            return buffer.getvalue(), 'image/jpeg'
+    except Exception:
+        return content, content_type
+
+
 class _ImageFetchService:
     """带白名单校验、负缓存与单航班去重的图片出站服务。
 
@@ -126,6 +171,8 @@ class _ImageFetchService:
         self._positive_bytes = 0
         self._negative: dict[str, float] = {}   # url -> 负缓存到期时刻（monotonic）
         self._positive: dict[str, tuple[float, bytes, str]] = {}  # url -> (到期, 内容, 类型)
+        self._thumbs: dict[str, tuple[float, bytes]] = {}  # 'url|w' -> (到期, JPEG 字节)
+        self._thumb_bytes = 0
         self._inflight: dict[str, asyncio.Task] = {}
 
     # ---- 缓存 ----
@@ -173,19 +220,52 @@ class _ImageFetchService:
         self._positive[url] = (time.monotonic() + POSITIVE_TTL_SECONDS, content, content_type)
         self._positive_bytes += len(content)
 
+    def _thumb_hit(self, key: str):
+        cached = self._thumbs.get(key)
+        if cached is None:
+            return None
+        if cached[0] <= time.monotonic():
+            self._thumb_bytes -= len(cached[1])
+            self._thumbs.pop(key, None)
+            return None
+        return cached[1]
+
+    def _remember_thumb(self, key: str, content: bytes) -> None:
+        if len(content) > THUMB_MAX_BYTES:
+            return
+        now = time.monotonic()
+        for stale in [k for k, v in self._thumbs.items() if v[0] <= now]:
+            self._thumb_bytes -= len(self._thumbs.pop(stale)[1])
+        while self._thumbs and self._thumb_bytes + len(content) > THUMB_MAX_BYTES:
+            oldest = next(iter(self._thumbs))
+            self._thumb_bytes -= len(self._thumbs.pop(oldest)[1])
+        self._thumbs[key] = (now + THUMB_TTL_SECONDS, content)
+        self._thumb_bytes += len(content)
+
     # ---- 出站 ----
 
-    async def fetch(self, url: str) -> tuple[bytes, str]:
-        """返回 (图片字节, content-type)；失败抛 HTTPException。"""
+    async def fetch(self, url: str, width: int = 0) -> tuple[bytes, str]:
+        """返回 (图片字节, content-type)；失败抛 HTTPException。
+
+        `width > 0` 时返回等比缩到该宽度的 JPEG（只缩不放）。缩略图有独立的
+        小时级缓存：列表反复打开时几乎不用再出站，也不会被原图缓存挤掉。
+        """
         if self._closed:
             raise HTTPException(status_code=503, detail="图片服务正在关闭")
         url = _validate_image_url(url)
+        thumb_key = f'{url}|w{width}' if width > 0 else ''
+        if thumb_key:
+            cached = self._thumb_hit(thumb_key)
+            if cached is not None:
+                return cached, 'image/jpeg'
         if self._negatively_blocked(url):
             raise HTTPException(
                 status_code=502, detail="图片 CDN 暂时拒绝访问（负缓存生效），请稍后重试"
             )
         hit = self._positive_hit(url)
         if hit is not None:
+            if thumb_key:
+                return self._shrink(thumb_key, hit)
             return hit
         task = self._inflight.get(url)
         if task is None or task.done():
@@ -194,7 +274,19 @@ class _ImageFetchService:
             # 防止 leader 在 await 前被取消时异常无人读取的告警
             task.add_done_callback(_retrieve_task_exception)
         # 等待共享任务：leader 断开不会取消任务，后续请求仍可拿到结果
-        return await asyncio.shield(task)
+        content, content_type = await asyncio.shield(task)
+        if thumb_key:
+            return self._shrink(thumb_key, (content, content_type))
+        return content, content_type
+
+    def _shrink(self, thumb_key: str, original: tuple[bytes, str]) -> tuple[bytes, str]:
+        width = int(thumb_key.rsplit('|w', 1)[1])
+        content, content_type = _resize_image(original[0], original[1], width)
+        # 只有真的重新编码过才缓存：降级分支返回的是同一个对象，此时缓存原图
+        # 会让下一次按「缩略图=JPEG」取到一张 PNG。
+        if content is not original[0]:
+            self._remember_thumb(thumb_key, content)
+        return content, content_type
 
     async def _fetch_upstream(self, url: str) -> tuple[bytes, str]:
         try:
@@ -267,6 +359,8 @@ class _ImageFetchService:
         self._inflight.clear()
         self._positive.clear()
         self._positive_bytes = 0
+        self._thumbs.clear()
+        self._thumb_bytes = 0
         self._negative.clear()
 
 
@@ -281,6 +375,7 @@ async def aclose_service() -> None:
 @router.get("/image-proxy")
 async def image_proxy(
     url: str = Query(..., description="原始图片 URL"),
+    w: int = Query(0, ge=0, le=MAX_THUMB_WIDTH, description="按该宽度等比缩小（0=原图）"),
     token: str = Query("", description="图片鉴权 token（<img> 无法带 header，走 query）"),
     x_api_key: str = Header("", alias="X-API-Key"),
 ):
@@ -298,7 +393,7 @@ async def image_proxy(
             raise HTTPException(status_code=401, detail="无效或缺失 API Key")
     safe_url = _validate_image_url(url)
     try:
-        content, content_type = await _service.fetch(safe_url)
+        content, content_type = await _service.fetch(safe_url, w)
     except (RuntimeError, OSError) as exc:
         # 2026-10-21：容器线程被采集任务耗光后，anyio 解析 DNS 要起线程却起不来，
         # 抛的是 `RuntimeError: can't start new thread`。这类错误不是「图片没了」，

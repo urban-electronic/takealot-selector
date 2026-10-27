@@ -105,4 +105,6 @@ export const searchProductsByNo = async (keyword: string): Promise<Product[]> =>
 };
 
 /** 本地模式：Tauri WebView 请求特征被 Takealot CDN 放行，直接返回原图地址 */
-export const getImageUrl = (url: string): string => url;
+// 本地/桌面模式图片直连，没有代理也就没有缩放；保留 width 参数是为了两套
+// API 签名一致（调用点不区分数据源）。
+export const getImageUrl = (url: string, _width?: number): string => url;

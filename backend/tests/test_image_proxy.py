@@ -338,3 +338,73 @@ def test_endpoint_negative_cache_avoids_second_outbound(client, monkeypatch):
         resp = client.get("/api/image-proxy", params={"url": ALLOWED, "token": "secret-key"})
         assert resp.status_code == 502
     assert len(calls) == 1
+
+
+# ---------- 缩略图：列表图片降载 ----------
+#
+# 列表一行只显示 68×68，原来却按原图下载：一页 20 张合计 10.8MB，跨境链路上
+# 要 20 多秒。下面钉住三件事——缩了、只出站一次、小图不放大。
+
+def _jpeg(size=(800, 600), color=(20, 40, 60)) -> bytes:
+    pil = pytest.importorskip("PIL.Image")
+    import io
+    buffer = io.BytesIO()
+    pil.new("RGB", size, color).save(buffer, "JPEG", quality=95)
+    return buffer.getvalue()
+
+
+def test_thumbnail_is_resized_to_requested_width():
+    big = _jpeg()
+    service, _ = make_service(lambda request: image_bytes(big))
+    content, content_type = asyncio.run(service.fetch(ALLOWED, 160))
+    pil = pytest.importorskip("PIL.Image")
+    import io
+    assert content_type == "image/jpeg"
+    assert len(content) < len(big) / 4, "缩略图必须明显变小，否则列表还是慢"
+    with pil.open(io.BytesIO(content)) as img:
+        assert img.width == 160
+        assert img.height == 120, "必须等比，不能压扁"
+
+
+def test_thumbnail_is_cached_and_skips_second_outbound():
+    """同一张图第二次要命中缩略图缓存——列表反复打开不该再出站。"""
+    big = _jpeg()
+    service, calls = make_service(lambda request: image_bytes(big))
+    asyncio.run(service.fetch(ALLOWED, 160))
+    content, _ = asyncio.run(service.fetch(ALLOWED, 160))
+    assert len(calls) == 1
+    assert content
+
+
+def test_thumbnail_does_not_upscale_small_image():
+    small = _jpeg(size=(80, 80))
+    service, _ = make_service(lambda request: image_bytes(small))
+    content, _ = asyncio.run(service.fetch(ALLOWED, 160))
+    assert content == small, "比目标还小的图必须原样返回，不能放大"
+
+
+def test_original_image_is_untouched_without_width():
+    big = _jpeg()
+    service, _ = make_service(lambda request: image_bytes(big))
+    content, _ = asyncio.run(service.fetch(ALLOWED))
+    assert content == big
+
+
+def test_endpoint_serves_thumbnail_and_keeps_cache_header(client, monkeypatch):
+    monkeypatch.setattr(image_proxy, "_API_KEY", "secret-key")
+    service, calls = make_service(lambda request: image_bytes(_jpeg()))
+    monkeypatch.setattr(image_proxy, "_service", service)
+    resp = client.get("/api/image-proxy",
+                      params={"url": ALLOWED, "token": "secret-key", "w": 160})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.headers["cache-control"] == "private, max-age=86400"
+    assert len(resp.content) < 40 * 1024
+    assert len(calls) == 1
+
+
+def test_endpoint_rejects_absurd_width(client, monkeypatch):
+    monkeypatch.setattr(image_proxy, "_API_KEY", "secret-key")
+    resp = client.get("/api/image-proxy",
+                      params={"url": ALLOWED, "token": "secret-key", "w": 99999})
+    assert resp.status_code == 422

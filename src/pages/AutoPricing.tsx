@@ -441,7 +441,7 @@ export default function AutoPricing() {
         const title=r.variant?.base||r.chinese_name||'中文名待核对';
         const openVariant=openVariantOf===r.product_id;
         return <tr key={key(r)} className={openVariant?'is-expanded':''}><td><input type="checkbox" aria-label={`选择SKU ${r.sku}`} checked={selected.includes(key(r))} onChange={e=>setSelected(e.target.checked?[...selected,key(r)]:selected.filter(k=>k!==key(r)))} /></td>
-          <td className="operations-product"><div className="product-cell"><Thumb src={r.image ? getImageUrl(r.image) : ''} /><div className="product-body"><a className="product-link" title={r.name} href={r.url} target="_blank" rel="noreferrer">{title}</a>{!r.variant?.base&&!r.chinese_name&&<small className="text-warning">{r.name_status==='invalid'?'中文字段为非中文，请修正':r.name_status==='ambiguous'?'SKU与中文名对应不明确':'中文名待补充'}</small>}
+          <td className="operations-product"><div className="product-cell"><Thumb src={r.image ? getImageUrl(r.image, 160) : ''} /><div className="product-body"><a className="product-link" title={r.name} href={r.url} target="_blank" rel="noreferrer">{title}</a>{!r.variant?.base&&!r.chinese_name&&<small className="text-warning">{r.name_status==='invalid'?'中文字段为非中文，请修正':r.name_status==='ambiguous'?'SKU与中文名对应不明确':'中文名待补充'}</small>}
             {/* 中文名对上号用，英文名才是平台上的标题：宽屏有富余就摆出来，窄屏藏掉。 */}
             {r.name&&r.name!==title&&<small className="product-en" title={r.name}>{r.name}</small>}
             <div className="product-meta"><span>{r.sku}</span><span>库存 {r.stock??'—'}</span>

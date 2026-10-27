@@ -14,3 +14,7 @@ tzdata>=2024.1
 # 产品标签 PDF（services/label_pdf.py）。Dockerfile 和 CI 装的都是这份，
 # 只加到根目录 requirements.txt 不够——容器启动时会 import 失败。
 reportlab>=4.0
+# /api/image-proxy 的缩略图（api/image_proxy.py）。列表一页 20 张原图合计
+# 10MB+，跨境链路上要 20 多秒；缩到 160px 宽后每张约 10KB。缺了它图片仍能
+# 显示（代码里降级回原图），但列表会重新变慢。
+pillow>=10.4.0
