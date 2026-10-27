@@ -349,6 +349,21 @@ def test_url_and_stored_plid_conflict_is_not_overwritten(db, seller_plid):
     assert plan['stats']['skip_count'] == 1
     assert db.get(Product, product.id).sku == 'OLD'
 
+
+def test_intervening_edit_rejects_prepared_plan(db):
+    product = add(db, plid='800', sku='OLD', tsin='1')
+    rows = [offer('1', '800', 'SELLER')]
+    plan = build_plan(db, STORE, rows)
+    old_token = plan['token']
+    product.sku = 'MANUAL'
+    db.commit()
+    assert build_plan(db, STORE, rows)['token'] != old_token
+    with pytest.raises(SellerSyncConflict):
+        apply_plan(db, STORE, plan)
+    db.rollback()
+    assert db.get(Product, product.id).sku == 'MANUAL'
+
+
 @pytest.mark.parametrize('field,value', [
     ('tsin_id', '2'), ('selling_price', 399.0),
     ('image_url', 'https://media.takealot.com/covers_images/2.jpg'),
