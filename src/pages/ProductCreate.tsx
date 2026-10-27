@@ -20,6 +20,8 @@ export default function ProductCreate() {
   const [productImage, setProductImage] = useState('');
   const [salePrice, setSalePrice] = useState('');
   const importerLink = useRef<HTMLAnchorElement>(null);
+  const identityVersion = useRef(0);
+  useEffect(() => () => { identityVersion.current += 1; }, []);
   const [showImporter, setShowImporter] = useState(false);
   const [importingFile, setImportingFile] = useState(false);
 
@@ -39,6 +41,7 @@ export default function ProductCreate() {
     try {
       const parsed = new URL(url.trim());
       if (!['http:', 'https:'].includes(parsed.protocol) || !['takealot.com', 'www.takealot.com'].includes(parsed.hostname) || parsed.username || parsed.password) throw new Error();
+      identityVersion.current += 1;
       setScrapeResult({ normalized_url: `${parsed.origin}${parsed.pathname}`, tsin: parsed.pathname.match(/PLID\d+/i)?.[0].toUpperCase() || null,
         product_name: null, product_image_url: null, actual_sale_price_zar: null, in_stock_price: null,
         takealot_category_path: null, warnings: ['手动录入：请填写标题和售价，选择 Fee 品类。'], success: false, data_source: 'manual' });
@@ -98,18 +101,21 @@ export default function ProductCreate() {
   }, [showImporter]);
 
   const applyImportedResult = (result: ScrapeResult) => {
+      const version = ++identityVersion.current;
+      setScraping(false);
       setUrl(result.normalized_url); setScrapeResult(result);
       setError(''); setSku(''); setFeeCategory(''); setFeeConfirmed(false); setChineseName(''); setFeeMatchError('');
       setProductName(result.product_name || ''); setProductImage(result.product_image_url || '');
       setSalePrice(result.actual_sale_price_zar !== null ? String(result.actual_sale_price_zar) : '');
       api.getFeeMappingRules().then(rules => {
+        if (version !== identityVersion.current) return;
         const match = rules.filter(rule => rule.active && rule.takealot_category_pattern && result.takealot_category_path?.toLowerCase().includes(rule.takealot_category_pattern.toLowerCase())).sort((a, b) => b.priority - a.priority)[0];
         if (match) { setFeeCategory(match.fee_category); setScrapeResult(prev => prev ? { ...prev, recommended_fee_category: match.fee_category, fee_category_confidence: 'high', fee_match_reason: `官网页面分类匹配：${match.takealot_category_pattern}` } : prev); }
       })
         // 映射规则读不到时「系统推荐」会写「无推荐」，和「规则里确实没有匹配项」长得一样。
         // 页面导入本来就是这个流程的卖点，读失败必须说明，否则用户会以为分类路径没匹配上。
-        .catch((e: unknown) => setFeeMatchError(e instanceof Error ? e.message : String(e)));
-      if (result.product_name) api.translateProductName(result.product_name).then(res => { if (res.chinese_name) setChineseName(res.chinese_name); }).catch(() => {});
+        .catch((e: unknown) => { if (version === identityVersion.current) setFeeMatchError(e instanceof Error ? e.message : String(e)); });
+      if (result.product_name) api.translateProductName(result.product_name).then(res => { if (version === identityVersion.current && res.chinese_name) setChineseName(prev => prev || res.chinese_name); }).catch(() => {});
   };
 
   useEffect(() => {
@@ -122,6 +128,7 @@ export default function ProductCreate() {
 
   const handleScrape = async () => {
     if (!url.trim()) return;
+    const version = ++identityVersion.current;
     setScraping(true);
     setError('');
     setScrapeResult(null);
@@ -133,6 +140,7 @@ export default function ProductCreate() {
     setFeeConfirmed(false);
     try {
       const result: ScrapeResult = await api.scrapeTakealot(url.trim());
+      if (version !== identityVersion.current) return;
       if (!result.success) setShowImporter(true);
       setScrapeResult(result);
       setProductName(result.product_name || '');
@@ -146,17 +154,17 @@ export default function ProductCreate() {
       if (result.product_name && !chineseName) {
         try {
           const translated = await api.translateProductName(result.product_name);
-          if (translated.chinese_name) {
-            setChineseName(translated.chinese_name);
+          if (version === identityVersion.current && translated.chinese_name) {
+            setChineseName(prev => prev || translated.chinese_name);
           }
         } catch {
           // 翻译失败静默处理，用户可手动填写
         }
       }
     } catch (e: any) {
-      setError(typeof e === 'string' ? e : e.message || '操作失败');
+      if (version === identityVersion.current) setError(typeof e === 'string' ? e : e.message || '操作失败');
     } finally {
-      setScraping(false);
+      if (version === identityVersion.current) setScraping(false);
     }
   };
 
@@ -252,7 +260,7 @@ export default function ProductCreate() {
             disabled={scraping}
             placeholder="https://www.takealot.com/..."
             value={url}
-            onChange={(e) => { setUrl(e.target.value); setScrapeResult(null); setProductName(''); setProductImage(''); setSalePrice(''); setSku(''); setFeeCategory(''); setFeeConfirmed(false); }}
+            onChange={(e) => { identityVersion.current += 1; setUrl(e.target.value); setScrapeResult(null); setProductName(''); setProductImage(''); setSalePrice(''); setSku(''); setChineseName(''); setFeeMatchError(''); setFeeCategory(''); setFeeConfirmed(false); }}
             style={{ flex: 1 }}
             onKeyDown={(e) => e.key === 'Enter' && handleScrape()}
           />
