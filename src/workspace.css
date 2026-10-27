@@ -743,10 +743,9 @@ button:focus-visible,
   flex: none;
   max-width: 100%;
   border-radius: var(--r-xs);
-  /* 底色不能太淡：第一版用 #e7eef9，在白卡上几乎看不见，读起来像「页面还没画完」。
-     压到 #d7e2f1 之后，占位条在 --surface-panel(#fff) 和 --table-head-bg(#f3f6fa) 上
-     都看得出形状；高光也只是提亮一点，不再把整条洗白。 */
-  background-color: #d7e2f1;
+  /* 底色不能太淡：第一版用 #e7eef9，在白卡上几乎看不见；第二版 #d7e2f1 又太亮刺眼。
+     压到 #bfc9d8 后，占位条在白卡和表头上都看得出形状，整体也不会过曝。 */
+  background-color: #bfc9d8;
   background-image: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, .72) 50%, rgba(255, 255, 255, 0) 100%);
   background-repeat: no-repeat;
   background-size: 220px 100%;
@@ -884,7 +883,7 @@ button:focus-visible,
   padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
   border: 1px solid var(--accent-line);
   border-radius: var(--r-lg);
-  background-color: var(--accent-soft);
+  background-color: #d0d9ea;
   background-image: linear-gradient(90deg, rgba(47, 106, 224, .08) 0%, rgba(47, 106, 224, 0) 58%);
 }
 .bulk-count {
