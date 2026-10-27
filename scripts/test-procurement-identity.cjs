@@ -159,6 +159,14 @@ const fireSubmit = async () => {
   check(!host.querySelector('form div[style*="cursor: pointer"]'), 'a failed search shows no fake result rows');
 
   await act(async () => root.unmount());
+  // 源码守卫：同步成功与同步失败不能并排挂着（BANNER-EXCLUSIVE-02）。
+  // 「同步成功！已导出 N 条」原来在失败分支不会被清掉，绿条红条一起挂。
+  const procurementSource = fs.readFileSync(file, 'utf8');
+  check(/setSyncMsg\(''\)/.test(procurementSource),
+    '同步失败/不可同步时必须清掉上一条「同步成功」');
+  const failBranch = procurementSource.slice(procurementSource.indexOf('同步失败:'));
+  check(/setSyncMsg\(''\)/.test(failBranch.slice(0, 200)),
+    '同步失败的 catch 里要清掉成功横幅');
   clearTimeout(watchdog);
   console.log(`PASS ${checks} Procurement identity assertions (jsdom, isolated API)`);
 })().catch(error => {

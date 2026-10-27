@@ -129,6 +129,14 @@ check(storesSource.includes('库存未自动同步'), 'API 读取档必须说清
   }
   check(/notice\(next === 'paused'/.test(bodyOf('toggleStatus')),
     '暂停/恢复必须给出结果提示，不能只重载列表');
+  // 暂停「当前店铺」时不能说「它不再出现在顶部店铺切换中」：storeOptions 会把
+  // 当前店铺保留在下拉里并标注「已暂停」（STORE-SWITCH-01），否则请求带着 A、
+  // 界面显示 B。用户最可能暂停的恰恰是正在用的那一家，所以文案必须分档。
+  check(storesSource.includes('getActiveStoreId'), '暂停文案要能判断「是不是当前店铺」');
+  check(/store\.id === getActiveStoreId\(\)/.test(bodyOf('toggleStatus')),
+    '暂停提示必须按「是否当前店铺」分档，不能一概说不再出现在切换中');
+  check(/pausedEffect/.test(bodyOf('toggleStatus')) && /pausedEffect/.test(storesSource),
+    '两种情况的后果都要说清（当前店铺仍留在下拉并标注已暂停）');
 }
 
 console.log(`test-store-switcher: ${checks} 条断言通过`);

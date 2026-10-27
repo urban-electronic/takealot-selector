@@ -6,15 +6,28 @@ const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
 const { JSDOM } = require('jsdom');
+// Reverse probe: restore the old refresh-failure behavior in memory, never on disk.
+if (!process.env.PACKING_REFRESH_REVERSE) {
+  const { spawnSync } = require('node:child_process');
+  const probe = spawnSync(process.execPath, [__filename], {
+    env: { ...process.env, PACKING_REFRESH_REVERSE: '1' },
+    encoding: 'utf8', timeout: 10000,
+  });
+  assert.equal(probe.status, 1, 'refresh reverse probe must fail');
+  assert.match(probe.stdout + probe.stderr,
+    /successful mutation feedback survives a separate list refresh failure/,
+    'reverse probe must fail at the refresh assertion, not fixture setup');
+  console.log('PASS refresh reverse probe: old load failure clears confirmed success');
+}
 const watchdog = setTimeout(() => { console.error('FAIL packing suite did not complete within 10s'); process.exit(1); }, 10000);
 const dom = new JSDOM('<div id="root"></div>', { url: 'https://example.invalid/packing' });
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Event', 'localStorage'])
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-if (!dom.window.URL.createObjectURL) dom.window.URL.createObjectURL = () => 'blob:stub';
-if (!dom.window.URL.revokeObjectURL) dom.window.URL.revokeObjectURL = () => {};
 globalThis.URL = dom.window.URL;
 document.addEventListener('click', e => { if (e.target.closest?.('a[download]')) e.preventDefault(); });
+if (!dom.window.URL.createObjectURL) dom.window.URL.createObjectURL = () => 'blob:stub';
+if (!dom.window.URL.revokeObjectURL) dom.window.URL.revokeObjectURL = () => {};
 
 const React = require('react');
 const { act } = React;
@@ -55,7 +68,11 @@ const remote = {
   },
   syncPackingImagesFromProducts: async () => { if (imageSyncFails) throw new Error('匹配接口 500'); return { ok: true, updated: 0, total_pending: 0, failed: [] }; },
   syncPackingVariantsFromTakealot: async () => ({ ok: true, groups_checked: 0, matched: 0, images: 0, unresolved: [] }),
-  exportPacking: async (payload) => { exported.push(payload); return { ok: true }; },
+  // 真实实现返回的是 Blob（remoteApi.exportPacking 走 response.blob()）。
+  // 桩原来回 `{ok:true}`，页面 `URL.createObjectURL(blob)` 于是抛
+  // 「obj argument must be an instance of Blob」——导出成功那条路径**从来没跑通过**，
+  // 只是没人断言横幅，所以一直看不出来。
+  exportPacking: async (payload) => { exported.push(payload); return new Blob(['fixture']); },
   getPackingCartons: async () => ({ date: '', total_cartons: 0, cartons: [] }),
   fetchPackingImageBlob: async () => { throw new Error('no image in fixture'); },
   getShipments: async () => [],
@@ -82,7 +99,13 @@ function compile(target, mocks = {}) {
   m.paths = Module._nodeModulePaths(path.dirname(target));
   const orig = m.require.bind(m);
   m.require = n => n in mocks ? mocks[n] : (localModule(n, target) || orig(n));
-  m._compile(ts.transpileModule(fs.readFileSync(target, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
+  let source = fs.readFileSync(target, 'utf8');
+  if (target === file && process.env.PACKING_REFRESH_REVERSE) {
+    const before = 'setError(`加载装箱单库失败：${reasonOf(e)}`);';
+    assert.ok(source.includes(before), 'reverse probe target must exist');
+    source = source.replace(before, 'fail(`加载装箱单库失败：${reasonOf(e)}`);');
+  }
+  m._compile(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
   return m.exports;
 }
 const types = compile(path.resolve(__dirname, '../src/types.ts'));
@@ -293,7 +316,11 @@ const root = createRoot(host);
   const blocked = host.querySelector('.alert-error');
   check(blocked && blocked.textContent.includes('运输方式'),
     `the blocked export must say why, got ${blocked && blocked.textContent}`);
-  check(!host.querySelector('.alert-success'), 'a blocked export clears the previous import success banner');
+  // 同一次操作的成败不能并排挂着（BANNER-EXCLUSIVE-02）：上一步导入成功留下的
+  // 绿条必须被这次「运输方式没选」的红条顶掉，否则屏幕上同时写着「导入完成」
+  // 和「请选择运输方式」，用户看不出这次到底成没成。
+  check(host.querySelectorAll('.alert-success').length === 0,
+    'a blocked export must clear the previous success banner');
 
   // 模板 G2 是「头程（空/海）」，只能是下拉里的两项之一，不能再是自由文本。
   const shippingSelect = host.querySelector('.packing-export-grid select');
@@ -307,13 +334,16 @@ const root = createRoot(host);
 
   await act(async () => { exportBtn.click(); await Promise.resolve(); await Promise.resolve(); });
   check(exported.length === 1, `export must be called once, got ${exported.length}`);
-  check(!host.querySelector('.alert-error'), 'successful retry clears the previous validation error');
   check(exported[0].shipping === '海运', `the chosen shipping method must reach the backend, got ${exported[0].shipping}`);
   const payload = exported[0] || {};
   check(JSON.stringify(payload.items) === JSON.stringify([{ sku: '114', cartons: '1', count: '12' }]),
     `export items must carry cartons=1 / count=12, got ${JSON.stringify(payload.items)}`);
   check(JSON.stringify(payload.cartons) === JSON.stringify([{ box_no: 'C01', note: '', items: [{ sku: '114', quantity: '12' }] }]),
     `export cartons must carry quantity=12, got ${JSON.stringify(payload.cartons)}`);
+  check(host.querySelectorAll('.alert-error').length === 0,
+    'a successful export must clear the previous error banner');
+  check(host.querySelectorAll('.alert-success').length === 1,
+    `a successful export leaves exactly one success banner, got ${host.querySelectorAll('.alert-success').length}`);
 
   const syncImages = [...host.querySelectorAll('button')].find(b => b.textContent === '按SKU匹配选品库图片');
   check(!!host.querySelector('.alert-success'), 'the fixture must reach actual export success, not just submit its payload');
@@ -356,6 +386,23 @@ const root = createRoot(host);
     'the one-click import must describe real failures separately and name the reason');
   check(!/失败 1 条/.test(oneClickText), 'the one-click import must not fall back to the old 「失败 N 条」 wording');
   await act(async () => root2.unmount());
+
+  // ---- 源码守卫：动作反馈互斥；列表读取失败单独保留；跳过行是提醒 -------------
+  // 行为断言只覆盖了「导入成功 → 导出被拦」与「导出成功」两条路径；剩下 8 个
+  // 处理函数（保存/删除/上传/移除图片/图片匹配/规格核对…）都是同一类写法，
+  // 靠这条守卫防止有人再退回 setError()/setMsg() 直写。
+  const packingSource = fs.readFileSync(file, 'utf8');
+  check(packingSource.includes('const notice = ') && packingSource.includes('const fail = '),
+    '装箱页必须提供 notice()/fail()：一个动作只留一条横幅');
+  const bannerWrites = packingSource.match(/(?:setMsg|setError)\((?!'')/g) || [];
+  check(bannerWrites.length === 3 && packingSource.includes('setError(`加载装箱单库失败：${reasonOf(e)}`)'),
+    `只允许 notice()/fail() 和独立列表读取错误写横幅，实际 ${bannerWrites.length} 处`);
+  // 「部分勾选行被跳过」是提醒、不是失败：原来写进 error，紧接着导出开始时的
+  // setError('') 在同一个同步流程里就把它抹掉，用户从来没看见过这句。
+  check(!/setError\(cartonsManual/.test(packingSource),
+    '跳过行的提醒不能写进 error（会被导出前的 setError(\'\') 立刻抹掉）');
+  check(packingSource.includes('skippedNote'),
+    '跳过说明必须并进导出成功提示，否则用户永远看不到');
 
   console.log(`PASS ${checks} packing display assertions (jsdom, isolated API)`);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

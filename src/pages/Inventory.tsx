@@ -30,6 +30,13 @@ export default function Inventory() {
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [exportingInbound, setExportingInbound] = useState(false);
   const [selectedShipmentIds, setSelectedShipmentIds] = useState<string[]>([]);
+  // 成功提示与失败提示互斥：写一条就清另一条（BANNER-EXCLUSIVE-02）。
+  // 原来「装箱单记录已撤回」不清上一条「导出失败」，「导出失败」也不清上一条
+  // 「库存调整已撤销」，两条横幅会并排挂着，看不出这次到底成没成。
+  // 与设置页/店铺页/装箱页同一套口径；load() 的分区降级仍单独报错（那是真的两件事）。
+  const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const notice = (text: string) => { setMessage(text); setError(''); };
+  const fail = (e: unknown) => { setError(reasonOf(e)); setMessage(''); };
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -58,13 +65,13 @@ export default function Inventory() {
   const submitAdjustment = async () => {
     if (adjustmentPending.current) return;
     const quantity = Number(form.quantity);
-    if (!adjustSku || !Number.isSafeInteger(quantity) || quantity < 1) { setError('请选择 SKU，并填写大于 0 的整数数量'); return; }
+    if (!adjustSku || !Number.isSafeInteger(quantity) || quantity < 1) { fail('请选择 SKU，并填写大于 0 的整数数量'); return; }
     adjustmentPending.current = true;
     setSavingAdjustment(true); setError(''); setMessage('');
     try {
       await createInventoryAdjustment({ sku: adjustSku, quantity_delta: form.mode === 'increase' ? quantity : -quantity, reason: form.reason, notes: form.notes, occurred_at: form.occurred_at });
-      setAdjustSku(''); setForm(prev => ({ ...prev, quantity: '', notes: '' })); setMessage('库存调整已记录'); await load();
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+      setAdjustSku(''); setForm(prev => ({ ...prev, quantity: '', notes: '' })); notice('库存调整已记录'); await load();
+    } catch (e: unknown) { fail(e); }
     finally { adjustmentPending.current = false; setSavingAdjustment(false); }
   };
 
@@ -92,9 +99,9 @@ export default function Inventory() {
         navigate('/packing');
         return;
       }
-      setMessage('装箱单记录已撤回，库存未变化');
+      notice('装箱单记录已撤回，库存未变化');
       await load();
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e: unknown) { fail(e); }
   };
 
   const undoAdjustment = async (row: InventoryAdjustment) => {
@@ -102,14 +109,14 @@ export default function Inventory() {
     setError(''); setMessage('');
     try {
       await reverseInventoryAdjustment(row.id);
-      setMessage('库存调整已撤销');
+      notice('库存调整已撤销');
       await load();
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e: unknown) { fail(e); }
   };
 
 
   const downloadInbound = async () => {
-    if (selectedShipmentIds.length === 0) { setError('请先勾选至少一个有效装箱单'); return; }
+    if (selectedShipmentIds.length === 0) { fail('请先勾选至少一个有效装箱单'); return; }
     setExportingInbound(true); setError('');
     try {
       const { blob, summary } = await exportInboundTemplate(selectedShipmentIds);
@@ -122,8 +129,8 @@ export default function Inventory() {
       const overflow = summary?.overflow?.length
         ? `；注意 ${summary.overflow.map(o => `箱 ${o.box_no} 有 ${o.skus} 个 SKU`).join('、')}，OMS 箱唛只放得下 5 行，会多印一页且那一页没有箱号`
         : '';
-      setMessage(`已生成 OMS 入仓文件：${detail}${overflow}`);
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : String(e)); }
+      notice(`已生成 OMS 入仓文件：${detail}${overflow}`);
+    } catch (e: unknown) { fail(e); }
     finally { setExportingInbound(false); }
   };
 

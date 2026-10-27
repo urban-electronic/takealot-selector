@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { createStore, getStores, getStoresInventoryOverview, updateStore } from '../remoteApi';
+import { createStore, getActiveStoreId, getStores, getStoresInventoryOverview, updateStore } from '../remoteApi';
 import type { Store, StoreInventoryOverview } from '../types';
 
 type Props = { onStoresChanged: (stores: Store[]) => void };
@@ -80,10 +80,17 @@ export default function Stores({ onStoresChanged }: Props) {
 
   const toggleStatus = async (store: Store) => {
     const next = store.status === 'active' ? 'paused' : 'active';
-    if (next === 'paused' && !window.confirm(`暂停“${store.name}”后，它不会出现在顶部店铺切换中。历史数据仍会保留，是否继续？`)) return;
+    // 当前店铺被暂停后**仍然留在**顶部下拉里（标注「已暂停」）——这是
+    // STORE-SWITCH-01 有意为之：它是每个请求实际带的 X-Store-ID，静默换成
+    // 别家店会让随后的装箱/库存操作落到另一家店上。所以不能一概说
+    // 「不再出现在顶部店铺切换中」：那正是用户最可能操作的那一家。
+    const pausedEffect = store.id === getActiveStoreId()
+      ? '它是当前店铺，会继续留在顶部下拉里并标注「已暂停」，切换店铺前所有请求仍按它发出'
+      : '它不再出现在顶部店铺切换中';
+    if (next === 'paused' && !window.confirm(`暂停“${store.name}”后，${pausedEffect}。历史数据仍会保留，是否继续？`)) return;
     try {
       await updateStore(store.id, { status: next });
-      notice(next === 'paused' ? `已暂停「${store.name}」，它不再出现在顶部店铺切换中` : `已恢复「${store.name}」`);
+      notice(next === 'paused' ? `已暂停「${store.name}」，${pausedEffect}` : `已恢复「${store.name}」`);
       await load();
     }
     catch (e: unknown) { fail(e); }

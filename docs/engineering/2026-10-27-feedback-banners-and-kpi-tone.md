@@ -59,11 +59,41 @@ const fail = (e: unknown) => { setError(e instanceof Error ? e.message : String(
 | --- | --- |
 | `Settings.tsx` | 6 个动作全部走 `notice()` / `fail()`（守卫逐个函数体检查） |
 | `Stores.tsx` | `save` / `toggleStatus` 走同一对；`load()` 保留独立报错 |
-| `Packing.tsx` | **未做**：5 处 `setError` 都不清 `msg`，同类问题，待后续轮次 |
-| `Dashboard.tsx` / `Inventory.tsx` | 一次性加载或已各自清空，未纳入守卫 |
+| `Packing.tsx` | 10 个动作全部走 `notice()` / `fail()`（BANNER-EXCLUSIVE-02）；源码守卫只放行 2 处 helper 写入 |
+| `Inventory.tsx` | 调整 / 撤回 / 入仓导出走同一对；`load()` 的分区降级是唯一例外 |
+| `Procurement.tsx` | 同步成功与同步失败互斥（`syncMsg` / `error`） |
+| `Dashboard.tsx` | 核对与按卖家表修正都会在动作开始时清两条，无需改动 |
+
+## 4. 「提醒」不能写进错误横幅
+
+`Packing.tsx` 的导出有两个前置检查：勾了却一行都导不出去（真失败，要拦）、
+勾了但部分行箱数/件数无效（**提醒**，导出照常进行，只是那几行被跳过）。
+
+提醒原来也写进 `error`，而导出开始时会 `setError('')` 清场——同一个同步流程里
+先写后清，React 还没渲染就被抹掉。结果是：用户勾了 3 行、只导出 2 行，
+屏幕上没有任何一句话解释少的那个去哪了。这条提醒在代码里存在了好几个版本，
+**从来没有被人看见过一次**。
+
+规则：会改变「这次做了什么」的说明，跟着结果一起说；只有「这次没做成」才占错误横幅。
+现在它拼进导出成功提示（`skippedNote`），导出完还能读一遍谁被跳过、为什么。
+
+## 5. 文案要跟得上行为（暂停店铺）
+
+店铺页暂停确认框原来写「它不会出现在顶部店铺切换中」。但 `storeOptions()`
+（STORE-SWITCH-01）会把**当前店铺**保留下拉里并标注「已暂停」——那是故意的：
+它是每个请求实际带的 `X-Store-ID`，静默换店会让随后的装箱/库存操作落到别家店上。
+于是文案在用户最可能操作的那一家上正好是反的。
+
+文案必须分档：当前店铺「会继续留在顶部下拉里并标注已暂停，切换前所有请求仍按它发出」，
+其他店铺「不再出现在切换中」。
 
 ## 相关守卫
 
 - `scripts/test-value-coercion.cjs`：`toneOf` 三态 + 详情页两行必须共用判据。
 - `scripts/test-fee-categories.cjs`：设置页 6 个处理函数不得直接写横幅。
-- `scripts/test-store-switcher.cjs`：店铺页同上，并要求暂停/恢复给出结果提示。
+- `scripts/test-store-switcher.cjs`：店铺页同上，并要求暂停/恢复给出结果提示；
+  暂停文案必须按「是不是当前店铺」分档。
+- `scripts/test-packing-display.cjs`：装箱页行为断言（「导入成功 → 导出被拦」只能剩红条、
+  导出成功只能剩绿条）+ 源码守卫（除两个 helper 外不许写横幅；跳过提醒不得进 `error`）。
+- `scripts/test-inventory-actions.cjs`：库存页只允许 `notice()` / `fail()` 与 `load()` 的分区降级写横幅。
+- `scripts/test-procurement-identity.cjs`：采购页同步失败的 catch 必须清掉「同步成功」。
