@@ -6,11 +6,26 @@ const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
 const { JSDOM } = require('jsdom');
+// Reverse probe: restore the old refresh-failure behavior in memory, never on disk.
+if (!process.env.PACKING_REFRESH_REVERSE) {
+  const { spawnSync } = require('node:child_process');
+  const probe = spawnSync(process.execPath, [__filename], {
+    env: { ...process.env, PACKING_REFRESH_REVERSE: '1' },
+    encoding: 'utf8', timeout: 10000,
+  });
+  assert.equal(probe.status, 1, 'refresh reverse probe must fail');
+  assert.match(probe.stdout + probe.stderr,
+    /successful mutation feedback survives a separate list refresh failure/,
+    'reverse probe must fail at the refresh assertion, not fixture setup');
+  console.log('PASS refresh reverse probe: old load failure clears confirmed success');
+}
 const watchdog = setTimeout(() => { console.error('FAIL packing suite did not complete within 10s'); process.exit(1); }, 10000);
 const dom = new JSDOM('<div id="root"></div>', { url: 'https://example.invalid/packing' });
 for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Node', 'Event', 'localStorage'])
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.URL = dom.window.URL;
+document.addEventListener('click', e => { if (e.target.closest?.('a[download]')) e.preventDefault(); });
 if (!dom.window.URL.createObjectURL) dom.window.URL.createObjectURL = () => 'blob:stub';
 if (!dom.window.URL.revokeObjectURL) dom.window.URL.revokeObjectURL = () => {};
 
@@ -22,6 +37,8 @@ const file = path.resolve(__dirname, '../src/pages/Packing.tsx');
 
 let catalog = [];
 let packingReads = 0;
+let packingReadFails = false;
+let imageSyncFails = false;
 // 「从选品库导入」弹层读的就是 api.getProducts。默认空，用例里按需改：
 // 读失败 / 有候选产品 / 导入结果的三档计数都要能分别构造出来。
 let importCatalog = [];
@@ -39,7 +56,7 @@ const api = {
   getProduct: async () => ({}),
 };
 const remote = {
-  getPackingProducts: async () => { packingReads += 1; return catalog.map(r => ({ ...r })); },
+  getPackingProducts: async () => { packingReads += 1; if (packingReadFails) throw new Error('列表读取失败'); return catalog.map(r => ({ ...r })); },
   getInventory: async () => [],
   syncPackingProductsFromCatalog: async () => ({ ok: true, total_products: 3, packing_products: catalog.length, imported: 0, skipped_no_sku: 0, duplicate_sku: 0 }),
   upsertPackingProduct: async () => { writes.push('upsert'); return { ok: true }; },
@@ -49,7 +66,7 @@ const remote = {
     if (importThrows) throw new Error('网络中断');
     return importResult;
   },
-  syncPackingImagesFromProducts: async () => ({ ok: true, updated: 0, total_pending: 0, failed: [] }),
+  syncPackingImagesFromProducts: async () => { if (imageSyncFails) throw new Error('匹配接口 500'); return { ok: true, updated: 0, total_pending: 0, failed: [] }; },
   syncPackingVariantsFromTakealot: async () => ({ ok: true, groups_checked: 0, matched: 0, images: 0, unresolved: [] }),
   // 真实实现返回的是 Blob（remoteApi.exportPacking 走 response.blob()）。
   // 桩原来回 `{ok:true}`，页面 `URL.createObjectURL(blob)` 于是抛
@@ -82,7 +99,13 @@ function compile(target, mocks = {}) {
   m.paths = Module._nodeModulePaths(path.dirname(target));
   const orig = m.require.bind(m);
   m.require = n => n in mocks ? mocks[n] : (localModule(n, target) || orig(n));
-  m._compile(ts.transpileModule(fs.readFileSync(target, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
+  let source = fs.readFileSync(target, 'utf8');
+  if (target === file && process.env.PACKING_REFRESH_REVERSE) {
+    const before = 'setError(`加载装箱单库失败：${reasonOf(e)}`);';
+    assert.ok(source.includes(before), 'reverse probe target must exist');
+    source = source.replace(before, 'fail(`加载装箱单库失败：${reasonOf(e)}`);');
+  }
+  m._compile(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
   return m.exports;
 }
 const types = compile(path.resolve(__dirname, '../src/types.ts'));
@@ -322,6 +345,20 @@ const root = createRoot(host);
   check(host.querySelectorAll('.alert-success').length === 1,
     `a successful export leaves exactly one success banner, got ${host.querySelectorAll('.alert-success').length}`);
 
+  const syncImages = [...host.querySelectorAll('button')].find(b => b.textContent === '按SKU匹配选品库图片');
+  check(!!host.querySelector('.alert-success'), 'the fixture must reach actual export success, not just submit its payload');
+  imageSyncFails = true;
+  await act(async () => { syncImages.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(!host.querySelector('.alert-success'), 'a later action failure removes the previous export success');
+  check(host.querySelector('.alert-error')?.textContent.includes('匹配接口 500'), 'the current action failure remains visible');
+  check(![...host.querySelectorAll('.alert button')].some(b => b.textContent === '导出 OMS 入仓模板'), 'the previous success action expires with its message');
+  imageSyncFails = false;
+  packingReadFails = true;
+  await act(async () => { syncImages.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(!!host.querySelector('.alert-success'), 'successful mutation feedback survives a separate list refresh failure');
+  check(host.querySelector('.alert-error')?.textContent.includes('列表读取失败'), 'list refresh failure is not erased by the successful action');
+  packingReadFails = false;
+
   check(writes.length === 0, 'rendering and reloading never writes to the backend');
   await act(async () => root.unmount());
 
@@ -350,7 +387,7 @@ const root = createRoot(host);
   check(!/失败 1 条/.test(oneClickText), 'the one-click import must not fall back to the old 「失败 N 条」 wording');
   await act(async () => root2.unmount());
 
-  // ---- 源码守卫：一个动作只留一条横幅；被跳过的行不能靠 error 提示 -------------
+  // ---- 源码守卫：动作反馈互斥；列表读取失败单独保留；跳过行是提醒 -------------
   // 行为断言只覆盖了「导入成功 → 导出被拦」与「导出成功」两条路径；剩下 8 个
   // 处理函数（保存/删除/上传/移除图片/图片匹配/规格核对…）都是同一类写法，
   // 靠这条守卫防止有人再退回 setError()/setMsg() 直写。
@@ -358,8 +395,8 @@ const root = createRoot(host);
   check(packingSource.includes('const notice = ') && packingSource.includes('const fail = '),
     '装箱页必须提供 notice()/fail()：一个动作只留一条横幅');
   const bannerWrites = packingSource.match(/(?:setMsg|setError)\((?!'')/g) || [];
-  check(bannerWrites.length === 2,
-    `只有 notice()/fail() 两个 helper 可以直接写横幅，实际 ${bannerWrites.length} 处`);
+  check(bannerWrites.length === 3 && packingSource.includes('setError(`加载装箱单库失败：${reasonOf(e)}`)'),
+    `只允许 notice()/fail() 和独立列表读取错误写横幅，实际 ${bannerWrites.length} 处`);
   // 「部分勾选行被跳过」是提醒、不是失败：原来写进 error，紧接着导出开始时的
   // setError('') 在同一个同步流程里就把它抹掉，用户从来没看见过这句。
   check(!/setError\(cartonsManual/.test(packingSource),

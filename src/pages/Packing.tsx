@@ -185,13 +185,13 @@ export default function Packing() {
   // 提示条上的直达按钮。带 `for` 是为了自动过期：别处 setMsg 换了文案，按钮就自己消失，
   // 不然会留下一个指向旧动作的按钮。
   const [msgAction, setMsgAction] = useState<{ for: string; label: string; onClick: () => void } | null>(null);
-  // 顶部两条横幅是两块独立状态，必须互斥：写一条就清另一条（BANNER-EXCLUSIVE-02）。
+  // 同一动作的结果互斥；写成功后的列表读取失败独立显示（PACK-BANNER-EXCLUSIVE-01）。
   // 原来「图片上传成功」不会清掉上一条「保存失败」，「保存失败」也不会清掉上一条
   // 「已移除图片」——绿条和红条并排挂在屏幕上，用户看不出这次到底成没成。
   // 与设置页/店铺页的 notice()/fail() 同一套口径。
   const reasonOf = (e: unknown) => (typeof e === 'string' ? e : (e as { message?: string } | null)?.message || '未知错误');
-  const notice = (text: string) => { setMsg(text); setError(''); };
-  const fail = (text: string) => { setError(text); setMsg(''); };
+  const notice = (text: string) => { setMsg(text); setError(''); setMsgAction(null); };
+  const fail = (text: string) => { setError(text); setMsg(''); setMsgAction(null); };
   const [catalogStats, setCatalogStats] = useState<{ total: number; noSku: number; duplicates: number } | null>(null);
 
   // 产品库筛选
@@ -328,7 +328,7 @@ export default function Packing() {
       const data = await getPackingProducts();
       setProducts(data);
     } catch (e: unknown) {
-      fail(`加载装箱单库失败：${reasonOf(e)}`);
+      setError(`加载装箱单库失败：${reasonOf(e)}`);
     } finally {
       setLoading(false);
     }
@@ -751,10 +751,10 @@ export default function Packing() {
         return;
       }
       const res = await importFromProducts(ids);
-      await loadProducts();
       // 同一个接口、同一套三档计数：这里以前自己拼了一句「新增 N 条，跳过 M 条，失败 K 条」，
       // 既把「已导入但缺图」吞掉（用户不知道要补图），失败也不点名 SKU。
       notice(describeImportResult(res, '一键导入完成：'));
+      await loadProducts();
     } catch (e: unknown) {
       fail(`一键导入失败：${reasonOf(e)}`);
     } finally {
@@ -785,6 +785,7 @@ export default function Packing() {
         default_count: editForm.default_count ?? null,
       });
       setEditSku(null);
+      notice('保存成功');
       await loadProducts();
     } catch (e: unknown) {
       fail(`保存失败：${reasonOf(e)}`);
@@ -801,6 +802,7 @@ export default function Packing() {
         next.delete(deleteSku);
         return next;
       });
+      notice('删除成功');
       await loadProducts();
     } catch (e: unknown) {
       fail(`删除失败：${reasonOf(e)}`);
@@ -922,7 +924,6 @@ export default function Packing() {
       const sp = new URLSearchParams(searchParams);
       sp.delete('import');
       setSearchParams(sp, { replace: true });
-      await loadProducts();
       setExportForm(prev => ({ ...prev, record_shipment: false }));
       // 导完草稿就清空了，最容易漏掉「去 OMS 建入库单」这一步。
       // 直接把入口给出来，并默认勾上刚导出的这一票。
@@ -937,6 +938,7 @@ export default function Packing() {
         label: '导出 OMS 入仓模板',
         onClick: () => { setMsgAction(null); openErpTemplate(true); },
       });
+      await loadProducts();
     } catch (e: unknown) {
       fail(`导出失败：${reasonOf(e)}`);
     } finally {
@@ -1012,13 +1014,13 @@ export default function Packing() {
     setError('');
     try {
       const res = await syncPackingImagesFromProducts(200);
-      await loadProducts();
       const failNote = res.failed.length ? `，失败 ${res.failed.length} 条（${res.failed.slice(0, 3).map(f => `${f.sku}:${f.reason}`).join('；')}${res.failed.length > 3 ? '…' : ''}）` : '';
       if (res.updated === 0 && res.failed.length === 0) {
         notice('未找到可匹配的图片：选品库中没有这些 SKU 的图片记录，或装箱单库已无待补图');
       } else {
         notice(`SKU 图片匹配完成：成功补图 ${res.updated} 条（本批处理 ${res.total_pending} 条待补图）${failNote}`);
       }
+      await loadProducts();
     } catch (e: any) {
       fail(`图片匹配失败：${reasonOf(e)}`);
     } finally {
@@ -1030,8 +1032,8 @@ export default function Packing() {
     setSyncingVariants(true); setMsg(''); setError('');
     try {
       const res = await syncPackingVariantsFromTakealot(30);
-      await loadProducts();
       notice(`官网规格核对完成：检查 ${res.groups_checked} 组，确认 ${res.matched} 个 SKU 规格，匹配 ${res.images} 张独立图片；${res.unresolved.length} 组需人工确认。`);
+      await loadProducts();
     } catch (e: any) {
       fail(`官网规格核对失败：${reasonOf(e)}`);
     } finally { setSyncingVariants(false); }
@@ -1072,8 +1074,8 @@ export default function Packing() {
     setError('');
     try {
       const res = await importFromProducts(ids);
-      await loadProducts();
       notice(describeImportResult(res));
+      await loadProducts();
       setImportSelected(new Set());
       setImportOpen(false);
     } catch (e: any) {
