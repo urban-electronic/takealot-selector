@@ -348,3 +348,17 @@ def test_url_and_stored_plid_conflict_is_not_overwritten(db, seller_plid):
     assert result['updated'] == result['created'] == 0
     assert plan['stats']['skip_count'] == 1
     assert db.get(Product, product.id).sku == 'OLD'
+
+@pytest.mark.parametrize('field,value', [
+    ('tsin_id', '2'), ('selling_price', 399.0),
+    ('image_url', 'https://media.takealot.com/covers_images/2.jpg'),
+    ('length_cm', 20), ('weight_grams', 500),
+])
+def test_create_payload_change_requires_new_preview(db, field, value):
+    row = offer('1', '800', 'W-A')
+    token = call_route(db, [row])['token']
+    with pytest.raises(HTTPException) as caught:
+        call_route(db, [dict(row, **{field: value})],
+                   path='/api/products/seller-sync/apply', token=token)
+    assert caught.value.status_code == 409
+    assert db.query(Product).count() == 0

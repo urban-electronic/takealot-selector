@@ -300,7 +300,8 @@ def _token(plan: Dict[str, Any]) -> str:
         [(item['plid'], item['product_id'],
           [(c['field'], c['value'], c.get('current')) for c in item['changes']])
          for item in plan['updates']],
-        [(item['plid'], item['sku'], item['product_name']) for item in plan['creates']],
+        # 新建的全部落库字段必须与预览一致，包括 TSIN、图片、售价和尺寸。
+        [sorted(item.items()) for item in plan['creates']],
         [item['plid'] for item in plan['skipped']],
     ))
     return hashlib.sha256(signature.encode()).hexdigest()
