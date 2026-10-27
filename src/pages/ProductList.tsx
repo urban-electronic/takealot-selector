@@ -1543,7 +1543,12 @@ export default function ProductList() {
         <div className="loading">加载中...</div>
       ) : products.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 48 }}>
-          {customSkuOnly ? (
+          {error ? (
+            <div role="status">
+              <p>商品列表读取失败，暂不能判断自建 SKU 的筛选结果。</p>
+              <button className="btn btn-outline" onClick={fetchProducts}>重新读取列表</button>
+            </div>
+          ) : customSkuOnly ? (
             <div className="seller-coverage-empty" style={{ overflowWrap: 'anywhere', maxWidth: 760, margin: '0 auto', textAlign: 'left' }}>
               <p style={{ color: 'var(--color-text-secondary)', textAlign: 'center' }}>
                 当前筛选没有匹配的自建 SKU。核对结果针对当前店铺的远程商品库，不代表搜索或其他筛选条件下的结论。

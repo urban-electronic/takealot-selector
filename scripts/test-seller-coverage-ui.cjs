@@ -16,7 +16,8 @@ const rows=Array.from({length:65},(_,i)=>({id:`p${i+1}`,product_no:i+1,sku:`SKU$
 rows[0].takealot_url='https://example.invalid/product';
 rows[1].sku='SKU2 SKU2B';rows[1].chinese_product_name='红色 蓝色';
 let pendingUpdate;const writes=[];
-const api={getProducts:async()=>[],getImageUrl:x=>x,updateProduct:(...args)=>{assert.ok(pendingUpdate,'unexpected fixture mutation');writes.push(args);return pendingUpdate;}};
+let listFailure=false;
+const api={getProducts:async()=>{if(listFailure)throw Error("fixture list offline");return [];},getImageUrl:x=>x,updateProduct:(...args)=>{assert.ok(pendingUpdate,'unexpected fixture mutation');writes.push(args);return pendingUpdate;}};
 // getStores 给空数组：拿不到店铺时页面按「代理」处理（保留参考价列），
 // 这样这条用例只量分页，不被代理/自营的显示差异干扰。
 let source='remote',storeId='default-store',coverageCalls=[],pendingCoverage=[],previewIds;
@@ -30,7 +31,7 @@ const types=compile(path.resolve(__dirname,'../src/types.ts'));
 const page=compile(path.resolve(__dirname,'../src/pages/ProductList.tsx'),{'../DataSourceContext':{useApi:()=>api,useDataSource:()=>({dataSource:source})},'../api':{openUrl:()=>{}},'../remoteApi':remote,'../types':types,'../utils/imageFallback':{ProductImage:()=>null}}).default;
 let scrolls=[];window.scrollTo=options=>scrolls.push(options);Object.defineProperty(window,'scrollY',{value:900,configurable:true});
 dom.window.HTMLElement.prototype.getBoundingClientRect=function(){return {top:this.classList.contains('product-table-scroll')?240:0,height:this.classList.contains('app-header')?68:20};};
-const root=createRoot(document.getElementById('root'));
+let root=createRoot(document.getElementById('root'));
 const button=s=>[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===s);
 const click=b=>b.dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true}));
 const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT'?dom.window.HTMLSelectElement.prototype:dom.window.HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event(el.tagName==='SELECT'?'change':'input',{bubbles:true}));};
@@ -57,6 +58,19 @@ const result={seller_offer_count:1,seller_plid_count:1,local_product_count:1,loc
  storeId='other-store';await act(async()=>render());
  await act(async()=>pendingCoverage.shift().resolve(result));
  assert.equal(document.body.textContent.includes('SKU 和卖家后台不一致：1'),false,'late response cannot leak across stores');
+ await act(async()=>root.unmount());
+ source='remote';storeId='default-store';listFailure=true;
+ const beforeFailure=coverageCalls.length;
+ root=createRoot(document.getElementById('root'));
+ await act(async()=>render());
+ assert.match(document.body.textContent,/暂不能判断自建 SKU/);
+ assert.equal(document.body.textContent.includes('当前筛选没有匹配'),false,'read failure is not a confirmed empty result');
+ assert.equal(coverageCalls.length,beforeFailure,'failed product read cannot initiate coverage');
+ listFailure=false;
+ await act(async()=>click(button('重新读取列表')));
+ assert.equal(document.body.textContent.includes('暂不能判断自建 SKU'),false,'successful retry clears read failure');
+ assert.equal(coverageCalls.length,beforeFailure+1);
+ await act(async()=>pendingCoverage.shift().resolve(result));
  await act(async()=>root.unmount());
  console.log('PASS seller coverage page: empty preview, one request, source/store isolation, exact TSIN query, late-response rejection; zero business writes');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{clearTimeout(watchdog);dom.window.close();});
