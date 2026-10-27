@@ -56,6 +56,16 @@ const quantity=value=>{const el=document.querySelector('input[placeholder="数�
  const rowButton=no=>document.querySelector(`tr:nth-child(${no}) .btn.btn-sm`).textContent;
  assert.equal(rowButton(1),'撤回并修改','a transit shipment deducts stock, so withdrawing restores it');
  assert.equal(rowButton(2),'撤回记录','an exported-only shipment never deducted stock');
+ // 源码守卫：撤回 / 入仓导出 / 库存调整都必须走 notice()/fail()（BANNER-EXCLUSIVE-02）。
+ // 「装箱单记录已撤回」不清上一条「导出失败」，「导出失败」也不清上一条
+ // 「库存调整已撤销」——两条横幅并排挂着，用户看不出这次到底成没成。
+ // 唯一允许直写的是 load() 的分区降级：那是「保存成功、但列表没读回来」，真的两件事。
+ const inventorySource=fs.readFileSync(file,'utf8');
+ assert.ok(inventorySource.includes('const notice = ')&&inventorySource.includes('const fail = '),
+   '库存页必须提供 notice()/fail()：一个动作只留一条横幅');
+ const bannerWrites=inventorySource.match(/(?:setMessage|setError)\((?!'')/g)||[];
+ assert.equal(bannerWrites.length,3,
+   `只允许 notice()/fail() 与 load() 的分区降级写横幅，实际 ${bannerWrites.length} 处`);
  act(()=>root.unmount());
  console.log('12 inventory interaction assertions passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

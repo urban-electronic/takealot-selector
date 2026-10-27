@@ -51,7 +51,11 @@ const remote = {
   },
   syncPackingImagesFromProducts: async () => ({ ok: true, updated: 0, total_pending: 0, failed: [] }),
   syncPackingVariantsFromTakealot: async () => ({ ok: true, groups_checked: 0, matched: 0, images: 0, unresolved: [] }),
-  exportPacking: async (payload) => { exported.push(payload); return { ok: true }; },
+  // 真实实现返回的是 Blob（remoteApi.exportPacking 走 response.blob()）。
+  // 桩原来回 `{ok:true}`，页面 `URL.createObjectURL(blob)` 于是抛
+  // 「obj argument must be an instance of Blob」——导出成功那条路径**从来没跑通过**，
+  // 只是没人断言横幅，所以一直看不出来。
+  exportPacking: async (payload) => { exported.push(payload); return new Blob(['fixture']); },
   getPackingCartons: async () => ({ date: '', total_cartons: 0, cartons: [] }),
   fetchPackingImageBlob: async () => { throw new Error('no image in fixture'); },
   getShipments: async () => [],
@@ -289,6 +293,11 @@ const root = createRoot(host);
   const blocked = host.querySelector('.alert-error');
   check(blocked && blocked.textContent.includes('运输方式'),
     `the blocked export must say why, got ${blocked && blocked.textContent}`);
+  // 同一次操作的成败不能并排挂着（BANNER-EXCLUSIVE-02）：上一步导入成功留下的
+  // 绿条必须被这次「运输方式没选」的红条顶掉，否则屏幕上同时写着「导入完成」
+  // 和「请选择运输方式」，用户看不出这次到底成没成。
+  check(host.querySelectorAll('.alert-success').length === 0,
+    'a blocked export must clear the previous success banner');
 
   // 模板 G2 是「头程（空/海）」，只能是下拉里的两项之一，不能再是自由文本。
   const shippingSelect = host.querySelector('.packing-export-grid select');
@@ -308,6 +317,10 @@ const root = createRoot(host);
     `export items must carry cartons=1 / count=12, got ${JSON.stringify(payload.items)}`);
   check(JSON.stringify(payload.cartons) === JSON.stringify([{ box_no: 'C01', note: '', items: [{ sku: '114', quantity: '12' }] }]),
     `export cartons must carry quantity=12, got ${JSON.stringify(payload.cartons)}`);
+  check(host.querySelectorAll('.alert-error').length === 0,
+    'a successful export must clear the previous error banner');
+  check(host.querySelectorAll('.alert-success').length === 1,
+    `a successful export leaves exactly one success banner, got ${host.querySelectorAll('.alert-success').length}`);
 
   check(writes.length === 0, 'rendering and reloading never writes to the backend');
   await act(async () => root.unmount());
@@ -336,6 +349,23 @@ const root = createRoot(host);
     'the one-click import must describe real failures separately and name the reason');
   check(!/失败 1 条/.test(oneClickText), 'the one-click import must not fall back to the old 「失败 N 条」 wording');
   await act(async () => root2.unmount());
+
+  // ---- 源码守卫：一个动作只留一条横幅；被跳过的行不能靠 error 提示 -------------
+  // 行为断言只覆盖了「导入成功 → 导出被拦」与「导出成功」两条路径；剩下 8 个
+  // 处理函数（保存/删除/上传/移除图片/图片匹配/规格核对…）都是同一类写法，
+  // 靠这条守卫防止有人再退回 setError()/setMsg() 直写。
+  const packingSource = fs.readFileSync(file, 'utf8');
+  check(packingSource.includes('const notice = ') && packingSource.includes('const fail = '),
+    '装箱页必须提供 notice()/fail()：一个动作只留一条横幅');
+  const bannerWrites = packingSource.match(/(?:setMsg|setError)\((?!'')/g) || [];
+  check(bannerWrites.length === 2,
+    `只有 notice()/fail() 两个 helper 可以直接写横幅，实际 ${bannerWrites.length} 处`);
+  // 「部分勾选行被跳过」是提醒、不是失败：原来写进 error，紧接着导出开始时的
+  // setError('') 在同一个同步流程里就把它抹掉，用户从来没看见过这句。
+  check(!/setError\(cartonsManual/.test(packingSource),
+    '跳过行的提醒不能写进 error（会被导出前的 setError(\'\') 立刻抹掉）');
+  check(packingSource.includes('skippedNote'),
+    '跳过说明必须并进导出成功提示，否则用户永远看不到');
 
   console.log(`PASS ${checks} packing display assertions (jsdom, isolated API)`);
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

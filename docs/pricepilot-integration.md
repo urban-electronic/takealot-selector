@@ -2021,3 +2021,39 @@ WorkBuddy；基线 `8f3a1df552`。
   `downloadProductLabels` 零调用点，但注释写明「保留是因为后端接口还在（供脚本/其它客户端用）」，
   属有意保留，不动。
 
+### BANNER-EXCLUSIVE-02 / PACK-EXPORT-WARN-01 / STORE-PAUSE-COPY-01（2026-10-27，自检轮）
+
+- 优先级 P2；开工时远端 main `deeb7ae429`、后端 build `deeb7ae429e4`，两者一致（无部署漂移），
+  全量 selfcheck 38/38、无跳过（156.2s）。三处都是「全绿时看不见、只有上一步刚成功/这一步失败
+  或用户正好暂停了当前店铺时才说话」的显示口径问题。
+- 复现（①）：`Packing.tsx` 的 `msg`（绿条）与 `error`（红条）是两块独立状态，10 个动作里只有
+  3 个会同时清两条。「保存失败」之后成功上传一张图 → 屏幕上同时写着「保存失败」和「图片上传成功」；
+  反过来「已移除图片」之后删除失败 → 绿条红条并排。`Inventory.tsx`（撤回装箱单 / 入仓导出）与
+  `Procurement.tsx`（同步成功 / 同步失败）是同一类写法，症状相同。
+- 改动（①）：三页各加 `notice()` / `fail()` 一对（写一条就清另一条），所有动作统一走它；
+  `load()` 的分区降级仍单独报错——「保存成功、但列表没读回来」是真的两件事，不该互相盖掉。
+  与上一轮 Settings/Stores 的 `notice()` / `fail()` 是同一套口径（见
+  `docs/engineering/2026-10-27-feedback-banners-and-kpi-tone.md`）。
+- 复现（②）：`handleExport` 里「部分勾选产品箱数/每箱件数无效，已自动跳过这些行」写的是 `setError`，
+  而导出开始时会 `setError('')` 清场。同一个同步流程里先写后清，React 还没渲染就被抹掉 ——
+  用户勾了 3 行只导出 2 行，屏幕上没有任何一句话解释少的那个去哪了。这条提醒存在了好几个版本，
+  **从来没被看见过一次**。
+- 改动（②）：它本来就不是失败（导出照常进行），改成拼进导出成功提示（`skippedNote`），
+  导出完还能读到谁被跳过、为什么。
+- 复现（③）：`Stores.tsx` 暂停确认框写「它不会出现在顶部店铺切换中」，但 `storeOptions()`
+  （STORE-SWITCH-01）会把**当前店铺**保留下拉并标注「已暂停」——那是故意的：它是每个请求
+  实际带的 `X-Store-ID`，静默换店会让随后的装箱/库存操作落到别家店上。于是文案在用户最可能
+  操作的那一家上正好是反的。
+- 改动（③）：按「是不是当前店铺」分档说明（当前店铺仍留在下拉并标注已暂停，切换前请求仍按它发出）。
+- 顺带修的测试桩：`test-packing-display.cjs` 的 `exportPacking` 桩返回 `{ok:true}`，而真实实现
+  返回 `Blob`，页面 `URL.createObjectURL(blob)` 于是抛「obj argument must be an instance of Blob」——
+  导出成功那条路径**从来没在门禁里跑通过**，因为没人断言横幅。改成返回 `new Blob([...])`。
+- 验证：`test-packing-display.cjs` 66→73 条断言（新增「导入成功 → 导出被拦只剩红条」「导出成功只剩绿条」
+  「除两个 helper 外不许写横幅」「跳过提醒不得进 error」）；`test-inventory-actions.cjs` 加源码守卫
+  （只放行 `notice` / `fail` / `load` 三处）；`test-procurement-identity.cjs` 加同步失败必须清成功条；
+  `test-store-switcher.cjs` 34→37（暂停文案必须按当前店铺分档）。四条反向探针分别把
+  「运输方式」改回 `setError`、导出成功改回 `setMsg`、暂停文案改回一刀切、`pausedEffect` 判断去掉
+  → 对应断言各自转红，已全部还原。tsc 通过；全量 selfcheck 38/38（155.8s）。
+- 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡）；调价参数语义（禁止区）；
+  版式审计的 `/api/operations/alerts` 恒给 `[]`，工作台「补货提醒」面板在 99 个组合里从未渲染过
+  （试过填入真实行、面板能正常出现且 0 处越界，但本轮 3 处预算已满，留待下轮）。

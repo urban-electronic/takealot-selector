@@ -73,7 +73,10 @@ export default function Procurement() {
     // 远程模式下 listProcurementRecords 读到的已经是远端数据，再 POST 回 /api/migrate
     // 等于把远端数据覆盖回远端，没有意义且可能覆盖并发写入。
     if (dataSource !== 'local') {
+      // 写错误就清掉上一条「同步成功」——两条横幅并排挂着看不出这次到底成没成
+      // （BANNER-EXCLUSIVE-02，与设置页/店铺页/装箱页/库存页同一套口径）。
       setError('当前是远程数据源，数据已在远端，无需同步。');
+      setSyncMsg('');
       return;
     }
     setSyncing(true);
@@ -84,7 +87,9 @@ export default function Procurement() {
       const data = await migrateToRemote([{ table: 'procurement_records', rows }]);
       setSyncMsg(`同步成功！已导出 ${data.imported?.procurement_records ?? rows.length} 条采购记录`);
     } catch (e: any) {
+      // 同步失败要清掉上一条「同步成功！已导出 N 条」，否则绿条红条同时挂着。
       setError(`同步失败: ${e.message}`);
+      setSyncMsg('');
     } finally {
       setSyncing(false);
     }
