@@ -364,8 +364,12 @@ def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(g
             if rename:
                 # SKU 是库存主键、发运行和装箱资料的关联键，只改主档会让旧 SKU 的
                 # 库存挂在空气上；下游一起迁，并留一条可追溯的映射。
-                from services.sku_migration import migrate_sku
-                migration = migrate_sku(db, product, [str(rename['current'])], [str(values['sku'])], store_id)
+                from services.sku_migration import migrate_sku, SkuMigrationConflict
+                try:
+                    migration = migrate_sku(db, product, [str(rename['current'])], [str(values['sku'])], store_id)
+                except SkuMigrationConflict as error:
+                    db.rollback()
+                    raise HTTPException(409, str(error))
                 plan['migrated'] = migration['moved']
                 plan['warnings'].extend(migration['conflicts'])
             if any(field in values for field in ('length_mm', 'width_mm', 'height_mm', 'actual_weight_kg')):

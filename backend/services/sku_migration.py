@@ -18,6 +18,10 @@ from models import (
     ShipmentCarton, ShipmentCartonItem, ShipmentLine, SkuRename, SystemSettings,
 )
 
+class SkuMigrationConflict(ValueError):
+    """Identity conflict: the caller must roll back the whole rename."""
+
+
 _SKU_SPLIT = re.compile(r"[\s,，;；]+")
 
 # 自动调价规则与 buybox 监控都把 sku 存在 JSON 里，键含 product_id 可直接定位。
@@ -48,7 +52,7 @@ def migrate_sku(
     宁可不改，也不能把库存挂到错误的规格上。
 
     不 commit，由调用方统一提交；返回 {'moved': {表名: 行数}, 'conflicts': [...],
-    'renamed': [...]}，冲突项表示该表里新 SKU 已存在，已跳过而不是覆盖。
+    'renamed': [...]}，装箱身份冲突抛 SkuMigrationConflict，调用方必须回滚，不允许部分迁移。
     """
     if len(old_skus) != len(new_skus):
         raise ValueError("旧 SKU 与新 SKU 数量不一致，无法一一对应")
@@ -60,13 +64,21 @@ def migrate_sku(
     if not pairs:
         return {"moved": moved, "conflicts": conflicts, "renamed": []}
 
+    # Preflight every pair before migrating anything. Skipping just packing data
+    # would split one identity across product/inventory and packing records.
     for old, new in pairs:
-        # 1) 装箱产品资料：复合主键 (store_id, sku)，新 SKU 已存在时跳过而不是覆盖。
+        old_row = db.query(PackingProduct).filter_by(store_id=store_id, sku=old).first()
+        new_row = db.query(PackingProduct).filter_by(store_id=store_id, sku=new).first()
+        if old_row and new_row:
+            raise SkuMigrationConflict('新旧 SKU 均有装箱资料，请先核对冲突；本次更正未保存')
+
+    for old, new in pairs:
+        # 1) 装箱产品资料：复合主键 (store_id, sku)，冲突时终止整次迁移。
         row = db.query(PackingProduct).filter_by(store_id=store_id, sku=old).first()
         if row:
             taken = db.query(PackingProduct).filter_by(store_id=store_id, sku=new).first()
             if taken:
-                conflicts.append(f"装箱资料里已存在 {new}，未合并 {old}")
+                raise SkuMigrationConflict("装箱资料刚发生冲突，请重新核对；本次更正未保存")
             else:
                 row.sku = new
                 moved["packing_products"] = moved.get("packing_products", 0) + 1
