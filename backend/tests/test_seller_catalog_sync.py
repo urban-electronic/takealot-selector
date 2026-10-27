@@ -362,3 +362,18 @@ def test_intervening_edit_rejects_prepared_plan(db):
         apply_plan(db, STORE, plan)
     db.rollback()
     assert db.get(Product, product.id).sku == 'MANUAL'
+
+
+@pytest.mark.parametrize('field,value', [
+    ('tsin_id', '2'), ('selling_price', 399.0),
+    ('image_url', 'https://media.takealot.com/covers_images/2.jpg'),
+    ('length_cm', 20), ('weight_grams', 500),
+])
+def test_create_payload_change_requires_new_preview(db, field, value):
+    row = offer('1', '800', 'W-A')
+    token = call_route(db, [row])['token']
+    with pytest.raises(HTTPException) as caught:
+        call_route(db, [dict(row, **{field: value})],
+                   path='/api/products/seller-sync/apply', token=token)
+    assert caught.value.status_code == 409
+    assert db.query(Product).count() == 0

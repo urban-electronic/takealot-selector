@@ -301,7 +301,7 @@ def _token(plan: Dict[str, Any]) -> str:
         [(item['plid'], item['product_id'], item['expected_updated_at'],
           [(c['field'], c['value'], c.get('current')) for c in item['changes']])
          for item in plan['updates']],
-        [(item['plid'], item['sku'], item['product_name']) for item in plan['creates']],
+        [sorted(item.items()) for item in plan['creates']],
         [item['plid'] for item in plan['skipped']],
     ))
     return hashlib.sha256(signature.encode()).hexdigest()
