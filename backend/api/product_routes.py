@@ -532,8 +532,11 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
         "manual_fulfillment_fee_zar",
         "manual_total_cost_zar",
     ]
+    # 只改这些字段时不必重算成本。purchase_url 是纯链接（补货侧栏「保存采购链接」
+    # 就只发这一个字段），漏了它会让一次保存链接顺手清空 manual_* 人工成本覆盖值。
     metadata_fields = {'sku', 'chinese_product_name', 'product_name', 'product_image_url',
-                       'product_image_path', 'takealot_url', 'tsin', 'note', 'market_prices'}
+                       'product_image_path', 'takealot_url', 'tsin', 'note', 'market_prices',
+                       'purchase_url'}
     if not set(update_data).issubset(metadata_fields):
         for mf in manual_fields:
             if mf not in update_data:

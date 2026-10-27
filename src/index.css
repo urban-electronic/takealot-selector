@@ -2255,6 +2255,30 @@ table tbody tr:hover { background: #f8fafc; }
 .replenishment-panel .card { margin-bottom: 12px; }
 @media (max-width: 600px) { .replenishment-panel { padding: 16px; } .replenishment-panel .form-row { grid-template-columns: 1fr; } }
 
+/* 采购货源块：侧栏第一屏先把"去哪儿买"给出来，再看计划参数。
+   放在 .replenishment-panel 里面，所以字号/控件高度都走 ui-tokens 的刻度。
+   minmax(0,1fr) 不能省：采购链接是又长又不换行的 URL，默认的 auto 列宽会被它
+   顶开，整张卡会横向溢出到侧栏外面（第一版就是这么被截图抓到的）。 */
+.sourcing-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); }
+.sourcing-panel > * { min-width: 0; }
+.sourcing-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
+.sourcing-panel-head h3 { margin: 0; font-size: var(--fs-title); color: var(--text-strong); }
+.sourcing-panel-head small { color: var(--text-muted); font-size: var(--fs-caption); }
+.sourcing-saved { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.sourcing-empty { margin: 0; color: var(--text-muted); font-size: var(--fs-body); }
+.sourcing-keyword, .sourcing-save { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.sourcing-keyword label, .sourcing-save label { min-width: 76px; color: var(--text-body); font-size: var(--fs-label); font-weight: 600; }
+.sourcing-keyword input, .sourcing-save input { flex: 1 1 220px; min-width: 0; min-height: var(--control-h-compact); padding: 0 var(--sp-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--surface-panel); color: var(--text-body); font-size: var(--fs-body); font-family: inherit; }
+.sourcing-keyword input:focus-visible, .sourcing-save input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sourcing-platforms { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+/* .btn 是给 <button> 写的，套到 <a> 上会带下划线，高度也靠 padding 撑；
+   这里补回链接语义下需要的两件事，点击目标不低于 24px。 */
+.sourcing-link { text-decoration: none; min-height: var(--control-h-min); }
+.sourcing-hint { margin: 0; color: var(--text-muted); font-size: var(--fs-label); }
+.sourcing-status { margin: 0; color: var(--success-strong); font-size: var(--fs-label); }
+.sourcing-status-error { color: var(--danger-strong); }
+@media (max-width: 600px) { .sourcing-keyword label, .sourcing-save label { min-width: 100%; } }
+
 .replenishment-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
 .replenishment-metrics .card strong { display: block; font-size: 28px; margin-top: 12px; color: var(--color-primary); }
 .replenishment-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }

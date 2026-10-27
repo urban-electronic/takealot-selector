@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getOperationsOverview, getProduct } from '../remoteApi';
 import PipelinePlan from '../operations/PipelinePlan';
+import SourcingPanel from '../operations/SourcingPanel';
 import type { Product } from '../types';
 import { formatPercent, formatPrice } from '../types';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
@@ -76,6 +77,6 @@ export default function Replenishment() {
       <div className="operations-pagination"><span>{dataset.length} {view==='schedule'?'批次':'商品'} · 每页25条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
     </div>
     <details className="operations-explanation"><summary>利润与资金安排说明</summary><p>海运成本较低且销量稳定时，滚动海运更有利于利润。计划比较现有成本表中的空海单件利润，低于设置门槛则暂缓；没有完整成本时只提供数量参考。60天覆盖不是一次买完全部展望需求，未来批次必须复核销量、价格和可用资金；采购成本、仓储费、资金占用及滞销风险仍需核对，不能把运输差价当作净利润保证。新品不足14天的数据标为参考，建议先小批验证，再拉长覆盖。</p></details>
-    {!!selected&&<div className="replenishment-overlay" onClick={close}><section className="replenishment-panel" role="dialog" aria-modal="true" aria-label="补货计划设置" onClick={e=>e.stopPropagation()}><div className="replenishment-panel-heading"><h2>商品计划设置</h2><button className="btn btn-outline" onClick={close}>关闭</button></div>{panelError?<div className="alert alert-error">{panelError}</div>:current?<PipelinePlan key={current.id} product={current} open />:<p>正在加载…</p>}</section></div>}
+    {!!selected&&<div className="replenishment-overlay" onClick={close}><section className="replenishment-panel" role="dialog" aria-modal="true" aria-label="补货计划设置" onClick={e=>e.stopPropagation()}><div className="replenishment-panel-heading"><h2>商品计划设置</h2><button className="btn btn-outline" onClick={close}>关闭</button></div>{panelError?<div className="alert alert-error">{panelError}</div>:current?<><SourcingPanel key={`sourcing-${current.id}`} product={current} /><PipelinePlan key={current.id} product={current} open /></>:<p>正在加载…</p>}</section></div>}
   </div>;
 }
