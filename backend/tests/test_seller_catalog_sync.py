@@ -185,8 +185,8 @@ def test_one_local_row_claimed_by_two_plids_is_skipped(db):
     """同一件本地商品被两个 PLID 同时命中，说明卖家那边有重复链接，先人工确认。"""
     add(db, product_no=1, sku='W-SHARED')
     plan = build_plan(db, STORE, [offer('1', '800', 'W-SHARED'), offer('2', '801', 'W-SHARED')])
-    assert plan['stats']['update_count'] == 1
-    assert plan['stats']['skip_count'] == 1
+    assert plan['stats']['update_count'] == 0
+    assert plan['stats']['skip_count'] == 2
     assert '同时命中' in plan['skipped'][0]['reason']
 
 
@@ -317,3 +317,34 @@ def test_scoped_token_cannot_be_used_for_a_full_sync(db):
         call_route(db, rows, path='/api/products/seller-sync/apply', token=token)
     assert caught.value.status_code == 409
     assert db.query(Product).count() == 0
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_conflicting_identifiers_never_choose_one_product(db, reverse):
+    first = add(db, plid='800', sku='OLD-A', tsin='1')
+    second = add(db, plid='801', sku='W-B', tsin='2')
+    rows = [offer('2', '800', 'W-B')]
+    if reverse:
+        rows.append(offer('1', '800', 'OLD-A'))
+        rows.reverse()
+    plan, result = apply_all(db, rows)
+    assert result['updated'] == result['created'] == 0
+    assert plan['stats']['skip_count'] == 1
+    assert db.get(Product, first.id).sku == 'OLD-A'
+    assert db.get(Product, second.id).plid == '801'
+
+
+def test_weak_match_cannot_replace_existing_different_plid(db):
+    product = add(db, plid='801', sku='W-A', tsin='1')
+    plan, result = apply_all(db, [offer('1', '800', 'W-A')])
+    assert result['updated'] == result['created'] == 0
+    assert plan['stats']['skip_count'] == 1
+    assert db.get(Product, product.id).plid == '801'
+
+
+@pytest.mark.parametrize('seller_plid', ['800', '801'])
+def test_url_and_stored_plid_conflict_is_not_overwritten(db, seller_plid):
+    product = add(db, plid='801', takealot_url='https://www.takealot.com/x/PLID800', sku='OLD')
+    plan, result = apply_all(db, [offer('1', seller_plid, 'NEW')])
+    assert result['updated'] == result['created'] == 0
+    assert plan['stats']['skip_count'] == 1
+    assert db.get(Product, product.id).sku == 'OLD'
