@@ -38,6 +38,16 @@ const checks = [
   [backend, /if custom_sku:\s*\n\s*products = \[product for product in products if is_custom_sku\(product\.sku\)\]/, '后端要真的按判据过滤'],
   [backend, /def is_custom_sku\(value: Optional\[str\]\) -> bool/, '后端要有判据函数'],
   [backend, /\| \(Product\.sku\.ilike\(like\)\)/, '后端搜索要包含 sku'],
+
+  // --- 筛空之后要能说清「为什么找不到」 ---
+  // 只写一句「本地没有」会把两种下一步动作相反的情况混在一起：商品还没导入，
+  // 和本地 SKU 还是旧值。空状态必须真的去核对，而不是给一句通用建议。
+  [page, /if \(!coverageSupported[^\n]+!customSkuOnly[^\n]+\) return;\s*\n\s*if \(coverageAsked\.current\.has\(coverageScope\)\) return;\s*\n\s*fetchCoverage\(\);/, '筛空时要真的发起核对'],
+  [page, /coverage\.seller_only_count/, '要把「还没导入」的数量摆出来'],
+  [page, /coverage\.sku_mismatch_count/, '要把「SKU 不一致」的数量摆出来'],
+  [remoteApi, /\/api\/products\/seller-coverage/, '核对接口要指向真实路径'],
+  [backend, /@router\.get\("\/seller-coverage"\)/, '后端要有核对接口'],
+  [backend, /verdict, advice = 'seller_only'[\s\S]{0,400}verdict, advice = 'sku_mismatch'/, '两种原因要在后端分开判，不能混成一句'],
 ];
 
 for (const [source, pattern, why] of checks) {
@@ -55,6 +65,8 @@ const mutants = [
   ['Rust 搜索', rust, /OR sku LIKE \?/, (s) => s.replace(' OR sku LIKE ?', '')],
   ['后端过滤', backend, /if custom_sku:\r?\n\s*products = \[product for product in products if is_custom_sku\(product\.sku\)\]/, (s) => s.replace(/if custom_sku:\r?\n\s*products = \[product for product in products if is_custom_sku\(product\.sku\)\]\r?\n/, '')],
   ['后端搜索', backend, /\| \(Product\.sku\.ilike\(like\)\)/, (s) => s.replace('            | (Product.sku.ilike(like))\n', '')],
+  ['筛空核对', page, /if \(!coverageSupported[^\n]+!customSkuOnly[^\n]+\) return;\s*\n\s*if \(coverageAsked\.current\.has\(coverageScope\)\) return;\s*\n\s*fetchCoverage\(\);/, (s) => s.replace(/\s*if \(coverageAsked\.current\.has\(coverageScope\)\) return;\s*\n\s*fetchCoverage\(\);/, '')],
+  ['两种原因分开判', backend, /verdict, advice = 'seller_only'[\s\S]{0,400}verdict, advice = 'sku_mismatch'/, (s) => s.replace(/verdict, advice = 'sku_mismatch'[^\n]*\n/, '')],
 ];
 
 for (const [name, source, pattern, mutate] of mutants) {
@@ -63,4 +75,4 @@ for (const [name, source, pattern, mutate] of mutants) {
   assert.doesNotMatch(mutated, pattern, `突变自测失败：${name} 删掉后守卫仍然通过，说明它没在守这一行`);
 }
 
-console.log('PASS 自建 SKU 筛选：界面开关、URL 参数、远程/桌面两套 API、Rust 与后端判据、搜索含 SKU（含 8 条突变自测）');
+console.log(`PASS 自建 SKU 筛选：界面开关、URL 参数、远程/桌面两套 API、Rust 与后端判据、搜索含 SKU、筛空后的原因核对（含 ${mutants.length} 条突变自测）`);

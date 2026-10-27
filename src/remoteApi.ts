@@ -168,6 +168,37 @@ export interface SkuAuditResult {
 }
 export const auditProductSkus = (): Promise<SkuAuditResult> => request<SkuAuditResult>('/api/products/sku-audit');
 
+/** 「为什么找不到」：卖家后台 vs 本地库的三类差异。 */
+export interface SellerCoverageProbe {
+  tsin: string;
+  verdict: 'matched' | 'sku_mismatch' | 'seller_only' | 'local_only' | 'nowhere';
+  advice: string;
+  seller: { found: boolean; plids: string[]; skus: string[]; title: string; status: string };
+  local: {
+    found: boolean;
+    products: { product_no: number; name: string; sku: string; plid: string }[];
+    skus: string[];
+  };
+}
+
+export interface SellerCoverageResult {
+  seller_offer_count: number;
+  seller_plid_count: number;
+  local_product_count: number;
+  local_plid_count: number;
+  matched_count: number;
+  sku_mismatch_count: number;
+  sku_mismatch: { product_id: string; product_no: number; name: string; local_sku: string[]; seller_sku: string[] }[];
+  seller_only_count: number;
+  seller_only: { plid: string; skus: string[]; title: string; status: string }[];
+  local_only_count: number;
+  truncated: boolean;
+  probes?: SellerCoverageProbe[];
+}
+
+export const getSellerCoverage = (tsin?: string): Promise<SellerCoverageResult> =>
+  request<SellerCoverageResult>(`/api/products/seller-coverage${tsin ? `?tsin=${encodeURIComponent(tsin)}` : ''}`);
+
 export const getOperationsProfile = (id: string): Promise<any> => request(`/api/operations/${id}`);
 export const saveOperationsProfile = (id: string, profile: unknown): Promise<any> => request(`/api/operations/${id}`, { method: 'PUT', body: JSON.stringify(profile) });
 export const getOperationsAlerts = (): Promise<any[]> => request('/api/operations/alerts');
