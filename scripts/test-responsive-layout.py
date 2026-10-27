@@ -90,6 +90,7 @@ def main():
         context.add_init_script(f"localStorage.setItem('api_base_url', '{BASE}')")
         # 需要模拟「这个接口读失败」时把路径放进来（见文件末尾的降级界面检查）。
         failing=set()
+        holding=False
         def intercept(route):
             from urllib.parse import urlsplit
             url=urlsplit(route.request.url)
@@ -100,6 +101,8 @@ def main():
                 if route.request.method != 'GET' and not allowed_write:
                     unknown.append(route.request.method+' '+url.path);route.abort();return
                 if url.path in DATA:
+                    if holding:
+                        return  # Leave fixture requests pending until navigation/context close.
                     route.fulfill(json=DATA[url.path]);return
                 unknown.append(route.request.method+' '+url.path);route.fulfill(status=404,json={'detail':'Fixture endpoint not declared'});return
             if url.netloc==base_netloc: route.continue_()
@@ -107,6 +110,35 @@ def main():
         context.route('**/*',intercept)
         page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
         checked=0
+        # Loading is a separate rendered state: do not let ready-page audits skip it.
+        # Only declared, intercepted fixture requests may stay pending; no live API.
+        loading_checked=0
+        holding=True
+        loading_routes=['/', '/products', '/packing', '/procurement', '/settings', '/products/fixture-product']
+        for width in (320,390,1280):
+            page.set_viewport_size({'width':width,'height':700})
+            for path in loading_routes:
+                page.goto(BASE+path,wait_until='domcontentloaded')
+                page.locator('[role="status"][aria-busy="true"]').wait_for(timeout=8000)
+                page.locator('.sk').first.wait_for(timeout=8000)
+                def skeleton_spills():
+                    return page.locator('.sk').evaluate_all('''items => items.filter(e => {
+                        const r=e.getBoundingClientRect(), p=e.parentElement.getBoundingClientRect();
+                        return r.width>0 && (r.right>p.right+1 || r.left<p.left-1);
+                    }).map(e=>({width:e.getBoundingClientRect().width,parent:e.parentElement.getBoundingClientRect().width}))''')
+                assert not skeleton_spills(), (width,path,'loading skeleton spills outside parent',skeleton_spills())
+                if width==320 and path=='/':
+                    # H1: remove the fix in memory and require this exact geometry check to fail.
+                    override=page.add_style_tag(content='.sk { max-width: none !important; }')
+                    assert skeleton_spills(), 'reverse probe must expose the 300px line in a 296px container'
+                    override.evaluate('e=>e.remove()')
+                    assert not skeleton_spills(), 'restoring max-width must fix the same layout'
+                loading_checked+=1
+        page.emulate_media(reduced_motion='reduce')
+        assert page.locator('.sk').first.evaluate('e=>getComputedStyle(e).animationName')=='none'
+        page.emulate_media(reduced_motion='no-preference')
+        holding=False
+        print(f'PASS {loading_checked} pending-API loading layouts and width reverse probe',flush=True)
         for width,height in [(1920,900),(1440,900),(1280,720),(1024,640),(768,700),(390,680),(1024,480),(390,480),(320,568)]:
             page.set_viewport_size({'width':width,'height':height})
             for path,title in PAGES:

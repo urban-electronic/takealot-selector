@@ -23,6 +23,7 @@ import type { PackingProduct, Product, PackingCarton, PackingCartonRecord, Packi
 import { safeSetItem } from '../utils/storage';
 import { todayLocal } from '../utils/datetime';
 import { CATALOG_CHANGED } from '../utils/catalogEvents';
+import { SkPage } from '../LoadStates';
 
 // 装箱单图片：img 标签无法带 X-API-Key header，改用 fetch blob + objectURL（带全局缓存）
 const blobUrlCache = new Map<string, string>();
@@ -1086,7 +1087,7 @@ export default function Packing() {
     }
   };
 
-  if (loading) return <div className="loading">加载中...</div>;
+  if (loading) return <SkPage rows={8} label="正在载入装箱单" />;
 
   return (
     <div className="page packing-page">

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import { getFxRates, getStores, getActiveStoreId } from '../remoteApi';
 import { openUrl } from '../api';
@@ -18,6 +18,7 @@ import { isAgencyStoreName } from '../utils/agencyStore';
 import { isEan13 } from '../utils/ean';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
+import { EmptyState, SkPage } from '../LoadStates';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -306,9 +307,9 @@ export default function ProductDetail() {
     updateField('market_prices', serializeMarketPrices(next));
   };
 
-  if (loading) return <div className="loading">加载中...</div>;
+  if (loading) return <SkPage rows={6} label="正在载入产品" />;
   if (error) return <div className="alert alert-error">{error}</div>;
-  if (!product) return <div className="loading">产品不存在</div>;
+  if (!product) return <EmptyState title="产品不存在" description="这条记录可能已经被删除，或者链接里的编号不对。" action={<Link to="/products" className="btn btn-primary">回产品列表</Link>} />;
 
   const status = SELECTION_STATUS_MAP[product.selection_status];
   const skuCount = (editData.sku || product.sku || '').split(/[\s,，;；]+/).filter(Boolean).length;
