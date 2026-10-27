@@ -431,6 +431,39 @@ def main():
                 if args.screenshots: page.screenshot(path=str(Path(args.screenshots)/f'packing-read-error-{width}.png'))
         finally:
             failing.clear()
+        # Empty custom-SKU results must render the new coverage branch, not merely
+        # a normal populated list. All seller data remain local intercepted fixtures.
+        original_products = DATA['/api/products']
+        DATA['/api/products'] = []
+        DATA['/api/products/seller-coverage'] = dict(
+            seller_offer_count=1, seller_plid_count=1, local_product_count=1,
+            local_plid_count=1, matched_count=0, sku_mismatch_count=1,
+            sku_mismatch=[dict(product_id=PRODUCT['id'], product_no=1,
+                name=PRODUCT['product_name'], local_sku=['1234567890123'], seller_sku=['W-'+'X'*160])],
+            seller_only_count=1, seller_only=[dict(plid='123',skus=['W-'+'Y'*160],
+                title=PRODUCT['product_name'],status='Buyable')], local_only_count=0, truncated=False)
+        try:
+            for width in (320,390,1280):
+                page.set_viewport_size({'width':width,'height':720})
+                page.goto(BASE+'/products?custom_sku=1')
+                card=page.locator('.seller-coverage-empty')
+                card.wait_for(timeout=8000)
+                card.get_by_role('status').wait_for(timeout=8000)
+                if 'SKU 和卖家后台不一致：1' not in card.inner_text():
+                    failures.append(f'{width}: custom SKU empty state has no coverage evidence')
+                if page.get_by_role('button',name='核对本店资料',exact=True).is_disabled():
+                    failures.append(f'{width}: empty custom SKU filter blocks mismatch preview')
+                for control in card.locator('input,button').all():
+                    box=control.bounding_box()
+                    if not box or box['x']<0 or box['x']+box['width']>width+1:
+                        failures.append(f'{width}: coverage control outside viewport {box}')
+                if page.evaluate('()=>document.documentElement.scrollWidth')>width+2:
+                    failures.append(f'{width}: custom SKU coverage long identifiers overflow')
+                if args.screenshots:
+                    page.screenshot(path=str(Path(args.screenshots)/f'seller-coverage-{width}.png'))
+        finally:
+            DATA['/api/products'] = original_products
+            DATA.pop('/api/products/seller-coverage',None)
         browser.close()
     report=dict(checked=checked,failures=failures,page_errors=errors,undeclared_api=sorted(set(unknown)))
     print(json.dumps(report,ensure_ascii=False,indent=2))

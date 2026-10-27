@@ -479,6 +479,173 @@ def sku_audit(db: Session = Depends(get_db), store_id: str = Depends(get_store_i
     return audit_skus(products)
 
 
+def _plid_of(url: Optional[str]) -> str:
+    match = re.search(r'PLID(\d+)', url or '', re.I)
+    return match[1] if match else ''
+
+
+def _seller_skus(rows: List[Dict[str, Any]]) -> List[str]:
+    return sorted({str(row.get('sku') or '').strip() for row in rows} - {''})
+
+
+@router.get("/seller-coverage")
+async def seller_coverage(
+    tsin: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """比对卖家后台的商品与本地商品，回答「某个商品为什么在系统里找不到」。
+
+    三种情况必须分开，因为下一步动作完全相反：
+
+    - seller_only  ：卖家后台有、本地没有 → 商品还没导入，跟 SKU 无关
+    - sku_mismatch ：PLID 对上了但 SKU 不一致 → 点「核对本店资料」同步
+    - local_only   ：本地有、卖家后台没有 → 可能已下架或链接失效
+
+    带 `tsin`（可逗号分隔多个）时额外回 `probes`，逐个给出结论——这是回答
+    「截图里这几个商品为什么筛不到」用的：同一个「找不到」背后可能是三件完全
+    不同的事，混成一句话用户只能猜。
+
+    只读：不写任何数据，也不回传密钥本身。
+    """
+    from services.takealot_seller_api import configured_key, _load_offers
+    if store_id != 'default-store':
+        raise HTTPException(400, '当前店铺尚未接入卖家资料')
+    key = configured_key(db)
+    if not key:
+        raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
+    try:
+        offers = await asyncio.wait_for(asyncio.to_thread(_load_offers, key), timeout=45)
+    except Exception as error:
+        raise HTTPException(503, f'卖家资料暂时无法读取（{_read_reason(error)}），请稍后重试')
+
+    seller: Dict[str, List[Dict[str, Any]]] = {}
+    seller_by_tsin: Dict[str, List[Dict[str, Any]]] = {}
+    for row in offers:
+        plid = str(row.get('productline_id') or '').strip()
+        if plid:
+            seller.setdefault(plid, []).append(row)
+        for token in sku_tokens(str(row.get('tsin_id') or '')):
+            seller_by_tsin.setdefault(token, []).append(row)
+
+    products = db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all()
+    local: Dict[str, List[Product]] = {}
+    local_by_tsin: Dict[str, List[Product]] = {}
+    for product in products:
+        plid = _plid_of(product.takealot_url)
+        if not plid:
+            candidates = {str(row.get('productline_id') or '').strip()
+                          for token in sku_tokens(product.tsin) for row in seller_by_tsin.get(token, [])}
+            candidates.discard('')
+            if len(candidates) == 1:
+                plid = next(iter(candidates))
+        if plid:
+            local.setdefault(plid, []).append(product)
+        for token in sku_tokens(product.tsin):
+            local_by_tsin.setdefault(token, []).append(product)
+
+    def relevant_rows(product, rows):
+        # TSIN identifies a variant; PLID can have separately stored variants.
+        exact = [row for row in rows if str(row.get('tsin_id') or '').strip() in sku_tokens(product.tsin)]
+        if exact:
+            return exact
+        known = set(sku_tokens(product.sku))
+        exact = [row for row in rows if str(row.get('sku') or '').strip() in known]
+        return exact or rows
+
+    matched = 0
+    mismatch = []
+    for plid, mine in local.items():
+        rows = seller.get(plid)
+        if not rows:
+            continue
+        for product in mine:
+            seller_skus = set(_seller_skus(relevant_rows(product, rows)))
+            local_skus = set(sku_tokens(product.sku))
+            if local_skus == seller_skus:
+                matched += 1
+            else:
+                mismatch.append({
+                    'product_id': product.id, 'product_no': product.product_no,
+                    'name': product.product_name or '',
+                    'local_sku': sorted(local_skus), 'seller_sku': sorted(seller_skus),
+                })
+
+    seller_only = []
+    for plid, rows in seller.items():
+        if plid in local:
+            continue
+        seller_only.append({
+            'plid': plid,
+            'skus': _seller_skus(rows),
+            'title': next((str(row.get('title') or '').strip() for row in rows if row.get('title')), ''),
+            'status': next((str(row.get('status') or '').strip() for row in rows if row.get('status')), ''),
+        })
+
+    local_only = sum(1 for plid in local if plid not in seller)
+    result = {
+        'seller_offer_count': len(offers),
+        'seller_plid_count': len(seller),
+        'local_product_count': len(products),
+        'local_plid_count': len(local),
+        'matched_count': matched,
+        'sku_mismatch_count': len(mismatch),
+        'sku_mismatch': mismatch[:100],
+        'seller_only_count': len(seller_only),
+        'seller_only': seller_only[:100],
+        'local_only_count': local_only,
+        'truncated': len(seller_only) > 100 or len(mismatch) > 100,
+    }
+
+    probes = []
+    for code in sku_tokens(tsin):
+        rows = seller_by_tsin.get(code, [])
+        mine = list(local_by_tsin.get(code, []))
+        seller_plids = sorted({str(row.get('productline_id') or '').strip() for row in rows} - {''})
+        if not mine:
+            for plid in seller_plids:
+                for product in local.get(plid, []):
+                    if product not in mine:
+                        mine.append(product)
+        seller_skus = _seller_skus(rows)
+        local_skus = sorted({sku for product in mine for sku in sku_tokens(product.sku)})
+        if rows and not mine:
+            verdict, advice = 'seller_only', '卖家后台有，按 TSIN/PLID 未匹配到本地记录；核对后再导入，避免重复。'
+        elif rows and mine and not set(seller_skus).issubset(set(local_skus)):
+            verdict, advice = 'sku_mismatch', '本地有这条商品，但 SKU 还是旧值——预览「核对本店资料」；仅身份对应明确时更正，多规格须人工核对。'
+        elif rows and mine:
+            verdict, advice = 'matched', '当前核对的 SKU 已在本地记录中；TSIN 是否可搜索取决于本地是否已保存该字段。'
+        elif mine:
+            verdict, advice = 'local_only', '本地有、卖家后台没有——可能已下架，或链接里的 PLID 失效。'
+        else:
+            verdict, advice = 'nowhere', '两边都没有——确认 TSIN 是否正确，或该商品属于其他店铺/已删除。'
+        probes.append({
+            'tsin': code,
+            'verdict': verdict,
+            'advice': advice,
+            'seller': {
+                'found': bool(rows),
+                'plids': seller_plids,
+                'skus': seller_skus,
+                'title': next((str(row.get('title') or '').strip() for row in rows if row.get('title')), ''),
+                'status': next((str(row.get('status') or '').strip() for row in rows if row.get('status')), ''),
+            },
+            'local': {
+                'found': bool(mine),
+                'products': [{
+                    'product_no': product.product_no,
+                    'name': product.product_name or '',
+                    'sku': product.sku or '',
+                    'plid': _plid_of(product.takealot_url),
+                } for product in mine[:5]],
+                'skus': local_skus,
+            },
+        })
+    if probes:
+        result['probes'] = probes
+    return result
+
+
 @router.get("/{product_id}", response_model=ProductOut)
 def get_product(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()

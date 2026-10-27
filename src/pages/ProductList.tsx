@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, getStores, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type SellerAssistResult, type MarketPriceStatus } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, getStores, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, getSellerCoverage, type SellerAssistResult, type MarketPriceStatus, type SellerCoverageResult } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
@@ -118,7 +118,7 @@ export default function ProductList() {
   const [assistNotice, setAssistNotice] = useState('');
   const previewAssist = async () => {
     setAssistBusy(true); setAssistError(''); setAssistNotice('');
-    try { setAssist(await previewSellerAssist(products.map(p => p.id))); }
+    try { setAssist(await previewSellerAssist(products.length ? products.map(p => p.id) : (coverage?.sku_mismatch ?? []).map(p => p.product_id))); }
     catch (e) { setAssistError(e instanceof Error ? e.message : '读取失败，请重试'); }
     finally { setAssistBusy(false); }
   };
@@ -128,7 +128,7 @@ export default function ProductList() {
     try {
       const result = await applySellerAssist(assist.items.filter(i => i.changes.length));
       const renamed = assist.items.filter(i => i.changes.some(c => c.field === 'sku' && c.current !== undefined)).length;
-      setAssist(null); fetchProducts();
+      setAssist(null); setCoverage(null); coverageAsked.current.delete(coverageScope); fetchProducts();
       setAssistNotice(renamed
         ? `已补齐 ${result.fillable} 个产品，其中 ${renamed} 个的 SKU 按卖家后台更正；旧 SKU 已留档，库存流水与发运记录一并迁移。尺寸和重量补齐后已重新计算物流费用与利润。`
         : `已补齐 ${result.fillable} 个产品。尺寸和重量补齐后已重新计算物流费用与利润。`);
@@ -555,7 +555,7 @@ export default function ProductList() {
     if (archivedMode) params.archived = 'true';
 
     return api.getProducts(params)
-      .then(rows => { if (seq === requestSeq.current) setProducts(rows); })
+      .then(rows => { if (seq === requestSeq.current) { setProducts(rows); setError(''); } })
       .catch((e: Error) => { if (seq === requestSeq.current) setError(e.message); })
       .finally(() => { if (seq === requestSeq.current) setLoading(false); });
   };
@@ -565,6 +565,49 @@ export default function ProductList() {
     // api 随数据源切换而变化（useApi 按 dataSource memo），不放进依赖会导致
     // 切换本地/远程后列表仍是旧数据源的结果
   }, [api, dataSource, statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly, customSkuOnly, archivedMode]);
+
+  // 「只看自建 SKU」筛空时，只写一句「本地没有」会把人引到错误的方向：可能是这些
+  // 商品本地压根没导入，也可能是本地 SKU 还是旧值（改的是卖家后台）。这两种下一步
+  // 动作正好相反，所以空状态里直接向卖家后台核对一次，把原因摆出来。
+  const [coverage, setCoverage] = useState<SellerCoverageResult | null>(null);
+  const [coverageError, setCoverageError] = useState('');
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  const [coverageQuery, setCoverageQuery] = useState('');
+  const coverageAsked = useRef(new Set<string>());
+  const coverageRequest = useRef(0);
+  const coverageBusy = useRef(false);
+  const coverageScope = `${dataSource}:${getActiveStoreId()}`;
+  const activeCoverageScope = useRef(coverageScope);
+  activeCoverageScope.current = coverageScope;
+  const coverageSupported = dataSource === 'remote' && getActiveStoreId() === 'default-store';
+
+  const fetchCoverage = (tsin?: string) => {
+    if (!coverageSupported || coverageBusy.current) return;
+    const scope = coverageScope;
+    const seq = ++coverageRequest.current;
+    coverageAsked.current.add(scope);
+    coverageBusy.current = true;
+    setCoverageLoading(true);
+    setCoverageError('');
+    setCoverage(null);
+    const current = () => seq === coverageRequest.current && scope === activeCoverageScope.current;
+    getSellerCoverage(tsin)
+      .then(rows => { if (current()) setCoverage(rows); })
+      .catch((e: Error) => { if (current()) setCoverageError(e.message); })
+      .finally(() => { if (current()) { coverageBusy.current = false; setCoverageLoading(false); } });
+  };
+
+  useEffect(() => {
+    setCoverage(null); setCoverageError(''); setCoverageLoading(false);
+    coverageBusy.current = false;
+    return () => { ++coverageRequest.current; coverageBusy.current = false; };
+  }, [coverageScope]);
+
+  useEffect(() => {
+    if (!coverageSupported || archivedMode || error || !customSkuOnly || loading || products.length > 0) return;
+    if (coverageAsked.current.has(coverageScope)) return;
+    fetchCoverage();
+  }, [coverageScope, coverageSupported, archivedMode, error, customSkuOnly, loading, products.length]);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -1230,8 +1273,8 @@ export default function ProductList() {
     <div className="product-list-page">
       <div className="product-list-header">
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
-        {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
-        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
+        {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || (!products.length && !coverage?.sku_mismatch.length) || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || (!products.length && !coverage?.sku_mismatch.length) || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
@@ -1501,13 +1544,68 @@ export default function ProductList() {
       ) : products.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 48 }}>
           {customSkuOnly ? (
-            <>
-              <p style={{ color: 'var(--color-text-secondary)' }}>
-                本地没有自建 SKU 的商品。卖家后台若已经改成自建命名（例如 W-S-12-02），
-                说明本地的 SKU 还是旧值——点右上角「核对本店资料」同步一次，回来这里就能筛到。
+            <div className="seller-coverage-empty" style={{ overflowWrap: 'anywhere', maxWidth: 760, margin: '0 auto', textAlign: 'left' }}>
+              <p style={{ color: 'var(--color-text-secondary)', textAlign: 'center' }}>
+                当前筛选没有匹配的自建 SKU。核对结果针对当前店铺的远程商品库，不代表搜索或其他筛选条件下的结论。
               </p>
-              <button className="btn btn-outline" style={{ marginTop: 12 }} onClick={() => setFilter('custom_sku', '')}>显示全部产品</button>
-            </>
+              {!coverageSupported && <p>本地数据源或当前店铺尚不支持卖家核对；不会用其他商品库的结果解释这里的空列表。</p>}
+              {coverageSupported && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <label htmlFor="coverage-tsin">核对 TSIN（可逗号分隔）</label>
+                <input id="coverage-tsin" value={coverageQuery} onChange={event => setCoverageQuery(event.target.value)} placeholder="输入卖家后台的 TSIN" style={{ minWidth: 0, maxWidth: '100%' }} />
+                <button className="btn btn-outline" disabled={coverageLoading} onClick={() => fetchCoverage(coverageQuery)}>核对</button>
+              </div>}
+              {coverageLoading && (
+                <p className="loading" style={{ padding: 16, textAlign: 'center' }}>正在核对卖家后台（最多约 1 分钟）…</p>
+              )}
+              {coverageError && (
+                <div className="alert alert-error" role="alert">
+                  核对失败：{coverageError}
+                  <button className="btn btn-outline btn-sm" style={{ marginLeft: 12 }} disabled={coverageLoading} onClick={() => fetchCoverage(coverageQuery)}>重试</button>
+                </div>
+              )}
+              {coverage && (
+                <>
+                  <div className="alert alert-info" role="status">
+                    <div>卖家资料可能来自最多 30 分钟的缓存；不能用它断言刚修改的 SKU 尚未生效。</div>
+                    <div>远程库 {coverage.local_product_count} 个商品；卖家后台 {coverage.seller_offer_count} 个报价、{coverage.seller_plid_count} 个商品。</div>
+                    <div>· 卖家后台有、本地未按身份匹配：{coverage.seller_only_count} 个 —— 先核对身份，再决定是否导入，避免重复。</div>
+                    <div>· 本地有、SKU 和卖家后台不一致：{coverage.sku_mismatch_count} 个 —— 预览「核对本店资料」；能明确对应的规格才更正，其他规格需人工核对。</div>
+                    <div>· 本地有、本次卖家资料未找到：{coverage.local_only_count} 个 —— 可能已下架，或链接里的 PLID 失效。</div>
+                    {coverage.truncated && <div>（接口明细最多 100 条，下方各展示前 10 条）</div>}
+                  </div>
+                  {coverage.probes?.map(item => <p key={item.tsin}><strong>TSIN {item.tsin}</strong>：{item.advice}</p>)}
+                  {coverage.seller_only.length > 0 && (
+                    <details open style={{ marginTop: 12 }}>
+                      <summary>卖家后台有、本地未匹配（{coverage.seller_only_count}）</summary>
+                      <ul style={{ margin: '8px 0 0 18px', color: 'var(--color-text-secondary)' }}>
+                        {coverage.seller_only.slice(0, 10).map(row => (
+                          <li key={row.plid}>
+                            <code>{row.skus.join(' / ') || '（无 SKU）'}</code>
+                            {row.title ? ` — ${row.title}` : ''}
+                            {row.status ? `（${row.status}）` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {coverage.sku_mismatch.length > 0 && (
+                    <details style={{ marginTop: 12 }}>
+                      <summary>SKU 不一致（{coverage.sku_mismatch_count}）</summary>
+                      <ul style={{ margin: '8px 0 0 18px', color: 'var(--color-text-secondary)' }}>
+                        {coverage.sku_mismatch.slice(0, 10).map(row => (
+                          <li key={row.product_id}>
+                            #{row.product_no} {row.name}：<code>{row.local_sku.join(' / ')}</code> → <code>{row.seller_sku.join(' / ')}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </>
+              )}
+              <div style={{ textAlign: 'center', marginTop: 16 }}>
+                <button className="btn btn-outline" onClick={() => setFilter('custom_sku', '')}>显示全部产品</button>
+              </div>
+            </div>
           ) : (
             <>
               <p style={{ color: 'var(--color-text-secondary)' }}>暂无产品记录</p>
