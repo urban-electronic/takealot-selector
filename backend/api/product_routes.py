@@ -536,7 +536,7 @@ async def seller_coverage(
     local: Dict[str, List[Product]] = {}
     local_by_tsin: Dict[str, List[Product]] = {}
     for product in products:
-        plid = _plid_of(product.takealot_url)
+        plid = _plid_of(product.takealot_url) or (product.plid or '').strip()
         if not plid:
             candidates = {str(row.get('productline_id') or '').strip()
                           for token in sku_tokens(product.tsin) for row in seller_by_tsin.get(token, [])}
@@ -640,7 +640,7 @@ async def seller_coverage(
                     'product_no': product.product_no,
                     'name': product.product_name or '',
                     'sku': product.sku or '',
-                    'plid': _plid_of(product.takealot_url),
+                    'plid': _plid_of(product.takealot_url) or (product.plid or '').strip(),
                 } for product in mine[:5]],
                 'skus': local_skus,
             },
@@ -648,6 +648,63 @@ async def seller_coverage(
     if probes:
         result['probes'] = probes
     return result
+
+
+class SellerSyncRequest(BaseModel):
+    token: Optional[str] = None
+
+
+async def _seller_offers(db: Session) -> List[Dict[str, Any]]:
+    """读一次卖家资料。45 秒预算小于前端 90 秒，超时是「没读完」而不是「没商品」。"""
+    from services.takealot_seller_api import configured_key, _load_offers
+    key = configured_key(db)
+    if not key:
+        raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_load_offers, key), timeout=45)
+    except Exception as error:
+        raise HTTPException(503, f'卖家资料暂时无法读取（{_read_reason(error)}），请稍后重试')
+
+
+@router.post('/seller-sync/preview')
+@router.post('/seller-sync/apply')
+async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    """把卖家后台的商品同步进正式产品主档：已有的更正，缺的新建。
+
+    这是用户明确要的那个动作——「你接入卖家后台这样去找，而且是在产品里面修改，
+    在产品列表中显示」。所以这里只改主档数据，不改展示方式：同步完，商品就是
+    普通产品行，用原来的搜索框、原来的表格就能看到。
+
+    两段式：先预览（列出要更正/新增/跳过的），确认后再 apply。token 绑定整份
+    计划，预览与写入之间只要本地商品或卖家资料变了，apply 就会被拒。
+    """
+    from services.seller_catalog_sync import SellerSyncConflict, apply_plan, build_plan
+    if store_id != 'default-store':
+        raise HTTPException(400, '当前店铺尚未接入卖家资料')
+    plan = build_plan(db, store_id, await _seller_offers(db))
+    applied = None
+    if request.url.path.endswith('/apply'):
+        if not data.token or data.token != plan['token']:
+            raise HTTPException(409, '卖家资料或本地商品已变化，请重新预览')
+        try:
+            applied = apply_plan(db, store_id, plan)
+        except SellerSyncConflict as error:
+            db.rollback()
+            raise HTTPException(409, str(error))
+        db.commit()
+    # 明细只回前 200 条：整库同步时 400+ 条会把响应撑到几 MB，而界面只列前几条。
+    limit = 200
+    payload = {
+        'stats': plan['stats'],
+        'updates': plan['updates'][:limit],
+        'creates': plan['creates'][:limit],
+        'skipped': plan['skipped'][:limit],
+        'token': plan['token'],
+        'truncated': any(len(plan[key]) > limit for key in ('updates', 'creates', 'skipped')),
+    }
+    if applied is not None:
+        payload['applied'] = applied
+    return payload
 
 
 @router.get("/{product_id}", response_model=ProductOut)

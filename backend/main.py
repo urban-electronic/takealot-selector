@@ -4,6 +4,7 @@ Takealot 选品系统 - 主入口
 
 import hmac
 import os
+import re
 import sys
 
 # 确保 backend 目录在 path 中
@@ -231,6 +232,13 @@ def _repair_product_metadata():
                     product.fee_rate_range = category.fee_rate_range
                     _apply_calculated_fields(db, product)
                     confirmed_categories += 1
+                # plid 列是身份锚点，历史行只有链接。补一次，之后同步/核对不用再
+                # 每次都正则抠链接——链接一空身份就丢了。
+                if not (product.plid or "").strip():
+                    found = re.search(r'PLID(\d+)', product.takealot_url or '', re.I)
+                    if found:
+                        product.plid = found.group(1)
+                        changed_numbers += 1
         if changed_numbers or confirmed_categories:
             db.commit()
         print(f"[startup] 产品元数据返检: 固化编号 {changed_numbers}, 自动确认 Fee 品类 {confirmed_categories}", flush=True)
@@ -355,6 +363,7 @@ def _ensure_columns():
                 "is_archived": "BOOLEAN DEFAULT 0",
                 "archived_at": "DATETIME",
                 "market_prices": "TEXT DEFAULT ''",
+                "plid": "TEXT DEFAULT ''",
             }
             with engine.begin() as conn:
                 for name, sql_type in product_additions.items():

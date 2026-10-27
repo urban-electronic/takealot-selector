@@ -638,6 +638,37 @@ export interface SellerAssistResult { items: SellerAssistItem[]; fillable: numbe
 export const previewSellerAssist = (ids: string[]) => request<SellerAssistResult>('/api/products/seller-assist/preview', { method: 'POST', body: JSON.stringify({ ids }) });
 export const applySellerAssist = (items: SellerAssistItem[]) => request<SellerAssistResult>('/api/products/seller-assist/apply', { method: 'POST', body: JSON.stringify({ ids: items.map(i => i.id), tokens: Object.fromEntries(items.map(i => [i.id, i.token])) }) });
 
+/** 卖家后台 → 正式产品主档：已有的更正，缺的新建。 */
+export interface SellerSyncChange {
+  field: string; label: string; value: string | number; current?: string | number;
+}
+export interface SellerSyncUpdate {
+  plid: string; product_id: string; product_no: number; name: string;
+  matched_by: 'plid' | 'tsin' | 'sku';
+  changes: SellerSyncChange[]; warnings: string[];
+}
+export interface SellerSyncCreate {
+  plid: string; sku: string; tsin: string; product_name: string;
+  product_image_url: string; takealot_url: string; actual_sale_price_zar: number | null;
+}
+export interface SellerSyncSkip { plid: string; skus: string[]; reason: string }
+export interface SellerSyncStats {
+  seller_offer_count: number; seller_group_count: number; local_product_count: number;
+  update_count: number; create_count: number; unchanged_count: number;
+  skip_count: number; rename_count: number;
+}
+export interface SellerSyncResult {
+  stats: SellerSyncStats;
+  updates: SellerSyncUpdate[];
+  creates: SellerSyncCreate[];
+  skipped: SellerSyncSkip[];
+  token: string;
+  truncated: boolean;
+  applied?: { created: number; updated: number; renamed: number; moved: Record<string, number> };
+}
+export const previewSellerSync = () => request<SellerSyncResult>('/api/products/seller-sync/preview', { method: 'POST', body: JSON.stringify({}) });
+export const applySellerSync = (token: string) => request<SellerSyncResult>('/api/products/seller-sync/apply', { method: 'POST', body: JSON.stringify({ token }) });
+
 export const getAutomaticPricing = (): Promise<any> => request('/api/automatic-pricing');
 export const configureAutomaticPricing = (product: string, offer: string, rule: unknown): Promise<any> => request(`/api/automatic-pricing/${product}/${offer}`, { method: 'PUT', body: JSON.stringify(rule) });
 export const pauseAutomaticPricing = (product: string, offer: string): Promise<any> => request(`/api/automatic-pricing/${product}/${offer}/pause`, { method: 'POST' });

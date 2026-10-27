@@ -141,7 +141,7 @@ SCAN = r"""
 
 # (打开按钮, 扫描根)。扫描根必须真的存在，打不开算失败。
 DIALOGS = {
-    '/products': [('核对本店资料', '.seller-assist-dialog')],
+    '/products': [('同步卖家后台', '.seller-assist-dialog')],
     '/packing': [('编辑', '[role=dialog]')],
     '/procurement': [('新建记录', 'form')],
     '/replenishment': [('设置', '[role=dialog]')],

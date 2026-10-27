@@ -53,6 +53,10 @@ class Product(Base):
 
     # Takealot fields
     takealot_url = Column(String, default="")
+    # 商品身份锚点。原来只能从 takealot_url 里正则抠 PLID，链接一空（手动新建、
+    # 抓取失败、卖家后台导入）身份就丢了，同一件商品会被重复导入。存在这一列之后
+    # 身份不再依赖链接的 slug 写法，链接只用于展示和点击。
+    plid = Column(String, default="", index=True)
     tsin = Column(String, default="")
     product_name = Column(String, default="")
     product_image_url = Column(String, default="")

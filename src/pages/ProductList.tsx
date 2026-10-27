@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
-import { getStoreStorageKey, readStoreStorage, getActiveStoreId, getStores, previewSellerAssist, applySellerAssist, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, getSellerCoverage, type SellerAssistResult, type MarketPriceStatus, type SellerCoverageResult } from '../remoteApi';
+import { getStoreStorageKey, readStoreStorage, getActiveStoreId, getStores, previewSellerSync, applySellerSync, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type MarketPriceStatus, type SellerSyncResult } from '../remoteApi';
 import type { Product } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
@@ -102,37 +102,46 @@ function variantSpec(label: string, allLabels: string[]): string {
 export default function ProductList() {
   const api = useApi();
   const { dataSource } = useDataSource();
-  const [assist, setAssist] = useState<SellerAssistResult | null>(null);
+  // 「同步卖家后台」的预览结果。同步只改商品主档，不改展示方式——同步完，
+  // 商品就是普通产品行，用原来的搜索框和表格就能看到，没有第二套结果页。
+  const [syncPlan, setSyncPlan] = useState<SellerSyncResult | null>(null);
   useEffect(() => {
-    if (!assist) return;
-    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setAssist(null); };
+    if (!syncPlan) return;
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setSyncPlan(null); };
     const previous = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     document.addEventListener('keydown', close);
     return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', close); };
-  }, [assist]);
-  const [assistOnlyTasks, setAssistOnlyTasks] = useState(true);
+  }, [syncPlan]);
   const [assistBusy, setAssistBusy] = useState(false);
   const [assistError, setAssistError] = useState('');
   /** 成功类提示单独一个状态：用 role="status" 播报，不会被读屏当成错误 */
   const [assistNotice, setAssistNotice] = useState('');
   const previewAssist = async () => {
+    if (assistBusy) return;
     setAssistBusy(true); setAssistError(''); setAssistNotice('');
-    try { setAssist(await previewSellerAssist(products.length ? products.map(p => p.id) : (coverage?.sku_mismatch ?? []).map(p => p.product_id))); }
+    try { setSyncPlan(await previewSellerSync()); }
     catch (e) { setAssistError(e instanceof Error ? e.message : '读取失败，请重试'); }
     finally { setAssistBusy(false); }
   };
   const applyAssist = async () => {
-    if (!assist) return;
+    if (!syncPlan || assistBusy) return;
     setAssistBusy(true); setAssistError(''); setAssistNotice('');
     try {
-      const result = await applySellerAssist(assist.items.filter(i => i.changes.length));
-      const renamed = assist.items.filter(i => i.changes.some(c => c.field === 'sku' && c.current !== undefined)).length;
-      setAssist(null); setCoverage(null); coverageAsked.current.delete(coverageScope); fetchProducts();
-      setAssistNotice(renamed
-        ? `已补齐 ${result.fillable} 个产品，其中 ${renamed} 个的 SKU 按卖家后台更正；旧 SKU 已留档，库存流水与发运记录一并迁移。尺寸和重量补齐后已重新计算物流费用与利润。`
-        : `已补齐 ${result.fillable} 个产品。尺寸和重量补齐后已重新计算物流费用与利润。`);
-    } catch (e) { setAssistError(e instanceof Error ? e.message : '补齐失败，请重新预览'); }
+      const result = await applySellerSync(syncPlan.token);
+      const applied = result.applied ?? { created: 0, updated: 0, renamed: 0 };
+      setSyncPlan(null);
+      // 刷新现有列表：同步完就是普通产品行，不需要另外一套结果展示。
+      fetchProducts();
+      const parts = [
+        applied.created ? `新增 ${applied.created} 个商品` : '',
+        applied.updated ? `更新 ${applied.updated} 个商品` : '',
+        applied.renamed ? `其中 ${applied.renamed} 个 SKU 按卖家后台更正（旧值已留档，库存与发运记录一并迁移）` : '',
+      ].filter(Boolean);
+      setAssistNotice(parts.length
+        ? `同步完成：${parts.join('，')}。采购成本、库存和利润没有被写入，仍需人工补。`
+        : '同步完成：本地主档已经和卖家后台一致，没有需要写入的变更。');
+    } catch (e) { setAssistError(e instanceof Error ? e.message : '同步失败，请重新预览'); }
     finally { setAssistBusy(false); }
   };
   const navigate = useNavigate();
@@ -183,7 +192,7 @@ export default function ProductList() {
   // 参考价批量录入面板。淘宝/中国官网都抓不到，14 个 SKU 一个个点进详情页太慢，
   // 这里一次贴完；SG 是后端自动同步的，面板里只读。
   const [mpPanel, setMpPanel] = useState<{ draft: Record<string, { CN: string; TB: string }> } | null>(null);
-  // 面板声明了 aria-modal="true"，就要像「核对本店资料」那个弹窗一样能被 Esc 关掉、
+  // 面板声明了 aria-modal="true"，就要像「同步卖家后台」那个弹窗一样能被 Esc 关掉、
   // 且关掉之前背后不滚动。原来只有点「关闭 ×」或点遮罩两条路：键盘用户按 Esc 没反应，
   // 窄屏上手指划的其实是背后那张产品表（弹窗本身没锁滚动）。
   useEffect(() => {
@@ -565,49 +574,6 @@ export default function ProductList() {
     // api 随数据源切换而变化（useApi 按 dataSource memo），不放进依赖会导致
     // 切换本地/远程后列表仍是旧数据源的结果
   }, [api, dataSource, statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly, customSkuOnly, archivedMode]);
-
-  // 「只看自建 SKU」筛空时，只写一句「本地没有」会把人引到错误的方向：可能是这些
-  // 商品本地压根没导入，也可能是本地 SKU 还是旧值（改的是卖家后台）。这两种下一步
-  // 动作正好相反，所以空状态里直接向卖家后台核对一次，把原因摆出来。
-  const [coverage, setCoverage] = useState<SellerCoverageResult | null>(null);
-  const [coverageError, setCoverageError] = useState('');
-  const [coverageLoading, setCoverageLoading] = useState(false);
-  const [coverageQuery, setCoverageQuery] = useState('');
-  const coverageAsked = useRef(new Set<string>());
-  const coverageRequest = useRef(0);
-  const coverageBusy = useRef(false);
-  const coverageScope = `${dataSource}:${getActiveStoreId()}`;
-  const activeCoverageScope = useRef(coverageScope);
-  activeCoverageScope.current = coverageScope;
-  const coverageSupported = dataSource === 'remote' && getActiveStoreId() === 'default-store';
-
-  const fetchCoverage = (tsin?: string) => {
-    if (!coverageSupported || coverageBusy.current) return;
-    const scope = coverageScope;
-    const seq = ++coverageRequest.current;
-    coverageAsked.current.add(scope);
-    coverageBusy.current = true;
-    setCoverageLoading(true);
-    setCoverageError('');
-    setCoverage(null);
-    const current = () => seq === coverageRequest.current && scope === activeCoverageScope.current;
-    getSellerCoverage(tsin)
-      .then(rows => { if (current()) setCoverage(rows); })
-      .catch((e: Error) => { if (current()) setCoverageError(e.message); })
-      .finally(() => { if (current()) { coverageBusy.current = false; setCoverageLoading(false); } });
-  };
-
-  useEffect(() => {
-    setCoverage(null); setCoverageError(''); setCoverageLoading(false);
-    coverageBusy.current = false;
-    return () => { ++coverageRequest.current; coverageBusy.current = false; };
-  }, [coverageScope]);
-
-  useEffect(() => {
-    if (!coverageSupported || archivedMode || error || !customSkuOnly || loading || products.length > 0) return;
-    if (coverageAsked.current.has(coverageScope)) return;
-    fetchCoverage();
-  }, [coverageScope, coverageSupported, archivedMode, error, customSkuOnly, loading, products.length]);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -1273,8 +1239,8 @@ export default function ProductList() {
     <div className="product-list-page">
       <div className="product-list-header">
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
-        {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || (!products.length && !coverage?.sku_mismatch.length) || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
-        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || (!products.length && !coverage?.sku_mismatch.length) || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
+        {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading} onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading} title="按卖家后台更正 SKU、补齐空字段，并把本地还没有的商品导入成正式产品" onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
@@ -1285,23 +1251,36 @@ export default function ProductList() {
       </div>}
       {assistNotice && <div role="status" className="product-task-banner">{assistNotice}</div>}
       {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
-      {assist && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="卖家资料补齐预览" onClick={e => { if (e.target === e.currentTarget) setAssist(null); }}>
+      {syncPlan && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="同步卖家后台预览" onClick={e => { if (e.target === e.currentTarget) setSyncPlan(null); }}>
         <div className="seller-assist-dialog">
-          <div className="seller-assist-header"><strong>卖家资料核对</strong><button className="btn btn-outline btn-sm" onClick={() => setAssist(null)}>关闭 ×</button></div>
+          <div className="seller-assist-header"><strong>同步卖家后台</strong><button className="btn btn-outline btn-sm" onClick={() => setSyncPlan(null)}>关闭 ×</button></div>
           <div className="seller-assist-body">
-          <h3>补齐预览：{assist.fillable} 个产品可以补齐</h3>
-          <p>来源：本店卖家 API。仅补空白 SKU、图片、标题、TSIN、尺寸和重量。尺寸或重量补齐后会重新计算费用与利润，人工成本覆盖值保留。</p>
-          <label style={{ display: 'block', marginBottom: 12 }}><input type="checkbox" checked={assistOnlyTasks} onChange={e => setAssistOnlyTasks(e.target.checked)} /> 只显示缺字段的产品</label>
-          <div className="seller-assist-table-scroll" role="region" aria-label="资料核对明细" tabIndex={0}><table style={{ width: '100%' }}><thead><tr><th>产品</th><th>将补齐</th><th>需要核对 / 人工填写</th></tr></thead><tbody>{assist.items.filter(item => !assistOnlyTasks || item.changes.length || item.manual.length || products.some(p => p.id === item.id && (!p.sku || !p.product_name || (!p.product_image_url && !p.product_image_path) || p.length_mm == null || p.width_mm == null || p.height_mm == null || p.actual_weight_kg == null))).map(item => <tr key={item.id}>
-            <td>#{item.product_no} {item.name}<br/><Link to={`/products/${item.id}`} onClick={() => setAssist(null)}>修改资料</Link></td>
-            <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : c.current === undefined || c.current === '' ? String(c.value) : <><span style={{ color: 'var(--text-muted)', textDecoration: 'line-through' }}>{String(c.current)}</span>{' → '}<strong>{String(c.value)}</strong></>}</div>) : '无需补齐'}</td>
-            <td>{[...item.warnings, ...(item.manual.length ? ['需填写：' + item.manual.join('、')] : [])].map((message, i) => <div key={i}>{message}</div>)}{item.differences.length > 0 && <details><summary>查看已有资料差异 ({item.differences.length})</summary>{item.differences.map((message, i) => <div key={i}>{message}</div>)}</details>}</td>
-          </tr>)}</tbody></table></div>
+          <h3>将更新 {syncPlan.stats.update_count} 个、新增 {syncPlan.stats.create_count} 个，跳过 {syncPlan.stats.skip_count} 个</h3>
+          <p>来源：本店卖家 API（可能来自最多 30 分钟的缓存）。只写卖家资料里确实有的字段：SKU、标题、图片、TSIN、尺寸重量、本店售价、链接。<strong>采购成本、库存、利润不会被写入</strong>，同步完仍需人工补。同步只改商品主档，不改展示方式——商品还是原来那张表里的行。</p>
+          {syncPlan.stats.rename_count > 0 && <p>{syncPlan.stats.rename_count} 个 SKU 会按卖家后台更正；旧值留档，库存流水与发运记录一并迁移。多规格对不上的一律跳过，不猜。</p>}
+          <div className="seller-assist-table-scroll" role="region" aria-label="同步明细" tabIndex={0}><table style={{ width: '100%' }}><thead><tr><th>商品</th><th>将写入</th><th>说明</th></tr></thead><tbody>
+            {syncPlan.updates.map(item => <tr key={`u-${item.plid}`}>
+              <td style={{ overflowWrap: 'anywhere' }}>#{item.product_no} {item.name}<br/><Link to={`/products/${item.product_id}`} onClick={() => setSyncPlan(null)}>修改资料</Link></td>
+              <td style={{ overflowWrap: 'anywhere' }}>{item.changes.map(c => <div key={c.field} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'baseline', minWidth: 0 }}><span>{c.label}：</span>{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : c.current === undefined || c.current === '' ? <span style={{ overflowWrap: 'anywhere', minWidth: 0 }}>{String(c.value)}</span> : <><span style={{ color: 'var(--text-muted)', textDecoration: 'line-through', overflowWrap: 'anywhere', minWidth: 0 }}>{String(c.current)}</span><span aria-hidden="true">→</span><strong style={{ overflowWrap: 'anywhere', minWidth: 0 }}>{String(c.value)}</strong></>}</div>)}</td>
+              <td style={{ overflowWrap: 'anywhere' }}>{item.warnings.length ? item.warnings.map((message, i) => <div key={i}>{message}</div>) : '按卖家后台更正'}</td>
+            </tr>)}
+            {syncPlan.creates.map(item => <tr key={`c-${item.plid}`}>
+              <td style={{ overflowWrap: 'anywhere' }}>新增：{item.product_name || '（无标题）'}</td>
+              <td style={{ overflowWrap: 'anywhere' }}><div>SKU：{item.sku || '—'}</div><div>TSIN：{item.tsin || '—'}</div>{item.actual_sale_price_zar != null && <div>售价：{formatZar(item.actual_sale_price_zar)}</div>}</td>
+              <td style={{ overflowWrap: 'anywhere' }}>本地没有这条商品，导入成正式产品；采购成本、库存留空</td>
+            </tr>)}
+            {syncPlan.skipped.map(item => <tr key={`s-${item.plid}`}>
+              <td style={{ overflowWrap: 'anywhere' }}>跳过：PLID {item.plid}</td>
+              <td style={{ overflowWrap: 'anywhere' }}>{item.skus.join(' / ') || '—'}</td>
+              <td style={{ overflowWrap: 'anywhere' }}>{item.reason}</td>
+            </tr>)}
+          </tbody></table></div>
+          {syncPlan.truncated && <p>明细超过 200 条，上面只列前 200 条；同步会按完整计划执行。</p>}
           </div>
           <div className="seller-assist-footer">
-            <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>{assist.items.some(item => item.changes.some(change => change.current !== undefined)) ? '确认补齐并更正 SKU' : '确认仅补空白资料'} ({assist.fillable})</button>
-            <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新核对</button>
-            <button className="btn btn-outline" onClick={() => setAssist(null)}>关闭</button>
+            <button className="btn btn-primary" disabled={assistBusy || syncPlan.stats.update_count + syncPlan.stats.create_count === 0} onClick={applyAssist}>确认同步 ({syncPlan.stats.update_count + syncPlan.stats.create_count})</button>
+            <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新读取</button>
+            <button className="btn btn-outline" onClick={() => setSyncPlan(null)}>关闭</button>
           </div>
         </div>
       </div>}
@@ -1549,68 +1528,18 @@ export default function ProductList() {
               <button className="btn btn-outline" onClick={fetchProducts}>重新读取列表</button>
             </div>
           ) : customSkuOnly ? (
-            <div className="seller-coverage-empty" style={{ overflowWrap: 'anywhere', maxWidth: 760, margin: '0 auto', textAlign: 'left' }}>
-              <p style={{ color: 'var(--color-text-secondary)', textAlign: 'center' }}>
-                当前筛选没有匹配的自建 SKU。核对结果针对当前店铺的远程商品库，不代表搜索或其他筛选条件下的结论。
+            <>
+              <p style={{ color: 'var(--color-text-secondary)' }}>当前没有匹配的自建 SKU。</p>
+              <p style={{ color: 'var(--color-text-secondary)', maxWidth: 560, margin: '8px auto 0' }}>
+                如果卖家后台已经改成了自建命名（例如 W-S-12-02），说明本地主档还没同步过来。
+                点右上角「同步卖家后台」，系统会按卖家后台更正 SKU，并把本地还没有的商品导入成正式产品；
+                同步完回到这里，用搜索框就能搜到。
               </p>
-              {!coverageSupported && <p>本地数据源或当前店铺尚不支持卖家核对；不会用其他商品库的结果解释这里的空列表。</p>}
-              {coverageSupported && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                <label htmlFor="coverage-tsin">核对 TSIN（可逗号分隔）</label>
-                <input id="coverage-tsin" value={coverageQuery} onChange={event => setCoverageQuery(event.target.value)} placeholder="输入卖家后台的 TSIN" style={{ minWidth: 0, maxWidth: '100%' }} />
-                <button className="btn btn-outline" disabled={coverageLoading} onClick={() => fetchCoverage(coverageQuery)}>核对</button>
-              </div>}
-              {coverageLoading && (
-                <p className="loading" style={{ padding: 16, textAlign: 'center' }}>正在核对卖家后台（最多约 1 分钟）…</p>
-              )}
-              {coverageError && (
-                <div className="alert alert-error" role="alert">
-                  核对失败：{coverageError}
-                  <button className="btn btn-outline btn-sm" style={{ marginLeft: 12 }} disabled={coverageLoading} onClick={() => fetchCoverage(coverageQuery)}>重试</button>
-                </div>
-              )}
-              {coverage && (
-                <>
-                  <div className="alert alert-info" role="status">
-                    <div>卖家资料可能来自最多 30 分钟的缓存；不能用它断言刚修改的 SKU 尚未生效。</div>
-                    <div>远程库 {coverage.local_product_count} 个商品；卖家后台 {coverage.seller_offer_count} 个报价、{coverage.seller_plid_count} 个商品。</div>
-                    <div>· 卖家后台有、本地未按身份匹配：{coverage.seller_only_count} 个 —— 先核对身份，再决定是否导入，避免重复。</div>
-                    <div>· 本地有、SKU 和卖家后台不一致：{coverage.sku_mismatch_count} 个 —— 预览「核对本店资料」；能明确对应的规格才更正，其他规格需人工核对。</div>
-                    <div>· 本地有、本次卖家资料未找到：{coverage.local_only_count} 个 —— 可能已下架，或链接里的 PLID 失效。</div>
-                    {coverage.truncated && <div>（接口明细最多 100 条，下方各展示前 10 条）</div>}
-                  </div>
-                  {coverage.probes?.map(item => <p key={item.tsin}><strong>TSIN {item.tsin}</strong>：{item.advice}</p>)}
-                  {coverage.seller_only.length > 0 && (
-                    <details open style={{ marginTop: 12 }}>
-                      <summary>卖家后台有、本地未匹配（{coverage.seller_only_count}）</summary>
-                      <ul style={{ margin: '8px 0 0 18px', color: 'var(--color-text-secondary)' }}>
-                        {coverage.seller_only.slice(0, 10).map(row => (
-                          <li key={row.plid}>
-                            <code>{row.skus.join(' / ') || '（无 SKU）'}</code>
-                            {row.title ? ` — ${row.title}` : ''}
-                            {row.status ? `（${row.status}）` : ''}
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  {coverage.sku_mismatch.length > 0 && (
-                    <details style={{ marginTop: 12 }}>
-                      <summary>SKU 不一致（{coverage.sku_mismatch_count}）</summary>
-                      <ul style={{ margin: '8px 0 0 18px', color: 'var(--color-text-secondary)' }}>
-                        {coverage.sku_mismatch.slice(0, 10).map(row => (
-                          <li key={row.product_id}>
-                            #{row.product_no} {row.name}：<code>{row.local_sku.join(' / ')}</code> → <code>{row.seller_sku.join(' / ')}</code>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                </>
-              )}
-              <div style={{ textAlign: 'center', marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 12 }}>
+                {dataSource === 'remote' && <button className="btn btn-primary" disabled={assistBusy} onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
                 <button className="btn btn-outline" onClick={() => setFilter('custom_sku', '')}>显示全部产品</button>
               </div>
-            </div>
+            </>
           ) : (
             <>
               <p style={{ color: 'var(--color-text-secondary)' }}>暂无产品记录</p>

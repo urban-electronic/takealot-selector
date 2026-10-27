@@ -12,6 +12,7 @@ const localApi = read('src/api.ts');
 const remoteApi = read('src/remoteApi.ts');
 const rust = read('src-tauri/src/commands/products.rs');
 const backend = read('backend/api/product_routes.py');
+const syncService = read('backend/services/seller_catalog_sync.py');
 
 const checks = [
   // --- 界面 ---
@@ -39,19 +40,38 @@ const checks = [
   [backend, /def is_custom_sku\(value: Optional\[str\]\) -> bool/, '后端要有判据函数'],
   [backend, /\| \(Product\.sku\.ilike\(like\)\)/, '后端搜索要包含 sku'],
 
-  // --- 筛空之后要能说清「为什么找不到」 ---
-  // 只写一句「本地没有」会把两种下一步动作相反的情况混在一起：商品还没导入，
-  // 和本地 SKU 还是旧值。空状态必须真的去核对，而不是给一句通用建议。
-  [page, /if \(!coverageSupported[^\n]+!customSkuOnly[^\n]+\) return;\s*\n\s*if \(coverageAsked\.current\.has\(coverageScope\)\) return;\s*\n\s*fetchCoverage\(\);/, '筛空时要真的发起核对'],
-  [page, /coverage\.seller_only_count/, '要把「还没导入」的数量摆出来'],
-  [page, /coverage\.sku_mismatch_count/, '要把「SKU 不一致」的数量摆出来'],
-  [remoteApi, /\/api\/products\/seller-coverage/, '核对接口要指向真实路径'],
-  [backend, /@router\.get\("\/seller-coverage"\)/, '后端要有核对接口'],
-  [backend, /verdict, advice = 'seller_only'[\s\S]{0,400}verdict, advice = 'sku_mismatch'/, '两种原因要在后端分开判，不能混成一句'],
+  // --- 筛空之后要走「同步主档」，不是另开一套结果页 ---
+  // 用户要的是「跟搜索框里搜出来的一样」：同步只改数据，展示仍用原来那张表。
+  // 所以这里守两件事——同步这条链是通的，以及那个单独的结果卡片/TSIN 输入框
+  // 没有又长回来。
+  [page, /setSyncPlan\(await previewSellerSync\(\)\)/, '要有「同步卖家后台」的预览入口'],
+  [page, /await applySellerSync\(syncPlan\.token\)/, '确认同步必须带预览 token，防止过期计划被写库'],
+  [page, /syncPlan\.stats\.create_count/, '预览要摆出「将新增多少个」'],
+  [page, /syncPlan\.stats\.skip_count/, '预览要摆出「跳过了多少个」'],
+  [page, /syncPlan\.skipped\.map/, '跳过项要连原因一起列出来，不能只给个数字'],
+  [remoteApi, /\/api\/products\/seller-sync\/preview/, '预览接口要指向真实路径'],
+  [remoteApi, /\/api\/products\/seller-sync\/apply/, '写入接口要指向真实路径'],
+  [backend, /@router\.post\('\/seller-sync\/preview'\)/, '后端要有同步预览接口'],
+  [backend, /@router\.post\('\/seller-sync\/apply'\)/, '后端要有同步写入接口'],
+  [backend, /data\.token != plan\['token'\]/, 'apply 要校验 token，预览之后本地变了必须重来'],
+  [syncService, /def build_plan\(db, store_id: str, offers: List\[Dict\[str, Any\]\]\)/, '计划要由卖家资料和本地主档现算'],
+  [syncService, /if _ambiguous\(plid, rows, indexes\):/, '命中多条本地记录时不能动'],
+  [syncService, /if not payload\['product_name'\]:/, '没标题的卖家行不新建'],
 ];
 
 for (const [source, pattern, why] of checks) {
   assert.match(source, pattern, why);
+}
+
+// 用户明确否掉的东西：筛空时另开一套「核对卡片 + TSIN 输入框 + 独立明细」。
+// 这类回归不会报错，只会让人觉得「又变成另一个页面了」，所以直接禁掉。
+const forbidden = [
+  [page, /seller-coverage-empty/, '筛空时不要再渲染独立的核对卡片'],
+  [page, /id="coverage-tsin"/, '不要再单独放一个 TSIN 核对输入框'],
+  [page, /getSellerCoverage\(/, '页面不再自己拉核对结果，改走同步'],
+];
+for (const [source, pattern, why] of forbidden) {
+  assert.doesNotMatch(source, pattern, why);
 }
 
 // 突变自测：把关键行删掉，确认上面的正则真的会失败。
@@ -65,8 +85,9 @@ const mutants = [
   ['Rust 搜索', rust, /OR sku LIKE \?/, (s) => s.replace(' OR sku LIKE ?', '')],
   ['后端过滤', backend, /if custom_sku:\r?\n\s*products = \[product for product in products if is_custom_sku\(product\.sku\)\]/, (s) => s.replace(/if custom_sku:\r?\n\s*products = \[product for product in products if is_custom_sku\(product\.sku\)\]\r?\n/, '')],
   ['后端搜索', backend, /\| \(Product\.sku\.ilike\(like\)\)/, (s) => s.replace('            | (Product.sku.ilike(like))\n', '')],
-  ['筛空核对', page, /if \(!coverageSupported[^\n]+!customSkuOnly[^\n]+\) return;\s*\n\s*if \(coverageAsked\.current\.has\(coverageScope\)\) return;\s*\n\s*fetchCoverage\(\);/, (s) => s.replace(/\s*if \(coverageAsked\.current\.has\(coverageScope\)\) return;\s*\n\s*fetchCoverage\(\);/, '')],
-  ['两种原因分开判', backend, /verdict, advice = 'seller_only'[\s\S]{0,400}verdict, advice = 'sku_mismatch'/, (s) => s.replace(/verdict, advice = 'sku_mismatch'[^\n]*\n/, '')],
+  ['同步入口', page, /setSyncPlan\(await previewSellerSync\(\)\)/, (s) => s.replace('setSyncPlan(await previewSellerSync());', 'setSyncPlan(null);')],
+  ['token 校验', backend, /data\.token != plan\['token'\]/, (s) => s.replace("if not data.token or data.token != plan['token']:", 'if False:')],
+  ['身份撞车保护', syncService, /if _ambiguous\(plid, rows, indexes\):/, (s) => s.replace('        if _ambiguous(plid, rows, indexes):', '        if False:')],
 ];
 
 for (const [name, source, pattern, mutate] of mutants) {
@@ -75,4 +96,4 @@ for (const [name, source, pattern, mutate] of mutants) {
   assert.doesNotMatch(mutated, pattern, `突变自测失败：${name} 删掉后守卫仍然通过，说明它没在守这一行`);
 }
 
-console.log(`PASS 自建 SKU 筛选：界面开关、URL 参数、远程/桌面两套 API、Rust 与后端判据、搜索含 SKU、筛空后的原因核对（含 ${mutants.length} 条突变自测）`);
+console.log(`PASS 自建 SKU 筛选：界面开关、URL 参数、远程/桌面两套 API、Rust 与后端判据、搜索含 SKU、筛空后走同步主档且不再另开结果页（含 ${mutants.length} 条突变自测 + ${forbidden.length} 条禁用项）`);

@@ -87,7 +87,19 @@ DATA = {
     '/api/operations/alerts':ALERTS, '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', english_name='Travel storage bag with a deliberately long English product title', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
     '/api/automatic-pricing':{'configured':False,'rows':[PRICING]},
     '/api/buybox/page-open':{'queued':0,'skipped':0,'price_changed':False},
-    '/api/products/seller-assist/preview':{'fillable':1,'items':[dict(id=PRODUCT['id'],product_no=1,name=PRODUCT['product_name'],token='fixture-only',changes=[dict(field='product_name',label='标题',value=PRODUCT['product_name'])],differences=[],warnings=['请核对实际规格与商品身份'],manual=['重量'])]},
+    # 「同步卖家后台」的预览。原来这里是 seller-assist 的预览，页面改成走同步之后
+    # 那个接口不再被调用，弹窗就打不开——审计会卡在 wait_for 而不是「0 处问题」。
+    '/api/products/seller-sync/preview':dict(
+        stats=dict(seller_offer_count=2,seller_group_count=2,local_product_count=1,update_count=1,
+                   create_count=1,unchanged_count=0,skip_count=1,rename_count=1),
+        updates=[dict(plid='104036518',product_id=PRODUCT['id'],product_no=1,name=PRODUCT['product_name'],
+                      matched_by='plid',warnings=['请核对实际规格与商品身份'],
+                      changes=[dict(field='sku',label='SKU',value='W-S-12-04',current='9902357746192')])],
+        creates=[dict(plid='104410843',sku='W-S-12-02',tsin='104410843',product_name=PRODUCT['product_name'],
+                      product_image_url='',takealot_url='https://www.takealot.com/x/PLID104410843',
+                      actual_sale_price_zar=299)],
+        skipped=[dict(plid='96097290',skus=['9901','9902'],reason='本地 SKU 与卖家后台不一致，多规格无法自动对应，请人工核对')],
+        token='fixture-only',truncated=False),
 }
 PAGES = [('/', '运营工作台'),('/products','产品列表'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
 
@@ -109,7 +121,7 @@ def main():
             if url.path.startswith('/api/'):
                 if url.path in failing:
                     route.fulfill(status=500,json={'detail':'Fixture failure'});return
-                allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open', '/api/products/seller-assist/preview')
+                allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open', '/api/products/seller-sync/preview')
                 if route.request.method != 'GET' and not allowed_write:
                     unknown.append(route.request.method+' '+url.path);route.abort();return
                 if url.path in DATA:
@@ -156,10 +168,10 @@ def main():
                         if box['wrap']!='nowrap' or box['overflow']!='hidden': failures.append(f'{width}: English title is not single-line truncated {box}')
                         if box['right']>box['cellRight']+1: failures.append(f'{width}: English title spills out of the product column {box}')
                 if path=='/products' and (width,height) in ((1280,720),(390,480),(320,568)):
-                    page.get_by_role('button',name='核对本店资料',exact=True).click()
+                    page.get_by_role('button',name='同步卖家后台',exact=True).click()
                     preview=page.locator('.seller-assist-dialog');preview.wait_for()
                     if preview.locator('.seller-assist-body').evaluate('e=>e.scrollWidth>e.clientWidth+1'):failures.append(f'{width}: preview body overflows')
-                    if width<=480 and not preview.get_by_role('region',name='资料核对明细').evaluate('e=>e.scrollWidth>e.clientWidth'):failures.append(f'{width}: preview table lacks local scroll')
+                    if width<=480 and not preview.get_by_role('region',name='同步明细').evaluate('e=>e.scrollWidth>e.clientWidth'):failures.append(f'{width}: preview table lacks local scroll')
                     bounds=preview.bounding_box()
                     if bounds['x']<0 or bounds['y']<0 or bounds['x']+bounds['width']>width+1 or bounds['y']+bounds['height']>height+1:failures.append(f'{width}: seller preview outside viewport')
                     for control in preview.get_by_role('button').all():
@@ -312,7 +324,7 @@ def main():
                         b=control.bounding_box()
                         if b['x']<0 or b['y']<0 or b['x']+b['width']>width+1 or b['y']+b['height']>height+1:failures.append(f'{width}: market price action clipped')
                     if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: market price dialog causes page overflow')
-                    # 声明了 aria-modal 就得能用 Esc 关掉（和「核对本店资料」同一个口径）。
+                    # 声明了 aria-modal 就得能用 Esc 关掉（和「同步卖家后台」同一个口径）。
                     page.keyboard.press('Escape')
                     if mp.count():failures.append(f'{width}: market price Escape failed')
                 if path=='/auto-pricing' and (width,height) in ((1280,720),(390,680),(320,568)):
@@ -431,39 +443,26 @@ def main():
                 if args.screenshots: page.screenshot(path=str(Path(args.screenshots)/f'packing-read-error-{width}.png'))
         finally:
             failing.clear()
-        # Empty custom-SKU results must render the new coverage branch, not merely
-        # a normal populated list. All seller data remain local intercepted fixtures.
+        # 自建 SKU 现在是普通产品行。这里量的是「长 SKU 会不会把原表格撑破」，
+        # 以及那个被用户否掉的独立核对卡片有没有偷偷长回来。
         original_products = DATA['/api/products']
-        DATA['/api/products'] = []
-        DATA['/api/products/seller-coverage'] = dict(
-            seller_offer_count=1, seller_plid_count=1, local_product_count=1,
-            local_plid_count=1, matched_count=0, sku_mismatch_count=1,
-            sku_mismatch=[dict(product_id=PRODUCT['id'], product_no=1,
-                name=PRODUCT['product_name'], local_sku=['1234567890123'], seller_sku=['W-'+'X'*160])],
-            seller_only_count=1, seller_only=[dict(plid='123',skus=['W-'+'Y'*160],
-                title=PRODUCT['product_name'],status='Buyable')], local_only_count=0, truncated=False)
+        DATA['/api/products'] = [dict(PRODUCT, sku='W-' + 'S-12-02-' * 12, product_no=1)]
         try:
-            for width in (320,390,1280):
+            for width in (320, 390, 1280):
                 page.set_viewport_size({'width':width,'height':720})
                 page.goto(BASE+'/products?custom_sku=1')
-                card=page.locator('.seller-coverage-empty')
-                card.wait_for(timeout=8000)
-                card.get_by_role('status').wait_for(timeout=8000)
-                if 'SKU 和卖家后台不一致：1' not in card.inner_text():
-                    failures.append(f'{width}: custom SKU empty state has no coverage evidence')
-                if page.get_by_role('button',name='核对本店资料',exact=True).is_disabled():
-                    failures.append(f'{width}: empty custom SKU filter blocks mismatch preview')
-                for control in card.locator('input,button').all():
-                    box=control.bounding_box()
-                    if not box or box['x']<0 or box['x']+box['width']>width+1:
-                        failures.append(f'{width}: coverage control outside viewport {box}')
+                row=page.locator('.product-table tbody tr').first
+                row.wait_for(timeout=8000)
+                if 'W-S-12-02-' not in row.inner_text():
+                    failures.append(f'{width}: long custom SKU missing from the normal product table')
+                if page.locator('.seller-coverage-empty').count():
+                    failures.append(f'{width}: retired coverage card is back in the custom SKU empty state')
                 if page.evaluate('()=>document.documentElement.scrollWidth')>width+2:
-                    failures.append(f'{width}: custom SKU coverage long identifiers overflow')
+                    failures.append(f'{width}: long custom SKU overflows the page')
                 if args.screenshots:
-                    page.screenshot(path=str(Path(args.screenshots)/f'seller-coverage-{width}.png'))
+                    page.screenshot(path=str(Path(args.screenshots)/f'seller-custom-sku-row-{width}.png'))
         finally:
             DATA['/api/products'] = original_products
-            DATA.pop('/api/products/seller-coverage',None)
         browser.close()
     report=dict(checked=checked,failures=failures,page_errors=errors,undeclared_api=sorted(set(unknown)))
     print(json.dumps(report,ensure_ascii=False,indent=2))

@@ -156,15 +156,23 @@ ASSIST_FIELDS = {'sku': 'SKU', 'product_name': '英文标题', 'product_image_ur
                  'length_mm': '长度(mm)', 'width_mm': '宽度(mm)', 'height_mm': '高度(mm)', 'actual_weight_kg': '重量(kg)'}
 
 
-def offer_plan(product, offers):
+def plid_from_url(url):
+    match = re.search(r'PLID(\d+)', url or '', re.I)
+    return match.group(1) if match else ''
+
+
+def offer_plan(product, offers, plid=None):
     """Exact identity only; never infer seller identity from a title.
 
     归属一律靠 PLID 判定（比 SKU 可靠：SKU 会被运营改名）。SKU 只用来判断
     「本地记录的是哪几个规格」，以及决定要不要按卖家后台更正。
+
+    `plid` 由调用方传入时优先用它：链接为空但库里已经存了 PLID 的商品
+    （卖家后台导入的行就是这样）不能因为抠不到链接就判成「无匹配」。
     """
     skus = re.split(r'[\s,，;；]+', (product.sku or '').strip()) if product.sku else []
-    match = re.search(r'PLID(\d+)', product.takealot_url or '', re.I)
-    plid_rows = [r for r in offers if str(r.get('productline_id')) == match[1]] if match else []
+    plid = plid or plid_from_url(getattr(product, 'takealot_url', '')) or (getattr(product, 'plid', '') or '')
+    plid_rows = [r for r in offers if str(r.get('productline_id')) == str(plid)] if plid else []
     candidates = plid_rows
     if skus:
         exact = [r for r in offers if str(r.get('sku')) in skus]
