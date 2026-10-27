@@ -184,11 +184,12 @@ def test_cost_shipping_and_category_recalculate_without_total_override():
                     manual_domestic_forwarding_cny=1)
         db.add(p); db.commit(); _apply_calculated_fields(db,p); db.commit()
         old_cost = p.unit_product_cost_cny
+        assert p.international_shipping_per_unit_cny == 158
         result = update_product('cost', ProductUpdate(purchase_cost_cny=80, note='mixed'), db, 'default-store')
         assert result['unit_product_cost_cny'] == old_cost + 10
         assert result['manual_domestic_forwarding_cny'] == 1
         result = update_product('cost', ProductUpdate(shipping_method='海运普货'), db, 'default-store')
-        assert result['international_shipping_per_unit_cny'] != 158
+        assert result['international_shipping_per_unit_cny'] == 9.0
         result = update_product('cost', ProductUpdate(fee_category='Fixture Fee'), db, 'default-store')
         assert result['success_fee_zar'] == 100
         assert result['profit_zar'] == round(500-result['total_cost_zar'],2)
