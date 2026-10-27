@@ -91,15 +91,16 @@ def group_offers(offers: List[Dict[str, Any]]) -> Tuple[Dict[str, List[Dict[str,
 def _index(products: List[Product]) -> Tuple[Dict[str, List[Product]], Dict[str, List[Product]], Dict[str, List[Product]]]:
     """本地身份索引：PLID / TSIN / SKU 三份。
 
-    链接里抠得出 PLID 的按链接算，抠不出的用库里存的 plid 列——两者都不行才
-    退到 TSIN、SKU。只用来「找得到」，不用来「猜得到」：命中不唯一一律跳过。
+    链接和独立列都进入索引，以便发现两者冲突；TSIN、SKU 仅在没有冲突时
+    补全身份。命中不唯一或已有身份相矛盾，一律跳过。
     """
     by_plid: Dict[str, List[Product]] = {}
     by_tsin: Dict[str, List[Product]] = {}
     by_sku: Dict[str, List[Product]] = {}
     for product in products:
-        plid = plid_from_url(product.takealot_url) or (getattr(product, 'plid', '') or '').strip()
-        if plid:
+        anchors = {plid_from_url(product.takealot_url),
+                   (getattr(product, 'plid', '') or '').strip()} - {''}
+        for plid in anchors:
             by_plid.setdefault(plid, []).append(product)
         for token in _tokens(product.tsin):
             by_tsin.setdefault(token, []).append(product)
@@ -134,16 +135,24 @@ def _locate(plid: str, rows: List[Dict[str, Any]], indexes) -> Tuple[Optional[Pr
     return None, ''
 
 
-def _ambiguous(plid: str, rows: List[Dict[str, Any]], indexes) -> bool:
-    """PLID/TSIN/SKU 任何一层命中多个不同商品，都算身份不明，不能动。"""
+def _identity_hits(plid: str, rows: List[Dict[str, Any]], indexes) -> Dict[str, Product]:
     by_plid, by_tsin, by_sku = indexes
-    if len({product.id for product in by_plid.get(plid, [])}) > 1:
+    hits = list(by_plid.get(plid, []))
+    for field, index in (('tsin_id', by_tsin), ('sku', by_sku)):
+        for token in {str(row.get(field) or '').strip() for row in rows} - {''}:
+            hits.extend(index.get(token, []))
+    return {product.id: product for product in hits}
+
+
+def _ambiguous(plid: str, rows: List[Dict[str, Any]], indexes) -> bool:
+    """所有标识必须指向同一产品，已有 PLID 不允许被弱匹配改绑。"""
+    hits = _identity_hits(plid, rows, indexes)
+    if len(hits) > 1:
         return True
-    for token in sorted({str(row.get('tsin_id') or '').strip() for row in rows} - {''}):
-        if len({product.id for product in by_tsin.get(token, [])}) > 1:
-            return True
-    for token in sorted({str(row.get('sku') or '').strip() for row in rows} - {''}):
-        if len({product.id for product in by_sku.get(token, [])}) > 1:
+    for product in hits.values():
+        anchors = {plid_from_url(product.takealot_url),
+                   (getattr(product, 'plid', '') or '').strip()} - {''}
+        if anchors - {plid}:
             return True
     return False
 
@@ -194,7 +203,11 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
     creates: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     unchanged = 0
-    claimed: Dict[str, str] = {}
+    # 先检查整批归属，不能先放行第一条、只拒绝后来的冲突行。
+    claims: Dict[str, set] = {}
+    for candidate_plid, candidate_rows in groups.items():
+        for product_id in _identity_hits(candidate_plid, candidate_rows, indexes):
+            claims.setdefault(product_id, set()).add(candidate_plid)
 
     for plid, rows in groups.items():
         skus = sorted({str(row.get('sku') or '').strip() for row in rows} - {''})
@@ -217,11 +230,10 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
                 continue
             creates.append(payload)
             continue
-        if product.id in claimed:
+        if len(claims.get(product.id, set())) > 1:
             skipped.append({'plid': plid, 'skus': skus,
-                            'reason': '同一件本地商品被 PLID %s 和 %s 同时命中，先人工确认归属' % (claimed[product.id], plid)})
+                            'reason': '同一件本地商品被多个 PLID 同时命中，先人工确认归属'})
             continue
-        claimed[product.id] = plid
         plan = offer_plan(product, offers, plid=plid)
         changes = list(plan['changes'])
         # 身份补全：本地这条记录是靠 TSIN/SKU 找到的，说明它自己没有 PLID。
