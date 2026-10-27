@@ -14,7 +14,11 @@ from _audit_server import vite_server  # noqa: E402  （必须先插 sys.path）
 JNB_TODAY = (datetime.now(timezone.utc) + timedelta(hours=2)).date().isoformat()
 
 BASE = 'http://127.0.0.1:5173'  # 默认值；__main__ 会换成现挑的空闲端口（见 _audit_server.py）
-PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳包 / Travel storage bag with a long product title', chinese_product_name='收纳包', sku='TEST-001', selection_status='数据待补充', product_image_url=None, product_image_path=None, takealot_url='https://catalog.example.invalid/product/this-is-a-deliberately-long-product-link-for-layout-validation', recorded_at='2026-10-15', purchase_quantity=1, fee_category='Home', fee_category_confirmed=False, is_archived=False)
+PRODUCT = dict(id='fixture-product', product_no=1, product_name='多用途收纳包 / Travel storage bag with a long product title', chinese_product_name='收纳包', sku='TEST-001', selection_status='数据待补充', product_image_url=None, product_image_path=None, takealot_url='https://catalog.example.invalid/product/this-is-a-deliberately-long-product-link-for-layout-validation', recorded_at='2026-10-15', purchase_quantity=1, fee_category='Home', fee_category_confirmed=False, is_archived=False,
+               # 补货侧栏「采购货源」块的已存链接。必须是真实长度的 1688 地址：这个块
+               # 第一版就是因为一串不换行的长 URL 把 grid 列宽顶开，整张卡横向溢出到
+               # 侧栏外面。给空值只会渲染空态，那一半布局等于没量过。
+               purchase_url='https://detail.1688.com/offer/757518228893.html?spm=a360q.7751291.0.0.596129a8n4FSNJ&sk=common')
 # Optional numeric values used by the existing detail view; fixtures are never saved.
 for key in ['actual_sale_price_zar','purchase_cost_cny','purchase_shipping_cny','length_mm','width_mm','height_mm','actual_weight_kg','packaging_cost_per_unit_cny','inbound_listing_fee_cny','outbound_operation_fee_cny','last_mile_delivery_fee_cny','other_fee_cny','fulfillment_fee_zar','success_fee_rate','total_cost_zar','profit_zar','profit_margin']:
     PRODUCT[key] = 0
@@ -231,10 +235,62 @@ def main():
                         page.locator('.primary-nav').get_by_role('link',name='装箱单',exact=True).click()
                         page.get_by_role('heading',name='装箱单工作台',exact=True).wait_for()
                         if page.locator('.packing-selected-item').count()!=1:failures.append('packing selection lost on navigation')
-                if path=='/replenishment' and (width,height) in ((1280,720),(390,480)):
+                if path=='/replenishment' and (width,height) in ((1280,720),(768,700),(390,480),(320,568)):
                     page.get_by_role('button',name='设置',exact=True).first.click()
                     dialog=page.get_by_role('dialog',name='补货计划设置',exact=True)
                     dialog.wait_for()
+                    # 「采购货源」块（侧栏第一屏）。加它的时候只在 1366 一档看过截图，
+                    # 而它第一版就是因为一串不换行的长 1688 链接把 grid 列宽顶开、整张卡
+                    # 横向溢出到侧栏外。所以这里按元素边界逐个核，**不用 scrollWidth**
+                    # 判文字溢出（ellipsis 不改 scrollWidth，那种判法看不见被截断的文字，
+                    # 见 docs/engineering/code-review-standard.md §5）。
+                    card=dialog.locator('.sourcing-panel')
+                    # 侧栏先渲染标题、再异步取商品，采购货源块要等 getProduct 回来才出现。
+                    # 不等就会在「正在加载…」那一帧上量，报成「块不见了」。
+                    try:
+                        card.wait_for(timeout=10000)
+                    except Exception:
+                        pass
+                    if card.count()!=1:
+                        failures.append(f'{width}: sourcing panel missing')
+                    else:
+                        cb=card.bounding_box()
+                        if cb['x']<0 or cb['x']+cb['width']>width+1:
+                            failures.append(f'{width}: sourcing panel outside viewport {cb}')
+                        # 子控件不能越过卡片右边界——这就是第一版的真实故障形态
+                        for tag in ('.sourcing-saved a','.sourcing-keyword input','.sourcing-save input','.sourcing-save button'):
+                            node=dialog.locator(tag)
+                            if not node.count(): continue
+                            b=node.bounding_box()
+                            if b['x']<0 or b['x']+b['width']>width+1:
+                                failures.append(f'{width}: sourcing {tag} outside viewport {b}')
+                            elif b['x']+b['width']>cb['x']+cb['width']+1:
+                                failures.append(f'{width}: sourcing {tag} overflows card {b} vs {cb}')
+                        # 四个平台入口一个都不能少，且点击目标 ≥24px（WCAG 2.5.8）
+                        links=dialog.locator('.sourcing-platforms a')
+                        if links.count()!=4:
+                            failures.append(f'{width}: sourcing platform links {links.count()} != 4')
+                        for i in range(links.count()):
+                            b=links.nth(i).bounding_box()
+                            if b['height']<24:
+                                failures.append(f'{width}: sourcing platform link only {b["height"]:.0f}px tall')
+                            if b['x']<0 or b['x']+b['width']>width+1:
+                                failures.append(f'{width}: sourcing platform link outside viewport {b}')
+                        # 文字：读 computed style 确认换行方式，并核右边不越界；
+                        # 靠 ellipsis 收掉的窄条要单独报（那才是"看起来正常、其实读不到"）
+                        for tag in ('.sourcing-panel-head small','.sourcing-empty','.sourcing-hint'):
+                            node=dialog.locator(tag)
+                            if not node.count(): continue
+                            style=node.first.evaluate("e=>{const s=getComputedStyle(e);return {ws:s.whiteSpace,ox:s.overflowX,tr:s.textOverflow}}")
+                            b=node.first.bounding_box()
+                            if b['x']+b['width']>cb['x']+cb['width']+1:
+                                failures.append(f'{width}: sourcing text {tag} overflows card {b} vs {cb}')
+                            if style['ox']=='hidden' and style['tr']=='ellipsis' and b['width']<40:
+                                failures.append(f'{width}: sourcing text {tag} collapsed to {b["width"]:.0f}px')
+                        # 顺序：采购货源必须排在「计划参数与采购到货」之前
+                        plan=dialog.locator('details.card').first
+                        if plan.count() and plan.bounding_box()['y']<cb['y']:
+                            failures.append(f'{width}: sourcing panel must sit above plan details')
                     close=dialog.get_by_role('button',name='关闭',exact=True)
                     close.scroll_into_view_if_needed()
                     bounds=close.bounding_box()

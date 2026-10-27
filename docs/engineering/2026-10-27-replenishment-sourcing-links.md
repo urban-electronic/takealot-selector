@@ -73,10 +73,56 @@ if not set(update_data).issubset(metadata_fields):
   `.sourcing-panel` 的 grid 列宽是 `auto`，被这一串顶开，整张卡横向溢出到侧栏外——
   **是截图发现的，不是想出来的**。修法是 `grid-template-columns: minmax(0, 1fr)`
   + 子项 `min-width: 0`，并把重复的 URL 行去掉（下面的输入框已经显示同一个值）。
-  验收时用 `panel.scrollWidth === panel.clientWidth` 判有没有溢出。
 - 只用 `ui-tokens.css` 里的令牌（字号 ≥11px、控件高度 ≥24px、文字色都带实测对比度），
   `check-visual-consistency.cjs` 16 组约束全过。
 - `<a>` 套 `.btn` 会带下划线，`.sourcing-link` 补 `text-decoration: none` 与 `min-height`。
+
+## 补记：第一版验收本身是假绿（G3 / H4）
+
+上线后按 `code-review-standard.md` 自查，发现第一版的验收方式正好踩了标准里点名的两条：
+
+1. **只在一个宽度看过截图。** 面板 `width: min(880px, 100vw)`，1366 宽时是 880，
+   390 宽时布局完全换一套（标签换行、按钮折行）。G2 要求多尺寸全量，
+   而 `/replenishment` 的侧栏在 `test-responsive-layout.py` 里只量过「关闭按钮够不够得着」
+   和「Escape 能不能关」——**新加的块一行断言都没有**。改了 `src/` 却没有任何机器守卫
+   量过它，正是 H4 说的「fixture 没覆盖被测路径」。
+2. **用 `scrollWidth === clientWidth` 当溢出判据。** 标准 §5 写得很清楚：
+   `text-overflow: ellipsis` 不改 `scrollWidth`，这种判法看不见被截断的文字。
+   它只对「容器被顶宽」有效，对「文字被吃掉」完全瞎。
+
+### 补的守卫
+
+`scripts/test-responsive-layout.py` 的 `/replenishment` 侧栏段，宽度从 2 档扩到
+**1280 / 768 / 390 / 320 四档**，逐项核：
+
+- `.sourcing-panel` 存在，且左/右边界都在视口内；
+- 「打开采购链接」「搜索关键词」「采购链接」「保存」四个控件都不越过卡片右边界
+  （第一版的真实故障形态就是越界，不是 scrollWidth 变大）；
+- 四个平台入口一个不少，且每个点击目标高度 ≥24px（WCAG 2.5.8）；
+- 文字节点读 **computed style**（`white-space` / `overflow-x` / `text-overflow`）
+  并核右边界；被 ellipsis 收成窄条（<40px）的单独报——这才是「看着正常、其实读不到」；
+- 顺序：采购货源必须排在「计划参数与采购到货」之前（这是需求本身）。
+
+fixture 也补了 `purchase_url`（真实长度的 1688 地址）。原来 fixture 里没有这个字段，
+只会渲染空态，**已存链接那一半布局等于从没被量过**。
+
+另外补了一处等待：侧栏先渲染标题、再异步取商品，采购货源块要等 `getProduct` 回来才出现。
+第一版断言直接量，量到的是「正在加载…」那一帧，报成「块不见了」（C1：等待要有上限，
+但不能没有等待）。
+
+### 反向探针（如实记录）
+
+| 探针 | 结果 |
+| --- | --- |
+| 把输入框 `min-width` 从 0 改成 340px（模拟"输入框太窄"的修法） | **红**：`320: sourcing .sourcing-keyword input outside viewport {'x':33,'width':340}` |
+| 把采购货源挪到计划参数之后 | **红**：四档全部报 `sourcing panel must sit above plan details` |
+| 撤掉 `.sourcing-panel` 的 `minmax(0,1fr)` + `min-width:0` | **绿**（没有转红） |
+
+第三条要如实说：**这处修正是纵深防御，不是当前唯一的承重点。** 因为第一版溢出是被
+那串 `white-space: nowrap` 的 URL 文字顶开的，后来按 UI 需要把那行删掉了，
+所以现在撤掉 `minmax` 也不会复现溢出。留着它是因为「将来任何不可断行的内容
+（长域名、长 SKU、长文件名）都会重新触发同一形态」，但**不能宣称这条守卫钉住了它**。
+真正承重的是上面两条边界断言。
 
 ## 守卫清单
 
@@ -84,7 +130,7 @@ if not set(update_data).issubset(metadata_fields):
 | --- | --- |
 | `scripts/test-sourcing-links.cjs` | 平台清单（删一个就红）、关键词来源优先级、多分支不给关键词、空白折叠、空关键词不生成链接、`javascript:`/`data:`/裸域名一律拒、平台名识别、四个平台域名不串台 |
 | `backend/tests/test_metadata_updates.py` | 只改元数据字段不得动人工成本与重算结果 |
-| 截图验收（临时脚本，未入库） | 卡片不横向溢出；已存链接 / 只有变体标签 两种状态的实际排版 |
+| `scripts/test-responsive-layout.py`（`/replenishment` 段） | 侧栏采购货源块在 1280/768/390/320 四档都不越界、四个入口都在且 ≥24px、文字没被 ellipsis 吃掉、顺序在计划参数之前 |
 
 反向探针各做过一次：去掉 `encodeURIComponent` → "关键词没有编码"转红；
 去掉 protocol 校验 → "必须拒绝 javascript:" 转红。
