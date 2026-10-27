@@ -562,7 +562,7 @@ async def seller_coverage(
         for product in mine:
             seller_skus = set(_seller_skus(relevant_rows(product, rows)))
             local_skus = set(sku_tokens(product.sku))
-            if local_skus == seller_skus:
+            if seller_skus and local_skus == seller_skus:
                 matched += 1
             else:
                 mismatch.append({
@@ -611,7 +611,7 @@ async def seller_coverage(
         local_skus = sorted({sku for product in mine for sku in sku_tokens(product.sku)})
         if rows and not mine:
             verdict, advice = 'seller_only', '卖家后台有，按 TSIN/PLID 未匹配到本地记录；核对后再导入，避免重复。'
-        elif rows and mine and not set(seller_skus).issubset(set(local_skus)):
+        elif rows and mine and (not seller_skus or not set(seller_skus).issubset(set(local_skus))):
             verdict, advice = 'sku_mismatch', '本地有这条商品，但 SKU 还是旧值——预览「核对本店资料」；仅身份对应明确时更正，多规格须人工核对。'
         elif rows and mine:
             verdict, advice = 'matched', '当前核对的 SKU 已在本地记录中；TSIN 是否可搜索取决于本地是否已保存该字段。'

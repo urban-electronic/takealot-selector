@@ -250,3 +250,12 @@ def test_exact_tsin_probe_does_not_borrow_sibling_sku(db, offers):
     item=probe(call(db,tsin='700006'),'700006')
     assert item['verdict']=='sku_mismatch'
     assert item['local']['skus']==['WRONG']
+
+
+def test_empty_seller_sku_is_not_evidence_of_matching_identity(db, offers):
+    offers.append(offer('700008','800008',''))
+    db.add(Product(id='empty-sku',store_id=STORE,tsin='700008',sku='',takealot_url='https://www.takealot.com/x/PLID800008'))
+    db.commit()
+    result=call(db,tsin='700008')
+    assert probe(result,'700008')['verdict'] != 'matched'
+    assert any(x['product_id']=='empty-sku' for x in result['sku_mismatch'])
