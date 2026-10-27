@@ -624,13 +624,13 @@ export default function ProductList() {
           if (p.id !== id) return p;
           return {
             ...p,
-            sku: result.sku ?? p.sku,
-            fee_category: result.fee_category ?? p.fee_category,
+            sku: result.sku || p.sku,
+            fee_category: result.fee_category || p.fee_category,
             fee_category_confirmed: result.fee_category_confirmed ?? p.fee_category_confirmed,
-            product_name: result.product_name ?? p.product_name,
-            chinese_product_name: result.chinese_product_name ?? p.chinese_product_name,
+            product_name: result.product_name || p.product_name,
+            chinese_product_name: result.chinese_product_name || p.chinese_product_name,
             actual_sale_price_zar: result.actual_sale_price_zar ?? p.actual_sale_price_zar,
-            product_image_url: result.product_image_url ?? p.product_image_url,
+            product_image_url: result.product_image_url || p.product_image_url,
             profit_margin: result.profit_margin ?? p.profit_margin,
             profit_zar: result.profit_zar ?? p.profit_zar,
             total_cost_zar: result.total_cost_zar ?? p.total_cost_zar,
@@ -1522,8 +1522,12 @@ export default function ProductList() {
                                   if (next.has(sku)) next.delete(sku); else next.add(sku);
                                   return next;
                                 })} />
-                                <span className="branch-image">
-                                  {p.product_image_url ? <ProductImage src={api.getImageUrl(p.product_image_url)} referrerPolicy="no-referrer" /> : <i>待补图</i>}
+                                <span className="branch-image" title={p.product_image_url || p.product_image_path || '无图片URL'}>
+                                  {p.product_image_url || p.product_image_path ? (
+                                    <ProductImage src={api.getImageUrl(p.product_image_url || p.product_image_path || '')} referrerPolicy="no-referrer" />
+                                  ) : (
+                                    <i>待补图</i>
+                                  )}
                                 </span>
                                 <span className={`branch-role ${index === 0 ? 'primary' : ''}`}>{index === 0 ? '主' : variantKind(labels[index])}</span>
                                 <code>{sku}</code>
