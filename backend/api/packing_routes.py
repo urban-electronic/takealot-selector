@@ -625,6 +625,11 @@ def _replace_cartons(db: Session, shipment: Shipment, store_id: str, cartons, it
     _write_cartons(db, shipment, store_id, cartons, items)
 
 
+def _packing_image_exists(filename: str) -> bool:
+    """A stored filename alone does not prove the image is still on disk."""
+    return bool(filename and Path(filename).name == filename and (px.IMAGE_DIR / filename).is_file())
+
+
 def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str) -> None:
     """导出前补齐选品库中的重量和本地图片，不让远程图片只停留在页面预览。"""
     source = _catalog_product_for_sku(db, product.sku, store_id)
@@ -633,7 +638,7 @@ def _hydrate_export_product(db: Session, product: PackingProduct, store_id: str)
     if source.actual_weight_kg:
         product.weight = str(source.actual_weight_kg)
     image_url = _catalog_images_by_sku([source]).get(product.sku, '')
-    if not product.image_file and image_url:
+    if not _packing_image_exists(product.image_file) and image_url:
         try:
             product.image_file = _fetch_takealot_image(image_url)
         except Exception:
@@ -705,20 +710,21 @@ def import_from_products(data: ImportFromProductsIn, db: Session = Depends(get_d
 
 @router.post('/sync-images-from-products')
 def sync_images_from_products(data: SyncImagesIn, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    """把装箱单库中"待补图"（image_file 为空）的产品，按 SKU 去选品库 products
+    """把装箱单库中待补图（文件名为空或文件已丢失）的产品，按 SKU 去选品库 products
     匹配 product_image_url 并抓取转存为 SHA256 图片。
 
-    - 仅处理 image_file 为空的产品，不覆盖用户手动上传的图
+    - 保留磁盘上仍存在的图片，包括用户手动上传的图
     - 按 SKU 精确匹配（str 直接比较，与导入逻辑一致）
     - 图片抓取失败不阻断，记入 failed 返回
     """
     limit = max(0, int(getattr(data, 'limit', 100) or 100))
     pending = (
         db.query(PackingProduct)
-        .filter(PackingProduct.store_id == store_id, PackingProduct.image_file == '')
+        .filter(PackingProduct.store_id == store_id)
         .order_by(PackingProduct.sku)
         .all()
     )
+    pending = [p for p in pending if not _packing_image_exists(p.image_file)]
     if limit > 0:
         pending = pending[:limit]
     source_images = _catalog_images_by_sku(db.query(Product).filter(Product.store_id == store_id, Product.is_archived == False).all())
