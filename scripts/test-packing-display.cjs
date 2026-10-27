@@ -101,9 +101,9 @@ function compile(target, mocks = {}) {
   m.require = n => n in mocks ? mocks[n] : (localModule(n, target) || orig(n));
   let source = fs.readFileSync(target, 'utf8');
   if (target === file && process.env.PACKING_REFRESH_REVERSE) {
-    const before = 'setError(`加载装箱单库失败：${reasonOf(e)}`);';
+    const before = 'setError(READ_ERROR + reasonOf(e));';
     assert.ok(source.includes(before), 'reverse probe target must exist');
-    source = source.replace(before, 'fail(`加载装箱单库失败：${reasonOf(e)}`);');
+    source = source.replace(before, 'fail(READ_ERROR + reasonOf(e));');
   }
   m._compile(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } }).outputText, target);
   return m.exports;
@@ -357,7 +357,15 @@ const root = createRoot(host);
   await act(async () => { syncImages.click(); await Promise.resolve(); await Promise.resolve(); });
   check(!!host.querySelector('.alert-success'), 'successful mutation feedback survives a separate list refresh failure');
   check(host.querySelector('.alert-error')?.textContent.includes('列表读取失败'), 'list refresh failure is not erased by the successful action');
+  // 读取失败这条不走 notice()/fail()，所以恢复时也没人替它收尾：原来它会一直挂在
+  // 已经恢复的表格上方，用户以为列表还是旧的（PACK-READ-ERR-01）。同时，表格空着的时候
+  // 用户没有任何入口再读一次——重新读取只在窗口重新获得焦点时才发生。
+  const retry = [...host.querySelectorAll('.alert-error button')].find(b => b.textContent === '重新读取');
+  check(!!retry, 'the read failure offers its own retry instead of asking for a page refresh');
   packingReadFails = false;
+  await act(async () => { retry.click(); await Promise.resolve(); await Promise.resolve(); });
+  check(!host.querySelector('.alert-error'), 'a successful re-read clears the stale read failure');
+  check(!!host.querySelector('.alert-success'), 'the confirmed mutation result is not erased by the re-read');
 
   check(writes.length === 0, 'rendering and reloading never writes to the backend');
   await act(async () => root.unmount());
@@ -394,8 +402,10 @@ const root = createRoot(host);
   const packingSource = fs.readFileSync(file, 'utf8');
   check(packingSource.includes('const notice = ') && packingSource.includes('const fail = '),
     '装箱页必须提供 notice()/fail()：一个动作只留一条横幅');
-  const bannerWrites = packingSource.match(/(?:setMsg|setError)\((?!'')/g) || [];
-  check(bannerWrites.length === 3 && packingSource.includes('setError(`加载装箱单库失败：${reasonOf(e)}`)'),
+  // 函数式写入（setError(prev => …)）是「按前缀撤掉自己的那条」，不是新增一条横幅，
+  // 所以不计数；要数的是「谁可以直接写一条非空横幅」。
+  const bannerWrites = packingSource.match(/(?:setMsg|setError)\((?!'')(?!prev =>)/g) || [];
+  check(bannerWrites.length === 3 && packingSource.includes('setError(READ_ERROR + reasonOf(e))'),
     `只允许 notice()/fail() 和独立列表读取错误写横幅，实际 ${bannerWrites.length} 处`);
   // 「部分勾选行被跳过」是提醒、不是失败：原来写进 error，紧接着导出开始时的
   // setError('') 在同一个同步流程里就把它抹掉，用户从来没看见过这句。

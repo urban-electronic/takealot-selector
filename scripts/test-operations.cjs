@@ -6,10 +6,11 @@ const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'takealot-operations-'));
 try {
-  execFileSync(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), ...['pricing', 'replenish', 'recommend', 'keywords'].map(n => path.join(root, `src/operations/${n}.ts`)), '--outDir', tmp, '--target', 'ES2020', '--module', 'commonjs', '--skipLibCheck']);
+  execFileSync(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), ...['pricing', 'replenish', 'recommend', 'keywords', 'replenishmentSummary'].map(n => path.join(root, `src/operations/${n}.ts`)), '--outDir', tmp, '--target', 'ES2020', '--module', 'commonjs', '--skipLibCheck']);
   const { evaluatePricing } = require(path.join(tmp, 'pricing.js'));
   const { computeReplenish } = require(path.join(tmp, 'replenish.js'));
   const { buildSuggestions } = require(path.join(tmp, 'recommend.js'));
+  const { summarizeAlerts, describeCaveats } = require(path.join(tmp, 'replenishmentSummary.js'));
   const now = new Date('2026-10-13T12:00:00Z');
   const offer = (price, offerType = 'fastest', status = 'in_stock') => ({ seller: 'competitor', price, offerType, status, fetchedAt: now });
   const input = { currentPrice: 273, minPrice: 113, maxPrice: 400, competitorOffers: [offer(274), offer(263, 'best_price')], rule: { strategy: 'takealot_buybox', leadAmount: 1, excludedSellers: [], minPriceChange: 1, cooldownMinutes: 10 }, state: { stock: 5, lastPricedAt: null, todayChanges: 0, maxDailyChanges: 5, offersMaxAgeMs: 1800000, now, holdingBuybox: false, buyboxPrice: 263 } };
@@ -45,5 +46,21 @@ try {
   assert.equal(buildSuggestions(source, '', [candidate, candidate]).accepted.length, 1, '候选链接去重');
   assert.equal(buildSuggestions(source, '', [{ ...candidate, price: 99 }]).accepted.length, 0, '拒绝低于价格门槛的候选');
   assert.equal(buildSuggestions(source, '', [{ ...candidate, title: 'Anker Power Bank' }]).accepted.length, 0, '同品牌不同品类不能误推荐');
-  console.log('22 operations regression assertions passed');
+  // 工作台「补货提醒」的汇总口径（ALERTS-STALE-01）。后端按「产品 × 运输方式」逐行返回，
+  // 所以产品数必须按 product_id 去重；stale/overdue 也一样，否则一个产品两条行会被数成两个。
+  const alerts = [
+    { product_id: 'a', mode: 'air', quantity: 24, stale: false, overdue: false },
+    { product_id: 'a', mode: 'sea', quantity: 180, stale: true, overdue: true },
+    { product_id: 'b', mode: 'sea', quantity: 60, stale: true, overdue: false },
+  ];
+  const alertsSummary = summarizeAlerts(alerts);
+  assert.equal(alertsSummary.products, 2, '补货提醒的产品数按 product_id 去重，不数行');
+  assert.equal(alertsSummary.air, 24);
+  assert.equal(alertsSummary.sea, 240);
+  assert.equal(alertsSummary.staleProducts, 2, '同一个产品空运+海运都带 stale 只算一个产品');
+  assert.equal(alertsSummary.overdueProducts, 1);
+  assert.equal(describeCaveats(alertsSummary), '（2 个产品库存待更新、1 个产品到货延期）');
+  assert.equal(describeCaveats(summarizeAlerts([{ product_id: 'a', mode: 'sea', quantity: 1 }])), '', '没有标记时不加括号');
+  assert.equal(summarizeAlerts([{ product_id: 'a', mode: 'sea', quantity: null }]).sea, 0, '缺数量按 0 兜底，不能出现 NaN');
+  console.log('31 operations regression assertions passed');
 } finally { fs.rmSync(tmp, { recursive: true, force: true }); }

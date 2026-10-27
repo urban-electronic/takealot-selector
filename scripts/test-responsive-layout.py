@@ -34,6 +34,15 @@ PRODUCT['market_prices'] = json.dumps({
 STORE = dict(id='default-store', name='代理CK店铺', platform='Takealot', status='active', owner_name='', sync_method='manual', sync_interval_minutes=60, external_store_ref='', allow_negative_inventory_shipments=False, last_synced_at=None)
 PROCUREMENT = dict(id='fixture-record', product_id=PRODUCT['id'], product_no='1', product_name=PRODUCT['product_name'], recorded_at='2026-10-15', quantity=2, unit_price_cny=10, total_price_cny=20, status='in_transit', notes='', shipping_cost_cny=0)
 PACK = dict(sku='TEST-001', name='收纳包', name_zh='收纳包', name_en='Travel storage bag', image_file='', default_count=1, material='织物', electric='否', magnetic='否', unit='个', weight='0.2', brand='', battery='')
+# 工作台顶部的「补货提醒」面板只在这一条接口有数据时才渲染（空数组直接 return null），
+# 而 fixture 一直给的是 []——于是这个面板在 99 个组合里从来没出现过，审计照样报
+# 「0 处问题」。后端按「产品 × 运输方式」逐行返回，这里照这个形状给：一个产品两条
+# （空运 + 海运）、另一个产品一条，顺带带上 stale / overdue 两个数据质量标记。
+ALERTS = [
+    dict(product_id=PRODUCT['id'], name='收纳包', mode='air', quantity=24, stale=False, pre_air_shortage=40, overdue=False),
+    dict(product_id=PRODUCT['id'], name='收纳包', mode='sea', quantity=180, stale=True, pre_air_shortage=40, overdue=True),
+    dict(product_id='fixture-second', name='折叠收纳箱', mode='sea', quantity=60, stale=False, pre_air_shortage=0, overdue=False),
+]
 RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last_result='未启动',
             max_daily_changes=10, today_changes=4, change_day=JNB_TODAY,
             # 决策卡片和「今日改价」都只从 rule.plan 渲染。没有 plan 时这一整块不出现，
@@ -71,7 +80,7 @@ DATA = {
     # 设置页会读本店卖家名（调价判断 Buybox 持位的依据），漏声明就会 404 后静默降级。
     '/api/integrations/takealot-seller/identity':{'name':'','source':'','candidates':[]},
     '/api/packing/products':[PACK], '/api/packing/sync-from-products':{'ok':True,'total_products':1,'skipped_no_sku':0,'duplicate_sku':0},
-    '/api/operations/alerts':[], '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', english_name='Travel storage bag with a deliberately long English product title', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
+    '/api/operations/alerts':ALERTS, '/api/operations/overview':{'rows':[dict(id=PRODUCT['id'], name='收纳包', english_name='Travel storage bag with a deliberately long English product title', sku='TEST-001', plan={'level':'healthy','velocity':1,'stock':10,'schedule':[]})]}, '/api/operations/'+PRODUCT['id']:{'profile':None,'purchases':[],'plan':None},
     '/api/automatic-pricing':{'configured':False,'rows':[PRICING]},
     '/api/buybox/page-open':{'queued':0,'skipped':0,'price_changed':False},
     '/api/products/seller-assist/preview':{'fillable':1,'items':[dict(id=PRODUCT['id'],product_no=1,name=PRODUCT['product_name'],token='fixture-only',changes=[dict(field='product_name',label='标题',value=PRODUCT['product_name'])],differences=[],warnings=['请核对实际规格与商品身份'],manual=['重量'])]},
@@ -155,6 +164,23 @@ def main():
                     if args.screenshots: page.screenshot(path=str(Path(args.screenshots)/f'seller-preview-{width}.png'))
                     page.keyboard.press('Escape')
                     if preview.count():failures.append('seller preview Escape failed')
+                if path=='/':
+                    # 补货提醒面板：fixture 给空数组时它整块 return null，99 个组合里
+                    # 从没被渲染过。这里点名要求它真的在页面上，并把三档计数核对一遍
+                    # （空 fixture 或者算错档位都会红，而不是「少一个检查点」）。
+                    panel=page.get_by_role('region',name='补货提醒')
+                    if panel.count()!=1: failures.append(f'{width}: dashboard replenishment panel missing')
+                    else:
+                        text=panel.inner_text()
+                        # 2 个产品（按 product_id 去重，不是 3 行）、空运 24、海运 180+60。
+                        # 后两条是数据质量标记：补货计划页每行都标，汇总原来一个字都不提。
+                        for fragment in ('2 个产品待补货','空运缺口 24 件','海运缺口 240 件','1 个产品库存待更新','1 个产品到货延期'):
+                            if fragment not in text: failures.append(f'{width}: replenishment summary lost {fragment!r}: {text!r}')
+                        pb=panel.bounding_box()
+                        if pb['x']<0 or pb['x']+pb['width']>width+1: failures.append(f'{width}: replenishment panel clipped {pb}')
+                        link=panel.get_by_role('link',name='查看补货计划',exact=False)
+                        lb=link.bounding_box()
+                        if not lb or lb['x']<0 or lb['x']+lb['width']>width+1: failures.append(f'{width}: replenishment link clipped {lb}')
                 if path=='/' and width in (1440,1024,390):
                     page.get_by_role('button',name='管理工具',exact=True).click()
                     menu=page.locator('.management-menu-panel').bounding_box()
@@ -317,6 +343,36 @@ def main():
                 if '当前值' not in select.locator('option:checked').inner_text():
                     failures.append(f'{width}: stored fee category not labelled as current value')
                 if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: fee category edit select causes page overflow')
+        finally:
+            failing.clear()
+        # ---- 装箱单库读取失败时的降级界面 -------------------------------------
+        # 正常 fixture 永远读得到装箱单库，所以「读失败」这条分支在任何宽度下都没被
+        # 渲染过。而它恰恰是表格空着时屏幕上唯一的解释：原来既没有重试入口（重新读取
+        # 只在窗口重新获得焦点时才发生），红条也不会在恢复后消失（PACK-READ-ERR-01）。
+        # 这里只量这一条：横幅可见、在视口内、重试按钮点得到、不撑破页面。
+        failing.add('/api/packing/products')
+        try:
+            for width,height in ((390,680),(320,568)):
+                page.set_viewport_size({'width':width,'height':height})
+                path='/packing'
+                print(f'Checking {width} {path} (packing list failing)',flush=True)
+                page.goto(BASE+path)
+                try: page.get_by_role('heading',name='装箱单工作台',exact=True).first.wait_for(timeout=8000)
+                except Exception: failures.append(f'{width} {path}: missing heading (packing read failing)');continue
+                page.locator('.loading').wait_for(state='hidden')
+                alert=page.get_by_role('alert')
+                if alert.count()!=1: failures.append(f'{width}: packing read failure shows {alert.count()} alerts');continue
+                if not alert.is_visible(): failures.append(f'{width}: packing read failure alert hidden')
+                text=alert.inner_text()
+                if '加载装箱单库失败' not in text: failures.append(f'{width}: packing read failure text lost the point: {text!r}')
+                box=alert.bounding_box()
+                if box['x']<0 or box['x']+box['width']>width+1: failures.append(f'{width}: packing read alert clipped {box}')
+                retry=alert.get_by_role('button',name='重新读取')
+                if retry.count()!=1: failures.append(f'{width}: packing read failure has no retry');continue
+                b=retry.bounding_box()
+                if not b or b['x']<0 or b['x']+b['width']>width+1 or b['y']<0: failures.append(f'{width}: packing retry unreachable {b}')
+                if page.evaluate('()=>document.documentElement.scrollWidth')>width+2: failures.append(f'{width}: packing read alert causes page overflow')
+                if args.screenshots: page.screenshot(path=str(Path(args.screenshots)/f'packing-read-error-{width}.png'))
         finally:
             failing.clear()
         browser.close()

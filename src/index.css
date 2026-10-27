@@ -2491,6 +2491,8 @@ table tbody tr:hover { background: #f8fafc; }
 
 .replenishment-summary { margin-bottom: 16px; padding: 16px 20px; }
 .replenishment-summary .dashboard-panel-title { margin-bottom: 0; gap: 12px; flex-wrap: wrap; }
+/* 数据质量提示跟着这句汇总走，不能挤成新的一行把按钮顶下去：窄屏允许换行。 */
+.replenishment-summary .replenishment-caveat { color: var(--warning-strong); white-space: normal; overflow-wrap: anywhere; }
 .pricing-table .collection-status-cell { min-width: 170px; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
 .pricing-table .collection-status-cell small { max-width: 240px; white-space: normal; line-height: 1.5; }
 .browser-collector-panel { padding: 16px 20px; margin-bottom: 16px; }

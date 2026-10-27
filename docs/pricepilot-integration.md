@@ -2057,3 +2057,45 @@ WorkBuddy；基线 `8f3a1df552`。
 - 未做：`variant_unmatched` 的真实 DOM 判定（本地出口被 Cloudflare 挡）；调价参数语义（禁止区）；
   版式审计的 `/api/operations/alerts` 恒给 `[]`，工作台「补货提醒」面板在 99 个组合里从未渲染过
   （试过填入真实行、面板能正常出现且 0 处越界，但本轮 3 处预算已满，留待下轮）。
+
+### PACK-READ-ERR-01 / AUDIT-ALERTS-01 / ALERTS-STALE-01（2026-10-27，自检轮）
+
+- 优先级 P2；开工时远端 main `372eafc15d`、后端 build `372eafc15ddb`，两者一致（无部署漂移）；
+  全量 selfcheck 38/38、无跳过（194.6s）。开工时工作树里还有并行 agent 未提交的
+  PACK-BANNER-EXCLUSIVE-01（装箱动作反馈互斥 + 保存/删除成功提示），内容与远端一致，
+  先 `git add -u` 提交对齐再叠加本轮改动（未改写它的任何判据）。
+- 复现（①）：`Packing.tsx` 的「加载装箱单库失败」是刻意绕开 `notice()`/`fail()` 直接写
+  `error` 的（写成功后读列表失败，两条要同时看得见）。但绕开那对 helper 的代价是
+  **恢复时也没人替它收尾**：`loadProducts()` 读成功后不清 `error`，那条红条会一直挂在
+  已经恢复的表格上方；而读失败时表格是空的，重新读取又只在窗口重新获得焦点时才发生，
+  用户没有任何入口再试一次。
+- 改动（①）：给这条提示一个固定前缀 `READ_ERROR`，读成功后按前缀撤掉（函数式写入，
+  只清自己那条，不抹掉刚写下的动作结果）；横幅上加「重新读取」按钮。
+  源码守卫从「只放行 2 处 helper」改成「放行 2 处 helper + 这一条」，函数式写入不计入
+  横幅条数（它是撤销，不是新增一条）。
+- 复现（②）：版式审计的 `/api/operations/alerts` 一直给 `[]`，而「补货提醒」面板
+  `rows.length===0` 时直接 `return null`——这个面板在 99 个组合里从来没渲染过，
+  审计照样报「0 处问题」。上一轮试过填数据但没进代码。
+- 改动（②）：fixture 按后端形状给 3 行（同一产品空运+海运、另一产品海运，带 stale/overdue），
+  审计在每一档点名要求面板存在、三档计数正确、数据质量提示在、面板与链接不越界。
+- 复现（③）：同一批数字，补货计划页每行标「库存待更新」「到货延期」，工作台汇总一个字都不提
+  ——读起来像刚盘过，实际是过期数据算的。
+- 改动（③）：汇总口径抽到 `src/operations/replenishmentSummary.ts`（纯函数），产品数、
+  stale、overdue 全部按 `product_id` 去重（一个产品可能同时有空运和海运行），
+  缺口按 0 兜底；`describeCaveats()` 只在有标记时补「（2 个产品库存待更新、1 个产品到货延期）」。
+- 验证：`test-packing-display.cjs` 73→82 条断言（读失败可见 → 有重试入口 → 恢复后红条消失 →
+  动作结果仍在）；`test-operations.cjs` 22→31 条（去重/兜底/无标记不加括号）；
+  版式审计 99 组合 + 3 组降级（新增装箱单读失败 390/320）0 失败、0 未声明接口。
+  四条反向探针：去掉 `setError(prev => …)` → 「a successful re-read clears the stale read failure」转红；
+  去掉「重新读取」按钮 → 审计 390/320 报 `packing read failure has no retry`；
+  alerts fixture 改回 `[]` → 9 档全报 `dashboard replenishment panel missing`；
+  去掉 caveats 渲染 → 9 档全报 `replenishment summary lost '1 个产品库存待更新'`。均已还原。
+- 复测：tsc 通过；全量 selfcheck 38/38（198.3s，pytest 51.6s）。未动后端，未跑单独 pytest。
+- 未做：`variant_unmatched` 的真实 DOM（本地出口被 Cloudflare 挡）；调价参数语义（禁止区）；
+  `getOperationsAlerts()` 失败时面板保留上一轮的计数只加一句红字（要不要清空属显示取舍）。
+- 顺带补记（并行提交原 docs 零记录）：①`sync-images-from-products` 与导出前补图不再只看
+  `image_file` 是否为空，而是看文件是否真的还在磁盘上（`_packing_image_exists()`）——
+  历史行指向已删除的文件时，原来既不会补图也不会报错，导出的装箱单缺图却显示「已有图」；
+  ②`/api/products/scrape-takealot` 的 75 秒预算改成整条链路共用一个 deadline，卖家接口另给
+  20 秒上限；超时不再丢弃已读到的字段，而是保留 `partial_result` 并把缺哪几项写进 warnings。
+

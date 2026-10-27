@@ -59,7 +59,7 @@ const fail = (e: unknown) => { setError(e instanceof Error ? e.message : String(
 | --- | --- |
 | `Settings.tsx` | 6 个动作全部走 `notice()` / `fail()`（守卫逐个函数体检查） |
 | `Stores.tsx` | `save` / `toggleStatus` 走同一对；`load()` 保留独立报错 |
-| `Packing.tsx` | 10 个动作全部走 `notice()` / `fail()`（BANNER-EXCLUSIVE-02）；源码守卫只放行 2 处 helper 写入 |
+| `Packing.tsx` | 10 个动作全部走 `notice()` / `fail()`（BANNER-EXCLUSIVE-02）；源码守卫放行 3 处：两个 helper + 「读列表失败」这一条（PACK-READ-ERR-01） |
 | `Inventory.tsx` | 调整 / 撤回 / 入仓导出走同一对；`load()` 的分区降级是唯一例外 |
 | `Procurement.tsx` | 同步成功与同步失败互斥（`syncMsg` / `error`） |
 | `Dashboard.tsx` | 核对与按卖家表修正都会在动作开始时清两条，无需改动 |
@@ -87,6 +87,34 @@ const fail = (e: unknown) => { setError(e instanceof Error ? e.message : String(
 文案必须分档：当前店铺「会继续留在顶部下拉里并标注已暂停，切换前所有请求仍按它发出」，
 其他店铺「不再出现在切换中」。
 
+## 6. 不经过 helper 的横幅，要自己收尾（PACK-READ-ERR-01）
+
+「读列表失败」故意不走 `notice()` / `fail()`：写成功之后读列表失败是真的两件事，
+两条要同时看得见（`PACK-BANNER-EXCLUSIVE-01`）。但正因为不走那对 helper，
+**读取恢复时也没有人替它收尾**——红条会一直挂在已经恢复的表格上方，
+用户以为列表还是旧的。
+
+规则：凡是不经 `notice()` / `fail()` 的横幅，必须自己带「什么时候撤掉」。
+装箱页的做法是给这条提示一个固定前缀 `READ_ERROR`，`loadProducts()` 读成功后
+用函数式写入按前缀撤掉（`setError(prev => prev.startsWith(READ_ERROR) ? '' : prev)`），
+所以它只会清掉自己那条，不会把刚写下的动作结果一起抹掉。
+
+同时补一个「重新读取」按钮：读失败时表格是空的，而重新读取原来只在窗口重新获得
+焦点时才发生，用户只能看着红条猜要不要刷新整页。这条横幅以前在任何宽度下都没被
+量过（正常 fixture 永远读得到列表），现在版式审计会在 390/320 各渲染一次并核对
+横幅可见、按钮点得到、不撑破页面。
+
+## 7. 汇总口径不能丢掉数据质量标记（ALERTS-STALE-01）
+
+`/api/operations/alerts` 按「产品 × 运输方式」逐行返回，带 `stale`（库存/采购数据过期）
+与 `overdue`（到货延期）两个标记。补货计划页每行都标了「库存待更新」「到货延期」，
+工作台顶部的汇总却只写「N 个产品待补货 · 空运缺口 X 件 · 海运缺口 Y 件」——
+同一批数字，一个页面说「这是旧数据算的」，另一个说得像刚盘过。
+
+汇总口径抽到 `src/operations/replenishmentSummary.ts`（纯函数，`test-operations.cjs` 覆盖）：
+产品数与两个标记都按 `product_id` 去重（一个产品可能同时有空运和海运行），
+缺口数量按 0 兜底；`describeCaveats()` 只在有标记时补一句括号说明。
+
 ## 相关守卫
 
 - `scripts/test-value-coercion.cjs`：`toneOf` 三态 + 详情页两行必须共用判据。
@@ -94,6 +122,8 @@ const fail = (e: unknown) => { setError(e instanceof Error ? e.message : String(
 - `scripts/test-store-switcher.cjs`：店铺页同上，并要求暂停/恢复给出结果提示；
   暂停文案必须按「是不是当前店铺」分档。
 - `scripts/test-packing-display.cjs`：装箱页行为断言（「导入成功 → 导出被拦」只能剩红条、
-  导出成功只能剩绿条）+ 源码守卫（除两个 helper 外不许写横幅；跳过提醒不得进 `error`）。
+  导出成功只能剩绿条、读失败能在动作成功后单独显示且恢复后自己消失）+ 源码守卫
+  （除两个 helper 和「读列表失败」外不许写横幅；跳过提醒不得进 `error`）。
+- `scripts/test-operations.cjs`：`summarizeAlerts()` 的产品数/缺口/stale/overdue 去重口径。
 - `scripts/test-inventory-actions.cjs`：库存页只允许 `notice()` / `fail()` 与 `load()` 的分区降级写横幅。
 - `scripts/test-procurement-identity.cjs`：采购页同步失败的 catch 必须清掉「同步成功」。

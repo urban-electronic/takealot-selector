@@ -117,6 +117,13 @@ function needsChineseReview(label: string): boolean {
 const PACKING_DRAFT_KEY = 'packingDraftV1';
 const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 
+// 「读列表失败」和「动作失败」是两件事：写成功后读列表失败，两条要同时看得见
+// （PACK-BANNER-EXCLUSIVE-01）。所以这条提示不经过 notice()/fail()，而是直接写
+// error；也正因为它不走那对 helper，读取恢复后没人替它收尾——原来这条红条会一直
+// 挂在已经恢复的表格上方，用户以为列表还是旧的。下面按这个前缀识别并撤掉它
+// （PACK-READ-ERR-01）。
+const READ_ERROR = '加载装箱单库失败：';
+
 // OMS（鲲鹏 JF WMS）的箱唛一张只放得下 5 行 SKU：表头 + 5 行刚好贴到 100mm 页底，
 // 第 6 行起会另起一页，而那一页没有箱号也没有条码。装的时候就提示，别等印完才发现。
 const MAX_SKUS_PER_BOX = 5;
@@ -327,8 +334,11 @@ export default function Packing() {
       setCatalogStats({ total: sync.total_products, noSku: sync.skipped_no_sku, duplicates: sync.duplicate_sku });
       const data = await getPackingProducts();
       setProducts(data);
+      // 读成功了就把「读失败」这条撤掉。这里只能清自己的那条：动作结果（notice/fail）
+      // 写的是另一件事，读一次列表不该把它抹掉。
+      setError(prev => (prev.startsWith(READ_ERROR) ? '' : prev));
     } catch (e: unknown) {
-      setError(`加载装箱单库失败：${reasonOf(e)}`);
+      setError(READ_ERROR + reasonOf(e));
     } finally {
       setLoading(false);
     }
@@ -1119,7 +1129,18 @@ export default function Packing() {
         </div>
       </div>
 
-      {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
+      {error && (
+        <div className="alert alert-error" role="alert" style={{ marginBottom: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>{error}</span>
+          {/* 读失败时表格是空的，而重新读取只在窗口重新获得焦点时才会发生——
+              没有这个按钮，用户只能看着「加载装箱单库失败」猜要不要刷新整页。 */}
+          {error.startsWith(READ_ERROR) && (
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => { void loadProducts(); }}>
+              重新读取
+            </button>
+          )}
+        </div>
+      )}
       {msg && (
         <div className="alert alert-success" style={{ marginBottom: 12 }}>
           {msg}
