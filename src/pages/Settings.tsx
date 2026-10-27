@@ -3,6 +3,7 @@ import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
 import { getSellerApiStatus, getSellerIdentity, setSellerIdentity } from '../remoteApi';
 import { buildExportPayload } from '../utils/exportPayload';
+import { SkPage } from '../LoadStates';
 
 export default function Settings() {
   const api = useApi();
@@ -227,7 +228,7 @@ export default function Settings() {
     }
   };
 
-  if (loading) return <div className="loading">加载中...</div>;
+  if (loading) return <SkPage rows={5} label="正在载入设置" />;
 
   return (
     <div className="settings-page">

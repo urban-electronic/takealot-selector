@@ -16,6 +16,7 @@ import { isEan13 } from '../utils/ean';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
+import { EmptyState, SkTable } from '../LoadStates';
 
 // 需要重新抓图的行：缺图，或者分支变体的图片仍是主变体那张（同组同图）。
 const imageRefetchPending = (rows: Product[]) => {
@@ -428,6 +429,12 @@ export default function ProductList() {
   const taskMode = searchParams.get('task') || '';
   const archivedMode = searchParams.get('archived') === '1';
   const maintenanceMode = searchParams.get('maintenance') === '1';
+  // 列表空了要分清「一个产品都没有」和「筛出来是空的」：前者该引导去新建，
+  // 后者该引导去清筛选。原来两种情况都是一张空白表格，什么都不说。
+  const hasActiveFilter = Boolean(
+    searchText || statusFilter || feeFilter || shippingFilter.length || linkStatusFilter.length
+    || missingField || multiSkuOnly || duplicateSkuOnly,
+  );
   const [searchInput, setSearchInput] = useState(searchText);
 
   // URL 与输入框双向同步；输入停止 300ms 后再请求，避免每个按键都刷新列表
@@ -568,6 +575,18 @@ export default function ProductList() {
     // 筛选变更回到第一页
     next.delete('page');
     setSearchParams(next);
+    setCurrentPage(1);
+  };
+
+  // 清筛选但保留「正在看的这一档」：任务模式、归档、核对模式都是入口带进来的上下文，
+  // 一键清空把它们一起清掉，人就不知道自己还在哪个清单里了。
+  const clearFilters = () => {
+    const next = new URLSearchParams();
+    if (archivedMode) next.set('archived', '1');
+    if (maintenanceMode) next.set('maintenance', '1');
+    if (taskMode) next.set('task', taskMode);
+    setSearchParams(next);
+    setSearchInput('');
     setCurrentPage(1);
   };
 
@@ -1224,7 +1243,9 @@ export default function ProductList() {
   return (
     <div className="product-list-page">
       <div className="product-list-header">
-        <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
+        {/* 加载中不写数字：这时候 products 还是空数组，标题会先显示「(0)」再跳成「(379)」，
+            看着像加载失败又自己好了。 */}
+        <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'}{loading ? '' : ` (${products.length})`}</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对缺字段'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading || !products.length || products.length > 500} title={products.length > 500 ? `当前 ${products.length} 个产品，超过单次核对上限 500 个，请先用筛选缩小范围` : undefined} onClick={previewAssist}>{assistBusy ? '核对中…' : '核对本店资料'}</button>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
@@ -1465,29 +1486,48 @@ export default function ProductList() {
           {labelLoading ? '生成中…' : `下载标签${labelCount > 0 ? ` (${labelCount})` : ''}`}
         </button>
 
-        <button
-          className="btn btn-primary btn-sm"
-          disabled={selectedSkus.size === 0}
-          title={selectedSkus.size === 0 ? '请先勾选产品（需有 SKU）' : `将选中的 ${selectedSkus.size} 个产品加入装箱单`}
-          onClick={() => {
-            const skus = Array.from(selectedSkus);
-            navigate(`/packing?import=${encodeURIComponent(skus.join(','))}`);
-          }}
-        >
-          加入装箱单{selectedSkus.size > 0 ? ` (${selectedSkus.size})` : ''}
-        </button>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
       {labelNote && <div className="alert alert-info" role="status">{labelNote}</div>}
 
-      {loading ? (
-        <div className="loading">加载中...</div>
-      ) : products.length === 0 ? (
-        <div className="card" style={{ textAlign: 'center', padding: 48 }}>
-          <p style={{ color: 'var(--color-text-secondary)' }}>暂无产品记录</p>
-          <Link to="/create" className="btn btn-primary" style={{ marginTop: 12 }}>新建产品</Link>
+      {/* 批量操作只在勾选后出现。它原来挤在筛选条末尾：没勾选时永远是灰的，
+          窗口一窄还会被挤到第二行单独占一行，看着像没做完。它作用的是下面这张表，
+          所以放在表格正上方；勾了几个写在左边，不用去数。 */}
+      {!loading && selectedSkus.size > 0 && pagedProducts.length > 0 && (
+        <div className="bulk-action-bar" role="region" aria-label="批量操作">
+          <span className="bulk-count">已选 <strong>{selectedSkus.size}</strong> 个 SKU</span>
+          <span className="bulk-spacer" />
+          <button className="btn btn-outline btn-sm" onClick={() => setSelectedSkus(new Set())}>取消选择</button>
+          <button
+            className="btn btn-primary btn-sm"
+            title={`将选中的 ${selectedSkus.size} 个产品加入装箱单`}
+            onClick={() => {
+              const skus = Array.from(selectedSkus);
+              navigate(`/packing?import=${encodeURIComponent(skus.join(','))}`);
+            }}
+          >
+            加入装箱单 ({selectedSkus.size})
+          </button>
         </div>
+      )}
+
+      {loading ? (
+        <SkTable rows={9} label="正在载入产品列表" />
+      ) : products.length === 0 ? (
+        hasActiveFilter ? (
+          <EmptyState
+            title="没有符合条件的产品"
+            description="当前筛选条件下一条都没命中。可能是状态、品类或链接状态互相排除了。"
+            action={<button className="btn btn-primary" onClick={clearFilters}>清除筛选</button>}
+          />
+        ) : (
+          <EmptyState
+            title="还没有产品记录"
+            description="产品列表是选品、比价和装箱的起点。先建一个产品，或者把 Takealot 商品页保存下来导入。"
+            action={<Link to="/create" className="btn btn-primary">新建产品</Link>}
+          />
+        )
       ) : (
         <div className="table-wrapper product-list-table-wrapper">
           <div className="product-table-scroll" ref={tableScrollRef}>

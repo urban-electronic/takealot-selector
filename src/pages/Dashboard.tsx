@@ -9,6 +9,7 @@ import { formatPercent } from '../types';
 import { missingSkuTasks } from '../utils/dashboardTasks';
 import { isPlaceholderLabel, skuVariants, variantLabels } from '../utils/variants';
 import { applySettled, failureSummary, reasonText } from '../utils/settle';
+import { EmptyState, SkDashboard } from '../LoadStates';
 
 export default function Dashboard() {
   const api = useApi();
@@ -112,9 +113,9 @@ export default function Dashboard() {
     .filter(group => group.items.length > 0);
   const issueCount = visibleTaskGroups.reduce((total, group) => total + group.items.reduce((subtotal, task) => subtotal + task.count, 0), 0);
 
-  if (loading) return <div className="loading">正在检查待处理事项...</div>;
+  if (loading) return <SkDashboard />;
   if (error) return <div className="alert alert-error">主页加载失败：{error}</div>;
-  if (!stats) return <div className="loading">暂无数据</div>;
+  if (!stats) return <EmptyState title="还没有可汇总的数据" description="工作台的数字来自产品、库存和发货记录。先去产品列表加几个产品，这里就会自己长出来。" />;
 
   return (
     <div className="dashboard-page dashboard-simple">
