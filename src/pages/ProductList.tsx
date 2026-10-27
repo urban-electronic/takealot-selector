@@ -1500,14 +1500,20 @@ export default function ProductList() {
         <div className="loading">加载中...</div>
       ) : products.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 48 }}>
-          <p style={{ color: 'var(--color-text-secondary)' }}>
-            {customSkuOnly
-              ? '没有自建 SKU 的商品。官网抓来的 SKU 都是 13 位数字，运营自己按规则起的才会带字母或符号。'
-              : '暂无产品记录'}
-          </p>
-          {customSkuOnly
-            ? <button className="btn btn-outline" style={{ marginTop: 12 }} onClick={() => setFilter('custom_sku', '')}>显示全部产品</button>
-            : <Link to="/create" className="btn btn-primary" style={{ marginTop: 12 }}>新建产品</Link>}
+          {customSkuOnly ? (
+            <>
+              <p style={{ color: 'var(--color-text-secondary)' }}>
+                本地没有自建 SKU 的商品。卖家后台若已经改成自建命名（例如 W-S-12-02），
+                说明本地的 SKU 还是旧值——点右上角「核对本店资料」同步一次，回来这里就能筛到。
+              </p>
+              <button className="btn btn-outline" style={{ marginTop: 12 }} onClick={() => setFilter('custom_sku', '')}>显示全部产品</button>
+            </>
+          ) : (
+            <>
+              <p style={{ color: 'var(--color-text-secondary)' }}>暂无产品记录</p>
+              <Link to="/create" className="btn btn-primary" style={{ marginTop: 12 }}>新建产品</Link>
+            </>
+          )}
         </div>
       ) : (
         <div className="table-wrapper product-list-table-wrapper">
