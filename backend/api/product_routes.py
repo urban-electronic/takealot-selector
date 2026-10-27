@@ -740,6 +740,15 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db), store_id:
     if normalized:
         p.takealot_url = normalized
 
+    # 身份锚点：PLID 从链接里取，不指望前端一定填。
+    #
+    # 抓取走的是公开商品页，只能拿到标题/图/价/类目；SKU 是卖家私有字段，公开
+    # 页面根本不返回，所以抓完 SKU 一定是空的——这不是抓漏了。把 PLID 落进独立
+    # 的 plid 列，以后同步卖家资料时就能按 PLID 精确对上，不用退到 TSIN/SKU 猜。
+    found_plid = _plid_of(normalized or data.takealot_url or '')
+    if found_plid:
+        p.plid = found_plid
+
     # 自动编号
     max_no = db.query(Product.product_no).filter(Product.store_id == store_id).order_by(Product.product_no.desc()).first()
     p.product_no = (max_no[0] + 1) if max_no and max_no[0] else 1

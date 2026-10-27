@@ -401,6 +401,14 @@ export default function ProductCreate() {
               <div className="form-group">
                 <label>SKU</label>
                 <input value={sku} onChange={(e) => setSku(e.target.value)} />
+                {!sku.trim() && (
+                  // 抓取走公开商品页，SKU 是卖家后台私有字段，公开页面根本不返回，
+                  // 所以从链接抓的选品这里一定是空的。不说清楚，用户会以为抓漏了。
+                  <small style={{ display: 'block', marginTop: 4, lineHeight: 1.5, color: 'var(--text-muted)' }}>
+                    Takealot 公开页面不提供 SKU，所以从链接抓来的选品这里是空的。若这条是你自己店里的商品，
+                    保存后点「刷新价格」会自动带回；否则请按你的命名规则填写——SKU 是采购、库存、装箱的关联键。
+                  </small>
+                )}
               </div>
               <div className="form-group">
                 <label>中文品名</label>

@@ -13,6 +13,7 @@ const remoteApi = read('src/remoteApi.ts');
 const rust = read('src-tauri/src/commands/products.rs');
 const backend = read('backend/api/product_routes.py');
 const syncService = read('backend/services/seller_catalog_sync.py');
+const createPage = read('src/pages/ProductCreate.tsx');
 
 const checks = [
   // --- 界面 ---
@@ -58,6 +59,10 @@ const checks = [
   [backend, /build_plan\(db, store_id, await _seller_offers\(db\), plids=data\.plids\)/, '「只同步点名的 PLID」要真的传进计划，否则收窄会静默变成整库写入'],
   [syncService, /if _ambiguous\(plid, rows, indexes\):/, '命中多条本地记录时不能动'],
   [syncService, /if not payload\['product_name'\]:/, '没标题的卖家行不新建'],
+  // 抓取走公开商品页，SKU 是卖家后台私有字段，公开页不返回。创建页必须把这件事
+  // 说出来，否则用户只会看到「SKU 怎么是空的」，以为是系统抓漏了。
+  [createPage, /Takealot 公开页面不提供 SKU/, '创建页要说明抓来的商品为什么没有 SKU'],
+  [backend, /found_plid = _plid_of\(normalized or data\.takealot_url or ''\)/, '新建商品要把 PLID 落进独立列，同步才不用猜'],
 ];
 
 for (const [source, pattern, why] of checks) {
@@ -90,6 +95,8 @@ const mutants = [
   ['token 校验', backend, /data\.token != plan\['token'\]/, (s) => s.replace("if not data.token or data.token != plan['token']:", 'if False:')],
   ['身份撞车保护', syncService, /if _ambiguous\(plid, rows, indexes\):/, (s) => s.replace('        if _ambiguous(plid, rows, indexes):', '        if False:')],
   ['收窄范围透传', backend, /plids=data\.plids/, (s) => s.replace(', plids=data.plids)', ')')],
+  ['PLID 回填', backend, /found_plid = _plid_of\(normalized or data\.takealot_url or ''\)/,
+    (s) => s.replace("found_plid = _plid_of(normalized or data.takealot_url or '')", "found_plid = ''")],
 ];
 
 for (const [name, source, pattern, mutate] of mutants) {
