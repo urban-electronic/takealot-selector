@@ -558,6 +558,26 @@ async def _pick_open_option(page, target):
     return None
 
 
+async def _wait_selected(page, label, timeout_ms=4000, interval_ms=300):
+    """点击后等页面把选中态落定，返回是否确认选中。
+
+    原来点完固定等 700ms 就判一次。Takealot 切变体会重新请求报价再重绘，
+    700ms 时 DOM 常常还没更新——2026-10-27 实测 4 条商品同时在
+    「成功 → 失败 → 成功」之间来回跳，failures 全是 1，失败率约 50%，
+    而 diagnostics 里页面确实有同名按钮（variant_sample 能读到 "Grey"）。
+    判据不变（还是 `_selected_for_label`），只是给页面更多时间：
+    减少假红，不会把没选中读成选中。
+    """
+    waited = 0
+    while True:
+        if await _selected_for_label(page, label):
+            return True
+        if waited >= timeout_ms:
+            return False
+        await page.wait_for_timeout(interval_ms)
+        waited += interval_ms
+
+
 async def apply_variant_label(page, label):
     """把某一个变体维度切到 label。返回 (是否确认选中, 方式)。
 
@@ -601,11 +621,23 @@ async def apply_variant_label(page, label):
         try:
             if _norm_label(await el.inner_text()) != target:
                 continue
+        except Exception:
+            continue
+        # 元素可能在视口外或被吸顶头部盖住：先滚进视口再点。原来直接 click()，
+        # 被遮挡时抛 ElementClickIntercepted 后走 except 静默跳过，界面上只留下
+        # 一句「未能切到变体」，看不出是点不进去还是点了没反应。
+        # 滚动本身失败不能连累点击（老实现/测试桩可能没有这个方法）。
+        scroll = getattr(el, 'scroll_into_view_if_needed', None)
+        if scroll is not None:
+            try:
+                await scroll(timeout=3000)
+            except Exception:
+                pass
+        try:
             await el.click()
         except Exception:
             continue
-        await page.wait_for_timeout(700)
-        if await _selected_for_label(page, label):
+        if await _wait_selected(page, label):
             return True, "click"
 
     # C) 下拉触发器：点开，再从弹出列表里选
@@ -625,10 +657,9 @@ async def apply_variant_label(page, label):
         if option is not None:
             try:
                 await option.click()
-                await page.wait_for_timeout(700)
             except Exception:
                 pass
-            if await _selected_for_label(page, label):
+            if await _wait_selected(page, label):
                 return True, "dropdown"
             # 下拉选完后会把选中的值写回触发器自身文本（"Select an option" → "L"）。
             # 部分实现不给选项加 aria-selected，这条是最直接的证据；只认**这个

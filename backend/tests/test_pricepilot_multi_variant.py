@@ -236,3 +236,63 @@ def test_subtitle_tail_on_a_variant_page_fails_conservatively():
     assert result['variantSwitchFailed'] is True
     assert result['variantUnmatched'] == ['professional package for travel']
     assert result['buyboxPrice'] is None
+
+
+class SettleColourButton(ColourButton):
+    """点击后不立刻生效的颜色按钮：模拟页面切变体要重新请求报价再重绘。"""
+
+    async def click(self):
+        settle = getattr(self.page, 'settle_ms', 0)
+        if settle:
+            self.page.pending = self._text
+            self.page.elapsed = 0  # 从点击那一刻开始计时，不含前置的随机等待
+        else:
+            self.page.pick_colour(self._text)
+
+
+class SettleFakePage(FakePage):
+    """选中态延迟落定的变体页。settle_ms 是点击到真正生效之间的毫秒数。"""
+
+    def __init__(self, settle_ms=0, **kwargs):
+        self.settle_ms = settle_ms
+        self.elapsed = 0
+        self.pending = None
+        super().__init__(**kwargs)
+        self._colours = [SettleColourButton(self, c) for c in ('Black', COLOUR)]
+
+    async def wait_for_timeout(self, ms):
+        self.elapsed += ms
+        if self.pending and self.elapsed >= self.settle_ms:
+            self.pick_colour(self.pending)
+            self.pending = None
+
+
+def test_variant_click_that_settles_late_is_still_confirmed():
+    """点完页面要 1.5 秒才重绘完，也要判成功（VAR-SETTLE-01）。
+
+    2026-10-27 线上实测：4 条商品同时在「成功 → 失败 → 成功」之间跳，
+    failures 全是 1，而 diagnostics 里页面确实有同名按钮。根因是点击后
+    固定等 700ms 就查一次选中态，页面还没重绘完就判了失败。这类失败是
+    **假红**：门控本身没错，只是问得太早。
+
+    这里钉住「等页面落定」这个行为：1.5 秒才生效时必须仍然确认选中。
+    """
+    page = SettleFakePage(settle_ms=1500)
+    result = run(page)
+    assert result['variantApplied'] == [COLOUR, SIZE], result.get('variantMethods')
+    assert not result.get('variantSwitchFailed')
+    assert result['buyboxPrice'] == TARGET_PRICE
+
+
+def test_variant_that_never_settles_is_still_rejected():
+    """等再久也不生效的，必须照样判失败（防止把等待写成"总是通过"）。
+
+    这条守的是反向风险：把超时从 700ms 拉到几秒后，如果判据被写松
+    （比如「点过就算选中」），切不到变体也会放行默认变体的报价——
+    那是拿错的价去调价，比多等几秒严重得多。
+    """
+    page = SettleFakePage(settle_ms=10 ** 9)
+    result = run(page)
+    assert result['variantSwitchFailed'] is True
+    assert result['variantUnmatched'] == [COLOUR]
+    assert result['buyboxPrice'] is None
