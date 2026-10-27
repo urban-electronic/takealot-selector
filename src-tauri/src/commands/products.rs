@@ -190,6 +190,16 @@ fn apply_calculations(p: &Product, conn: &rusqlite::Connection) -> HashMap<Strin
 
 // ---- Tauri Commands ----
 
+/// 自建 SKU：任一段不是纯数字。官网抓来的都是 13 位数字，运营按自己的
+/// 命名规则起的会带字母或符号。空 SKU 不算自建（那是没填）。
+/// 与后端 `is_custom_sku()` 同一口径，两边不一致会导致本地/远程列表条数不同。
+fn is_custom_sku(value: &str) -> bool {
+    value
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | '，' | ';' | '；'))
+        .filter(|token| !token.is_empty())
+        .any(|token| !token.chars().all(|c| c.is_ascii_digit()))
+}
+
 #[tauri::command]
 pub fn get_products(
     state: State<DbState>,
@@ -200,6 +210,7 @@ pub fn get_products(
     min_margin: Option<f64>,
     max_margin: Option<f64>,
     search: Option<String>,
+    custom_sku: Option<bool>,
     sort_by: Option<String>,
     sort_order: Option<String>,
 ) -> Result<Vec<Product>, String> {
@@ -243,10 +254,11 @@ pub fn get_products(
     }
     if let Some(ref s) = search {
         let like = format!("%{}%", s);
-        sql.push_str(" AND (product_name LIKE ? OR tsin LIKE ? OR takealot_url LIKE ?)");
-        params.push(Box::new(like.clone()));
-        params.push(Box::new(like.clone()));
-        params.push(Box::new(like));
+        // 与远程接口同一口径：中文品名和 SKU 也要能搜到。
+        sql.push_str(" AND (product_name LIKE ? OR chinese_product_name LIKE ? OR sku LIKE ? OR tsin LIKE ? OR takealot_url LIKE ?)");
+        for _ in 0..5 {
+            params.push(Box::new(like.clone()));
+        }
     }
 
     let col = sort_by.as_deref().unwrap_or("created_at");
@@ -261,6 +273,11 @@ pub fn get_products(
     for row in rows {
         let p = row.map_err(|e| e.to_string())?;
         products.push(p);
+    }
+    if custom_sku.unwrap_or(false) {
+        // 内存过滤：多规格串的分隔符（换行/空格/逗号）本身也是非数字，
+        // 直接拿 SQL 的 GLOB '*[^0-9]*' 会把纯数字的多规格误判成自建。
+        products.retain(|product| is_custom_sku(product.sku.as_deref().unwrap_or("")));
     }
     Ok(products)
 }

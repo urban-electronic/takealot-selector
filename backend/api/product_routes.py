@@ -374,6 +374,24 @@ def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(g
     return {'items': plans, 'fillable': sum(bool(p['changes']) for p in plans)}
 
 
+_SKU_SPLIT = re.compile(r"[\s,，;；]+")
+
+
+def sku_tokens(value: Optional[str]) -> List[str]:
+    """多规格商品的 SKU 用换行/空格/逗号分号拼成一整串，这里统一拆开。"""
+    return [token.strip() for token in _SKU_SPLIT.split(value or "") if token.strip()]
+
+
+def is_custom_sku(value: Optional[str]) -> bool:
+    """自建 SKU：任一段不是纯数字。
+
+    官网与平台抓来的 SKU 都是 13 位数字（TSIN 体系），运营按品类自己的命名
+    规则起的 SKU 一定带字母或符号。空 SKU 不算自建——那是没填，不是自己起的。
+    多规格里只要有一段是自建的，整条就算自建（列表里要能找到它）。
+    """
+    return any(not re.fullmatch(r"[0-9]+", token) for token in sku_tokens(value))
+
+
 @router.get("", response_model=List[ProductOut])
 def list_products(
     selection_status: Optional[str] = Query(None),
@@ -386,6 +404,7 @@ def list_products(
     missing_field: Optional[str] = Query(None),
     multi_sku: bool = Query(False),
     duplicate_sku: bool = Query(False),
+    custom_sku: bool = Query(False),
     archived: bool = Query(False),
     sort_by: Optional[str] = Query("created_at"),
     sort_order: Optional[str] = Query("desc"),
@@ -415,6 +434,7 @@ def list_products(
         query = query.filter(
             (Product.product_name.ilike(like))
             | (Product.chinese_product_name.ilike(like))
+            | (Product.sku.ilike(like))
             | (Product.tsin.ilike(like))
             | (Product.takealot_url.ilike(like))
         )
@@ -436,11 +456,11 @@ def list_products(
 
     products = query.all()
 
-    def sku_tokens(value: Optional[str]) -> List[str]:
-        return [token.strip() for token in re.split(r"[\s,，;；]+", value or "") if token.strip()]
-
     if multi_sku:
         products = [product for product in products if len(sku_tokens(product.sku)) > 1]
+
+    if custom_sku:
+        products = [product for product in products if is_custom_sku(product.sku)]
 
     if duplicate_sku:
         # 重复冲突必须基于完整产品库判断，不能只统计当前筛选结果。

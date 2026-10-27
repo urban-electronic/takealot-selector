@@ -428,6 +428,7 @@ export default function ProductList() {
   const missingField = searchParams.get('missing_field') || '';
   const multiSkuOnly = searchParams.get('multi_sku') === '1';
   const duplicateSkuOnly = searchParams.get('duplicate_sku') === '1';
+  const customSkuOnly = searchParams.get('custom_sku') === '1';
   const taskMode = searchParams.get('task') || '';
   const archivedMode = searchParams.get('archived') === '1';
   const maintenanceMode = searchParams.get('maintenance') === '1';
@@ -550,6 +551,7 @@ export default function ProductList() {
     if (missingField) params.missing_field = missingField;
     if (multiSkuOnly) params.multi_sku = '1';
     if (duplicateSkuOnly) params.duplicate_sku = '1';
+    if (customSkuOnly) params.custom_sku = '1';
     if (archivedMode) params.archived = 'true';
 
     return api.getProducts(params)
@@ -562,7 +564,7 @@ export default function ProductList() {
     fetchProducts();
     // api 随数据源切换而变化（useApi 按 dataSource memo），不放进依赖会导致
     // 切换本地/远程后列表仍是旧数据源的结果
-  }, [api, dataSource, statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly, archivedMode]);
+  }, [api, dataSource, statusFilter, feeFilter, shippingFilter.join(','), linkStatusFilter.join(','), searchText, missingField, multiSkuOnly, duplicateSkuOnly, customSkuOnly, archivedMode]);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -1423,11 +1425,21 @@ export default function ProductList() {
         <input
           type="text"
           className="product-search-input"
-          placeholder="搜索中文品名/英文品名/TSIN/链接..."
+          placeholder="搜索中文品名/英文品名/SKU/TSIN/链接..."
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
-          aria-label="搜索中文品名、英文品名、TSIN或链接"
+          aria-label="搜索中文品名、英文品名、SKU、TSIN或链接"
         />
+
+        <button
+          type="button"
+          className={`btn btn-sm ${customSkuOnly ? 'btn-primary' : 'btn-outline'}`}
+          aria-pressed={customSkuOnly}
+          title="只显示 SKU 不是纯数字的商品：官网抓来的都是 13 位数字，带字母或符号的就是运营自建的命名"
+          onClick={() => setFilter('custom_sku', customSkuOnly ? '' : '1')}
+        >
+          只看自建 SKU
+        </button>
 
         {/* 列设置按钮 */}
         <div className="col-settings-wrapper" ref={colPanelRef}>
@@ -1488,8 +1500,14 @@ export default function ProductList() {
         <div className="loading">加载中...</div>
       ) : products.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 48 }}>
-          <p style={{ color: 'var(--color-text-secondary)' }}>暂无产品记录</p>
-          <Link to="/create" className="btn btn-primary" style={{ marginTop: 12 }}>新建产品</Link>
+          <p style={{ color: 'var(--color-text-secondary)' }}>
+            {customSkuOnly
+              ? '没有自建 SKU 的商品。官网抓来的 SKU 都是 13 位数字，运营自己按规则起的才会带字母或符号。'
+              : '暂无产品记录'}
+          </p>
+          {customSkuOnly
+            ? <button className="btn btn-outline" style={{ marginTop: 12 }} onClick={() => setFilter('custom_sku', '')}>显示全部产品</button>
+            : <Link to="/create" className="btn btn-primary" style={{ marginTop: 12 }}>新建产品</Link>}
         </div>
       ) : (
         <div className="table-wrapper product-list-table-wrapper">

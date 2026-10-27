@@ -26,6 +26,7 @@ export const getProducts = (params?: Record<string, string>): Promise<Product[]>
     minMargin: params?.min_margin ? Number(params.min_margin) : null,
     maxMargin: params?.max_margin ? Number(params.max_margin) : null,
     search: params?.search ?? null,
+    customSku: params?.custom_sku === '1' ? true : null,
     sortBy: params?.sort_by ?? null,
     sortOrder: params?.sort_order ?? null,
   }) as Promise<Product[]>;
