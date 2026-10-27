@@ -155,6 +155,25 @@ class ProductUpdate(BaseModel):
         return _check_market_prices(v)
 
 
+# Exhaustive, disjoint classification is enforced by the schema coverage test.
+PRODUCT_METADATA_FIELDS = frozenset({
+    'sku', 'chinese_product_name', 'product_name', 'product_image_url',
+    'product_image_path', 'takealot_url', 'tsin', 'note', 'market_prices',
+    'purchase_url', 'link_status', 'product_no', 'competing_sellers_count',
+    'stock_remaining', 'review_count', 'rating_value',
+})
+PRODUCT_CALCULATION_FIELDS = frozenset({
+    'actual_sale_price_zar', 'fee_category', 'fee_category_confirmed',
+    'purchase_cost_cny', 'purchase_shipping_cny', 'purchase_quantity',
+    'length_mm', 'width_mm', 'height_mm', 'actual_weight_kg',
+    'packaging_cost_per_unit_cny', 'shipping_method', 'inbound_listing_fee_cny',
+    'outbound_operation_fee_cny', 'last_mile_delivery_fee_cny', 'other_fee_cny',
+    'fulfillment_fee_zar', 'manual_domestic_forwarding_cny',
+    'manual_international_shipping_cny', 'manual_overseas_op_cost_cny',
+    'manual_success_fee_zar', 'manual_fulfillment_fee_zar', 'manual_total_cost_zar',
+})
+
+
 class ProductOut(BaseModel):
     id: str
     product_no: Optional[int] = None
@@ -522,25 +541,9 @@ def update_product(product_id: str, data: ProductUpdate, db: Session = Depends(g
     for field, value in update_data.items():
         setattr(p, field, value)
 
-    # 若用户未在本次请求中显式设置 manual_* 字段，则清空它们
-    # 以避免残留的 manual 值覆盖重新计算的结果
-    manual_fields = [
-        "manual_domestic_forwarding_cny",
-        "manual_international_shipping_cny",
-        "manual_overseas_op_cost_cny",
-        "manual_success_fee_zar",
-        "manual_fulfillment_fee_zar",
-        "manual_total_cost_zar",
-    ]
-    # 只改这些字段时不必重算成本。purchase_url 是纯链接（补货侧栏「保存采购链接」
-    # 就只发这一个字段），漏了它会让一次保存链接顺手清空 manual_* 人工成本覆盖值。
-    metadata_fields = {'sku', 'chinese_product_name', 'product_name', 'product_image_url',
-                       'product_image_path', 'takealot_url', 'tsin', 'note', 'market_prices',
-                       'purchase_url'}
-    if not set(update_data).issubset(metadata_fields):
-        for mf in manual_fields:
-            if mf not in update_data:
-                setattr(p, mf, None)
+    # PATCH omission preserves existing overrides; explicit null resets only that
+    # field. Recalculation must not silently discard operator-entered costs.
+    if set(update_data) & PRODUCT_CALCULATION_FIELDS:
         _apply_calculated_fields(db, p)
     db.commit()
     db.refresh(p)
