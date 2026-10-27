@@ -598,8 +598,10 @@ export const fetchPackingImageBlob = async (filename: string): Promise<Blob> => 
 
 export interface SellerAssistItem {
   id: string; product_no: number; name: string; token: string;
-  changes: { field: string; label: string; value: string | number }[];
+  // current 只在「以卖家后台为准更正 SKU」时出现，表示要被替换掉的旧值。
+  changes: { field: string; label: string; value: string | number; current?: string | number }[];
   differences: string[]; warnings: string[]; manual: string[];
+  migrated?: Record<string, number>;
 }
 export interface SellerAssistResult { items: SellerAssistItem[]; fillable: number }
 export const previewSellerAssist = (ids: string[]) => request<SellerAssistResult>('/api/products/seller-assist/preview', { method: 'POST', body: JSON.stringify({ ids }) });

@@ -352,12 +352,22 @@ def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(g
             values = {change['field']: change['value'] for change in plan['changes']}
             if not values:
                 continue
+            # 带 current 的 sku 变更表示「以卖家后台为准更正」，不是补空白。
+            rename = next((change for change in plan['changes']
+                           if change['field'] == 'sku' and change.get('current')), None)
             # Conditional update protects concurrent edits after the preview check.
             count = db.query(Product).filter(Product.id == product.id, Product.store_id == store_id, Product.updated_at == product.updated_at).update({**values, 'updated_at': datetime.utcnow()}, synchronize_session=False)
             if count != 1:
                 db.rollback()
                 raise HTTPException(409, '同事刚修改了资料，请重新预览')
             db.refresh(product)
+            if rename:
+                # SKU 是库存主键、发运行和装箱资料的关联键，只改主档会让旧 SKU 的
+                # 库存挂在空气上；下游一起迁，并留一条可追溯的映射。
+                from services.sku_migration import migrate_sku
+                migration = migrate_sku(db, product, [str(rename['current'])], [str(values['sku'])], store_id)
+                plan['migrated'] = migration['moved']
+                plan['warnings'].extend(migration['conflicts'])
             if any(field in values for field in ('length_mm', 'width_mm', 'height_mm', 'actual_weight_kg')):
                 _apply_calculated_fields(db, product)
         db.commit()

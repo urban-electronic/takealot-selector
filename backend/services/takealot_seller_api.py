@@ -157,10 +157,15 @@ ASSIST_FIELDS = {'sku': 'SKU', 'product_name': '英文标题', 'product_image_ur
 
 
 def offer_plan(product, offers):
-    """Exact identity only; never infer seller identity from a title."""
+    """Exact identity only; never infer seller identity from a title.
+
+    归属一律靠 PLID 判定（比 SKU 可靠：SKU 会被运营改名）。SKU 只用来判断
+    「本地记录的是哪几个规格」，以及决定要不要按卖家后台更正。
+    """
     skus = re.split(r'[\s,，;；]+', (product.sku or '').strip()) if product.sku else []
     match = re.search(r'PLID(\d+)', product.takealot_url or '', re.I)
-    candidates = [r for r in offers if str(r.get('productline_id')) == match[1]] if match else []
+    plid_rows = [r for r in offers if str(r.get('productline_id')) == match[1]] if match else []
+    candidates = plid_rows
     if skus:
         exact = [r for r in offers if str(r.get('sku')) in skus]
         # All existing SKUs must map; decorated historical SKUs require manual review.
@@ -172,9 +177,24 @@ def offer_plan(product, offers):
         else:
             candidates = []
     proposed = {}; warnings = []
+    official_skus = sorted({str(r.get('sku') or '').strip() for r in plid_rows if r.get('sku')})
+    replace_sku = None
+    if skus and not candidates and official_skus:
+        # 本地 SKU 与卖家后台对不上。以卖家后台为准更正，但只在能确定一一对应时做：
+        # 单规格（本地 1 个、该 PLID 下也只有 1 个）映射唯一；多规格没有可靠对应
+        # 关系，猜错会把库存和发运挂到别的规格上，宁可交给人工。
+        if len(skus) == 1 and len(official_skus) == 1:
+            replace_sku = (skus[0], official_skus[0])
+            candidates = plid_rows
+        else:
+            warnings.append('本地 SKU 与卖家后台不一致（本地：%s；卖家后台：%s），'
+                            '多规格无法自动对应，请人工核对。'
+                            % ('、'.join(skus), '、'.join(official_skus)))
     if candidates:
         if not skus:
             proposed['sku'] = '\n'.join(sorted(set(str(r['sku']) for r in candidates if r.get('sku'))))
+        elif replace_sku:
+            proposed['sku'] = replace_sku[1]
         for field, source in [('product_name', 'title'), ('tsin', 'tsin_id'), ('product_image_url', 'image_url')]:
             vals = {str(r[source]) for r in candidates if r.get(source)}
             if len(vals) == 1:
@@ -192,7 +212,8 @@ def offer_plan(product, offers):
         if len(candidates) > 1:
             warnings.append('多规格商品仅补齐所有匹配规格一致的资料；尺寸有差异时请人工核对。')
     else:
-        warnings.append('本店卖家资料无精确匹配，请人工补充；不会猜测 SKU。')
+        if not warnings:
+            warnings.append('本店卖家资料无精确匹配，请人工补充；不会猜测 SKU。')
     changes = []; differences = []
     for field, value in proposed.items():
         current = getattr(product, field)
@@ -202,7 +223,12 @@ def offer_plan(product, offers):
         if value and empty:
             changes.append({'field': field, 'label': ASSIST_FIELDS[field], 'value': value})
         elif current != value:
-            differences.append(ASSIST_FIELDS[field] + '与卖家资料不同，保留现有值')
+            if field == 'sku' and replace_sku:
+                # 这是替换而不是补齐，必须把旧值一起交给界面确认。
+                changes.append({'field': field, 'label': ASSIST_FIELDS[field],
+                                'value': value, 'current': current})
+            else:
+                differences.append(ASSIST_FIELDS[field] + '与卖家资料不同，保留现有值')
     manual = [label for field, label in [('purchase_cost_cny', '采购成本'), ('fee_category', 'Fee品类'), ('shipping_method', '运输方式')] if not getattr(product, field)]
     fingerprint = hashlib.sha256(repr((product.id, product.store_id, product.updated_at, changes)).encode()).hexdigest()
     return {'id': product.id, 'product_no': product.product_no, 'name': product.product_name or '未命名',

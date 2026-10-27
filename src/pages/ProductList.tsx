@@ -127,8 +127,11 @@ export default function ProductList() {
     setAssistBusy(true); setAssistError(''); setAssistNotice('');
     try {
       const result = await applySellerAssist(assist.items.filter(i => i.changes.length));
+      const renamed = assist.items.filter(i => i.changes.some(c => c.field === 'sku' && c.current !== undefined)).length;
       setAssist(null); fetchProducts();
-      setAssistNotice(`已补齐 ${result.fillable} 个产品。尺寸和重量补齐后已重新计算物流费用与利润。`);
+      setAssistNotice(renamed
+        ? `已补齐 ${result.fillable} 个产品，其中 ${renamed} 个的 SKU 按卖家后台更正；旧 SKU 已留档，库存流水与发运记录一并迁移。尺寸和重量补齐后已重新计算物流费用与利润。`
+        : `已补齐 ${result.fillable} 个产品。尺寸和重量补齐后已重新计算物流费用与利润。`);
     } catch (e) { setAssistError(e instanceof Error ? e.message : '补齐失败，请重新预览'); }
     finally { setAssistBusy(false); }
   };
@@ -1246,12 +1249,12 @@ export default function ProductList() {
           <label style={{ display: 'block', marginBottom: 12 }}><input type="checkbox" checked={assistOnlyTasks} onChange={e => setAssistOnlyTasks(e.target.checked)} /> 只显示缺字段的产品</label>
           <div className="seller-assist-table-scroll" role="region" aria-label="资料核对明细" tabIndex={0}><table style={{ width: '100%' }}><thead><tr><th>产品</th><th>将补齐</th><th>需要核对 / 人工填写</th></tr></thead><tbody>{assist.items.filter(item => !assistOnlyTasks || item.changes.length || item.manual.length || products.some(p => p.id === item.id && (!p.sku || !p.product_name || (!p.product_image_url && !p.product_image_path) || p.length_mm == null || p.width_mm == null || p.height_mm == null || p.actual_weight_kg == null))).map(item => <tr key={item.id}>
             <td>#{item.product_no} {item.name}<br/><Link to={`/products/${item.id}`} onClick={() => setAssist(null)}>修改资料</Link></td>
-            <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : String(c.value)}</div>) : '无需补齐'}</td>
+            <td>{item.changes.length ? item.changes.map(c => <div key={c.field}>{c.label}：{c.field === 'product_image_url' ? <a href={String(c.value)} target="_blank" rel="noreferrer">查看图片</a> : c.current === undefined || c.current === '' ? String(c.value) : <><span style={{ color: 'var(--text-muted)', textDecoration: 'line-through' }}>{String(c.current)}</span>{' → '}<strong>{String(c.value)}</strong></>}</div>) : '无需补齐'}</td>
             <td>{[...item.warnings, ...(item.manual.length ? ['需填写：' + item.manual.join('、')] : [])].map((message, i) => <div key={i}>{message}</div>)}{item.differences.length > 0 && <details><summary>查看已有资料差异 ({item.differences.length})</summary>{item.differences.map((message, i) => <div key={i}>{message}</div>)}</details>}</td>
           </tr>)}</tbody></table></div>
           </div>
           <div className="seller-assist-footer">
-            <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>确认仅补空白资料 ({assist.fillable})</button>
+            <button className="btn btn-primary" disabled={assistBusy || !assist.fillable} onClick={applyAssist}>{assist.items.some(item => item.changes.some(change => change.current !== undefined)) ? '确认补齐并更正 SKU' : '确认仅补空白资料'} ({assist.fillable})</button>
             <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新核对</button>
             <button className="btn btn-outline" onClick={() => setAssist(null)}>关闭</button>
           </div>

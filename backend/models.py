@@ -359,3 +359,22 @@ class ShipmentCartonItem(Base):
     name_zh = Column(String, default="")
     name_en = Column(String, default="")
     quantity = Column(Integer, nullable=False, default=1)
+
+
+class SkuRename(Base):
+    """SKU 变更留档：以卖家后台为准更正 SKU 时，旧值留在这里可追溯。
+
+    这张表只追加、不修改。`detail` 记录本次一并迁移了哪些表、各改了几行，
+    回答的是「库存/发运里那个旧 SKU 去哪了」——不留档的话，改完之后
+    历史单据里的 SKU 就再也无法对应回任何一个商品。
+    """
+    __tablename__ = "sku_renames"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
+    product_id = Column(String, nullable=False, index=True)
+    old_sku = Column(String, nullable=False, index=True)
+    new_sku = Column(String, nullable=False, index=True)
+    source = Column(String, default="seller_api")
+    detail = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
