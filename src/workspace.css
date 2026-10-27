@@ -731,3 +731,182 @@ button:focus-visible,
   .packing-modal, .app-modal { padding: 18px; max-height: calc(100dvh - 24px); }
   .replenishment-panel-heading { top: -16px; }
 }
+
+/* ---- 14. 加载骨架 ---------------------------------------------------------
+   全站原来一律是居中的一行「加载中...」。数据从 Railway 回来要几百毫秒到一秒多，
+   这段时间页面高度只有 20px；数据到了表格一次撑开四五百像素，每次切页视线都要跳一下。
+   骨架先按最终形状占位，数据到了只是「填色」。
+   高光只做一次很淡的扫过（1.25s 一轮），不做脉冲——脉冲会让整页一闪一闪，长列表上很吵。 */
+
+.sk {
+  display: block;
+  flex: none;
+  max-width: 100%;
+  border-radius: var(--r-xs);
+  /* 底色不能太淡：第一版用 #e7eef9，在白卡上几乎看不见；第二版 #d7e2f1 又太亮刺眼。
+     压到 #bfc9d8 后，占位条在白卡和表头上都看得出形状，整体也不会过曝。 */
+  background-color: #bfc9d8;
+  background-image: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, .72) 50%, rgba(255, 255, 255, 0) 100%);
+  background-repeat: no-repeat;
+  background-size: 220px 100%;
+  background-position: -30% 0;
+  animation: sk-sweep 1.25s var(--ease) infinite;
+}
+@keyframes sk-sweep {
+  to { background-position: 130% 0; }
+}
+/* 关掉动效时不能只剩一片灰：改成描边式的空框，看得出「在等」而不是「坏了」。 */
+@media (prefers-reduced-motion: reduce) {
+  .sk {
+    animation: none;
+    background-image: none;
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+  }
+}
+
+.sk-table {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-hairline);
+  border-radius: var(--r-lg);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+}
+.sk-table-head,
+.sk-row {
+  display: grid;
+  /* 全部 minmax(0, …)：窄屏下只会挤，不会把容器撑出横向滚动条。 */
+  grid-template-columns:
+    20px 30px 22px
+    minmax(0, 1.7fr) minmax(0, .8fr) minmax(0, .8fr) minmax(0, .6fr) minmax(0, .5fr);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-3);
+}
+.sk-table-head {
+  height: 40px;
+  background-color: var(--table-head-bg);
+  background-image: linear-gradient(180deg, #f9fbfe 0%, #f1f6fc 100%);
+  border-bottom: 1px solid var(--line-strong);
+}
+.sk-row {
+  height: 62px;
+  border-bottom: 1px solid var(--line-hairline);
+}
+.sk-row:last-child { border-bottom: 0; }
+
+.sk-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+.sk-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-1);
+}
+
+.sk-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sp-4);
+}
+.sk-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--line-hairline);
+  border-radius: var(--r-xl);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+}
+
+.sk-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border: 1px solid var(--line-hairline);
+  border-radius: var(--r-xl);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+}
+.sk-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+
+/* ---- 15. 空态 ------------------------------------------------------------
+   虚线框是刻意的：它跟「已加载的实心卡片」区分开，一眼能看出这块还没有内容。
+   只在确实没有数据时出现，加载中用骨架，两者不要混。 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-7) var(--sp-5);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-xl);
+  background: var(--surface-panel);
+  text-align: center;
+}
+.empty-state-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.empty-state-desc {
+  /* 中文一个字的宽度约等于 1em，`ch` 是按数字 0 算的，46ch 只有 23 个汉字宽——
+     说明文字会被挤成三行，还会从「链接状态」中间断开。改 em + balance 让两行等长。 */
+  max-width: 30em;
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text-muted);
+  text-wrap: balance;
+}
+.empty-state-action { margin-top: var(--sp-2); }
+
+/* ---- 16. 批量操作条 ------------------------------------------------------
+   「加入装箱单」原来和「列设置」「下载标签」挤在同一个筛选条里，窗口一窄就被挤到
+   第二行单独占一行，看着像没做完。它其实是**批量**操作，跟筛选不是一层：
+   没勾选时它一定是灰的，勾了才该出现。 */
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-lg);
+  background-color: #d0d9ea;
+  background-image: linear-gradient(90deg, rgba(47, 106, 224, .08) 0%, rgba(47, 106, 224, 0) 58%);
+}
+.bulk-count {
+  font-size: var(--fs-body);
+  color: var(--accent-ink);
+}
+.bulk-count strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.bulk-action-bar .bulk-spacer { margin-left: auto; }
+
+@media (max-width: 760px) {
+  .sk-table-head,
+  .sk-row {
+    grid-template-columns: 18px 26px minmax(0, 1.6fr) minmax(0, .7fr);
+    gap: var(--sp-2);
+    padding: 0 var(--sp-2);
+  }
+  .sk-table-head > .sk:nth-child(n + 5),
+  .sk-row > .sk:nth-child(n + 5) { display: none; }
+  .sk-row { height: 56px; }
+  .sk-columns { grid-template-columns: minmax(0, 1fr); }
+  .bulk-action-bar { flex-wrap: wrap; padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3); }
+  .bulk-action-bar .bulk-spacer { margin-left: 0; }
+}

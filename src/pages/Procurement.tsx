@@ -5,6 +5,7 @@ import { useApi, useDataSource } from '../DataSourceContext';
 import { migrateToRemote } from '../remoteApi';
 import { todayLocal } from '../utils/datetime';
 import type { ProcurementRecord, Product } from '../types';
+import { SkPage } from '../LoadStates';
 
 export default function Procurement() {
   const api = useApi();
@@ -257,7 +258,7 @@ export default function Procurement() {
     : records;
   const filteredTotal = filteredRecords.reduce((sum, r) => sum + toAmount(r.total_amount), 0);
 
-  if (loading) return <div className="loading">加载中...</div>;
+  if (loading) return <SkPage rows={8} label="正在载入采购记录" />;
 
   return (
     <div className="page procurement-page">
