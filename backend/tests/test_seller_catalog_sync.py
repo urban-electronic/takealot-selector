@@ -242,10 +242,10 @@ from api import product_routes
 from api.product_routes import SellerSyncRequest, seller_sync
 
 
-def call_route(db, offers, path='/api/products/seller-sync/preview', token=None):
+def call_route(db, offers, path='/api/products/seller-sync/preview', token=None, plids=None):
     product_routes._seller_offers = _fake_offers(offers)
     request = SimpleNamespace(url=SimpleNamespace(path=path))
-    return asyncio.run(seller_sync(SellerSyncRequest(token=token), request, db=db, store_id=STORE))
+    return asyncio.run(seller_sync(SellerSyncRequest(token=token, plids=plids), request, db=db, store_id=STORE))
 
 
 def _fake_offers(offers):
@@ -279,3 +279,41 @@ def test_apply_with_the_preview_token_writes_once(db):
     # 不会因为重复提交再建一条。
     again = call_route(db, rows)
     assert again['stats']['create_count'] == 0
+
+
+# --- 收窄范围：只同步点名的 PLID -------------------------------------------
+
+def test_scope_keeps_only_the_named_plids(db):
+    """点名两条就只算这两条——界面写「新增 2 个」，写进去的也必须是 2 个。"""
+    rows = [offer('1', '111', 'A-1'), offer('2', '222', 'A-2'), offer('3', '333', 'A-3')]
+    plan = build_plan(db, STORE, rows, plids=['111', ' 333 '])
+    assert plan['stats']['create_count'] == 2
+    assert plan['stats']['seller_offer_count'] == 2
+    assert plan['stats']['scope_count'] == 2
+    assert {item['plid'] for item in plan['creates']} == {'111', '333'}
+
+
+def test_scope_is_part_of_the_token(db):
+    """只同步 A 的预览不能拿去执行整库，否则用户以为动了 1 条、实际写了 190 多条。"""
+    rows = [offer('1', '111', 'A-1'), offer('2', '222', 'A-2')]
+    full = build_plan(db, STORE, rows)
+    scoped = build_plan(db, STORE, rows, plids=['111'])
+    assert full['token'] != scoped['token']
+
+
+def test_scoped_apply_writes_only_the_named_plids(db):
+    rows = [offer('1', '111', 'A-1'), offer('2', '222', 'A-2')]
+    token = call_route(db, rows, plids=['111'])['token']
+    payload = call_route(db, rows, path='/api/products/seller-sync/apply', token=token, plids=['111'])
+    assert payload['applied']['created'] == 1
+    assert [product.plid for product in db.query(Product).all()] == ['111']
+
+
+def test_scoped_token_cannot_be_used_for_a_full_sync(db):
+    """拿着「只同步 111」的 token 发一个不带 plids 的 apply，必须被拒。"""
+    rows = [offer('1', '111', 'A-1'), offer('2', '222', 'A-2')]
+    token = call_route(db, rows, plids=['111'])['token']
+    with pytest.raises(HTTPException) as caught:
+        call_route(db, rows, path='/api/products/seller-sync/apply', token=token)
+    assert caught.value.status_code == 409
+    assert db.query(Product).count() == 0

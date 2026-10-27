@@ -652,6 +652,9 @@ async def seller_coverage(
 
 class SellerSyncRequest(BaseModel):
     token: Optional[str] = None
+    # 只同步指定 PLID。整库同步会把卖家后台 480+ 个商品一次性灌进选品库，
+    # 而用户常常只关心其中几条（例如刚改过 SKU 的那几个），所以留一个收窄口径。
+    plids: Optional[List[str]] = None
 
 
 async def _seller_offers(db: Session) -> List[Dict[str, Any]]:
@@ -681,7 +684,7 @@ async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = D
     from services.seller_catalog_sync import SellerSyncConflict, apply_plan, build_plan
     if store_id != 'default-store':
         raise HTTPException(400, '当前店铺尚未接入卖家资料')
-    plan = build_plan(db, store_id, await _seller_offers(db))
+    plan = build_plan(db, store_id, await _seller_offers(db), plids=data.plids)
     applied = None
     if request.url.path.endswith('/apply'):
         if not data.token or data.token != plan['token']:

@@ -169,8 +169,19 @@ def _create_payload(plid: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def build_plan(db, store_id: str, offers: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """算出「要更正什么、要新增什么、哪些跳过」，不写库。"""
+def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
+               plids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """算出「要更正什么、要新增什么、哪些跳过」，不写库。
+
+    `plids` 用来收窄范围。整库同步会一次新增一百多个商品，而用户常常只关心其中
+    几条（例如刚在卖家后台改过 SKU 的那几个）。收窄后所有计数都按收窄后的口径
+    算——界面上写「将新增 4 个」就必须真的只写这 4 个，不能拿整库数字吓人。
+    """
+    wanted = {str(plid).strip() for plid in (plids or []) if str(plid).strip()}
+    if wanted:
+        # 没有 PLID 的孤儿行本来也不参与同步，收窄时一并排除，不要混进跳过数。
+        offers = [row for row in offers
+                  if str(row.get('productline_id') or '').strip() in wanted]
     groups, orphans = group_offers(offers)
     products = db.query(Product).filter(Product.store_id == store_id).all()
     active = [product for product in products if not product.is_archived]
@@ -241,6 +252,7 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]]) -> Dict[str, Any
     stats = {
         'seller_offer_count': len(offers),
         'seller_group_count': len(groups),
+        'scope_count': len(wanted),
         'local_product_count': len(active),
         'update_count': len(updates),
         'create_count': len(creates),
@@ -256,6 +268,7 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]]) -> Dict[str, Any
         'creates': creates,
         'skipped': skipped,
         'orphans': len(orphans),
+        'scope': sorted(wanted),
     }
     plan['token'] = _token(plan)
     return plan
@@ -269,6 +282,9 @@ def _token(plan: Dict[str, Any]) -> str:
     """
     signature = repr((
         plan['stats'],
+        # 范围也进签名：只同步 A 的预览不能拿去执行「整库」或「A+B」，否则用户以为
+        # 只动了那几条，实际多写了一百多条。
+        plan.get('scope') or [],
         [(item['plid'], item['product_id'],
           [(c['field'], c['value'], c.get('current')) for c in item['changes']])
          for item in plan['updates']],

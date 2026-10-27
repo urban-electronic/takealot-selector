@@ -666,8 +666,14 @@ export interface SellerSyncResult {
   truncated: boolean;
   applied?: { created: number; updated: number; renamed: number; moved: Record<string, number> };
 }
-export const previewSellerSync = () => request<SellerSyncResult>('/api/products/seller-sync/preview', { method: 'POST', body: JSON.stringify({}) });
-export const applySellerSync = (token: string) => request<SellerSyncResult>('/api/products/seller-sync/apply', { method: 'POST', body: JSON.stringify({ token }) });
+// plids 是可选的收窄口径：整库同步会一次新增一百多条商品，排查某几个 SKU 时
+// 只同步关心的那几条，写进去的范围才和界面上看到的一致。
+const sellerSyncBody = (plids?: string[], token?: string) => JSON.stringify(
+  plids && plids.length ? (token ? { token, plids } : { plids }) : (token ? { token } : {}),
+);
+
+export const previewSellerSync = (plids?: string[]) => request<SellerSyncResult>('/api/products/seller-sync/preview', { method: 'POST', body: sellerSyncBody(plids) });
+export const applySellerSync = (token: string, plids?: string[]) => request<SellerSyncResult>('/api/products/seller-sync/apply', { method: 'POST', body: sellerSyncBody(plids, token) });
 
 export const getAutomaticPricing = (): Promise<any> => request('/api/automatic-pricing');
 export const configureAutomaticPricing = (product: string, offer: string, rule: unknown): Promise<any> => request(`/api/automatic-pricing/${product}/${offer}`, { method: 'PUT', body: JSON.stringify(rule) });

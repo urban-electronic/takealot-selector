@@ -54,7 +54,8 @@ const checks = [
   [backend, /@router\.post\('\/seller-sync\/preview'\)/, '后端要有同步预览接口'],
   [backend, /@router\.post\('\/seller-sync\/apply'\)/, '后端要有同步写入接口'],
   [backend, /data\.token != plan\['token'\]/, 'apply 要校验 token，预览之后本地变了必须重来'],
-  [syncService, /def build_plan\(db, store_id: str, offers: List\[Dict\[str, Any\]\]\)/, '计划要由卖家资料和本地主档现算'],
+  [syncService, /def build_plan\(db, store_id: str, offers: List\[Dict\[str, Any\]\],/, '计划要由卖家资料和本地主档现算'],
+  [backend, /build_plan\(db, store_id, await _seller_offers\(db\), plids=data\.plids\)/, '「只同步点名的 PLID」要真的传进计划，否则收窄会静默变成整库写入'],
   [syncService, /if _ambiguous\(plid, rows, indexes\):/, '命中多条本地记录时不能动'],
   [syncService, /if not payload\['product_name'\]:/, '没标题的卖家行不新建'],
 ];
@@ -88,6 +89,7 @@ const mutants = [
   ['同步入口', page, /setSyncPlan\(await previewSellerSync\(\)\)/, (s) => s.replace('setSyncPlan(await previewSellerSync());', 'setSyncPlan(null);')],
   ['token 校验', backend, /data\.token != plan\['token'\]/, (s) => s.replace("if not data.token or data.token != plan['token']:", 'if False:')],
   ['身份撞车保护', syncService, /if _ambiguous\(plid, rows, indexes\):/, (s) => s.replace('        if _ambiguous(plid, rows, indexes):', '        if False:')],
+  ['收窄范围透传', backend, /plids=data\.plids/, (s) => s.replace(', plids=data.plids)', ')')],
 ];
 
 for (const [name, source, pattern, mutate] of mutants) {
