@@ -840,12 +840,14 @@ def _catalog_fallback(url: str) -> Optional[Dict[str, Any]]:
             "data_source": "offer_catalog"}
 
 
-async def scrape_product(url: str) -> Dict[str, Any]:
+async def scrape_product(url: str, *, partial_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     抓取 Takealot 商品页面,返回结构化数据。
     策略: curl_cffi -> Firefox -> Chromium+stealth -> 报错
     """
-    result = {
+    # Request-local progress survives a caller's deadline; cancellation still propagates.
+    result = partial_result if partial_result is not None else {}
+    result.update({
         "normalized_url": normalize_takealot_url(url),
         "tsin": None,
         "product_name": None,
@@ -861,7 +863,7 @@ async def scrape_product(url: str) -> Dict[str, Any]:
         "warnings": [],
         "success": False,
         "diagnostics": [],
-    }
+    })
 
     if not validate_takealot_url(url):
         result["warnings"].append("URL 不属于 takealot.com 域名")

@@ -24,6 +24,12 @@ def _blocked_browser():
     """
     import contextlib
     stack = contextlib.ExitStack()
+    @contextlib.asynccontextmanager
+    async def fixture_runtime():
+        yield object()
+    module = ModuleType('playwright.async_api')
+    module.async_playwright = fixture_runtime
+    stack.enter_context(patch.dict(sys.modules, {'playwright.async_api': module}))
     async def rendered(*args, **kwargs):
         return None, 'blocked'
     stack.enter_context(patch.object(scraper, '_try_scrape_with_browser', rendered))
@@ -81,7 +87,7 @@ def test_foreign_currency_is_not_used_as_zar():
 
 
 def test_route_returns_failure_as_editable_result_and_preserves_variants():
-    async def fake_scrape(url):
+    async def fake_scrape(url, **kwargs):
         return {'normalized_url': url, 'tsin': 'PLID123', 'success': False,
                 'warnings': ['blocked'], 'variants': []}
     with patch.object(routes, 'scrape_product', fake_scrape), patch.object(routes, 'match_fee_category', return_value={'fee_category': None, 'confidence': 'low'}):
@@ -272,7 +278,7 @@ def test_route_reports_scrape_timeout_as_editable_result():
     「请稍后刷新列表确认结果」——抓取请求没有列表可刷新。这里让服务端先收尾，
     并且 success=false 会让前端直接展开「导入保存的网页」面板。
     """
-    async def slow_scrape(url):
+    async def slow_scrape(url, **kwargs):
         await asyncio.sleep(5)
         return {'normalized_url': url, 'success': True}
 
@@ -285,3 +291,58 @@ def test_route_reports_scrape_timeout_as_editable_result():
     assert result['variants'] == []
     assert '中止' in result['warnings'][0]
     assert '导入保存的网页' in result['warnings'][0]
+
+
+def test_route_timeout_retains_fields_read_before_a_later_stage_stalls(monkeypatch):
+    partial = {'product_name': 'Fixture product', 'product_image_url': 'https://media.takealot.com/fixture.jpg'}
+    cancelled = []
+    async def stalled(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+    monkeypatch.setitem(sys.modules, 'playwright.async_api', None)
+    monkeypatch.setattr(scraper, '_scrape_with_curl_cffi', lambda *args: (partial, ''))
+    monkeypatch.setattr(scraper, '_scrape_with_profile_browser', stalled)
+    monkeypatch.setattr(scraper, '_catalog_fallback', lambda *args: None)
+    monkeypatch.setattr(routes, 'SCRAPE_BUDGET_SECONDS', 0.1)
+    monkeypatch.setattr(routes, 'match_fee_category', lambda *args, **kwargs: {'fee_category': None, 'confidence': 'low'})
+    result = asyncio.run(routes.scrape_takealot(routes.ScrapeRequest(url=URL), db=None))
+    assert result['product_name'] == partial['product_name']
+    assert result['product_image_url'] == partial['product_image_url']
+    assert result['actual_sale_price_zar'] is None
+    assert result['success'] is False
+    assert cancelled == [True]
+    assert {'stage': 'budget', 'reason': 'timeout'} in result['diagnostics']
+    assert any('已保留' in warning for warning in result['warnings'])
+    assert not any('标题、图片、售价都没有拿到' in warning for warning in result['warnings'])
+
+
+def test_seller_wait_is_bounded_and_official_read_uses_remaining_budget(monkeypatch):
+    from types import SimpleNamespace
+    waits = []
+    original_wait = asyncio.wait_for
+    async def record_wait(awaitable, timeout):
+        waits.append(timeout)
+        return await original_wait(awaitable, timeout=timeout)
+    async def stalled_seller(*args):
+        await asyncio.Event().wait()
+    async def official(url, **kwargs):
+        return {'normalized_url': url, 'product_name': 'Official fixture', 'product_image_url': None,
+                'actual_sale_price_zar': None, 'variants': [], 'warnings': [], 'success': False}
+    monkeypatch.setattr(routes, 'configured_key', lambda db: 'isolated-fixture')
+    monkeypatch.setattr(routes.asyncio, 'to_thread', stalled_seller)
+    monkeypatch.setattr(routes.asyncio, 'wait_for', record_wait)
+    monkeypatch.setattr(routes, 'scrape_product', official)
+    monkeypatch.setattr(routes, 'SCRAPE_BUDGET_SECONDS', 0.1)
+    monkeypatch.setattr(routes, 'SELLER_LOOKUP_BUDGET_SECONDS', 0.02, raising=False)
+    monkeypatch.setattr(routes, 'match_fee_category', lambda *args, **kwargs: {'fee_category': None, 'confidence': 'low'})
+    async def run():
+        return await original_wait(routes.scrape_takealot(routes.ScrapeRequest(url=URL),
+                                    db=object(), request=SimpleNamespace(headers={})), timeout=0.4)
+    result = asyncio.run(run())
+    assert result['product_name'] == 'Official fixture'
+    assert any('卖家资料读取等待超时' in item for item in result['warnings'])
+    assert len(waits) == 2
+    assert waits[0] == 0.02
+    assert 0 < waits[1] < 0.09, 'official lookup must receive remaining time, not a fresh budget'
