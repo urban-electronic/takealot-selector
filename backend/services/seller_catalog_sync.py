@@ -254,6 +254,7 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
         updates.append({
             'plid': plid,
             'product_id': product.id,
+            'expected_updated_at': product.updated_at.isoformat(),
             'product_no': product.product_no,
             'name': product.product_name or plan['name'],
             'matched_by': basis,
@@ -297,7 +298,7 @@ def _token(plan: Dict[str, Any]) -> str:
         # 范围也进签名：只同步 A 的预览不能拿去执行「整库」或「A+B」，否则用户以为
         # 只动了那几条，实际多写了一百多条。
         plan.get('scope') or [],
-        [(item['plid'], item['product_id'],
+        [(item['plid'], item['product_id'], item['expected_updated_at'],
           [(c['field'], c['value'], c.get('current')) for c in item['changes']])
          for item in plan['updates']],
         [(item['plid'], item['sku'], item['product_name']) for item in plan['creates']],
@@ -332,7 +333,7 @@ def apply_plan(db, store_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
         values['updated_at'] = datetime.utcnow()
         count = db.query(Product).filter(Product.id == product.id,
                                          Product.store_id == store_id,
-                                         Product.updated_at == product.updated_at).update(values, synchronize_session=False)
+                                         Product.updated_at == datetime.fromisoformat(item['expected_updated_at'])).update(values, synchronize_session=False)
         if count != 1:
             raise SellerSyncConflict('同事刚修改了资料，请重新同步')
         db.refresh(product)
