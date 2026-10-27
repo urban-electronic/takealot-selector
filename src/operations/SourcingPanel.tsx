@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { updateProduct } from '../remoteApi';
 import type { Product } from '../types';
 import { normalizePurchaseUrl, purchaseHostLabel, sourcingKeyword, sourcingLinks } from './sourcing';
@@ -19,6 +19,7 @@ export default function SourcingPanel({ product }: { product: Product }) {
   const [saved, setSaved] = useState(product.purchase_url ?? '');
   const [draft, setDraft] = useState(product.purchase_url ?? '');
   const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
   const [note, setNote] = useState('');
   const [problem, setProblem] = useState('');
 
@@ -42,6 +43,7 @@ export default function SourcingPanel({ product }: { product: Product }) {
   const hasChinese = /[\u4e00-\u9fa5]/.test(keyword);
 
   const save = async () => {
+    if (saving.current) return;
     const trimmed = draft.trim();
     const next = normalizePurchaseUrl(trimmed);
     if (trimmed && !next) {
@@ -49,6 +51,7 @@ export default function SourcingPanel({ product }: { product: Product }) {
       setNote('');
       return;
     }
+    saving.current = true;
     setBusy(true);
     setProblem('');
     setNote('');
@@ -61,6 +64,7 @@ export default function SourcingPanel({ product }: { product: Product }) {
     } catch (error) {
       setProblem((error as Error).message);
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   };
@@ -131,6 +135,7 @@ export default function SourcingPanel({ product }: { product: Product }) {
           id="replenishment-sourcing-url"
           type="url"
           inputMode="url"
+          disabled={busy}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="粘贴 1688 / 淘宝 / 供应商链接，保存后补货时可直接打开"
