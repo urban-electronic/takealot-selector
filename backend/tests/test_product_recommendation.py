@@ -267,3 +267,35 @@ def test_route_zero_limit_still_fills_the_other_column(db):
     payload = _route(db, target.id, similar_limit=0, complement_limit=4)
     assert payload['similar'] == []
     assert payload['complement'], '关掉同类不该连带关掉配套'
+
+
+# ---------- 线上真机验证抓到的两个误判（2026-10-28） ----------
+# 真实库里「Hair Clipper」被当成 hair clip 的配件，「Pet Hair Remover Gloves」
+# 因为共享一个 hair 被推成假发的配套。两条都是把不相干的东西摆成「配着买」。
+
+def test_phrase_match_respects_word_boundary():
+    from services.product_recommendation import contains_phrase
+    assert contains_phrase('Electric 5W Hair Clipper, Hair Trimmer Kit', 'hair clip') is False, \
+        'hair clipper 不是 hair clip，子串匹配会把它误判成配件'
+    assert contains_phrase('Wig Cap Net For Full Frontal Wig', 'wig cap') is True
+    assert contains_phrase('Hair Clips For Women', 'hair clip') is True, '复数要认'
+    assert contains_phrase('真空吸尘器滤网 3 件装', '滤网') is True, '中文按子串'
+
+
+def test_pet_hair_remover_is_not_a_wig_accessory(db):
+    wig = anchor(db)
+    remover = add(db, 2, 'Static Pet Hair Remover Gloves Black 2-Pack, Reusable', fee='Beauty', price=129.0)
+    matched, _ = is_accessory_of(remover, wig)
+    assert matched is False, '宠物毛清理手套和假发只共享一个 hair，不是配套'
+
+    result = recommend(db, STORE, wig)
+    assert all('Pet Hair' not in item['name'] for item in result['complement']), \
+        '这类噪音不能出现在配套栏里'
+
+
+def test_real_accessory_still_matches_after_tightening(db):
+    """收紧判据之后，真配件不能被一起误伤。"""
+    wig = anchor(db)
+    cap = add(db, 2, 'Wig Cap Net For Full Frontal Wig Breathable', sku='W-A-01', price=49.0)
+    matched, reason = is_accessory_of(cap, wig)
+    assert matched is True and 'wig cap' in reason

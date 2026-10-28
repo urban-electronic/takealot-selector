@@ -74,6 +74,26 @@
   审计照样报"0 处问题"——等于新加的这块版式从没被量过。补上之后详情页的可聚焦元素
   从 15 个涨到 20 个，焦点圈对比度也一并量了。
 
+## 上线后第一轮真机验证抓到的三个误判
+
+部署完拿真实库（401 件在架）跑了一遍，同类栏是对的（假发锚点推出来的都是假发，
+标题重合 5–8 个品类词），配套栏有三个真问题：
+
+1. **子串匹配**：规则表里的 `hair clip` 命中了「Hair Clip**per**」——`keyword in name`
+   没有词边界。改成 `contains_phrase`（按词对齐、最后一词允许复数、中文仍按子串）。
+2. **泛词凑配套**：「Static Pet Hair Remover Gloves」「Effortless Pet Hair & Lint
+   Removal Tool」和假发只共享一个 `hair`，就被判成「同类目配件」。加了
+   `SUBJECT_CONFLICTS`：共享的品类词是 `hair` 而候选讲的是宠物毛/车用/地板，
+   直接不算配套。
+3. **`wig` 的规则表是死代码**：`is_accessory_of` 里有 `if len(term) < 4: continue`，
+   而 `wig` 只有 3 个字母——这个最主要的品类，它的 15 条组合规则从来没被查过，
+   配件全靠后面的泛判据兜着。去掉长度门槛（表是白名单，短词不会误伤）。
+
+三条都补了测试（`test_phrase_match_respects_word_boundary` /
+`test_pet_hair_remover_is_not_a_wig_accessory` /
+`test_real_accessory_still_matches_after_tightening`），守卫脚本加了
+`SUBJECT_CONFLICTS` 的两份实现比对与 2 条新突变（把整词匹配换回子串会红）。
+
 ## 预期效果
 
 - 从详情页顺着看下一条，不再回列表重搜；
@@ -85,4 +105,6 @@
 - 行为维度只认采购共现，没有浏览/加购埋点，新商品基本拿不到这 0.10 分；
 - 配件识别只看标题与静态组合表，**不猜**：标题里没有配件词就不会被判成配件，
   宁可漏掉也不要把两件不相干的东西摆成"配套"（错一次就是一笔真实采购）；
-- 组合表是静态维护的，新增品类需要手工加一条。
+- 组合表是静态维护的，新增品类需要手工加一条；
+- 复数只认末词加 s/es（bag/bags、clip/clips），"6PCS Vacuum Cleaner Bags" 这类
+  中间插了别的词（vacuum **cleaner** bags）仍然匹配不到，属于可接受的漏。
