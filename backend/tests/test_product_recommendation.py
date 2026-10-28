@@ -326,3 +326,14 @@ def test_modifier_words_do_not_inflate_title_overlap():
     for word in ('compatible', 'dual', 'max', 'plus', 'mini'):
         assert word not in tokens('Compatible With Tapo RV30 Max Plus Mini Dual Drone'), \
             '%s 是修饰词，不该进品类词表' % word
+
+
+def test_standard_url_plid_deduplicates_legacy_products(db):
+    target = anchor(db)
+    target.plid = ''
+    target.takealot_url = 'https://www.takealot.com/old-title/PLID800'
+    duplicate = add(db, 90, 'Human Brazilian Straight Wig Different Title', sku='DIFFERENT')
+    duplicate.takealot_url = 'https://www.takealot.com/new-title/PLID800'
+    db.commit()
+    result = recommend(db, STORE, target)
+    assert duplicate.id not in {item['product_id'] for item in result['similar'] + result['complement']}
