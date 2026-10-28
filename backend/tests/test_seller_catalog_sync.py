@@ -377,3 +377,25 @@ def test_create_payload_change_requires_new_preview(db, field, value):
                    path='/api/products/seller-sync/apply', token=token)
     assert caught.value.status_code == 409
     assert db.query(Product).count() == 0
+
+
+def test_concurrent_creates_are_serialized(tmp_path):
+    engine = create_engine('sqlite:///' + str(tmp_path / 'concurrent.db'),
+                           connect_args={'timeout': 0.02})
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, autoflush=False)
+    with sessions() as setup:
+        setup.add(Store(id=STORE, name='fixture', status='active'))
+        setup.commit()
+    with sessions() as first, sessions() as second:
+        rows = [offer('1', '800', 'W-A')]
+        a, b = build_plan(first, STORE, rows), build_plan(second, STORE, rows)
+        apply_plan(first, STORE, a)
+        with pytest.raises(SellerSyncConflict):
+            apply_plan(second, STORE, b)
+        second.rollback()
+        first.commit()
+        with pytest.raises(SellerSyncConflict):
+            apply_plan(second, STORE, b)
+        second.rollback()
+        assert second.query(Product).filter(Product.plid == '800').count() == 1
