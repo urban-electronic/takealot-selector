@@ -18,6 +18,7 @@ import { isAgencyStoreName } from '../utils/agencyStore';
 import { isEan13 } from '../utils/ean';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
+import ProductRecommendations from '../ProductRecommendations';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -946,6 +947,9 @@ export default function ProductDetail() {
           </tbody>
         </table>
       </div>
+
+      {/* 同类 / 配套推荐：放在最后一块，选完这条正好顺着看下一条 */}
+      <ProductRecommendations productId={product.id} />
     </div>
   );
 }

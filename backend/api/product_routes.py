@@ -710,6 +710,28 @@ async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = D
     return payload
 
 
+@router.get("/{product_id}/recommendations")
+def product_recommendations(
+    product_id: str,
+    similar_limit: int = Query(6, ge=0, le=12),
+    complement_limit: int = Query(4, ge=0, le=12),
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """详情页底部的「同类商品」与「配套周边」。只读，不写库。
+
+    返回里带 `meta`（策略、权重、去重规则、数量上限、候选数），界面上直接展示
+    推荐依据——用户看得到「为什么推这条」，才敢照着往下选。
+
+    默认同类 6 条、配件 4 条：再多会把详情页拉长成列表页，反而没人看。
+    """
+    product = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="产品不存在")
+    from services.product_recommendation import recommend
+    return recommend(db, store_id, product, similar_limit, complement_limit)
+
+
 @router.get("/{product_id}", response_model=ProductOut)
 def get_product(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()

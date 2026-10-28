@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -219,6 +219,20 @@ export const getProducts = (params?: Record<string, string>): Promise<Product[]>
 
 export const getProduct = (id: string): Promise<Product> =>
   request<Product>(`/api/products/${encodeURIComponent(id)}`);
+
+/** 详情页推荐（同类商品 / 配套周边）。服务端算，返回里带 meta 说明推荐依据。 */
+export const getRecommendations = (
+  id: string,
+  options?: { similarLimit?: number; complementLimit?: number },
+): Promise<RecommendationResult> => {
+  const params = new URLSearchParams();
+  if (options?.similarLimit != null) params.set('similar_limit', String(options.similarLimit));
+  if (options?.complementLimit != null) params.set('complement_limit', String(options.complementLimit));
+  const qs = params.toString();
+  return request<RecommendationResult>(
+    `/api/products/${encodeURIComponent(id)}/recommendations${qs ? `?${qs}` : ''}`,
+  );
+};
 
 export const createProduct = async (data: Partial<Product>): Promise<Product> => {
   const result = await request<Product>('/api/products', {

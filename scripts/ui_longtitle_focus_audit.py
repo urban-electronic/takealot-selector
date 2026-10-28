@@ -92,6 +92,13 @@ p2["chinese_product_name"] = "吸尘袋套装"
 DATA["/api/products"] = [p1, p2]
 DATA["/api/products/" + p1["id"]] = p1
 DATA["/api/products/" + p2["id"]] = p2
+# 详情页推荐区对每个商品都会请求一次。p2 是本脚本新造的商品，推荐接口也得跟着造一份，
+# 否则这 6 个组合里每次进详情页都会 404，被记进 request_errors —— 审计判失败，
+# 而失败原因跟长标题布局毫无关系，只会让人去翻一个不存在的问题。
+DATA["/api/products/" + p2["id"] + "/recommendations"] = copy.deepcopy(
+    DATA["/api/products/" + p1["id"] + "/recommendations"])
+DATA["/api/products/" + p2["id"] + "/recommendations"]["meta"]["anchor"].update(
+    product_id=p2["id"], product_no=2, name=LONG_EN_BAGS)
 
 rows = DATA["/api/automatic-pricing"]["rows"]
 rows[0]["name"] = LONG_EN_CAMERA

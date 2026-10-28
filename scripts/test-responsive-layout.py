@@ -66,6 +66,34 @@ PRICING['monitor'].update(buybox_price=269,last_success_at='2026-10-15T14:00:00Z
 DATA = {
     '/api/stores':[STORE], '/api/inventory/stores-overview':[],
     '/api/products':[PRODUCT], '/api/products/'+PRODUCT['id']:PRODUCT,
+    # 详情页底部的「同类商品 / 配套周边」。漏声明时这个请求 404、整块静默降级成
+    # 一句错误提示，四个审计照样报「0 处问题」——等于新加的这块版式从没被量过。
+    # 这里给两条同类 + 两条配套（含一条长标题、一条无图），把卡片撑开到换行。
+    '/api/products/'+PRODUCT['id']+'/recommendations':dict(
+        similar=[
+            dict(product_id='fixture-similar-1', product_no=7, name='Travel storage bag with a deliberately long English product title for overlap check',
+                 chinese_name='旅行收纳包 加大号 可折叠 防水 多隔层（长标题占位）', sku='TEST-007', plid='104410843',
+                 image_url='',
+                 price_zar=299.0, profit_margin=0.31, fee_category='Bags', takealot_url='https://www.takealot.com/x/PLID104410843',
+                 score=0.72, reasons=['同一费率类别：Bags', '标题重合 3 个品类词', '价格带接近']),
+            dict(product_id='fixture-similar-2', product_no=9, name='Travel storage bag small', chinese_name='旅行收纳包 小号',
+                 sku='TEST-009', plid='', image_url='', price_zar=149.0, profit_margin=0.22, fee_category='Bags',
+                 takealot_url='', score=0.41, reasons=['标题重合 2 个品类词']),
+        ],
+        complement=[
+            dict(product_id='fixture-complement-1', product_no=11, name='Storage bag shoulder strap', chinese_name='收纳包肩带',
+                 sku='TEST-011', plid='', image_url='', price_zar=59.0, profit_margin=0.45, fee_category='Bags',
+                 takealot_url='', score=0.55, reasons=['常见配套：bag → strap']),
+            dict(product_id='fixture-complement-2', product_no=12, name='Storage bag rain cover', chinese_name='收纳包防雨罩',
+                 sku='TEST-012', plid='', image_url='', price_zar=79.0, profit_margin=None, fee_category='Bags',
+                 takealot_url='', score=0.33, reasons=['同类目配件（bag）']),
+        ],
+        meta=dict(strategy='品类关联 + 属性相似 + 搭配互补 + 行为共现，加权求和后去重截断',
+                  weights=dict(category=0.35, attribute=0.30, complement=0.25, behavior=0.10),
+                  dedup='自身/归档/同 PLID/同 SKU/同标题/同图，任一相同只留最高分；同类与配件之间也不重复',
+                  min_score=0.18, limits=dict(similar=6, complement=4), candidate_count=42, scored_count=7,
+                  anchor=dict(product_id=PRODUCT['id'], product_no=PRODUCT.get('product_no'), name=PRODUCT['product_name'], fee_category=PRODUCT.get('fee_category'))),
+    ),
     '/api/products/stats/dashboard':dict(total=1, qualified=0, not_recommended=0, pending=0, data_incomplete=1, avg_profit_margin=0),
     '/api/inventory':[dict(product_id=PRODUCT['id'], name='收纳包', name_en=PRODUCT['product_name'], sku='TEST-001', available=10, in_transit=2, purchased=10, adjusted=0, shipped=0)],
     '/api/inventory/shipments':[], '/api/inventory/adjustments':[], '/api/activity':[],

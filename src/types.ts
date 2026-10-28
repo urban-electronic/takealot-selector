@@ -9,6 +9,8 @@ export interface Product {
   note: string | null;
   takealot_url: string | null;
   tsin: string | null;
+  /** Takealot 商品线 ID（公开，在链接里）。推荐去重与卖家后台对账都用它 */
+  plid?: string | null;
   product_name: string | null;
   product_image_url: string | null;
   product_image_path: string | null;
@@ -137,6 +139,43 @@ export const LINK_STATUS_MAP: Record<string, { label: string; color: string; tex
   '已上架': { label: '已上架', color: '#e8f6ea', text: '#17694a' }, // 5.96:1
   '已发货': { label: '已发货', color: '#ffeddb', text: '#a35400' }, // 4.81:1
 };
+
+// ---- 产品推荐（详情页底部的「同类商品 / 配套周边」）----
+// 口径与 backend/services/product_recommendation.py 一致；
+// 本地数据源在 src/utils/productRecommend.ts 里按同一套常量算一遍。
+export interface RecommendationItem {
+  product_id: string;
+  product_no: number | null;
+  name: string;
+  chinese_name: string;
+  sku: string;
+  plid: string;
+  image_url: string;
+  price_zar: number | null;
+  profit_margin: number | null;
+  fee_category: string | null;
+  takealot_url: string;
+  score: number;
+  /** 命中的推荐依据，界面上逐条展示——看不到理由的推荐没人敢用 */
+  reasons: string[];
+}
+
+export interface RecommendationMeta {
+  strategy: string;
+  weights: { category: number; attribute: number; complement: number; behavior: number };
+  dedup: string;
+  min_score: number;
+  limits: { similar: number; complement: number };
+  candidate_count: number;
+  scored_count: number;
+  anchor: { product_id: string; product_no: number | null; name: string; fee_category: string | null };
+}
+
+export interface RecommendationResult {
+  similar: RecommendationItem[];
+  complement: RecommendationItem[];
+  meta: RecommendationMeta;
+}
 
 export interface ProcurementRecord {
   id: string;

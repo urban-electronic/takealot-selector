@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, RecommendationResult } from './types';
+import { recommendProducts } from './utils/productRecommend';
 
 /** 在系统默认浏览器中打开外部 URL，Tauri 中 target="_blank" 不生效 */
 export const openUrl = (url: string): void => {
@@ -48,6 +49,26 @@ export const restoreProduct = (id: string): Promise<string> =>
 
 export const refreshPrice = (id: string, _source?: 'official' | 'seller' | 'details'): Promise<Record<string, unknown>> =>
   invoke('refresh_price', { id }) as Promise<Record<string, unknown>>;
+
+/**
+ * 详情页推荐（同类商品 / 配套周边）。本地数据源没有服务端，就在前端按同一套口径算：
+ * 拉一次全量商品 + 采购记录，交给 utils/productRecommend。
+ * 拉取失败不抛——详情页主体比推荐重要，推荐挂了不该把整页弄红。
+ */
+export const getRecommendations = async (
+  id: string,
+  options?: { similarLimit?: number; complementLimit?: number },
+): Promise<RecommendationResult> => {
+  const [anchor, pool, records] = await Promise.all([
+    getProduct(id),
+    getProducts(),
+    listProcurementRecords().catch(() => [] as ProcurementRecord[]),
+  ]);
+  return recommendProducts(anchor, pool, records, {
+    similarLimit: options?.similarLimit,
+    complementLimit: options?.complementLimit,
+  });
+};
 
 // Scraper - uses system curl (Apple TLS) via Rust backend to bypass Cloudflare
 export const scrapeTakealot = (productUrl: string): Promise<ScrapeResult> =>
