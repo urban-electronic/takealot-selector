@@ -51,11 +51,15 @@ MAX_LIMIT = 12
 MIN_SCORE = 0.18
 
 # 英文停用词 + 电商标题里的无效词。只做轻量处理，不引第三方分词。
+# compatible / dual / max / plus / mini / pro 这类修饰词放在这里：它们会让
+# 「标题重合 6 个品类词」这种结论虚高，还会把不相干的东西凑成「同类目配件」
+# （线上真机验证里「Dual Wireless Microphones」就是这么被推给无人机的）。
 STOPWORDS = frozenset("""
 a an and are as at be by for from has have in is it its of on or that the to was
 with without your you our we this these those new hot sale free shipping gift
 set pack pcs piece pieces item items quality high premium original genuine
 inch inches cm mm size large small medium mini big
+compatible dual max plus mini pro multipack
 """.split())
 
 # 配件/周边词。出现在候选标题里，说明它可能是「配着买」的东西。
@@ -92,6 +96,106 @@ COMPLEMENT_RULES: Dict[str, Tuple[str, ...]] = {
     'trimmer': ('trimmer blade', 'trimmer head', 'replacement blade', '刀头'),
     'telescope': ('telescope tripod', 'telescope mount', '望远镜支架', '三脚架'),
 }
+
+# 「同一个词，不是同一个东西」。候选标题里出现这些词时，即使与锚点共享 hair / mat
+# 这类泛词，也不是它的配套——假发和「宠物毛清理手套」只共享一个 hair，
+# 摆在一起就是噪音，用户会照着买。
+#
+# 只放**实测踩到或一眼能说清**的：宠物毛清理手套/滚筒（pet/dog/cat/lint）被推到
+# 假发配套里，是 2026-10-28 线上真机验证抓到的。新增条目请附上触发它的真实标题。
+SUBJECT_CONFLICTS: Dict[str, Tuple[str, ...]] = {
+    'hair': ('pet', 'dog', 'cat', 'lint', 'carpet', 'floor'),
+    'cover': ('car', 'sofa', 'pillow', 'book', 'phone'),
+    'mat': ('floor', 'yoga', 'door', 'car'),
+    'brush': ('paint', 'toilet', 'shoe'),
+}
+
+_WORD_SPLIT = re.compile(r'[a-z0-9]+')
+
+
+def _words(text: str) -> List[str]:
+    """把标题拆成小写词序列，供整词短语匹配用。"""
+    return _WORD_SPLIT.findall((text or '').lower())
+
+
+def contains_phrase(name: str, keyword: str) -> bool:
+    """整词匹配短语：`hair clip` 不能命中 `hair clipper`。
+
+    原来是 `keyword in name`，于是「Hair Clipper」被当成 hair clip 的配件——
+    线上真机验证第一屏就抓到了。规则表里的词都是完整词组，按词对齐才安全；
+    最后一个词允许复数（bag / bags），前面必须逐词相同。
+    中文没有分词，直接子串判断。
+    """
+    if not keyword:
+        return False
+    if not keyword.isascii():
+        return keyword in (name or '').lower()
+    words = _words(name)
+    target = _words(keyword)
+    if not target:
+        return False
+    size = len(target)
+    for index in range(len(words) - size + 1):
+        if words[index:index + size - 1] != target[:-1]:
+            continue
+        last = words[index + size - 1]
+        if last in (target[-1], target[-1] + 's', target[-1] + 'es'):
+            return True
+    return False
+
+
+def _subject_conflict(shared_terms: Iterable[str], name: str) -> bool:
+    """共享的品类词是泛词，而候选讲的是另一件事（宠物毛/车用/地板）。"""
+    words = set(_words(name))
+    for term in shared_terms:
+        if words.intersection(SUBJECT_CONFLICTS.get(term, ())):
+            return True
+    return False
+
+
+def _is_accessory_word(word: str) -> bool:
+    """单词是不是配件词（认简单复数：pad / pads）。"""
+    return word in ACCESSORY_TERMS or (
+        word.endswith('s') and word[:-1] in ACCESSORY_TERMS
+    ) or (
+        word.endswith('es') and word[:-2] in ACCESSORY_TERMS
+    )
+
+
+def _matches_any(word: str, terms: Iterable[str]) -> bool:
+    """单词是不是命中了给定的品类词（同样认简单复数）。"""
+    if word in terms:
+        return True
+    if word.endswith('es') and word[:-2] in terms:
+        return True
+    return word.endswith('s') and word[:-1] in terms
+
+
+def generic_companion(name: str, shared_terms: Iterable[str]) -> Tuple[bool, str]:
+    """配件词必须**紧挨着**品类词出现（wig cap / vacuum filter / pet pad）。
+
+    只看「有没有共同的词」会把不相干的东西凑成配套：线上真机验证里
+    「Dual Wireless Microphones」被推给无人机，理由写着「同类目配件（dual）」——
+    它和锚点只共享一个修饰词，配件词（pad）跟品类词根本不在一处。
+
+    结构上说得通的配套，配件词总是跟着品类词出现。间隔放宽到 2 个词，
+    覆盖 "vacuum cleaner filter" 这种中间夹一个词的写法。
+
+    多个候选时取**后面最远**的那个（+2 → +1 → -1 → -2）：英文标题里真正的中心词
+    一般在修饰语后面，"vacuum cleaner filter" 的配件是 filter，不是 cleaner。
+    """
+    terms = set(shared_terms)
+    words = _words(name)
+    if not words or not terms:
+        return False, ''
+    for index, word in enumerate(words):
+        if not _matches_any(word, terms):
+            continue
+        for offset in (2, 1, -1, -2):
+            near = index + offset
+            if 0 <= near < len(words) and _is_accessory_word(words[near]):
+                return True, '同类目配件（%s + %s）' % (word, words[near])
+    return False, ''
 
 
 def _norm(text: str) -> str:
@@ -146,21 +250,30 @@ def is_accessory_of(candidate: Product, anchor: Product) -> Tuple[bool, str]:
 
     两条判据：命中静态组合表，或候选标题同时包含锚点品类词与配件词。
     只看标题，不猜——宁可漏掉，也不要把两件不相干的东西摆成「配套」。
+
+    两条判据之前都先过一道「主题冲突」：共享的品类词是 hair 这种泛词，
+    而候选讲的是宠物毛/车用/地板，那就不是同一件事。
     """
     name = (candidate.product_name or '').lower()
     anchor_terms = category_terms(anchor)
+    candidate_terms = tokens(candidate.product_name or '')
+    shared = candidate_terms & anchor_terms
+    if _subject_conflict(shared, name):
+        return False, ''
     for term in anchor_terms:
-        if len(term) < 4:
-            continue
+        # 只查表，不设长度门槛：原来是 len(term) < 4 就跳过，于是 'wig'（3 个字母）
+        # 的整张组合表从来没被查过——假发是这里最主要的品类，它的配件全靠后面的
+        # 泛判据兜着，规则表等于死代码。表是白名单，短词也不会误伤。
         rules = COMPLEMENT_RULES.get(term)
         if rules:
             for keyword in rules:
-                if keyword in name:
+                if contains_phrase(name, keyword):
                     return True, '常见配套：%s → %s' % (term, keyword)
-    candidate_terms = tokens(candidate.product_name or '')
-    if candidate_terms & ACCESSORY_TERMS and candidate_terms & anchor_terms:
-        shared = sorted(candidate_terms & anchor_terms)[:2]
-        return True, '同类目配件（%s）' % '、'.join(shared)
+    # 配件词是否真的挨着品类词，交给 generic_companion 判；这里不再先用 tokens
+    # 做一遍「有没有配件词」的预筛——tokens 认不出复数（pads），会和下面的判据打架。
+    paired, reason = generic_companion(name, shared)
+    if paired:
+        return True, reason
     return False, ''
 
 

@@ -45,6 +45,18 @@ const parseRules = (block, open, close) => {
   return out;
 };
 
+/** 去掉注释再查「有没有写错」——否则注释里提到的旧写法会把守卫自己弄红。 */
+const stripComments = (text, lang) => {
+  if (lang === 'ts') {
+    return text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+  }
+  return text
+    .replace(/"""[\s\S]*?"""/g, '')
+    .replace(/^\s*#.*$/gm, '');
+};
+
 function collect(files) {
   const errors = [];
   const eq = (left, right, label) => {
@@ -125,6 +137,45 @@ function collect(files) {
     for (const key of Object.keys(pyRules)) {
       if (key in tsRules) eq(pyRules[key], tsRules[key], `组合表 ${key} 的配件`);
     }
+  }
+
+  // --- 4b. 主题冲突表 + 整词匹配 ---
+  // 这两条是线上真机验证抓到的误判：`'hair clip' in 'Hair Clipper'` 命中了，
+  // 「Pet Hair Remover」因为共享 hair 被推成假发配套。
+  const pyConflictBlock = (files.py.match(/SUBJECT_CONFLICTS[^=]*=\s*\{([\s\S]*?)\n\}/) || [])[1];
+  const tsConflictBlock = (files.ts.match(/SUBJECT_CONFLICTS[^=]*=\s*\{([\s\S]*?)\n\};/) || [])[1];
+  if (pyConflictBlock == null || tsConflictBlock == null) {
+    errors.push('没解析到 SUBJECT_CONFLICTS（「同一个词不是同一个东西」的冲突表）');
+  } else {
+    const pyConflict = parseRules(pyConflictBlock, '(', ')');
+    const tsConflict = parseRules(tsConflictBlock, '[', ']');
+    eq(Object.keys(pyConflict).sort(), Object.keys(tsConflict).sort(), '主题冲突表的品类键');
+    for (const key of Object.keys(pyConflict)) {
+      if (key in tsConflict) eq(pyConflict[key], tsConflict[key], `主题冲突表 ${key}`);
+    }
+  }
+  if (!/def contains_phrase\(name: str, keyword: str\)/.test(files.py)) {
+    errors.push('Python 缺少 contains_phrase：配件词必须整词匹配');
+  }
+  if (!/export function containsPhrase\(/.test(files.ts)) {
+    errors.push('TS 缺少 containsPhrase：配件词必须整词匹配');
+  }
+  // 泛判据必须要求「配件词挨着品类词」：只共享修饰词不算配套
+  // （线上出现过「Dual Wireless Microphones」挂在无人机下面）。
+  if (!/def generic_companion\(/.test(files.py)) {
+    errors.push('Python 缺少 generic_companion：泛判据必须要求配件词挨着品类词');
+  }
+  if (!/export function genericCompanion\(/.test(files.ts)) {
+    errors.push('TS 缺少 genericCompanion：泛判据必须要求配件词挨着品类词');
+  }
+  if (/同类目配件（%s）['"]\s*%\s*['"]、['"]\.join\(sorted\(shared\)/.test(files.py)) {
+    errors.push('Python 泛判据又退回「共享品类词就算配件」了');
+  }
+  if (/if keyword in name:/.test(stripComments(files.py, 'py'))) {
+    errors.push('Python 还在用子串匹配配件词（hair clip 会命中 hair clipper）');
+  }
+  if (/name\.includes\(keyword\)/.test(stripComments(files.ts, 'ts'))) {
+    errors.push('TS 还在用子串匹配配件词（hair clip 会命中 hair clipper）');
   }
 
   // --- 5. 引擎关键行为：阈值过滤 + 去重 + 两栏互斥 ---
@@ -220,6 +271,13 @@ const mutants = [
   ['权重漂移', 'py', (s) => s.replace('WEIGHT_CATEGORY = 0.35', 'WEIGHT_CATEGORY = 0.40')],
   ['配件词漂移', 'ts', (s) => s.replace('cable cord adapter charger', 'cable cord adapter')],
   ['组合表漂移', 'ts', (s) => s.replace("'wig cap', 'wig net'", "'wig cap'")],
+  ['主题冲突表漂移', 'ts', (s) => s.replace("hair: ['pet', 'dog', 'cat'", "hair: ['pet', 'dog'")],
+  ['整词匹配被换回子串', 'py', (s) => s.replace('if contains_phrase(name, keyword):', 'if keyword in name:')],
+  ['泛判据退回共享品类词', 'py', (s) => s.replace(
+    'paired, reason = generic_companion(name, shared)',
+    'paired, reason = True, "同类目配件（%s）" % "、".join(sorted(shared)[:2])',
+  )],
+  ['修饰词回到词表', 'ts', (s) => s.replace('compatible dual max plus mini pro multipack', 'multipack')],
   ['默认上限漂移', 'ts', (s) => s.replace('DEFAULT_LIMITS = { similar: 6, complement: 4 }', 'DEFAULT_LIMITS = { similar: 8, complement: 4 }')],
   ['阈值过滤被删', 'ts', (s) => s.replace('if (scoredOne.score < MIN_SCORE) continue;', '')],
   ['同类栏不再排除配件', 'ts', (s) => s.replace('if (item.accessory) continue;', '')],

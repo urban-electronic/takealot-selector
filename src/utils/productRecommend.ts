@@ -29,12 +29,18 @@ export const MAX_LIMIT = 12;
 /** 低于这个分数不进推荐：宁可不给，也不要用「都差不多」凑数。 */
 export const MIN_SCORE = 0.18;
 
-/** 英文停用词 + 电商标题里的无效词。只做轻量处理，不引第三方分词。 */
+/**
+ * 英文停用词 + 电商标题里的无效词。只做轻量处理，不引第三方分词。
+ * compatible / dual / max / plus / mini / pro 这类修饰词放在这里：它们会让
+ * 「标题重合 6 个品类词」这种结论虚高，还会把不相干的东西凑成「同类目配件」
+ * （线上真机验证里「Dual Wireless Microphones」就是这么被推给无人机的）。
+ */
 export const STOPWORDS = new Set(
   `a an and are as at be by for from has have in is it its of on or that the to was
 with without your you our we this these those new hot sale free shipping gift
 set pack pcs piece pieces item items quality high premium original genuine
-inch inches cm mm size large small medium mini big`
+inch inches cm mm size large small medium mini big
+compatible dual max plus mini pro multipack`
     .split(/\s+/)
     .filter(Boolean),
 );
@@ -75,6 +81,111 @@ export const COMPLEMENT_RULES: Record<string, string[]> = {
   trimmer: ['trimmer blade', 'trimmer head', 'replacement blade', '刀头'],
   telescope: ['telescope tripod', 'telescope mount', '望远镜支架', '三脚架'],
 };
+
+/**
+ * 「同一个词，不是同一个东西」。候选标题里出现这些词时，即使与锚点共享 hair / mat
+ * 这类泛词，也不是它的配套——假发和「宠物毛清理手套」只共享一个 hair，
+ * 摆在一起就是噪音，用户会照着买。
+ *
+ * 只放实测踩到或一眼能说清的：宠物毛清理手套被推到假发配套里，是 2026-10-28
+ * 线上真机验证抓到的。新增条目请附上触发它的真实标题。
+ */
+export const SUBJECT_CONFLICTS: Record<string, string[]> = {
+  hair: ['pet', 'dog', 'cat', 'lint', 'carpet', 'floor'],
+  cover: ['car', 'sofa', 'pillow', 'book', 'phone'],
+  mat: ['floor', 'yoga', 'door', 'car'],
+  brush: ['paint', 'toilet', 'shoe'],
+};
+
+const wordsOf = (text: string | null | undefined): string[] =>
+  (text || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+
+/**
+ * 整词匹配短语：`hair clip` 不能命中 `hair clipper`。
+ *
+ * 原来是 `name.includes(keyword)`，于是「Hair Clipper」被当成 hair clip 的配件——
+ * 线上真机验证第一屏就抓到了。规则表里的词都是完整词组，按词对齐才安全；
+ * 最后一个词允许复数（bag / bags），前面必须逐词相同。中文没有分词，直接子串判断。
+ */
+export function containsPhrase(name: string | null | undefined, keyword: string): boolean {
+  if (!keyword) return false;
+  const lower = (name || '').toLowerCase();
+  // 非 ASCII（中文）直接子串
+  if (!/^[\x20-\x7e]*$/.test(keyword)) return lower.includes(keyword);
+  const words = wordsOf(lower);
+  const target = wordsOf(keyword);
+  if (!target.length) return false;
+  for (let i = 0; i + target.length <= words.length; i += 1) {
+    let matched = true;
+    for (let j = 0; j < target.length; j += 1) {
+      const want = target[j];
+      const got = words[i + j];
+      if (j === target.length - 1) {
+        if (got !== want && got !== `${want}s` && got !== `${want}es`) { matched = false; break; }
+      } else if (got !== want) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return true;
+  }
+  return false;
+}
+
+/** 共享的品类词是泛词，而候选讲的是另一件事（宠物毛/车用/地板）。 */
+function subjectConflict(sharedTerms: Iterable<string>, name: string): boolean {
+  const words = new Set(wordsOf(name));
+  for (const term of sharedTerms) {
+    for (const conflict of SUBJECT_CONFLICTS[term] || []) {
+      if (words.has(conflict)) return true;
+    }
+  }
+  return false;
+}
+
+/** 单词是不是配件词（认简单复数：pad / pads）。 */
+function isAccessoryWord(word: string): boolean {
+  return ACCESSORY_TERMS.has(word)
+    || (word.endsWith('s') && ACCESSORY_TERMS.has(word.slice(0, -1)))
+    || (word.endsWith('es') && ACCESSORY_TERMS.has(word.slice(0, -2)));
+}
+
+/** 单词是不是命中了给定的品类词（同样认简单复数）。 */
+function matchesAny(word: string, terms: Iterable<string>): boolean {
+  const set = terms instanceof Set ? terms : new Set(terms);
+  if (set.has(word)) return true;
+  if (word.endsWith('es') && set.has(word.slice(0, -2))) return true;
+  return word.endsWith('s') && set.has(word.slice(0, -1));
+}
+
+/**
+ * 配件词必须**紧挨着**品类词出现（wig cap / vacuum filter / pet pad）。
+ *
+ * 只看「有没有共同的词」会把不相干的东西凑成配套：线上真机验证里
+ * 「Dual Wireless Microphones」被推给无人机，理由写着「同类目配件（dual）」——
+ * 它和锚点只共享一个修饰词，配件词（pad）跟品类词根本不在一处。
+ *
+ * 多个候选时取后面最远的那个（+2 → +1 → -1 → -2）：英文标题里真正的中心词
+ * 一般在修饰语后面，"vacuum cleaner filter" 的配件是 filter，不是 cleaner。
+ */
+export function genericCompanion(
+  name: string | null | undefined,
+  sharedTerms: Iterable<string>,
+): { paired: boolean; reason: string } {
+  const terms = new Set(sharedTerms);
+  const words = wordsOf(name);
+  if (!words.length || !terms.size) return { paired: false, reason: '' };
+  for (let i = 0; i < words.length; i += 1) {
+    if (!matchesAny(words[i], terms)) continue;
+    for (const offset of [2, 1, -1, -2]) {
+      const near = i + offset;
+      if (near >= 0 && near < words.length && isAccessoryWord(words[near])) {
+        return { paired: true, reason: `同类目配件（${words[i]} + ${words[near]}）` };
+      }
+    }
+  }
+  return { paired: false, reason: '' };
+}
 
 /** 标题归一化：小写、标点转空格、压缩空白。用于去重比较。 */
 export function normalizeTitle(text: string | null | undefined): string {
@@ -144,6 +255,9 @@ export function categoryTerms(product: Product): Set<string> {
 /**
  * 候选是不是锚点的配件。只看标题，不猜——宁可漏掉，
  * 也不要把两件不相干的东西摆成「配套」。
+ *
+ * 两条判据之前都先过一道「主题冲突」：共享的品类词是 hair 这种泛词，
+ * 而候选讲的是宠物毛/车用/地板，那就不是同一件事。
  */
 export function isAccessoryOf(
   candidate: Product,
@@ -151,22 +265,26 @@ export function isAccessoryOf(
 ): { accessory: boolean; reason: string } {
   const name = (candidate.product_name || '').toLowerCase();
   const anchorTerms = categoryTerms(anchor);
+  const candidateTerms = titleTokens(candidate.product_name);
+  const shared = intersection(candidateTerms, anchorTerms);
+  if (subjectConflict(shared, name)) return { accessory: false, reason: '' };
+
   for (const term of anchorTerms) {
-    if (term.length < 4) continue;
+    // 只查表，不设长度门槛：原来是 length < 4 就跳过，于是 'wig'（3 个字母）的整张
+    // 组合表从来没被查过——假发是这里最主要的品类，它的配件全靠后面的泛判据兜着，
+    // 规则表等于死代码。表是白名单，短词也不会误伤。
     const rules = COMPLEMENT_RULES[term];
     if (!rules) continue;
     for (const keyword of rules) {
-      if (name.includes(keyword)) {
+      if (containsPhrase(name, keyword)) {
         return { accessory: true, reason: `常见配套：${term} → ${keyword}` };
       }
     }
   }
-  const candidateTerms = titleTokens(candidate.product_name);
-  const shared = intersection(candidateTerms, anchorTerms);
-  const hasAccessory = [...candidateTerms].some((token) => ACCESSORY_TERMS.has(token));
-  if (hasAccessory && shared.length) {
-    return { accessory: true, reason: `同类目配件（${shared.slice(0, 2).join('、')}）` };
-  }
+  // 配件词是否真的挨着品类词，交给 genericCompanion 判；这里不再先用 titleTokens
+  // 做一遍「有没有配件词」的预筛——titleTokens 认不出复数（pads），会和下面的判据打架。
+  const paired = genericCompanion(name, shared);
+  if (paired.paired) return { accessory: true, reason: paired.reason };
   return { accessory: false, reason: '' };
 }
 
