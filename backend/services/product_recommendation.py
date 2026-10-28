@@ -364,7 +364,7 @@ def _score(anchor: Product, candidate: Product, shared_terms: set,
 
     behavior = min(1.0, cooccur / 3.0)
     if cooccur:
-        reasons.append('曾同批采购 %d 次' % cooccur)
+        reasons.append('采购记录同日出现 %d 天' % cooccur)
 
     score = (WEIGHT_CATEGORY * category + WEIGHT_ATTRIBUTE * attribute +
              WEIGHT_COMPLEMENT * complement + WEIGHT_BEHAVIOR * behavior)

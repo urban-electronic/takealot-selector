@@ -379,7 +379,7 @@ function scorePair(
   if (accessoryHit.accessory) reasons.push(accessoryHit.reason);
 
   const behavior = Math.min(1, cooccur / 3);
-  if (cooccur) reasons.push(`曾同批采购 ${cooccur} 次`);
+  if (cooccur) reasons.push(`采购记录同日出现 ${cooccur} 天`);
 
   const score = WEIGHTS.category * category
     + WEIGHTS.attribute * attribute
