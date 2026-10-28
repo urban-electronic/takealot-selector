@@ -337,3 +337,16 @@ def test_standard_url_plid_deduplicates_legacy_products(db):
     db.commit()
     result = recommend(db, STORE, target)
     assert duplicate.id not in {item['product_id'] for item in result['similar'] + result['complement']}
+
+
+def test_daily_record_cooccurrence_does_not_claim_same_batch(db):
+    target = anchor(db)
+    other = add(db, 91, 'Human Brazilian Straight Wig 20 Inch', sku='OTHER')
+    for product in (target, other):
+        db.add(ProcurementRecord(store_id=STORE, product_id=product.id,
+                                 recorded_at='2026-10-28', status='cancelled'))
+    db.commit()
+    result = recommend(db, STORE, target)
+    item = next(item for item in result['similar'] if item['product_id'] == other.id)
+    assert '采购记录同日出现 1 天' in item['reasons']
+    assert all('同批采购' not in reason for reason in item['reasons'])
