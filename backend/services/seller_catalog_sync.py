@@ -315,6 +315,21 @@ def apply_plan(db, store_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     """按计划写库。调用方负责 commit；这里只在出错时抛异常，由调用方 rollback。"""
     from datetime import datetime
 
+    from sqlalchemy import update
+    from sqlalchemy.exc import OperationalError
+    from models import Store
+
+    # Hold the database write reservation until the caller commits or rolls back.
+    # An in-process mutex cannot protect separate workers/connections.
+    try:
+        locked = db.execute(update(Store).where(Store.id == store_id).values(id=Store.id))
+    except OperationalError as error:
+        if 'locked' in str(error).lower() or 'busy' in str(error).lower():
+            raise SellerSyncConflict('其他操作正在写入，请稍后重新预览') from error
+        raise
+    if locked.rowcount != 1:
+        raise SellerSyncConflict('店铺已变化，请重新预览')
+
     from api.product_routes import _apply_calculated_fields
     from services.sku_migration import SkuMigrationConflict, migrate_sku
 
