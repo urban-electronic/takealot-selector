@@ -94,6 +94,23 @@
 `test_real_accessory_still_matches_after_tightening`），守卫脚本加了
 `SUBJECT_CONFLICTS` 的两份实现比对与 2 条新突变（把整词匹配换回子串会红）。
 
+修完再验一轮，配套栏暴露出更根本的一条：泛判据（「共享品类词 + 候选含配件词」）
+太松，理由是「同类目配件（compatible、max）」「同类目配件（dual）」——共享的只是
+修饰词，配件词跟品类词根本不在一处。无人机下面挂着「Dual Wireless Microphones」。
+
+于是两处：
+
+4. **修饰词进停用词**：`compatible / dual / max / plus / mini / pro / multipack`。
+   它们让「标题重合 6 个品类词」虚高，也是泛判据凑数的原料。
+5. **泛判据要求配件词挨着品类词**（间隔 ≤2 词）：`wig cap`、`vacuum filter`、
+   `pet pad` 都是这个结构。多个候选时取后面最远的那个——英文标题里真正的中心词
+   一般在修饰语后面，`vacuum cleaner filter` 的配件是 filter 而不是 cleaner。
+   理由文案也从「同类目配件（dual）」改成「同类目配件（vacuum + filter）」，
+   把实际起作用的两个词写出来。
+
+补 3 条测试（只共享修饰词不算配套、配件词必须挨着、修饰词不进词表，25 例全过），
+守卫加 2 条突变（泛判据退回「共享品类词就算配件」会红、修饰词从词表消失会红）。
+
 ## 预期效果
 
 - 从详情页顺着看下一条，不再回列表重搜；

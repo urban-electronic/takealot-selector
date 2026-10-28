@@ -299,3 +299,30 @@ def test_real_accessory_still_matches_after_tightening(db):
     cap = add(db, 2, 'Wig Cap Net For Full Frontal Wig Breathable', sku='W-A-01', price=49.0)
     matched, reason = is_accessory_of(cap, wig)
     assert matched is True and 'wig cap' in reason
+
+
+# ---------- 只共享修饰词不算配套（真机验证第二轮） ----------
+# 线上配套栏出现过「Dual Wireless Microphones」挂在无人机下面，理由是「同类目配件（dual）」。
+
+def test_sharing_only_a_modifier_is_not_a_companion(db):
+    drone = add(db, 1, 'Mini Drone With Remote And Dual 4K Cameras', fee='Electronics', price=1299.0)
+    mic = add(db, 2, 'Dual Wireless Microphones with Type-C Receiver and Cable',
+              fee='Electronics', price=499.0)
+    matched, reason = is_accessory_of(mic, drone)
+    assert matched is False, '只共享一个 dual，不是无人机的配件；理由是 %r' % reason
+
+
+def test_accessory_word_must_sit_next_to_the_category_word(db):
+    vacuum = add(db, 1, 'Robot Vacuum Replacement Parts 15-Pack', fee='Small Appliances', price=399.0)
+    miele = add(db, 2, 'Miele - GN HyClean 3D Vacuum Cleaner Filter', fee='Small Appliances', price=349.0)
+    matched, reason = is_accessory_of(miele, vacuum)
+    assert matched is True, '滤网是吸尘器配件，vacuum 与 filter 隔一个词也算挨着'
+    assert 'vacuum + filter' in reason, '理由要说清是哪两个词凑成的配套，实际是 %r' % reason
+
+
+def test_modifier_words_do_not_inflate_title_overlap():
+    """compatible / dual / max 这类修饰词进词表会让「标题重合 N 个品类词」虚高。"""
+    from services.product_recommendation import tokens
+    for word in ('compatible', 'dual', 'max', 'plus', 'mini'):
+        assert word not in tokens('Compatible With Tapo RV30 Max Plus Mini Dual Drone'), \
+            '%s 是修饰词，不该进品类词表' % word

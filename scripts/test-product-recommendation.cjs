@@ -160,6 +160,17 @@ function collect(files) {
   if (!/export function containsPhrase\(/.test(files.ts)) {
     errors.push('TS 缺少 containsPhrase：配件词必须整词匹配');
   }
+  // 泛判据必须要求「配件词挨着品类词」：只共享修饰词不算配套
+  // （线上出现过「Dual Wireless Microphones」挂在无人机下面）。
+  if (!/def generic_companion\(/.test(files.py)) {
+    errors.push('Python 缺少 generic_companion：泛判据必须要求配件词挨着品类词');
+  }
+  if (!/export function genericCompanion\(/.test(files.ts)) {
+    errors.push('TS 缺少 genericCompanion：泛判据必须要求配件词挨着品类词');
+  }
+  if (/同类目配件（%s）['"]\s*%\s*['"]、['"]\.join\(sorted\(shared\)/.test(files.py)) {
+    errors.push('Python 泛判据又退回「共享品类词就算配件」了');
+  }
   if (/if keyword in name:/.test(stripComments(files.py, 'py'))) {
     errors.push('Python 还在用子串匹配配件词（hair clip 会命中 hair clipper）');
   }
@@ -262,6 +273,11 @@ const mutants = [
   ['组合表漂移', 'ts', (s) => s.replace("'wig cap', 'wig net'", "'wig cap'")],
   ['主题冲突表漂移', 'ts', (s) => s.replace("hair: ['pet', 'dog', 'cat'", "hair: ['pet', 'dog'")],
   ['整词匹配被换回子串', 'py', (s) => s.replace('if contains_phrase(name, keyword):', 'if keyword in name:')],
+  ['泛判据退回共享品类词', 'py', (s) => s.replace(
+    'paired, reason = generic_companion(name, shared)',
+    'paired, reason = True, "同类目配件（%s）" % "、".join(sorted(shared)[:2])',
+  )],
+  ['修饰词回到词表', 'ts', (s) => s.replace('compatible dual max plus mini pro multipack', 'multipack')],
   ['默认上限漂移', 'ts', (s) => s.replace('DEFAULT_LIMITS = { similar: 6, complement: 4 }', 'DEFAULT_LIMITS = { similar: 8, complement: 4 }')],
   ['阈值过滤被删', 'ts', (s) => s.replace('if (scoredOne.score < MIN_SCORE) continue;', '')],
   ['同类栏不再排除配件', 'ts', (s) => s.replace('if (item.accessory) continue;', '')],
