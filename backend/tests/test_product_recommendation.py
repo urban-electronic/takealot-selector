@@ -267,3 +267,14 @@ def test_route_zero_limit_still_fills_the_other_column(db):
     payload = _route(db, target.id, similar_limit=0, complement_limit=4)
     assert payload['similar'] == []
     assert payload['complement'], '关掉同类不该连带关掉配套'
+
+
+def test_standard_url_plid_deduplicates_legacy_products(db):
+    target = anchor(db)
+    target.plid = ''
+    target.takealot_url = 'https://www.takealot.com/old-title/PLID800'
+    duplicate = add(db, 90, 'Human Brazilian Straight Wig Different Title', sku='DIFFERENT')
+    duplicate.takealot_url = 'https://www.takealot.com/new-title/PLID800'
+    db.commit()
+    result = recommend(db, STORE, target)
+    assert duplicate.id not in {item['product_id'] for item in result['similar'] + result['complement']}

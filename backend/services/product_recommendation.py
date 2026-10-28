@@ -35,6 +35,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from models import Product
+from services.takealot_seller_api import plid_from_url
 
 # ---- 权重（改这里就能整体调平，测试里也按这里断言） ----
 WEIGHT_CATEGORY = 0.35
@@ -204,7 +205,7 @@ def _cooccurrence(db, store_id: str) -> Dict[str, Dict[str, int]]:
 def _identity_keys(product: Product) -> List[str]:
     """同一件商品的判据集合。任一相同就算重复。"""
     keys = []
-    plid = (getattr(product, 'plid', '') or '').strip()
+    plid = (getattr(product, 'plid', '') or '').strip() or plid_from_url(product.takealot_url)
     if plid:
         keys.append('plid:' + plid)
     sku = (product.sku or '').strip()

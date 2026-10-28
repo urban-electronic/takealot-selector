@@ -206,7 +206,7 @@ export function buildCooccurrence(
 function plidOf(product: Product): string {
   const direct = (product.plid || '').trim();
   if (direct) return direct;
-  const match = (product.takealot_url || '').match(/[?&]plid=(\d+)/i);
+  const match = (product.takealot_url || '').match(/(?:\/PLID|[?&]plid=)(\d+)/i);
   return match ? match[1] : '';
 }
 
