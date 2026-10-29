@@ -1106,12 +1106,48 @@ def promote(
     建完之后 item 指向新产品，再点就不会重复建。
     """
     from api.product_routes import _apply_calculated_fields
+    from sqlalchemy import update
+    from sqlalchemy.exc import OperationalError
+    from models import Store
+
+    # 与卖家同步使用同一店铺写保留：先拿锁，再读取身份，直到commit/rollback。
+    # Python锁不能保护另一worker；SQLite会拒绝并发写，不允许旧快照创建重复主档。
+    try:
+        locked = db.execute(update(Store).where(Store.id == store_id).values(id=Store.id))
+    except OperationalError as error:
+        db.rollback()
+        if 'locked' in str(error).lower() or 'busy' in str(error).lower():
+            raise HTTPException(status_code=409, detail='其他操作正在写入，请刷新后重试') from None
+        raise
+    if locked.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail='店铺已变化，请刷新后重试')
 
     items = db.query(SelectionItem).filter(
         SelectionItem.id.in_(data.ids), SelectionItem.store_id == store_id
-    ).all()
+    ).populate_existing().all()
     if not items:
+        db.rollback()
         raise HTTPException(status_code=404, detail="没有找到可新建的选品记录")
+
+    by_plid: Dict[int, set] = {}
+    by_tsin: Dict[str, set] = {}
+    identities: Dict[str, Any] = {}
+
+    def index_product(product_id, plid, tsin, url):
+        anchors = {value for value in (pub.parse_plid(plid), pub.parse_plid(url)) if value is not None}
+        identity_tsin = (tsin or '').strip()
+        identities[product_id] = (anchors, identity_tsin)
+        for anchor in anchors:
+            by_plid.setdefault(anchor, set()).add(product_id)
+        if identity_tsin:
+            by_tsin.setdefault(identity_tsin, set()).add(product_id)
+
+    # 包含归档主档，避免重新创建仍被库存/装箱引用的历史产品；仅取身份列。
+    for existing in db.query(Product.id, Product.plid, Product.tsin, Product.takealot_url).filter(
+        Product.store_id == store_id
+    ).all():
+        index_product(*existing)
 
     created: List[Dict[str, str]] = []
     skipped: List[Dict[str, str]] = []
@@ -1119,9 +1155,28 @@ def promote(
         if item.promoted_product_id:
             skipped.append({"id": item.id, "reason": "已建过产品"})
             continue
-        if item.already_in_products and item.plid:
-            skipped.append({"id": item.id, "reason": "产品列表里已有同一 PLID"})
+        anchors = {value for value in (pub.parse_plid(item.plid), pub.parse_plid(item.takealot_url)) if value is not None}
+        tsin = (item.tsin or '').strip()
+        if len(anchors) > 1:
+            skipped.append({'id': item.id, 'reason': 'PLID与链接不一致，请核对规格'})
             continue
+        plid_hits = set().union(*(by_plid.get(anchor, set()) for anchor in anchors))
+        tsin_hits = by_tsin.get(tsin, set()) if tsin else set()
+        matches = plid_hits | tsin_hits
+        if matches:
+            conflict = len(matches) > 1 or any(
+                len(identities[product_id][0]) > 1
+                or (anchors and identities[product_id][0] and anchors != identities[product_id][0])
+                or (tsin and identities[product_id][1] and tsin != identities[product_id][1])
+                for product_id in matches
+            )
+            reason = ('商品身份信息不一致，请核对PLID、TSIN及规格' if conflict else
+                      '产品列表里已有同一 PLID' if plid_hits else '产品列表里已有同一 TSIN')
+            if not conflict:
+                item.already_in_products = True
+            skipped.append({'id': item.id, 'reason': reason})
+            continue
+        item.already_in_products = False  # 导入时标记仅供提示，不能替代当前主档核对。
         if not item.product_name and not item.plid:
             skipped.append({"id": item.id, "reason": "既没有商品名也没有 PLID，无法建产品"})
             continue
@@ -1170,6 +1225,7 @@ def promote(
         product.recorded_at = datetime.utcnow()
         db.add(product)
         db.flush()
+        index_product(product.id, product.plid, product.tsin, product.takealot_url)
 
         item.promoted_product_id = product.id
         item.status = "已建产品"

@@ -827,3 +827,134 @@ def test_catalogue_check_never_rewrites_connection_even_with_legacy_save_flag(db
     monkeypatch.setattr(cat,'save_winner',lambda *a:pytest.fail('read-only check overwrote connection'))
     result=diag_catalogue(plid='123456',save=True,db=db,store_id=STORE)
     assert result['saved'] is False
+
+
+def _promotion_draft(db, **fields):
+    values=dict(store_id=STORE,batch_id='promotion-fixture',product_name='Fixture candidate',
+                plid='1001',tsin='',already_in_products=False,purchase_quantity=1)
+    values.update(fields)
+    item=SelectionItem(**values)
+    db.add(item);db.commit()
+    return item
+
+
+@pytest.mark.parametrize('identity', ['plid','tsin','legacy_url'])
+def test_promote_rechecks_live_identity_instead_of_import_flag(db,identity):
+    item=_promotion_draft(db,plid='1001' if identity!='tsin' else '',tsin='2002' if identity=='tsin' else '')
+    old=Product(store_id=STORE,product_name='Preserve silver variant',sku='FIXTURE-SILVER',
+                plid='1001' if identity=='plid' else '',tsin='2002' if identity=='tsin' else '',
+                takealot_url='https://www.takealot.com/legacy/PLID1001' if identity=='legacy_url' else '',
+                purchase_cost_cny=77,actual_sale_price_zar=269)
+    db.add(old);db.commit()
+    result=promote(IdList(ids=[item.id]),db=db,store_id=STORE)
+    assert result['created']==0
+    assert result['skipped']==1
+    assert db.query(Product).count()==1
+    db.refresh(old)
+    assert (old.sku,old.purchase_cost_cny,old.actual_sale_price_zar)==('FIXTURE-SILVER',77,269)
+    assert not item.promoted_product_id
+
+
+def test_promote_ignores_stale_positive_flag_when_identity_no_longer_exists(db):
+    item=_promotion_draft(db,already_in_products=True)
+    result=promote(IdList(ids=[item.id]),db=db,store_id=STORE)
+    assert result['created']==1
+    assert db.query(Product).count()==1
+
+
+def test_promote_checks_tsin_for_duplicates_created_in_same_batch(db):
+    a=_promotion_draft(db,plid='',tsin='2002',product_name='First')
+    b=_promotion_draft(db,plid='',tsin='2002',product_name='Second')
+    result=promote(IdList(ids=[a.id,b.id]),db=db,store_id=STORE)
+    assert (result['created'],result['skipped'])==(1,1)
+    assert db.query(Product).count()==1
+
+
+def test_promote_identity_is_store_scoped_and_does_not_match_title(db):
+    db.add(Store(id='promotion-other-store',name='Other',status='active'))
+    db.add(Product(store_id='promotion-other-store',plid='1001',tsin='2002',product_name='Same title'))
+    db.add(Product(store_id=STORE,plid='3003',product_name='Same title'))
+    db.commit()
+    item=_promotion_draft(db,tsin='2002',product_name='Same title')
+    assert promote(IdList(ids=[item.id]),db=db,store_id=STORE)['created']==1
+    assert db.query(Product).filter(Product.store_id==STORE).count()==2
+
+
+def test_promote_conflicting_identity_never_creates_or_relinks(db):
+    db.add_all([Product(store_id=STORE,plid='1001',tsin='2002',sku='KEEP-A'),
+                Product(store_id=STORE,plid='3003',tsin='4004',sku='KEEP-B')])
+    db.commit()
+    item=_promotion_draft(db,plid='1001',tsin='4004')
+    result=promote(IdList(ids=[item.id]),db=db,store_id=STORE)
+    assert result['created']==0
+    assert '核对' in result['skip_details'][0]['reason']
+    assert not item.promoted_product_id
+    assert {p.sku for p in db.query(Product).all()}=={'KEEP-A','KEEP-B'}
+
+
+def test_promote_serializes_two_connections_before_live_identity_check(tmp_path):
+    from sqlalchemy import event
+    engine=create_engine(f'sqlite:///{tmp_path / "promotion.sqlite"}',connect_args={'timeout':0.02})
+    Base.metadata.create_all(engine)
+    sessions=sessionmaker(bind=engine,autoflush=False)
+    first=sessions();second=sessions()
+    try:
+        first.add(Store(id=STORE,name='Fixture store',status='active'))
+        first.add_all([
+            SelectionItem(id='promotion-first',store_id=STORE,batch_id='a',plid='1001',product_name='First'),
+            SelectionItem(id='promotion-second',store_id=STORE,batch_id='b',plid='1001',product_name='Second'),
+        ])
+        first.commit()
+        blocked=[]
+        def during_first_commit(session):
+            with pytest.raises(HTTPException) as error:
+                promote(IdList(ids=['promotion-second']),db=second,store_id=STORE)
+            blocked.append(error.value.status_code)
+        event.listen(first,'before_commit',during_first_commit,once=True)
+        result=promote(IdList(ids=['promotion-first']),db=first,store_id=STORE)
+        assert result['created']==1
+        assert blocked==[409]
+        again=promote(IdList(ids=['promotion-second']),db=second,store_id=STORE)
+        assert (again['created'],again['skipped'])==(0,1)
+        assert second.query(Product).count()==1
+        assert not second.query(SelectionItem).filter_by(id='promotion-second').one().promoted_product_id
+    finally:
+        first.close();second.close();engine.dispose()
+
+
+def test_promote_keeps_archived_identity_and_requires_review_for_variant_conflict(db):
+    old=Product(store_id=STORE,plid='1001',tsin='2002',sku='KEEP-SILVER',is_archived=True)
+    db.add(old);db.commit()
+    item=_promotion_draft(db,tsin='4004')
+    result=promote(IdList(ids=[item.id]),db=db,store_id=STORE)
+    assert result['created']==0
+    assert '核对' in result['skip_details'][0]['reason']
+    db.refresh(old)
+    assert old.is_archived and old.tsin=='2002' and old.sku=='KEEP-SILVER'
+
+
+def test_promote_refuses_disagreeing_candidate_url_and_plid(db):
+    item=_promotion_draft(db,takealot_url='https://www.takealot.com/x/PLID3003')
+    result=promote(IdList(ids=[item.id]),db=db,store_id=STORE)
+    assert result['created']==0
+    assert '核对' in result['skip_details'][0]['reason']
+    assert db.query(Product).count()==0
+
+
+def test_promote_refreshes_preloaded_item_after_other_connection_promoted(tmp_path):
+    engine=create_engine(f'sqlite:///{tmp_path / "promotion-cache.sqlite"}',connect_args={'timeout':0.02})
+    Base.metadata.create_all(engine)
+    sessions=sessionmaker(bind=engine,autoflush=False)
+    first=sessions();second=sessions()
+    try:
+        first.add(Store(id=STORE,name='Fixture store',status='active'))
+        first.add(SelectionItem(id='promotion-title-only',store_id=STORE,batch_id='a',plid='',tsin='',product_name='Manual title'))
+        first.commit()
+        cached=second.query(SelectionItem).filter_by(id='promotion-title-only').one()
+        assert cached.promoted_product_id is None
+        assert promote(IdList(ids=[cached.id]),db=first,store_id=STORE)['created']==1
+        assert promote(IdList(ids=[cached.id]),db=second,store_id=STORE)['created']==0
+        assert second.query(Product).count()==1
+        assert cached.promoted_product_id is not None
+    finally:
+        first.close();second.close();engine.dispose()
