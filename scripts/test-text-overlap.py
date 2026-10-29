@@ -238,6 +238,8 @@ def main():
                         page.locator('.loading').wait_for(state='hidden', timeout=5000)
                     except Exception:
                         pass
+                    if path == '/selection':
+                        page.locator('.selection-card').first.wait_for(state='visible', timeout=5000)
                     res = page.evaluate(SCAN, None)
                     surfaces += 1
                     report.append(dict(res, width=width, path=path, scope='page'))

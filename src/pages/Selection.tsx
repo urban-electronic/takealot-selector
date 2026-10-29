@@ -131,8 +131,8 @@ function SelectionCard({
     <article className={`selection-card ${item.selected ? 'is-selected' : ''} ${locked ? 'is-locked' : ''}`}>
       <header>
         <label className="selection-pick">
-          <input type="checkbox" checked={item.selected} disabled={locked} onChange={onToggle} />
-          <span className="visually-hidden">选中 {item.product_name || item.plid}</span>
+          <input type="checkbox" aria-label={`选中 ${item.product_name || item.plid}`}
+            checked={item.selected} disabled={locked} onChange={onToggle} />
         </label>
         {tier ? <span className={`selection-tier ${tier.className}`}>{tier.label}</span> : null}
         {item.already_in_products ? <span className="selection-flag is-dup">已在产品列表</span> : null}

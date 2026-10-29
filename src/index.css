@@ -3193,6 +3193,7 @@ table tbody tr:hover { background: #f8fafc; }
   flex-wrap: wrap;
   gap: var(--sp-2);
   flex-shrink: 0;
+  max-width: 100%;
 }
 
 .selection-notice {
@@ -3395,6 +3396,7 @@ table tbody tr:hover { background: #f8fafc; }
 .selection-card {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: var(--sp-2);
   padding: var(--sp-3);
   background: #fff;
@@ -3535,12 +3537,13 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(96px, 100%), 1fr));
   gap: 6px;
 }
 
 .selection-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 

@@ -63,7 +63,27 @@ RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last
                       reason='3 个竞品有现货，最低 R 255；本店不在持位，按一次最多降 15% 走一步：269 → 255，够不着就分几轮走。库存紧张（约 12 天）时不跟降。'))
 PRICING = dict(product_id=PRODUCT['id'], offer_id='test-offer', sku='TEST-001', name=PRODUCT['product_name'], group='未分类', stock=10, price=269, suggested_min=200, rule=RULE, monitor=dict(status='error', enabled=False, interval_minutes=5, error_code='site_challenge', error='网站要求本人验证', last_success_at=None))
 PRICING['monitor'].update(buybox_price=269,last_success_at='2026-10-15T14:00:00Z',price_ownership=dict(state='matched',own_price=269,own_price_source='official_live',own_price_asof='2026-10-15T14:00:01Z',identity_verified=False))
+SELECTION = dict(
+    id='fixture-selection', batch_id='fixture-batch', batch_name='布局验收',
+    plid='12345678', tsin='87654321', product_name=PRODUCT['product_name'],
+    chinese_product_name='收纳包', product_image_url='', image_urls=[],
+    fee_category='Home', fee_category_confidence='high', fee_category_reason='',
+    takealot_category_path='Home > Storage', actual_sale_price_zar=269,
+    rating_value=4.5, review_count=120, tier='S', already_in_products=False,
+    promoted_product_id=None, selected=True, status='待核算',
+    length_mm=200, width_mm=100, height_mm=50, actual_weight_kg=0.2,
+    dimensions_source='manual', purchase_cost_cny=30, purchase_shipping_cny=5,
+    purchase_quantity=10, unit_price_cny=3, shipping_method='空运',
+    chargeable_weight_kg=0.2, cost_to_sa_warehouse_zar=100, total_cost_zar=150,
+    profit_zar=119, profit_margin=0.44, enrich_status='ok', enrich_message='',
+    takealot_url='', purchase_url='', note='', sales_qty=None,
+)
+
 DATA = {
+    '/api/selection/batches': [dict(batch_id='fixture-batch', batch_name='布局验收', count=1, created_at='2026-10-29T10:00:00Z')],
+    '/api/selection/items': dict(items=[SELECTION], total=1),
+    '/api/selection/summary': dict(total=1, pending=1, qualified=0, rejected=0, promoted=0,
+                                   selected=1, duplicates=0, with_image=0, with_dimensions=1, no_plid=0),
     '/api/stores':[STORE], '/api/inventory/stores-overview':[],
     '/api/products':[PRODUCT], '/api/products/'+PRODUCT['id']:PRODUCT,
     # 详情页底部的「同类商品 / 配套周边」。漏声明时这个请求 404、整块静默降级成
@@ -202,6 +222,10 @@ def main():
                 try: page.get_by_role('heading',name=title,exact=False).first.wait_for(timeout=8000)
                 except Exception: failures.append(f'{width} {path}: missing heading');continue
                 page.locator('.loading').wait_for(state='hidden')
+                if path == '/selection':
+                    page.locator('.selection-card').first.wait_for(state='visible')
+                    if page.locator('.selection-card').count() != 1:
+                        failures.append(f'{width} /selection: fixture card not rendered')
                 details=page.evaluate('''() => ({width:document.documentElement.clientWidth, scroll:document.documentElement.scrollWidth,
                     header:document.querySelector('.app-header').getBoundingClientRect().right,
                     offenders:[...document.querySelectorAll('body *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0 && r.right>innerWidth+2 && !e.closest('table') && !e.closest('.primary-nav')}).slice(0,5).map(e=>e.className||e.tagName)})''')
