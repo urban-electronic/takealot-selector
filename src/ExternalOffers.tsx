@@ -245,6 +245,10 @@ export default function ExternalOffers({
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [notice, setNotice] = useState('');
+  // 外跳搜索词：可编辑，默认取商品名。商品的中文名常常只是「假发」这种大类词，
+  // 拿它直接去 1688 搜会出来一整屏不相干的东西，所以要让人能改成「发网」。
+  const [searchCn, setSearchCn] = useState('');
+  const [searchEn, setSearchEn] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -306,6 +310,12 @@ export default function ExternalOffers({
   }, [productName, productNameCn]);
 
   const total = (result?.sourcing.length || 0) + (result?.market.length || 0);
+
+  // 商品换了就把搜索词重置成新商品的名字（否则会带着上一件商品的词）
+  useEffect(() => {
+    setSearchCn(keywords.cn || '');
+    setSearchEn(keywords.en || '');
+  }, [keywords.cn, keywords.en]);
 
   return (
     <div className="card" data-external-offers="1">
@@ -481,7 +491,7 @@ export default function ExternalOffers({
               offers={result?.sourcing || []}
               onArchive={archive}
               onOpen={api.openUrl}
-              emptyText={`还没有匹配的 1688 货源。点右上「登记一条」把看中的链接存进来；或者直接去 1688 搜「${keywords.cn || '关键词'}」自己看。`}
+              emptyText={`还没有匹配的 1688 货源。点右上「登记一条」把看中的链接存进来；或者用下面的搜索框去 1688 找——搜到合适的再回来登记。`}
             />
             <Column
               title="Takealot 同类"
@@ -489,26 +499,46 @@ export default function ExternalOffers({
               offers={result?.market || []}
               onArchive={archive}
               onOpen={api.openUrl}
-              emptyText={`还没有匹配的 Takealot 同类。点右上「登记一条」存一条竞品链接；或者去 Takealot 搜「${keywords.en || '关键词'}」自己看。`}
+              emptyText={`还没有匹配的 Takealot 同类。点右上「登记一条」存一条竞品链接；或者用下面的搜索框去看看别人卖多少钱。`}
             />
           </div>
 
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            {/* 搜索词可改：商品的中文名经常只是「假发」这种大类词，
+                直接拿去 1688 搜会出来一整屏不相干的东西。默认值只是起点。 */}
+            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block' }}>
+              1688 搜索词
+              <input
+                value={searchCn}
+                onChange={(e) => setSearchCn(e.target.value)}
+                placeholder="例如：发网 / 假发支架"
+                style={{ display: 'block', width: 180, marginTop: 4 }}
+              />
+            </label>
             <button
               type="button"
               className="btn btn-outline btn-sm"
-              onClick={() => api.openUrl(searchUrl('1688', keywords.cn || ''))}
-              disabled={!keywords.cn}
+              onClick={() => api.openUrl(searchUrl('1688', searchCn))}
+              disabled={!searchCn.trim()}
             >
-              去 1688 搜同类
+              去 1688 搜
             </button>
+            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginLeft: 12 }}>
+              Takealot 搜索词
+              <input
+                value={searchEn}
+                onChange={(e) => setSearchEn(e.target.value)}
+                placeholder="例如：wig cap"
+                style={{ display: 'block', width: 240, marginTop: 4 }}
+              />
+            </label>
             <button
               type="button"
               className="btn btn-outline btn-sm"
-              onClick={() => api.openUrl(searchUrl('takealot', keywords.en || ''))}
-              disabled={!keywords.en}
+              onClick={() => api.openUrl(searchUrl('takealot', searchEn))}
+              disabled={!searchEn.trim()}
             >
-              去 Takealot 搜同类
+              去 Takealot 搜
             </button>
           </div>
 
