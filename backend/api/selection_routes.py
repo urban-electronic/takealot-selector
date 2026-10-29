@@ -89,12 +89,30 @@ def _fee_rate(db: Session, fee_category: Optional[str]) -> Optional[float]:
     return row.success_fee_rate if row else None
 
 
+def _derive_purchase_cost(item: SelectionItem) -> None:
+    """供货单价 × 采购数量 = 采购价。
+
+    供货单价有值时，采购价由它算出来，不再单独维护：两个都能手填必然打架，
+    而且现实中你常常只知道单价、不知道这批总共花了多少。单价留空时采购价
+    照旧手填（老用法不变），这样只拿到总价的那批数据也不会被清掉。
+    """
+    if item.unit_price_cny is None:
+        return
+    quantity = item.purchase_quantity or 4
+    if quantity <= 0:
+        return
+    item.purchase_cost_cny = round(item.unit_price_cny * quantity, 2)
+
+
 def _calc(item: SelectionItem, exchange_rate: float, fee_rate: Optional[float]) -> None:
     """把重尺+成本算成利润率，写回 item。
 
     `calculate_all` 里任一环缺失后面全 None，所以这里不需要自己判断完整性——
     缺什么就是 None，界面显示「待核算」。
     """
+    # 放在最前面：导入、单条改、批量改、enrich、一键新建都会走 _calc，
+    # 在这里派生能保证所有入口算出来的采购价是同一个口径。
+    _derive_purchase_cost(item)
     payload = {
         "length_mm": item.length_mm,
         "width_mm": item.width_mm,

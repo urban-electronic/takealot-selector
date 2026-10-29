@@ -71,7 +71,7 @@ const FEE_CATEGORY_SOURCE = { getFeeCategories };
 
 /** 数值输入：本地保留字符串，失焦或回车才提交，避免每敲一个字符发一次请求。 */
 function NumberCell({
-  label, value, unit, step, onCommit, disabled,
+  label, value, unit, step, onCommit, disabled, hint,
 }: {
   label: string;
   value: number | null;
@@ -79,6 +79,8 @@ function NumberCell({
   step?: number;
   onCommit: (next: number | null) => void;
   disabled?: boolean;
+  /** 字段由别的字段算出来时，在标签后标一句来源（如「= 单价×数量」）。 */
+  hint?: string;
 }) {
   const [draft, setDraft] = useState(value == null ? '' : String(value));
   useEffect(() => { setDraft(value == null ? '' : String(value)); }, [value]);
@@ -96,13 +98,17 @@ function NumberCell({
 
   return (
     <label className="selection-field">
-      <span>{label}{unit ? <i>{unit}</i> : null}</span>
+      <span>
+        {label}{unit ? <i>{unit}</i> : null}
+        {hint ? <i title={hint}>{hint}</i> : null}
+      </span>
       <input
         type="number"
         inputMode="decimal"
         step={step ?? 1}
         value={draft}
         disabled={disabled}
+        title={hint}
         onChange={event => setDraft(event.target.value)}
         onBlur={commit}
         onKeyDown={event => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
@@ -135,6 +141,11 @@ function SelectionCard({
   const locked = Boolean(item.promoted_product_id);
   const dimsMissing = item.length_mm == null || item.width_mm == null
     || item.height_mm == null || item.actual_weight_kg == null;
+  // 供货单价填了就以它为准：采购价 = 单价 × 数量。后端 _calc 里是同一个口径，
+  // 这里算一份只为把值立刻显示出来，不用等一次往返。
+  const derivedCost = item.unit_price_cny == null
+    ? null
+    : Math.round(item.unit_price_cny * (item.purchase_quantity || 4) * 100) / 100;
 
   return (
     <article className={`selection-card ${item.selected ? 'is-selected' : ''} ${locked ? 'is-locked' : ''}`}>
@@ -195,14 +206,19 @@ function SelectionCard({
           onCommit={next => onPatch({ height_mm: next ?? undefined })} />
         <NumberCell label="重量" unit="kg" step={0.01} value={item.actual_weight_kg} disabled={locked}
           onCommit={next => onPatch({ actual_weight_kg: next ?? undefined })} />
-        <NumberCell label="采购价" unit="¥" step={0.01} value={item.purchase_cost_cny} disabled={locked}
+        {/* 顺序按「单价 × 数量 = 采购价」排：先填单价和数量，采购价自动出来，
+            不用先算总价再除。 */}
+        <NumberCell label="供货单价" unit="¥" step={0.01} value={item.unit_price_cny} disabled={locked}
+          onCommit={next => onPatch({ unit_price_cny: next ?? undefined })} />
+        <NumberCell label="采购数量" value={item.purchase_quantity} disabled={locked}
+          onCommit={next => onPatch({ purchase_quantity: next ?? undefined })} />
+        <NumberCell label="采购价" unit="¥" step={0.01}
+          value={derivedCost ?? item.purchase_cost_cny}
+          disabled={locked || derivedCost != null}
+          hint={derivedCost != null ? '= 单价×数量' : undefined}
           onCommit={next => onPatch({ purchase_cost_cny: next ?? undefined })} />
         <NumberCell label="国内运费" unit="¥" step={0.01} value={item.purchase_shipping_cny} disabled={locked}
           onCommit={next => onPatch({ purchase_shipping_cny: next ?? undefined })} />
-        <NumberCell label="采购数量" value={item.purchase_quantity} disabled={locked}
-          onCommit={next => onPatch({ purchase_quantity: next ?? undefined })} />
-        <NumberCell label="供货单价" unit="¥" step={0.01} value={item.unit_price_cny} disabled={locked}
-          onCommit={next => onPatch({ unit_price_cny: next ?? undefined })} />
       </div>
 
       <div className="selection-row">

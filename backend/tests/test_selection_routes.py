@@ -674,3 +674,57 @@ class TestDiagPublic:
         assert report["success"] is True
         assert report["image_ok"] is False
         assert "没返回图库" in report["hint"]
+
+
+class TestPurchaseCostDerivation:
+    """采购价 = 供货单价 × 采购数量。
+
+    两个都手填必然打架：改单价忘了改总价，算出来的利润率就是错的。所以定了
+    「单价有值就以它为准」。这里钉住四种情况，尤其是「单价留空时不能把已经
+    手填的总价清掉」——只拿到总价的那批数据靠这条才不会被抹掉。
+    """
+
+    def test_multiplies_unit_price_by_quantity(self, db, monkeypatch):
+        item = _prepare_item(db, monkeypatch)
+        updated = patch_item(item.id, ItemPatch(
+            unit_price_cny=12.5, purchase_quantity=8,
+        ), db=db, store_id=STORE)
+
+        assert updated["purchase_cost_cny"] == 100.0
+
+    def test_follows_quantity_changes(self, db, monkeypatch):
+        item = _prepare_item(db, monkeypatch)
+        patch_item(item.id, ItemPatch(unit_price_cny=10, purchase_quantity=4),
+                   db=db, store_id=STORE)
+        updated = patch_item(item.id, ItemPatch(purchase_quantity=10),
+                             db=db, store_id=STORE)
+
+        assert updated["purchase_cost_cny"] == 100.0
+
+    def test_overrides_a_manually_entered_total(self, db, monkeypatch):
+        """单价一旦有值，手填的总价就作废——否则两个来源会互相矛盾。"""
+        item = _prepare_item(db, monkeypatch)
+        patch_item(item.id, ItemPatch(purchase_cost_cny=999), db=db, store_id=STORE)
+        updated = patch_item(item.id, ItemPatch(unit_price_cny=5, purchase_quantity=4),
+                             db=db, store_id=STORE)
+
+        assert updated["purchase_cost_cny"] == 20.0
+
+    def test_keeps_manual_total_when_unit_price_is_empty(self, db, monkeypatch):
+        item = _prepare_item(db, monkeypatch)
+        updated = patch_item(item.id, ItemPatch(
+            purchase_cost_cny=66, purchase_quantity=4,
+        ), db=db, store_id=STORE)
+
+        assert updated["purchase_cost_cny"] == 66
+
+    def test_clearing_unit_price_keeps_the_last_total(self, db, monkeypatch):
+        """清掉单价只是回到手填模式，不该把已经算好的总价一起清掉。"""
+        item = _prepare_item(db, monkeypatch)
+        patch_item(item.id, ItemPatch(unit_price_cny=7, purchase_quantity=3),
+                   db=db, store_id=STORE)
+        updated = patch_item(item.id, ItemPatch(unit_price_cny=None),
+                             db=db, store_id=STORE)
+
+        assert updated["unit_price_cny"] is None
+        assert updated["purchase_cost_cny"] == 21.0
