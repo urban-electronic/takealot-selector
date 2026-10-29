@@ -415,3 +415,153 @@ export function formatPercent(val: number | string | null | undefined): string {
   if (ratio == null) return '-';
   return `${(ratio * 100).toFixed(2)}%`;
 }
+
+/* ---------------------------------------------------------------------------
+ * 选品池（/selection）
+ *
+ * 和 `Product` 的区别：这是**待核算的候选**，不是产品主档。只有勾中并
+ * 「一键新建产品」之后才会复制成 `Product`。字段名刻意与 `Product` 对齐，
+ * 这样两边算利润用的是同一套公式（services/product_calculator.py）。
+ * ------------------------------------------------------------------------- */
+
+export type SelectionItemStatus = '待核算' | '合格' | '不合格' | '已建产品';
+
+export interface SelectionItem {
+  id: string;
+  batch_id: string;
+  batch_name: string;
+  plid: string;
+  tsin: string;
+  takealot_url: string;
+  product_name: string;
+  chinese_product_name: string;
+  brand: string;
+  product_image_url: string;
+  image_urls: string[];
+  takealot_category_path: string;
+  fee_category: string;
+  /** high / medium / low —— 类目是推断出来的，置信度决定要不要人工复核 */
+  fee_category_confidence: string;
+  fee_category_reason: string;
+  actual_sale_price_zar: number | null;
+  rating_value: number | null;
+  review_count: number | null;
+  /** 只有销售报表带来的行才有；竞品表这三项都是 null */
+  sales_qty: number | null;
+  net_sales_zar: number | null;
+  gross_sales_zar: number | null;
+  net_sales_cny: number | null;
+  /** S / A / B / C；没有销售数据时为空串 */
+  tier: string;
+  already_in_products: boolean;
+  promoted_product_id: string | null;
+  length_mm: number | null;
+  width_mm: number | null;
+  height_mm: number | null;
+  actual_weight_kg: number | null;
+  /**
+   * 重尺来源，可信度从高到低：
+   * product_list（产品列表里已有的）/ seller_api（本店 offer）/
+   * catalogue_api（卖家目录接口）/ public_api（公开页，约 10%，仅预填）/
+   * manual（人工填，锁定，不再被覆盖）
+   */
+  dimensions_source: string;
+  purchase_url: string;
+  purchase_cost_cny: number | null;
+  purchase_shipping_cny: number | null;
+  purchase_quantity: number;
+  unit_price_cny: number | null;
+  packaging_cost_per_unit_cny: number | null;
+  shipping_method: string | null;
+  fulfillment_fee_zar: number | null;
+  success_fee_zar: number | null;
+  chargeable_weight_kg: number | null;
+  unit_product_cost_cny: number | null;
+  international_shipping_per_unit_cny: number | null;
+  cost_to_sa_warehouse_zar: number | null;
+  total_cost_zar: number | null;
+  profit_zar: number | null;
+  profit_margin: number | null;
+  status: SelectionItemStatus;
+  selected: boolean;
+  enrich_status: string;
+  enrich_message: string;
+  note: string;
+}
+
+export interface SelectionImportResult {
+  batch_id: string;
+  batch_name: string;
+  sheet: string;
+  source_rows: number;
+  merged_rows: number;
+  created: number;
+  already_in_products: number;
+  skipped: number;
+  with_sales_data: number;
+  columns: Record<string, number>;
+  unknown_headers: string[];
+}
+
+export interface SelectionEnrichResult {
+  processed: number;
+  ok: number;
+  failed: number;
+  /** 从卖家 API 或目录接口拿到重尺的条数 */
+  with_dimensions: number;
+  /** 直接从产品主档抄到重尺的条数（自家商品的主路径） */
+  from_product_list: number;
+  /** 图/类目/价格主档里已经齐全、没再打网络的条数 */
+  skipped_network: number;
+  remaining: number;
+  seller_api: string;
+  failures: { id: string; plid: string; tsin: string; message: string }[];
+}
+
+export interface SelectionSummary {
+  total: number;
+  pending: number;
+  qualified: number;
+  rejected: number;
+  promoted: number;
+  selected: number;
+  duplicates: number;
+  with_image: number;
+  with_dimensions: number;
+  no_plid: number;
+}
+
+export interface SelectionBatch {
+  batch_id: string;
+  batch_name: string;
+  count: number;
+  created_at: string;
+}
+
+export interface SelectionItemPatch {
+  product_name?: string;
+  chinese_product_name?: string;
+  fee_category?: string;
+  takealot_url?: string;
+  actual_sale_price_zar?: number;
+  length_mm?: number;
+  width_mm?: number;
+  height_mm?: number;
+  actual_weight_kg?: number;
+  purchase_url?: string;
+  purchase_cost_cny?: number;
+  purchase_shipping_cny?: number;
+  purchase_quantity?: number;
+  unit_price_cny?: number;
+  packaging_cost_per_unit_cny?: number;
+  shipping_method?: string;
+  selected?: boolean;
+  note?: string;
+}
+
+export interface SelectionPromoteResult {
+  created: number;
+  skipped: number;
+  products: { id: string; product_id: string; product_no: string; product_name: string }[];
+  skip_details: { id: string; reason: string }[];
+}

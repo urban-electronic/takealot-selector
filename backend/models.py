@@ -413,3 +413,108 @@ class ExternalOffer(Base):
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SelectionItem(Base):
+    """选品池：待核算的候选商品，**不是**产品主档。
+
+    为什么单独建表而不写进 `products`
+    ---------------------------------
+    `products` 是库存、打包、采购三块的锚点（`inventory_routes` 查库存时只按
+    `store_id + is_archived` 过滤，不看 `selection_status`；打包有 32 处引用、
+    采购 10 处）。把一批待核算的候选写进去，它们会立刻出现在库存和打包清单里，
+    被当成真货处理；而一轮选品 1800 条里绝大多数会被淘汰，删掉又会在
+    `product_no` 上留下空洞。
+
+    所以草稿留在本表，只有勾选并「一键新建产品」时才复制进 `products`，
+    并把 `promoted_product_id` 指回去——之后 `products` 里那条是真数据，
+    本表只作为来源记录。
+
+    三类输入都能落进来
+    ------------------
+    - 只有链接（竞品店铺导出）→ `takealot_url`，PLID 从链接里取
+    - 只有 TSIN（Takealot 销售报表）→ `tsin`，enrich 时用卖家 API 反查 PLID
+    - 链接 + 销售数据（自己整理的选品表）→ 全字段都有
+
+    `status` 与 `Product.selection_status` 用词一致，但含义更粗：
+    待核算 / 合格 / 不合格 / 已建产品。
+    """
+
+    __tablename__ = "selection_items"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
+
+    # 一批 = 一次上传。batch_id 用时间戳+随机串，便于整批清掉重来。
+    batch_id = Column(String, default="", index=True)
+    batch_name = Column(String, default="")
+    source_row = Column(Integer, nullable=True)
+
+    # ---- 身份 ----
+    plid = Column(String, default="", index=True)
+    tsin = Column(String, default="", index=True)
+    takealot_url = Column(String, default="")
+    product_name = Column(String, default="")
+    chinese_product_name = Column(String, default="")
+    brand = Column(String, default="")
+    product_image_url = Column(String, default="")
+    image_urls = Column(Text, default="")      # JSON 数组，识图时一次给 3 张
+
+    # ---- 类目与费率 ----
+    takealot_category_path = Column(String, default="")
+    fee_category = Column(String, default="")
+    fee_category_confidence = Column(String, default="")   # high / medium / low
+    fee_category_reason = Column(String, default="")
+
+    # ---- 市场信号（公开接口或原表带来）----
+    actual_sale_price_zar = Column(Float, nullable=True)
+    rating_value = Column(Float, nullable=True)
+    review_count = Column(Integer, nullable=True)
+
+    # ---- 原表里的销售数据（可能为空：竞品表就没有）----
+    sales_qty = Column(Integer, nullable=True)
+    net_sales_zar = Column(Float, nullable=True)
+    gross_sales_zar = Column(Float, nullable=True)
+    net_sales_cny = Column(Float, nullable=True)
+    tier = Column(String, default="")          # S / A / B / C，无销售数据时留空
+
+    # ---- 与产品列表的关系 ----
+    already_in_products = Column(Boolean, default=False, index=True)
+    promoted_product_id = Column(String, nullable=True)
+
+    # ---- 重尺（手填为主，公开接口拿到就预填）----
+    length_mm = Column(Float, nullable=True)
+    width_mm = Column(Float, nullable=True)
+    height_mm = Column(Float, nullable=True)
+    actual_weight_kg = Column(Float, nullable=True)
+    dimensions_source = Column(String, default="")   # public_api / manual
+
+    # ---- 采购 ----
+    purchase_url = Column(String, default="")
+    purchase_cost_cny = Column(Float, nullable=True)
+    purchase_shipping_cny = Column(Float, nullable=True)
+    purchase_quantity = Column(Integer, default=4)
+    unit_price_cny = Column(Float, nullable=True)
+    packaging_cost_per_unit_cny = Column(Float, default=1.0)
+    shipping_method = Column(String, nullable=True)
+
+    # ---- 计算结果（由 calculate_all 写入，只做展示与排序，不参与再计算）----
+    fulfillment_fee_zar = Column(Float, nullable=True)
+    success_fee_zar = Column(Float, nullable=True)
+    volume_cbm = Column(Float, nullable=True)
+    chargeable_weight_kg = Column(Float, nullable=True)
+    unit_product_cost_cny = Column(Float, nullable=True)
+    international_shipping_per_unit_cny = Column(Float, nullable=True)
+    cost_to_sa_warehouse_zar = Column(Float, nullable=True)
+    total_cost_zar = Column(Float, nullable=True)
+    profit_zar = Column(Float, nullable=True)
+    profit_margin = Column(Float, nullable=True)
+
+    # ---- 流程状态 ----
+    status = Column(String, default="待核算", index=True)   # 待核算 / 合格 / 不合格 / 已建产品
+    selected = Column(Boolean, default=False)
+    enrich_status = Column(String, default="")             # "" / ok / failed
+    enrich_message = Column(String, default="")
+    note = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
