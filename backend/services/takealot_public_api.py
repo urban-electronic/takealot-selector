@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from threading import Event
 import urllib.error
@@ -36,6 +37,70 @@ REQUEST_HEADERS = {"User-Agent": "takealot-selector/1.0", "Accept": "application
 ACCESS_STOP_STATUS = {401, 403, 429}
 RETRY_STATUS = {500, 502, 503, 504}
 RETRY_DELAYS = (0.6, 1.8)
+
+MAX_RETRIES = 3
+
+
+class _Pacer:
+    """进程内的请求节流：任意两次请求之间至少隔 interval 秒。
+
+    为什么要它：`fetch_many` 并发打过去，从机房 IP 会被 Cloudflare 判成机器人
+    直接 429。光靠「失败了重试」治不好——重试的请求同样挤在窗口里。
+    真正有效的是**主动放慢**：把并发压成「串行排队 + 最小间隔」。
+
+    interval 会随 429 翻倍（只增不减），所以：
+    - 网络宽松时按初始节奏跑，不白等；
+    - 一旦被限流，停止本批；保留更慢节奏供接入条件改变后的人工操作使用。
+    """
+
+    def __init__(self, interval: float = 0.2, max_interval: float = 2.0):
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+        self._initial = interval
+        self.interval = interval
+        self.max_interval = max_interval
+
+    def wait(self, stop_event: Optional[Event] = None) -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
+        with self._lock:
+            now = time.monotonic()
+            delay = max(0.0, self._next_at - now)
+            self._next_at = max(now, self._next_at) + self.interval
+        if delay:
+            if stop_event is not None:
+                if stop_event.wait(delay):
+                    raise PublicReadStopped()
+            else:
+                time.sleep(delay)
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
+
+    def penalize(self) -> None:
+        """吃到 429 就把整体节奏放慢一档，本次运行内不再调回去。"""
+        with self._lock:
+            self.interval = min(self.interval * 2, self.max_interval)
+
+    def reset(self) -> None:
+        """测试用：把学到的节奏清掉。"""
+        with self._lock:
+            self.interval = self._initial
+            self._next_at = 0.0
+
+
+PACER = _Pacer()
+
+
+def fetch_budget(seconds: float = 45.0) -> int:
+    """按当前节奏，`seconds` 秒内大概能抓多少个。
+
+    为什么需要它：`enrich` 是「先整批抓、最后一次 commit」，一个请求要跑多久
+    完全由抓取速度决定。这是按间隔估算的数量，并非强制总时限。被限流后 PACER
+    会把间隔翻倍到 2 秒，400 个就变成 13 分钟——代理层早就把连接掐了，
+    抓到的数据随未提交的事务一起丢。所以调用方按这个数切一刀，剩下的交给
+    下一轮请求，进度才不会白费。
+    """
+    return max(1, int(seconds / max(PACER.interval, 0.05)))
 
 # 图库尺寸令牌。s-thumbnail 只有 40×40，s-pdpxl 459×459，s-zoom 约 1041×1033。
 # 识图要用 zoom；如果下游只要小图，改这个常量即可。
@@ -69,34 +134,70 @@ def parse_plid(value: Any) -> Optional[int]:
     return None
 
 
+def _header_value(headers: Any, name: str) -> Optional[str]:
+    """不区分大小写读取响应头，不输出其余响应内容。"""
+    if headers is None:
+        return None
+    try:
+        pairs = list(headers.items())
+    except Exception:
+        return None
+    for key, value in pairs:
+        if str(key).lower() == name.lower():
+            return value
+    return None
+
+
+def _retry_delay(error: Optional[BaseException], attempt: int) -> float:
+    """暂时性故障的退避；按大小写不敏感的 Retry-After 等待，最多30秒。"""
+    retry_after = _header_value(getattr(error, "headers", None), "Retry-After")
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 1.0), 30.0)
+        except (TypeError, ValueError):
+            pass
+    return RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+
+
+def _request_json(url: str, timeout: float) -> Dict[str, Any]:
+    """真实应用标识，只读JSON；不模拟浏览器或切换指纹/出口。"""
+    request = urllib.request.Request(url, headers=REQUEST_HEADERS)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", "ignore"))
+
+
 def _http_json(url: str, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
-    """仅对暂时性网络/5xx 故障有限重试；认证、拒绝及限流立即交还调用方。"""
+    """主动节流；仅暂时性故障有限重试，拒绝/限流立即停止。"""
     last_error: Optional[BaseException] = None
-    for delay in (0.0,) + RETRY_DELAYS:
+    for attempt in range(MAX_RETRIES + 1):
         if stop_event is not None and stop_event.is_set():
             raise PublicReadStopped()
-        if delay:
+        if attempt:
+            delay = _retry_delay(last_error, attempt - 1)
             if stop_event is not None:
                 if stop_event.wait(delay):
                     raise PublicReadStopped()
             else:
                 time.sleep(delay)
+        PACER.wait(stop_event)
         if stop_event is not None and stop_event.is_set():
             raise PublicReadStopped()
-        request = urllib.request.Request(url, headers=REQUEST_HEADERS)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8", "ignore"))
+            return _request_json(url, timeout)
         except urllib.error.HTTPError as error:
             if error.code in ACCESS_STOP_STATUS and stop_event is not None:
                 stop_event.set()
+            if error.code == 429:
+                PACER.penalize()
             error.close()
-            last_error = error
-            if error.code not in RETRY_STATUS:
+            if error.code not in RETRY_STATUS or attempt == MAX_RETRIES:
                 raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
             last_error = error
-    raise last_error if last_error else RuntimeError("公开接口读取失败")
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            if attempt == MAX_RETRIES:
+                raise
+            last_error = error
+    raise RuntimeError("公开接口读取失败")
 
 
 def _first_price(payload: Dict[str, Any]) -> Optional[float]:
@@ -263,7 +364,7 @@ def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] 
     return result
 
 
-def fetch_many(plids: Iterable[Any], workers: int = 8) -> List[Dict[str, Any]]:
+def fetch_many(plids: Iterable[Any], workers: int = 4) -> List[Dict[str, Any]]:
     """并发读取多个 PLID。
 
     首次访问拒绝或限流后，待发任务只返回明确失败；已发请求允许结束。
@@ -288,5 +389,5 @@ def fetch_many(plids: Iterable[Any], workers: int = 8) -> List[Dict[str, Any]]:
             stopped.set()
         return record
 
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 12))) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 4))) as pool:
         return list(pool.map(read_one, unique))

@@ -63,6 +63,10 @@ QUALIFY_MARGIN = 0.15
 
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 ENRICH_CHUNK = 400          # 单次请求最多抓这么多个，剩下的由前端接着调
+# 单次请求最多把多少秒花在「打网络」上。见 `pub.fetch_budget`：被限流时节流
+# 会把间隔放到 2 秒，400 个能拖成十几分钟，而 commit 在最后——请求先被掐掉
+# 就等于整块白抓。宁可多调几轮，也不要一次跑不完。
+ENRICH_NETWORK_BUDGET_SECONDS = 45.0
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +679,7 @@ def enrich(
     # --- 第三优先：竞品重尺走卖家目录接口（若探测通了）---
     dims_from_catalogue = _fill_catalogue_dims(db, targets)
 
-    # --- 公开接口补齐图/类目/价格（并发，8 线程实测最稳）---
+    # --- 公开接口补齐图/类目/价格（并发上限 4，真正的节流在 PACER 里）---
     #
     # 主档里已经把图/类目/价格都给全的，不用再打一次网络——1800 条销售报表
     # 里绝大多数是这种情况，省下来的是几十秒。
@@ -694,17 +698,36 @@ def enrich(
             )
         ]
     records: Dict[str, Dict[str, Any]] = {}
+    deferred_plids: set = set()
+    all_needed = set(need_fetch)
     if need_fetch:
-        for record in pub.fetch_many(need_fetch, workers=8):
+        # 被限流时 PACER 会把间隔翻倍，400 个能拖成十几分钟——这个请求会在
+        # commit 之前被代理掐掉，抓到的全丢。所以按当前节奏算这一轮抓得完多少，
+        # 剩下的留给前端下一轮（`remaining` 会让它接着调）。
+        afford = pub.fetch_budget(ENRICH_NETWORK_BUDGET_SECONDS)
+        if len(need_fetch) > afford:
+            deferred_plids = set(need_fetch[afford:])
+            need_fetch = need_fetch[:afford]
+        # workers 是并发**上限**不是目标：请求之间由 PACER 强制排队。
+        # 写死 8 会把 fetch_many 的新默认值（4）抵消掉，机房 IP 上就是整片 429。
+        for record in pub.fetch_many(need_fetch, workers=4):
             if record.get("plid") is not None:
                 records[str(record["plid"])] = record
-    skipped_network = sum(1 for item in targets if item.plid) - len(need_fetch)
+    # 按条数算，不按 plid 去重后的个数算：同一 PLID 可能对应多条选品记录，
+    # 用集合长度会让这两个计数偏小，前端看到的「省了多少 / 处理了多少」就对不上。
+    skipped_network = sum(1 for item in targets if item.plid and item.plid not in all_needed)
 
     exchange_rate = _exchange_rate(db)
     fee_rates: Dict[str, Optional[float]] = {}
-    ok = failed = 0
+    ok = failed = handled = 0
     failures: List[Dict[str, str]] = []
     for item in targets:
+        # 被推迟的这几条这一轮压根没打网络。如果照常走一遍，会被记成「抓取失败」，
+        # 前端看到一片红；而且 enrich_status 一旦变成 failed 就不在 remaining 里，
+        # 下一轮再也不会自动重试。所以原样留着，等下一轮。
+        if item.plid in deferred_plids:
+            continue
+        handled += 1
         _apply_public(item, records.get(item.plid or ""), db)
         if item.fee_category and item.fee_category not in fee_rates:
             fee_rates[item.fee_category] = _fee_rate(db, item.fee_category)
@@ -732,11 +755,13 @@ def enrich(
         )
         .scalar()
     ) or 0
-    if data.ids or data.batch_id:
+    if (data.ids or data.batch_id) and not deferred_plids:
         remaining = 0   # 指定了范围就只跑这一批，不诱导前端无限循环
 
     return {
-        "processed": len(targets),
+        # 推迟到下一轮的不算「已处理」——否则前端的「已抓取 N 个」会虚高，
+        # 而且 `!processed` 这个收尾判断也会失效。
+        "processed": handled,
         "ok": ok,
         "failed": failed,
         "with_dimensions": dims_from_seller + dims_from_catalogue,

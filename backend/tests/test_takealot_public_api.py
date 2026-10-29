@@ -119,6 +119,17 @@ class TestFirstPrice:
 class TestRetryPolicy:
     """隔离传输：受限即停；只有暂时性故障允许有限重试。"""
 
+    @pytest.fixture(autouse=True)
+    def _fresh_pacer(self, monkeypatch):
+        """PACER 是模块级单例，用例之间必须复位，否则前一个用例吃到的 429
+        会把后一个用例的节奏带慢（甚至影响真实跑批）。"""
+        from services import takealot_public_api as api
+
+        api.PACER.reset()
+        monkeypatch.setattr(api.PACER, "wait", lambda stop_event=None: None)
+        yield
+        api.PACER.reset()
+
     @staticmethod
     def _fake_urlopen(responses):
         """按顺序吐出预置响应；元素是异常就抛，是 bytes 就当成响应体。"""
@@ -167,7 +178,7 @@ class TestRetryPolicy:
 
         with pytest.raises(urllib.error.HTTPError):
             api._http_json("https://example.invalid")
-        assert calls["n"] == 1 + len(api.RETRY_DELAYS)
+        assert calls["n"] == 1 + api.MAX_RETRIES
 
     def test_does_not_retry_a_plain_404(self, monkeypatch):
         import urllib.error
@@ -251,8 +262,8 @@ class TestRetryPolicy:
         monkeypatch.setattr(api.time, 'sleep', sleeps.append)
         with pytest.raises(TimeoutError):
             api._http_json('https://example.invalid')
-        assert calls['n'] == 1 + len(api.RETRY_DELAYS)
-        assert sleeps == list(api.RETRY_DELAYS)
+        assert calls['n'] == 1 + api.MAX_RETRIES
+        assert sleeps == [api._retry_delay(None,i) for i in range(api.MAX_RETRIES)]
 
     def test_batch_keeps_success_before_access_denied(self, monkeypatch):
         import urllib.error
@@ -295,3 +306,209 @@ class TestRetryPolicy:
         assert rows[0]['public_access_blocked'] is True
         assert not any(row['success'] for row in rows)
         assert [row['plid'] for row in rows] == [123,456,789]
+
+
+    def test_429_penalizes_pace_but_does_not_retry(self, monkeypatch):
+        import urllib.error
+        from services import takealot_public_api as api
+        opener,calls=self._fake_urlopen([urllib.error.HTTPError('u',429,'limited',None,None),b'{}'])
+        monkeypatch.setattr(api.urllib.request,'urlopen',opener)
+        before=api.PACER.interval
+        with pytest.raises(urllib.error.HTTPError):api._http_json('https://example.invalid')
+        assert calls['n']==1
+        assert api.PACER.interval == pytest.approx(before*2)
+
+
+class TestRetryDelay:
+    """暂时性故障退避为0.6s/1.8s，Retry-After优先；401/403/429不进入重试。"""
+    def test_503_uses_the_long_ramp(self):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        error = urllib.error.HTTPError("u", 503, "x", None, None)
+        assert api._retry_delay(error, 0) == api.RETRY_DELAYS[0]
+        assert api._retry_delay(error, 1) == api.RETRY_DELAYS[1]
+
+    def test_503_clamps_at_the_last_step(self):
+        """重试次数配得比退避表长时不能 IndexError。"""
+        import urllib.error
+        from services import takealot_public_api as api
+
+        error = urllib.error.HTTPError("u", 503, "x", None, None)
+        assert api._retry_delay(error, 99) == api.RETRY_DELAYS[-1]
+
+    def test_other_status_uses_the_short_ramp(self):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        error = urllib.error.HTTPError("u", 403, "x", None, None)
+        assert api._retry_delay(error, 0) == api.RETRY_DELAYS[0]
+
+    def test_honours_retry_after(self):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        error = urllib.error.HTTPError("u", 503, "x", {"Retry-After": "7"}, None)
+        assert api._retry_delay(error, 0) == 7.0
+
+    def test_clamps_absurd_retry_after(self):
+        """服务端给 3600 时不能真等一小时——一次点击会把整个请求挂死。"""
+        import urllib.error
+        from services import takealot_public_api as api
+
+        error = urllib.error.HTTPError("u", 503, "x", {"Retry-After": "3600"}, None)
+        assert api._retry_delay(error, 0) == 30.0
+
+    def test_ignores_unparsable_retry_after(self):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        error = urllib.error.HTTPError(
+            "u", 503, "x", {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}, None
+        )
+        assert api._retry_delay(error, 0) == api.RETRY_DELAYS[0]
+
+
+class TestPacer:
+    """节流器：请求之间强制间隔，被限流就放慢且不再调回去。"""
+
+    @staticmethod
+    def _freeze(monkeypatch, api, start=100.0):
+        """把 monotonic 钉死、sleep 改成推进假时钟，用例才能断言「等了多久」。"""
+        clock = {"t": start}
+        slept = []
+
+        def fake_sleep(seconds):
+            slept.append(seconds)
+            clock["t"] += seconds
+
+        monkeypatch.setattr(api.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(api.time, "sleep", fake_sleep)
+        return slept
+
+    def test_first_request_does_not_wait(self, monkeypatch):
+        from services import takealot_public_api as api
+
+        slept = self._freeze(monkeypatch, api)
+        api._Pacer(interval=0.5).wait()
+        assert slept == []
+
+    def test_keeps_a_minimum_gap_between_requests(self, monkeypatch):
+        from services import takealot_public_api as api
+
+        slept = self._freeze(monkeypatch, api)
+        pacer = api._Pacer(interval=0.5)
+        pacer.wait()
+        pacer.wait()
+        pacer.wait()
+        assert slept == [pytest.approx(0.5), pytest.approx(0.5)]
+
+    def test_penalize_doubles_and_caps(self, monkeypatch):
+        from services import takealot_public_api as api
+
+        pacer = api._Pacer(interval=0.2, max_interval=0.5)
+        pacer.penalize()
+        assert pacer.interval == pytest.approx(0.4)
+        pacer.penalize()
+        assert pacer.interval == pytest.approx(0.5)  # 撞上限就停住
+        pacer.penalize()
+        assert pacer.interval == pytest.approx(0.5)
+
+    def test_reset_restores_the_initial_pace(self, monkeypatch):
+        from services import takealot_public_api as api
+
+        pacer = api._Pacer(interval=0.2)
+        pacer.penalize()
+        pacer.reset()
+        assert pacer.interval == pytest.approx(0.2)
+
+
+class TestPacerStop:
+    def test_cancelled_pacing_does_not_send_transport(self, monkeypatch):
+        from threading import Event
+        from services import takealot_public_api as api
+        stop = Event()
+        def reject_during_pacing(event):
+            assert event is stop
+            event.set()
+        monkeypatch.setattr(api.PACER, 'wait', reject_during_pacing)
+        monkeypatch.setattr(api, '_request_json', lambda *a: pytest.fail('request sent after pacing stop'))
+        with pytest.raises(api.PublicReadStopped):
+            api._http_json('https://example.invalid', stop_event=stop)
+
+    def test_stop_interrupts_reserved_pacing_slot(self, monkeypatch):
+        from threading import Event
+        from services import takealot_public_api as api
+        monkeypatch.setattr(api.time, 'monotonic', lambda: 100.0)
+        pacer=api._Pacer(interval=0.5)
+        pacer.wait()
+        stop=Event()
+        delays=[]
+        def cancel(delay):
+            delays.append(delay)
+            stop.set()
+            return True
+        monkeypatch.setattr(stop,'wait',cancel)
+        monkeypatch.setattr(api.time,'sleep',lambda _: pytest.fail('pacing sleep not interruptible'))
+        with pytest.raises(api.PublicReadStopped):pacer.wait(stop)
+        assert delays == [pytest.approx(0.5)]
+
+
+class TestFetchBudget:
+    """一轮请求能抓多少个。切这一刀是为了别让单个请求跑到被代理掐断。"""
+
+    def test_normal_pace_fits_a_full_chunk(self):
+        from services import takealot_public_api as api
+
+        api.PACER.reset()
+        assert api.fetch_budget(45.0) == 225   # 0.2 秒一个
+
+    def test_throttled_pace_shrinks_the_batch(self):
+        """间隔被放大到 2 秒时，45 秒只够 22 个——这才是真实的可用量。"""
+        from services import takealot_public_api as api
+
+        api.PACER.interval = 2.0
+        try:
+            assert api.fetch_budget(45.0) == 22
+        finally:
+            api.PACER.reset()
+
+    def test_never_returns_zero(self):
+        """间隔大到离谱时也得给 1 个，否则前端会以为「没有要抓的」直接停。"""
+        from services import takealot_public_api as api
+
+        api.PACER.interval = 9999.0
+        try:
+            assert api.fetch_budget(45.0) == 1
+        finally:
+            api.PACER.reset()
+
+
+class TestHeaderValue:
+    """响应头读取要不区分大小写。
+
+    HTTP/2 里响应头是小写的（`retry-after`），urllib 给的是 `email.Message`
+    （本身不区分大小写，但测试和未来换库时未必）。只按 `Retry-After` 查会漏，
+    于是服务端说了「等 12 秒」，我们还按 3 秒硬撞。
+    """
+
+    def test_case_insensitive(self):
+        from services import takealot_public_api as api
+
+        assert api._header_value({"retry-after": "5"}, "Retry-After") == "5"
+        assert api._header_value({"Retry-After": "5"}, "retry-after") == "5"
+
+    def test_missing_or_none(self):
+        from services import takealot_public_api as api
+
+        assert api._header_value(None, "Retry-After") is None
+        assert api._header_value({}, "Retry-After") is None
+
+    def test_accepts_email_message(self):
+        from email.message import Message
+
+        from services import takealot_public_api as api
+
+        message = Message()
+        message["Retry-After"] = "9"
+        assert api._header_value(message, "retry-after") == "9"

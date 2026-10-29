@@ -377,7 +377,12 @@ export default function Selection() {
     }
   };
 
-  /** 抓资料：后端一次最多 800 个，remaining 不为 0 就接着调。 */
+  /** 抓资料：后端一次最多 400 个，remaining 不为 0 就接着调。
+   *
+   * 后端主动节流并按估算量切块（见 fetch_budget）；收到拒绝/限流即停止后续轮次，
+   * 所以一轮不一定能清空队列。remaining 还在就再调一轮；跑满上限仍有剩余时
+   * 如实说「还剩多少」，不要报「完成」——用户看到的卡片才是可信的。
+   */
   const handleEnrich = async (refreshAll = false) => {
     setEnriching(true);
     let done = 0;
@@ -385,7 +390,7 @@ export default function Selection() {
     let failed = 0;
     let last: SelectionEnrichResult | null = null;
     try {
-      for (let round = 0; round < 12; round += 1) {
+      for (let round = 0; round < 20; round += 1) {
         const result = await enrichSelection({
           batch_id: batchId || undefined,
           refresh: refreshAll && round === 0,
@@ -393,7 +398,7 @@ export default function Selection() {
         last = result;
         done += result.processed;
         succeeded += result.ok;
-        failed += result.failed;
+        failed += result.failed;   // 每轮的失败要累加：只看最后一轮会漏报
         setEnrichResult(result);
         setNotice({
           kind: 'info',
@@ -403,12 +408,20 @@ export default function Selection() {
       }
       await refresh();
       if (last) {
-        const bits = [`${last.public_access_blocked ? '读取已停止' : '抓取完成'}：成功 ${succeeded} 个，失败 ${failed} 个`];
-        if (last.public_access_blocked) bits.push('公开接口访问受限，已停止后续批次');
+        const bits = [`成功 ${succeeded} 个，失败 ${failed} 个`];
         if (last.from_product_list) bits.push(`${last.from_product_list} 个重尺直接取自产品列表`);
         if (last.with_dimensions) bits.push(`${last.with_dimensions} 个从卖家接口带出重尺`);
         if (last.skipped_network) bits.push(`${last.skipped_network} 个资料齐全、没再打网络`);
-        setNotice({ kind: last.public_access_blocked || failed ? 'warn' : 'ok', text: `${bits.join('，')}。` });
+        if (last.public_access_blocked) {
+          setNotice({kind:'warn',text:`读取已停止：${bits.join('，')}；公开接口访问受限，已停止后续批次${last.remaining ? `，还有 ${last.remaining} 个待处理` : ''}。`});
+        } else if (last.remaining) {
+          setNotice({
+            kind: 'warn',
+            text: `本轮${bits.join('，')}；还有 ${last.remaining} 个没抓完（本次达到处理上限），再点一次「重抓全部资料」接着抓，已抓到的不会重复抓。`,
+          });
+        } else {
+          setNotice({ kind: failed ? 'warn' : 'ok', text: `抓取完成：${bits.join('，')}。` });
+        }
       }
     } catch (error) {
       setNotice({ kind: 'warn', text: (error as Error).message });
