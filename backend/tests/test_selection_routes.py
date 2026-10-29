@@ -13,11 +13,12 @@
 
 import asyncio
 import io
+import zipfile
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 import pytest
 from fastapi import HTTPException
-from openpyxl import Workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from starlette.datastructures import UploadFile
@@ -27,6 +28,7 @@ from api.selection_routes import (
     EnrichRequest,
     IdList,
     ItemPatch,
+    SelectQualifiedRequest,
     bulk_patch,
     delete_batch,
     enrich,
@@ -34,6 +36,7 @@ from api.selection_routes import (
     patch_item,
     promote,
     query_items,
+    select_qualified,
     summarize,
 )
 from database import Base
@@ -68,13 +71,71 @@ def db():
     session.close()
 
 
+def _column_name(index):
+    name = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
 def make_xlsx(rows):
-    workbook = Workbook()
-    sheet = workbook.active
-    for row in rows:
-        sheet.append(list(row))
+    """手写一个最小 xlsx。
+
+    不用 openpyxl 的 Workbook 写：它的 worksheet writer 要 `NamedTemporaryFile`，
+    在禁止写临时目录的环境（CI 沙箱、只读容器）里会直接 FileNotFoundError，
+    测试就变成了「环境检测」。顺带还钉住了读取端对 inlineStr 的处理——真实导出
+    里 sharedStrings 和 inlineStr 都出现过。
+    """
+    body = []
+    for row_index, row in enumerate(rows, start=1):
+        cells = []
+        for column_index, value in enumerate(row):
+            if value is None or value == "":
+                continue
+            ref = f"{_column_name(column_index)}{row_index}"
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                cells.append(f'<c r="{ref}"><v>{value}</v></c>')
+            else:
+                cells.append(
+                    f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+                )
+        body.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+
+    parts = {
+        "[Content_Types].xml":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '</Types>',
+        "_rels/.rels":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>',
+        "xl/workbook.xml":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '</Relationships>',
+        "xl/worksheets/sheet1.xml":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f'<sheetData>{"".join(body)}</sheetData></worksheet>',
+    }
     buffer = io.BytesIO()
-    workbook.save(buffer)
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in parts.items():
+            archive.writestr(name, content)
     return buffer.getvalue()
 
 
@@ -270,6 +331,62 @@ def test_enrich_does_not_overwrite_manual_dimensions(db, monkeypatch):
     assert item.dimensions_source == "manual"
 
 
+def test_enrich_copies_dimensions_from_product_list(db, monkeypatch):
+    """自家商品的重尺直接取自产品列表，不再调卖家 API。
+
+    销售报表只有 TSIN，那些商品本来就在主档里、重尺是人工填过的。走网络既慢
+    又可能把人工值冲掉，所以主档是第一优先。
+    """
+    db.add(Product(
+        store_id=STORE, tsin="88880002", plid="555001",
+        product_name="Own Product", product_image_url="https://media.takealot.com/a.jpg",
+        takealot_url="https://www.takealot.com/a/PLID555001",
+        fee_category="Homeware", actual_sale_price_zar=500.0,
+        length_mm=310.0, width_mm=210.0, height_mm=110.0, actual_weight_kg=1.35,
+    ))
+    db.commit()
+    do_import(db, [["Product Title", "TSIN"], ["Own Product", "88880002"]])
+
+    called = []
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: called.append(list(plids)) or [])
+    # 卖家接口故意给一组不同的值：如果被它覆盖，说明优先级错了
+    offers = [{"productline_id": 555001, "tsin_id": "88880002",
+               "length_cm": 1.0, "width_cm": 1.0, "height_cm": 1.0, "weight_grams": 1.0}]
+    monkeypatch.setattr("services.takealot_seller_api.configured_key", lambda db: "k" * 128)
+    monkeypatch.setattr("services.takealot_seller_api._load_offers", lambda key: offers)
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+    assert result["from_product_list"] == 1
+
+    item = db.query(SelectionItem).first()
+    assert item.plid == "555001"          # TSIN → PLID 从主档补上
+    assert item.length_mm == 310.0        # 主档的值，不是 offer 里的 10mm
+    assert item.actual_weight_kg == 1.35
+    assert item.dimensions_source == "product_list"
+    assert item.fee_category == "Homeware"
+    assert item.fee_category_confidence == "high"
+    # 主档里图/类目/价格都齐了，不该再打公开接口
+    assert result["skipped_network"] == 1
+    assert called == []
+
+
+def test_enrich_falls_back_to_network_when_product_incomplete(db, monkeypatch):
+    """主档里只有价格、没有重尺和主图 → 还是要走网络。"""
+    db.add(Product(store_id=STORE, tsin="88880003", plid="555002",
+                   product_name="Half Product", actual_sale_price_zar=500.0))
+    db.commit()
+    do_import(db, [["Product Title", "TSIN"], ["Half Product", "88880003"]])
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_fake_public(p) for p in plids])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+    assert result["from_product_list"] == 0
+    assert result["skipped_network"] == 0
+    item = db.query(SelectionItem).first()
+    assert item.product_image_url.endswith("555002.jpg")
+    assert item.takealot_category_path == "Home & Kitchen > Kitchen Storage"
+
+
 def test_enrich_skips_already_done_unless_refreshed(db, monkeypatch):
     do_import(db, [["产品名称", "产品链接"],
                    ["Tool", "https://www.takealot.com/t/PLID702"]])
@@ -348,6 +465,38 @@ def test_bulk_patch_applies_to_many(db, monkeypatch):
     ), db=db, store_id=STORE)
     assert result["updated"] == 2
     assert all(i.selected for i in db.query(SelectionItem).all())
+
+
+def test_select_qualified_only_picks_margin_ok_and_new(db, monkeypatch):
+    """预勾选必须同时满足「利润率≥15%」和「还没建过产品」。"""
+    do_import(db, [
+        ["产品名称", "产品链接"],
+        ["Good", "https://www.takealot.com/a/PLID821"],
+        ["Bad", "https://www.takealot.com/b/PLID822"],
+    ])
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+    good = db.query(SelectionItem).filter(SelectionItem.plid == "821").first()
+    bad = db.query(SelectionItem).filter(SelectionItem.plid == "822").first()
+    # 没有费率类目就算不出利润，所以这两条要显式给类目（真实流程里由 enrich 推断）
+    patch_item(good.id, ItemPatch(
+        fee_category="Homeware", actual_sale_price_zar=500.0,
+        length_mm=200, width_mm=150, height_mm=100, actual_weight_kg=0.5,
+        purchase_cost_cny=40, purchase_shipping_cny=20,
+        shipping_method="空运普货",
+    ), db=db, store_id=STORE)
+    patch_item(bad.id, ItemPatch(
+        fee_category="Homeware", actual_sale_price_zar=500.0,
+        length_mm=200, width_mm=150, height_mm=100, actual_weight_kg=0.5,
+        purchase_cost_cny=400, purchase_shipping_cny=0,
+        shipping_method="空运普货",
+    ), db=db, store_id=STORE)
+
+    result = select_qualified(SelectQualifiedRequest(), db=db, store_id=STORE)
+    assert result["selected"] == 1
+    db.refresh(good)
+    db.refresh(bad)
+    assert good.selected is True
+    assert bad.selected is False
 
 
 # ---------------------------------------------------------------------------

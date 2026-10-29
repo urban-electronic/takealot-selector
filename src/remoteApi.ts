@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult, ExternalOffer, ExternalOfferInput, ExternalOfferResult, ExternalPlatform } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult, ExternalOffer, ExternalOfferInput, ExternalOfferResult, ExternalPlatform , SelectionItem, SelectionImportResult, SelectionEnrichResult, SelectionSummary, SelectionBatch, SelectionItemPatch, SelectionPromoteResult } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -802,3 +802,106 @@ export const downloadProductLabels = async (
   }
   return await res.blob();
 };
+
+/* ---------------------------------------------------------------------------
+ * 选品池（/selection）
+ *
+ * 上传走 multipart，所以不能复用 `request`——那个函数硬写了
+ * `Content-Type: application/json`，会把 multipart 的 boundary 顶掉，
+ * 后端解析 FormData 时直接 400。
+ * ------------------------------------------------------------------------- */
+
+const requestForm = async <T>(path: string, form: FormData): Promise<T> => {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    method: 'POST',
+    // 故意不设 Content-Type：让浏览器自己带 boundary
+    headers: { 'X-API-Key': getApiKey(), 'X-Store-ID': getActiveStoreId() },
+    body: form,
+    signal: AbortSignal.timeout(180000),
+  });
+  if (res.status === 401) {
+    try { window.dispatchEvent(new Event('api-unauthorized')); } catch { /* 非浏览器环境 */ }
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}: ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch { /* 保留默认错误 */ }
+    throw new Error(detail);
+  }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+};
+
+export const importSelectionTable = (file: File, batchName = ''): Promise<SelectionImportResult> => {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('batch_name', batchName);
+  return requestForm<SelectionImportResult>('/api/selection/import', form);
+};
+
+export const enrichSelection = (body: { batch_id?: string; ids?: string[]; limit?: number; refresh?: boolean }): Promise<SelectionEnrichResult> =>
+  request<SelectionEnrichResult>('/api/selection/enrich', { method: 'POST', body: JSON.stringify(body) });
+
+export const getSelectionItems = (params: {
+  batch_id?: string; status?: string; keyword?: string; tier?: string;
+  only_selected?: boolean; hide_duplicates?: boolean; sort?: string;
+  limit?: number; offset?: number;
+} = {}): Promise<{ total: number; items: SelectionItem[] }> => {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '' && value !== false) search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request<{ total: number; items: SelectionItem[] }>(`/api/selection/items${query ? `?${query}` : ''}`);
+};
+
+export const getSelectionSummary = (batchId?: string): Promise<SelectionSummary> =>
+  request<SelectionSummary>(`/api/selection/summary${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ''}`);
+
+export const getSelectionBatches = (): Promise<SelectionBatch[]> =>
+  request<SelectionBatch[]>('/api/selection/batches');
+
+export const patchSelectionItem = (id: string, patch: SelectionItemPatch): Promise<SelectionItem> =>
+  request<SelectionItem>(`/api/selection/items/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+
+export const bulkPatchSelection = (ids: string[], patch: SelectionItemPatch): Promise<{ updated: number }> =>
+  request<{ updated: number }>('/api/selection/items/bulk', { method: 'POST', body: JSON.stringify({ ids, patch }) });
+
+/** 把「利润率达标且还没建过产品」的整批勾上，一次 UPDATE 完成。 */
+export const selectQualifiedSelection = (body: { batch_id?: string; min_margin?: number; only_new?: boolean }): Promise<{ selected: number; min_margin: number }> =>
+  request<{ selected: number; min_margin: number }>('/api/selection/items/select-qualified', { method: 'POST', body: JSON.stringify(body) });
+
+export const promoteSelection = (ids: string[]): Promise<SelectionPromoteResult> =>
+  request<SelectionPromoteResult>('/api/selection/items/promote', { method: 'POST', body: JSON.stringify({ ids }) });
+
+export const deleteSelectionItems = (ids: string[]): Promise<{ deleted: number }> =>
+  request<{ deleted: number }>('/api/selection/items', { method: 'DELETE', body: JSON.stringify({ ids }) });
+
+export const deleteSelectionBatch = (batchId: string): Promise<{ deleted: number }> =>
+  request<{ deleted: number }>(`/api/selection/batches/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
+
+/**
+ * 探测卖家目录接口能不能拿到竞品重尺。
+ *
+ * 后台 Search Takealot's Catalogue 能看到每个 productline 的打包重尺，说明这份
+ * 数据在 marketplace-api 上是有的，只是走卖家鉴权。`/v1/catalogue` 系列无 key 时
+ * 返回 401（路径存在、只差鉴权），但鉴权方案和 `/v1/offers` 不同，得拿真 key 试。
+ * 这个接口就是替人把「端点 × 鉴权位置」的组合试一遍，返回里不含 key。
+ */
+export interface CatalogueProbeReport {
+  ok: boolean;
+  plid?: string;
+  reason: string;
+  saved?: boolean;
+  winner: { endpoint: string; auth: string } | null;
+  tried: {
+    endpoint: string; path: string; auth: string; status: number;
+    note?: string; usable?: boolean;
+    dimension_keys?: string[];
+    dims?: { length_mm?: number | null; width_mm?: number | null; height_mm?: number | null; weight_kg?: number | null };
+  }[];
+}
+export const probeSelectionCatalogue = (plid: string): Promise<CatalogueProbeReport> =>
+  request<CatalogueProbeReport>(`/api/selection/diag/catalogue?plid=${encodeURIComponent(plid)}`);

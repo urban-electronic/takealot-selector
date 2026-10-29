@@ -169,9 +169,126 @@ def _apply_offer_dims(item: SelectionItem, offer: Dict[str, Any]) -> bool:
     return True
 
 
+def _copy_from_product_list(
+    db: Session, store_id: str, items: List[SelectionItem]
+) -> int:
+    """自家商品直接从产品主档抄资料，返回抄到重尺的条数。
+
+    为什么这是第一优先：销售报表只有 TSIN，而那些 TSIN 对应的商品**本来就在
+    产品列表里**，重尺是你之前一个个填进去的。再走卖家 API 拉一遍既慢（1800 条
+    要分块轮询）又可能把人工填的值冲掉。所以先抄主档，抄不到才走网络。
+
+    抄的范围刻意收窄：只填**空着的**字段。报表带来的商品名/销售额不会被覆盖。
+    """
+    plids = sorted({i.plid for i in items if i.plid})
+    tsins = sorted({i.tsin for i in items if i.tsin})
+    if not plids and not tsins:
+        return 0
+
+    conditions = []
+    if plids:
+        conditions.append(Product.plid.in_(plids))
+    if tsins:
+        conditions.append(Product.tsin.in_(tsins))
+    rows = (
+        db.query(Product)
+        .filter(Product.store_id == store_id, or_(*conditions))
+        .all()
+    )
+    by_plid: Dict[str, Product] = {}
+    by_tsin: Dict[str, Product] = {}
+    for row in rows:
+        if row.plid:
+            by_plid.setdefault(row.plid, row)
+        if row.tsin:
+            by_tsin.setdefault(row.tsin, row)
+
+    copied = 0
+    for item in items:
+        product = by_plid.get(item.plid) if item.plid else None
+        if product is None and item.tsin:
+            product = by_tsin.get(item.tsin)
+        if product is None:
+            continue
+
+        if not item.plid and product.plid:
+            item.plid = product.plid
+        if not item.tsin and product.tsin:
+            item.tsin = product.tsin
+        if not item.product_name and product.product_name:
+            item.product_name = product.product_name
+        if not item.chinese_product_name and product.chinese_product_name:
+            item.chinese_product_name = product.chinese_product_name
+        if not item.product_image_url and product.product_image_url:
+            item.product_image_url = product.product_image_url
+        if not item.takealot_url and product.takealot_url:
+            item.takealot_url = product.takealot_url
+        if item.actual_sale_price_zar is None and product.actual_sale_price_zar is not None:
+            item.actual_sale_price_zar = product.actual_sale_price_zar
+        if item.rating_value is None and product.rating_value is not None:
+            item.rating_value = product.rating_value
+        if item.review_count is None and product.review_count is not None:
+            item.review_count = product.review_count
+        if not item.fee_category and product.fee_category:
+            # 主档里的类目是人确认过的（新建产品时看过），比推断的可靠
+            item.fee_category = product.fee_category
+            item.fee_category_confidence = "high"
+            item.fee_category_reason = "沿用产品列表里已确认的类目"
+
+        has_dims = (
+            item.length_mm is not None and item.width_mm is not None
+            and item.height_mm is not None and item.actual_weight_kg is not None
+        )
+        if not has_dims and not item.dimensions_source:
+            dims = (product.length_mm, product.width_mm,
+                    product.height_mm, product.actual_weight_kg)
+            if all(value is not None for value in dims):
+                item.length_mm, item.width_mm, item.height_mm, item.actual_weight_kg = dims
+                item.dimensions_source = "product_list"
+                copied += 1
+        elif item.dimensions_source == "product_list":
+            copied += 1
+    return copied
+
+
+def _fill_catalogue_dims(db: Session, items: List[SelectionItem]) -> int:
+    """竞品重尺：走卖家后台「Search Takealot's Catalogue」那套目录接口。
+
+    只在探测确认可用时执行（`/api/selection/diag/catalogue` 写入结果）。
+    拿不到的留空，等人工填——绝不用类目默认值冒充。
+    """
+    from services.takealot_catalogue_api import fetch_dims, load_winner, configured_key
+
+    key = configured_key(db)
+    winner = load_winner(db) if key else None
+    if not key or not winner:
+        return 0
+
+    filled = 0
+    for item in items:
+        if item.dimensions_source or not item.plid:
+            continue
+        dims = fetch_dims(item.plid, key, winner)
+        if not dims:
+            continue
+        item.length_mm = dims.get("length_mm")
+        item.width_mm = dims.get("width_mm")
+        item.height_mm = dims.get("height_mm")
+        item.actual_weight_kg = dims.get("weight_kg")
+        item.dimensions_source = "catalogue_api"
+        filled += 1
+    return filled
+
+
 def _apply_public(item: SelectionItem, record: Optional[Dict[str, Any]], db: Session) -> None:
     """把公开接口的一条结果写进 item。"""
     if not record or not record.get("success"):
+        # 主档里已经把名字和主图给全的，本来就没走公开接口——这不是失败。
+        # 不区分的话，1800 条自家商品会整片标成「没抓到」。
+        if item.product_image_url and item.product_name:
+            item.enrich_status = "ok"
+            item.enrich_message = "资料取自产品列表，未走公开接口"
+            return
         item.enrich_status = "failed"
         warnings = (record or {}).get("warnings") or []
         item.enrich_message = "；".join(warnings) or "公开接口没有返回可用数据"
@@ -481,9 +598,17 @@ def enrich(
 
     if not targets:
         return {"processed": 0, "ok": 0, "failed": 0, "with_dimensions": 0,
+                "from_product_list": 0, "skipped_network": 0,
                 "remaining": 0, "seller_api": "", "failures": []}
 
-    # --- 卖家 API：本店 offer 里有重尺，还能把 TSIN 反查成 PLID ---
+    # --- 第一优先：产品主档。自家商品的图/类目/重尺库里已经有了 ---
+    #
+    # 这是「销售报表只有 TSIN」的主路径：那些商品本来就在产品列表里，重尺是你
+    # 之前填过的。再去卖家 API 拉一遍等于重复劳动，还可能把人工填的值覆盖掉。
+    # 抄完之后，缺东西的才走网络。
+    from_product_list = _copy_from_product_list(db, store_id, targets)
+
+    # --- 第二优先：卖家 API（本店 offer，能把 TSIN 反查成 PLID）---
     offer_by_plid: Dict[str, Dict[str, Any]] = {}
     offer_by_tsin: Dict[str, Dict[str, Any]] = {}
     seller_note = "未配置卖家 API 密钥"
@@ -501,11 +626,11 @@ def enrich(
                     offer_by_tsin[tsin] = offer
             seller_note = f"已读取本店 {len(offers)} 个 offer"
         else:
-            seller_note = "未配置卖家 API 密钥，本店重尺抓不到"
+            seller_note = "未配置卖家 API 密钥"
     except Exception as error:
         seller_note = f"卖家接口不可用：{error}"
 
-    # 第一遍：用 TSIN 反查 PLID，并把本店重尺填上
+    # 用 TSIN 反查 PLID，并把本店重尺填上（已经有重尺来源的不动）
     dims_from_seller = 0
     for item in targets:
         offer = None
@@ -517,20 +642,42 @@ def enrich(
                 item.plid = str(offer.get("productline_id") or "")
                 if not item.takealot_url:
                     item.takealot_url = build_takealot_url(item.plid)
-        if offer and _apply_offer_dims(item, offer):
+        if not offer:
+            continue
+        if not item.dimensions_source and _apply_offer_dims(item, offer):
             dims_from_seller += 1
-            if not item.product_name:
-                item.product_name = str(offer.get("title") or "")
-            if not item.product_image_url:
-                item.product_image_url = str(offer.get("image_url") or "")
+        if not item.product_name:
+            item.product_name = str(offer.get("title") or "")
+        if not item.product_image_url:
+            item.product_image_url = str(offer.get("image_url") or "")
 
-    # 第二遍：公开接口补齐图/类目/价格（并发，8 线程实测最稳）
-    plids = [item.plid for item in targets if item.plid]
+    # --- 第三优先：竞品重尺走卖家目录接口（若探测通了）---
+    dims_from_catalogue = _fill_catalogue_dims(db, targets)
+
+    # --- 公开接口补齐图/类目/价格（并发，8 线程实测最稳）---
+    #
+    # 主档里已经把图/类目/价格都给全的，不用再打一次网络——1800 条销售报表
+    # 里绝大多数是这种情况，省下来的是几十秒。
+    if data.refresh:
+        need_fetch = [item.plid for item in targets if item.plid]
+    else:
+        # 判定只用「有主图 + 有价格 + 有费率类目」三项。不要求
+        # takealot_category_path：Product 主档本来就不存前台类目路径（它存的是
+        # 已经确认过的 fee_category），拿它当必要条件会让自家商品永远重抓一遍。
+        need_fetch = [
+            item.plid for item in targets
+            if item.plid and not (
+                item.product_image_url
+                and item.actual_sale_price_zar is not None
+                and item.fee_category
+            )
+        ]
     records: Dict[str, Dict[str, Any]] = {}
-    if plids:
-        for record in pub.fetch_many(plids, workers=8):
+    if need_fetch:
+        for record in pub.fetch_many(need_fetch, workers=8):
             if record.get("plid") is not None:
                 records[str(record["plid"])] = record
+    skipped_network = sum(1 for item in targets if item.plid) - len(need_fetch)
 
     exchange_rate = _exchange_rate(db)
     fee_rates: Dict[str, Optional[float]] = {}
@@ -571,7 +718,9 @@ def enrich(
         "processed": len(targets),
         "ok": ok,
         "failed": failed,
-        "with_dimensions": dims_from_seller,
+        "with_dimensions": dims_from_seller + dims_from_catalogue,
+        "from_product_list": from_product_list,
+        "skipped_network": skipped_network,
         "remaining": remaining,
         "seller_api": seller_note,
         "failures": failures,
@@ -794,6 +943,62 @@ def bulk_patch(
         _apply_patch(item, data.patch, db, rate)
     db.commit()
     return {"updated": len(items)}
+
+
+class SelectQualifiedRequest(BaseModel):
+    batch_id: Optional[str] = None
+    min_margin: float = QUALIFY_MARGIN
+    only_new: bool = True       # 跳过已在产品列表里的重复品
+
+
+@router.get("/diag/catalogue")
+def diag_catalogue(
+    plid: str = Query(..., min_length=1, description="任取一个竞品 PLID，用来探测目录接口"),
+    save: bool = Query(True, description="探测成功后记住这套鉴权方式，enrich 直接复用"),
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """探测「Search Takealot's Catalogue」那套目录接口能不能拿到竞品重尺。
+
+    无 key 探测显示 `/v1/catalogue` 系列返回 401（路径存在、只差鉴权），但它的
+    鉴权方案和 `/v1/offers` 不是同一套，光看错误码猜不出 key 该放哪。这里用你
+    已经存好的 key 把「端点 × 鉴权位置」的组合挨个试一遍，一次点出结论。
+
+    返回里只有端点、鉴权方式、状态码和字段名，**不含 key**。
+    """
+    from services import takealot_catalogue_api as catalogue
+
+    report = catalogue.probe(db, plid)
+    if report.get("ok") and save:
+        catalogue.save_winner(db, report["winner"])
+        report["saved"] = True
+    return report
+
+
+@router.post("/items/select-qualified")
+def select_qualified(
+    data: SelectQualifiedRequest,
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """把「利润率达标且还没建过产品」的整批勾上。
+
+    前端逐页取 id 再批量勾会漏：翻页期间列表在变，而且 1800 条要翻 30 页。
+    这里一次 UPDATE 解决，条件与列表筛选同源（都用 profit_margin）。
+    """
+    query = db.query(SelectionItem).filter(
+        SelectionItem.store_id == store_id,
+        SelectionItem.profit_margin.isnot(None),
+        SelectionItem.profit_margin >= data.min_margin,
+        SelectionItem.promoted_product_id.is_(None),
+    )
+    if data.batch_id:
+        query = query.filter(SelectionItem.batch_id == data.batch_id)
+    if data.only_new:
+        query = query.filter(SelectionItem.already_in_products == False)  # noqa: E712
+    selected = query.update({SelectionItem.selected: True}, synchronize_session=False)
+    db.commit()
+    return {"selected": selected, "min_margin": data.min_margin}
 
 
 class IdList(BaseModel):

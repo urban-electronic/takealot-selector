@@ -8,6 +8,7 @@ import type { Store } from './types';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const ProductList = lazy(() => import('./pages/ProductList'));
+const Selection = lazy(() => import('./pages/Selection'));
 const ProductCreate = lazy(() => import('./pages/ProductCreate'));
 const ProductDetail = lazy(() => import('./pages/ProductDetail'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -21,6 +22,7 @@ const AutoPricing = lazy(() => import('./pages/AutoPricing'));
 const primaryNavItems = [
   { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
+  { path: '/selection', label: '选品池' },
   { path: '/inventory', label: '库存' },
   { path: '/auto-pricing', label: 'Buybox与调价' },
   { path: '/replenishment', label: '补货计划' },
@@ -184,6 +186,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<ProductList />} />
+          <Route path="/selection" element={<Selection />} />
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/buybox" element={<Navigate to="/auto-pricing" replace />} />
           <Route path="/auto-pricing" element={<AutoPricing />} />
