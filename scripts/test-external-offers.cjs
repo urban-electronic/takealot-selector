@@ -69,7 +69,7 @@ function collect(files) {
   if (/value >= 0/.test(stripComments(files.route, 'py'))) {
     errors.push('价格校验不能写成 >= 0：0 会被当成有效价格，界面上显示 ¥0');
   }
-  if (!/if data\.price is not None:\s*\n\s*offer\.price = data\.price if data\.price > 0 else None/.test(files.route)) {
+  if (!/if 'price' in data\.model_fields_set:\s*\n\s*offer\.price = data\.price if data\.price is not None and data\.price > 0 else None/.test(files.route)) {
     errors.push('修改接口要把 <=0 的价格落成空，不能原样存');
   }
 
@@ -189,7 +189,7 @@ const mutants = [
   ['域名白名单被放宽', 'route', (s) => s.replace("PLATFORM_1688: (\"1688.com\",)", "PLATFORM_1688: ('',)")],
   ['scheme 校验被删', 'route', (s) => s.replace("parsed.scheme not in ('http', 'https')", "parsed.scheme not in ()")],
   ['价格 0 又变成有效', 'route', (s) => s.replace('if value is not None and value <= 0:\n            return None', 'if value is not None and value >= 0:\n            return None')],
-  ['修改接口不再过滤 0 价', 'route', (s) => s.replace('offer.price = data.price if data.price > 0 else None', 'offer.price = data.price')],
+  ['修改接口不再过滤 0 价', 'route', (s) => s.replace('offer.price = data.price if data.price is not None and data.price > 0 else None', 'offer.price = data.price')],
   ['路由上限写死数字', 'route', (s) => s.replace('Query(DEFAULT_LIMIT, ge=0, le=MAX_LIMIT)', 'Query(8, ge=0, le=20)')],
   ['英文退回子串匹配', 'service', (s) => s.replace('if contains_phrase(text, keyword):', 'if keyword in text:')],
   ['中英文不再分流', 'service', (s) => s.replace('if keyword.isascii():', 'if True:')],
