@@ -6,7 +6,7 @@
 所以这里把每种写法都钉住。
 
 不联网：只测纯函数 `extract_dims` / `_scale_from_text` / `_walk_dimension_keys`。
-真实端点用 `/api/selection/diag/catalogue` 探。
+接入检查只用隔离响应；不调用真实鉴权端点。
 """
 
 import pytest
@@ -115,3 +115,77 @@ def test_walk_dimension_keys_lists_paths():
     keys = _walk_dimension_keys(payload)
     assert "a.length_cm" in keys
     assert any("weight" in key for key in keys)
+
+
+@pytest.mark.parametrize('winner',[None,{}, {'endpoint':'unknown','auth':'bearer'},
+    {'endpoint':{},'auth':[]}, {'endpoint':'catalogue_by_id','auth':'unknown'}])
+def test_no_discovery_or_key_read_without_valid_saved_connection(monkeypatch,winner):
+    from services import takealot_catalogue_api as api
+    monkeypatch.setattr(api,'load_winner',lambda _:winner)
+    monkeypatch.setattr(api,'configured_key',lambda _:pytest.fail('unexpected credential read'))
+    monkeypatch.setattr(api,'_request',lambda *a:pytest.fail('unexpected auth discovery'))
+    result=api.probe(object(),123456)
+    assert result['ok'] is False
+    assert result['tried']==[]
+
+
+@pytest.mark.parametrize('status',[200,401,403,429,404,503])
+def test_check_only_saved_path_and_auth_no_fallback(monkeypatch,status):
+    from services import takealot_catalogue_api as api
+    winner={'endpoint':'catalogue_search','auth':'header_x_api_key'}
+    monkeypatch.setattr(api,'load_winner',lambda _:winner)
+    monkeypatch.setattr(api,'configured_key',lambda _:'fixture-only')
+    calls=[]
+    def request(url,key,style):
+        calls.append((url,style))
+        return status, {'length_cm':10,'width_cm':20,'height_cm':30}
+    monkeypatch.setattr(api,'_request',request)
+    result=api.probe(object(),123456)
+    assert calls==[(api.BASE+'/v1/catalogue/search?q=123456','header_x_api_key')]
+    assert result['ok'] is (status==200)
+    assert len(result['tried'])==1
+    if status!=200:assert result.get('winner') is None
+    assert 'fixture-only' not in str(result)
+
+
+def test_saved_connection_error_is_safe_and_does_not_fallback(monkeypatch):
+    from services import takealot_catalogue_api as api
+    monkeypatch.setattr(api,'load_winner',lambda _:{'endpoint':'catalogue_by_id','auth':'header_x_api_key'})
+    monkeypatch.setattr(api,'configured_key',lambda _:'fixture-only')
+    calls=[]
+    def request(*args):
+        calls.append(1)
+        raise RuntimeError('synthetic-secret-in-message-and-url')
+    monkeypatch.setattr(api,'_request',request)
+    result=api.probe(object(),123456)
+    assert len(calls)==1
+    assert result['ok'] is False
+    assert 'synthetic-secret' not in str(result)
+
+
+@pytest.mark.parametrize('status',[401,403,429])
+def test_saved_dims_denial_is_not_silent_empty_data(monkeypatch,status):
+    from services import takealot_catalogue_api as api
+    calls=[]
+    monkeypatch.setattr(api,'_request',lambda *a: calls.append(1) or (status,None))
+    with pytest.raises(api.CatalogueAccessDenied) as error:
+        api.fetch_dims(123456,'fixture-only',{'endpoint':'catalogue_by_id','auth':'header_x_api_key'})
+    assert len(calls)==1
+    assert str(status) in str(error.value)
+    assert 'fixture-only' not in str(error.value)
+
+
+def test_request_uses_truthful_headers_and_never_follows_redirects(monkeypatch):
+    from services import takealot_catalogue_api as api
+    seen=[]
+    class Client:
+        def __init__(self,**kwargs):seen.append(kwargs)
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def get(self,url,**kwargs):
+            seen.append(kwargs)
+            return type('Response',(),{'status_code':403})()
+    monkeypatch.setattr(api.httpx,'Client',Client)
+    assert api._request(api.BASE+'/v1/catalogue/123456','fixture-only','header_x_api_key')==(403,None)
+    assert seen[0]['follow_redirects'] is False
+    assert seen[1]['headers']=={'User-Agent':'takealot-selector/1.0','Accept':'application/json','X-API-Key':'fixture-only'}

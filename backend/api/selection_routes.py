@@ -276,14 +276,16 @@ def _copy_from_product_list(
 def _fill_catalogue_dims(db: Session, items: List[SelectionItem]) -> int:
     """竞品重尺：走卖家后台「Search Takealot's Catalogue」那套目录接口。
 
-    只在探测确认可用时执行（`/api/selection/diag/catalogue` 写入结果）。
+    仅复用有效的已保存连接；检查接口不发现或写入新连接。
     拿不到的留空，等人工填——绝不用类目默认值冒充。
     """
     from services.takealot_catalogue_api import fetch_dims, load_winner, configured_key
 
+    winner = load_winner(db)
+    if not winner:
+        return 0
     key = configured_key(db)
-    winner = load_winner(db) if key else None
-    if not key or not winner:
+    if not key:
         return 0
 
     filled = 0
@@ -676,8 +678,14 @@ def enrich(
         if not item.product_image_url:
             item.product_image_url = str(offer.get("image_url") or "")
 
-    # --- 第三优先：竞品重尺走卖家目录接口（若探测通了）---
-    dims_from_catalogue = _fill_catalogue_dims(db, targets)
+    # --- 第三优先：竞品重尺走卖家目录接口（已有保存连接）---
+    from services.takealot_catalogue_api import CatalogueAccessDenied
+    try:
+        dims_from_catalogue = _fill_catalogue_dims(db, targets)
+    except CatalogueAccessDenied as error:
+        # 本轮事务未提交：保留之前已保存资料，不把未完成抓取伪装成成功。
+        db.rollback()
+        raise HTTPException(status_code=424, detail=str(error)) from None
 
     # --- 公开接口补齐图/类目/价格（并发上限 4，真正的节流在 PACER 里）---
     #
@@ -1003,25 +1011,19 @@ class SelectQualifiedRequest(BaseModel):
 
 @router.get("/diag/catalogue")
 def diag_catalogue(
-    plid: str = Query(..., min_length=1, description="任取一个竞品 PLID，用来探测目录接口"),
-    save: bool = Query(True, description="探测成功后记住这套鉴权方式，enrich 直接复用"),
+    plid: str = Query(..., min_length=1, description="检查已保存目录连接的数字 PLID"),
+    save: bool = Query(True, description="兼容旧参数；检查只读，不修改已保存连接"),
     db: Session = Depends(get_db),
     store_id: str = Depends(get_store_id),
 ):
-    """探测「Search Takealot's Catalogue」那套目录接口能不能拿到竞品重尺。
+    """仅检查已保存的目录连接一次；未接入时不读取密钥或发现鉴权方式。
 
-    无 key 探测显示 `/v1/catalogue` 系列返回 401（路径存在、只差鉴权），但它的
-    鉴权方案和 `/v1/offers` 不是同一套，光看错误码猜不出 key 该放哪。这里用你
-    已经存好的 key 把「端点 × 鉴权位置」的组合挨个试一遍，一次点出结论。
-
-    返回里只有端点、鉴权方式、状态码和字段名，**不含 key**。
+    返回安全状态和重尺字段，不返回密钥或响应正文。
     """
     from services import takealot_catalogue_api as catalogue
 
     report = catalogue.probe(db, plid)
-    if report.get("ok") and save:
-        catalogue.save_winner(db, report["winner"])
-        report["saved"] = True
+    report["saved"] = False  # 兼容旧调用参数，但检查不得覆盖并发更新的连接。
     return report
 
 

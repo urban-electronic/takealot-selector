@@ -510,13 +510,13 @@ export default function Selection() {
   };
 
   /**
-   * 探测卖家目录接口。拿当前列表里第一个有 PLID 的商品当样本。
-   * 通不通由后端拿已存的 key 逐个组合试，结果只回端点/鉴权/状态码/字段名。
+   * 检查已保存的目录连接。拿当前列表里第一个有 PLID 的商品当样本。
+   * 未配置连接时不读密钥或发请求；已有连接只检查一次，不更换鉴权。
    */
   const handleProbeCatalogue = async () => {
     const sample = items.find(item => item.plid)?.plid;
     if (!sample) {
-      setNotice({ kind: 'info', text: '先抓一次资料，或者列表里至少要有带 PLID 的商品才能探测' });
+      setNotice({ kind: 'info', text: '先抓一次资料，或者列表里至少要有带 PLID 的商品才能检查' });
       return;
     }
     setProbing(true);
@@ -527,8 +527,8 @@ export default function Selection() {
       setNotice({
         kind: report.ok ? 'ok' : 'warn',
         text: report.ok
-          ? `探测成功：${report.winner?.endpoint} + ${report.winner?.auth}。竞品重尺以后会自动抓，点「重抓全部资料」生效。`
-          : `没探通（${report.reason}）。竞品重尺仍按人工填写处理。`,
+          ? `目录连接检查成功：当前样本返回完整重尺，后续只使用已保存连接。`
+          : `目录连接未就绪（${report.reason}）。竞品重尺仍按人工填写处理。`,
       });
     } catch (error) {
       setNotice({ kind: 'warn', text: (error as Error).message });
@@ -593,7 +593,7 @@ export default function Selection() {
             {publicProbing ? '测试中…' : '测试主图接口'}
           </button>
           <button type="button" className="btn" onClick={() => void handleProbeCatalogue()} disabled={probing}>
-            {probing ? '探测中…' : '探测竞品重尺接口'}
+            {probing ? '检查中…' : '检查目录接入'}
           </button>
           <button type="button" className="btn" onClick={() => void handleEnrich(true)} disabled={enriching || importing}>
             {enriching ? '抓取中…' : '重抓全部资料'}
@@ -675,7 +675,7 @@ export default function Selection() {
         {probeReport && (
           <details className="selection-import-result" open={!probeReport.ok}>
             <summary>
-              目录接口探测：{probeReport.ok ? '通了' : '没通'} —— {probeReport.reason || '可以用了'}
+              目录连接检查：{probeReport.ok ? '样本可读' : '未就绪'} —— {probeReport.reason || '可以用了'}
             </summary>
             <ul>
               {probeReport.tried.map((row: CatalogueProbeReport['tried'][number]) => (
