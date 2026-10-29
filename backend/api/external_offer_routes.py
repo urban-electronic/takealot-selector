@@ -230,10 +230,10 @@ def update_offer(
         offer.title = data.title.strip()
     if data.title_cn is not None:
         offer.title_cn = data.title_cn.strip()
-    if data.price is not None:
-        offer.price = data.price if data.price > 0 else None
-    if data.moq is not None:
-        offer.moq = data.moq if data.moq > 0 else None
+    if 'price' in data.model_fields_set:
+        offer.price = data.price if data.price is not None and data.price > 0 else None
+    if 'moq' in data.model_fields_set:
+        offer.moq = data.moq if data.moq is not None and data.moq > 0 else None
     if data.image_url is not None:
         offer.image_url = data.image_url.strip()
     if data.keywords is not None:

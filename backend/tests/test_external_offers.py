@@ -260,3 +260,17 @@ def test_for_product_payload_shape(db):
 def _db_stub():
     """只为验证「域名/scheme 校验发生在查库之前」，不需要真会话。"""
     return None
+
+
+@pytest.mark.parametrize('changes,price,moq', [
+    ({'title': 'Edited'}, 25.0, 5),
+    ({'price': None}, None, 5),
+    ({'moq': None}, 25.0, None),
+    ({'price': None, 'moq': None}, None, None),
+])
+def test_patch_distinguishes_cleared_numbers_from_omitted(db, changes, price, moq):
+    created = create_offer(ExternalOfferIn(platform='1688',
+        url='https://detail.1688.com/offer/clear.html', price=25.0, moq=5), db, STORE)
+    saved = update_offer(created['id'], ExternalOfferPatch(**changes), db, STORE)
+    assert saved['price'] == price
+    assert saved['moq'] == moq
