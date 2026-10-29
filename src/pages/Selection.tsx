@@ -21,6 +21,7 @@ import {
   bulkPatchSelection,
   deleteSelectionBatch,
   enrichSelection,
+  getFeeCategories,
   getImageUrl,
   getSelectionBatches,
   getSelectionItems,
@@ -28,12 +29,15 @@ import {
   importSelectionTable,
   patchSelectionItem,
   probeSelectionCatalogue,
+  probeSelectionPublicApi,
   promoteSelection,
   selectQualifiedSelection,
 } from '../remoteApi';
+import { useFeeCategories } from '../utils/useFeeCategories';
 import { SHIPPING_METHODS, formatPercent, formatPrice } from '../types';
-import type { CatalogueProbeReport } from '../remoteApi';
+import type { CatalogueProbeReport, PublicApiProbeReport } from '../remoteApi';
 import type {
+  FeeCategory,
   SelectionBatch,
   SelectionEnrichResult,
   SelectionImportResult,
@@ -60,6 +64,10 @@ const DIMENSION_SOURCE_LABEL: Record<string, string> = {
 };
 
 const STATUS_OPTIONS = ['待核算', '合格', '不合格', '已建产品'];
+
+// useFeeCategories 的 effect 依赖 source 本身，传对象字面量会每渲染一次就重读一遍，
+// 所以放在模块作用域固定住。
+const FEE_CATEGORY_SOURCE = { getFeeCategories };
 
 /** 数值输入：本地保留字符串，失焦或回车才提交，避免每敲一个字符发一次请求。 */
 function NumberCell({
@@ -115,12 +123,13 @@ function MarginBadge({ item }: { item: SelectionItem }) {
 }
 
 function SelectionCard({
-  item, busy, onPatch, onToggle,
+  item, busy, onPatch, onToggle, feeCategories,
 }: {
   item: SelectionItem;
   busy: boolean;
   onPatch: (patch: SelectionItemPatch) => void;
   onToggle: () => void;
+  feeCategories: FeeCategory[];
 }) {
   const tier = TIER_STYLE[item.tier];
   const locked = Boolean(item.promoted_product_id);
@@ -207,8 +216,22 @@ function SelectionCard({
         </label>
         <label className="selection-field is-wide">
           <span>类目</span>
-          <input value={item.fee_category} disabled={locked} placeholder="未匹配"
-            onChange={event => onPatch({ fee_category: event.target.value })} />
+          {/* 原来是自由输入框，得手打类目名，打错一个字就匹配不上费率。
+              改成下拉，直接列全部 Fee 类目并带上成功率，选一个就行。 */}
+          <select value={item.fee_category} disabled={locked}
+            onChange={event => onPatch({ fee_category: event.target.value })}>
+            <option value="">未匹配</option>
+            {/* 库里存的值不在类目表中（改过名、已停用、或历史手输的）时补一条，
+                否则下拉会显示成「未匹配」，看起来像这件货没设过类目。 */}
+            {item.fee_category && !feeCategories.some(fc => fc.name === item.fee_category) && (
+              <option value={item.fee_category}>{item.fee_category}（当前值）</option>
+            )}
+            {feeCategories.map(fc => (
+              <option key={fc.id} value={fc.name}>
+                {fc.name}（{(fc.success_fee_rate * 100).toFixed(0)}%）
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -274,6 +297,10 @@ export default function Selection() {
   const [bulkShipping, setBulkShipping] = useState('');
   const [probing, setProbing] = useState(false);
   const [probeReport, setProbeReport] = useState<CatalogueProbeReport | null>(null);
+  const [publicProbing, setPublicProbing] = useState(false);
+  const [publicProbe, setPublicProbe] = useState<PublicApiProbeReport | null>(null);
+  // 类目下拉的候选：全量 Fee 类目，卡片里选一个就带出成功率。
+  const feeCategoryState = useFeeCategories(FEE_CATEGORY_SOURCE);
 
   const loadList = useCallback(async () => {
     const result = await getSelectionItems({
@@ -476,6 +503,29 @@ export default function Selection() {
     }
   };
 
+  /** 让服务器自己去读一次公开接口，确认「抓不到主图」到底卡在哪一层。 */
+  const handleProbePublic = async () => {
+    const sample = items.find(item => item.plid)?.plid;
+    if (!sample) {
+      setNotice({ kind: 'info', text: '列表里至少要有带 PLID 的商品才能测' });
+      return;
+    }
+    setPublicProbing(true);
+    setPublicProbe(null);
+    try {
+      const report = await probeSelectionPublicApi(sample);
+      setPublicProbe(report);
+      setNotice({
+        kind: report.success && report.image_ok ? 'ok' : 'warn',
+        text: `PLID ${report.plid}：${report.hint}`,
+      });
+    } catch (error) {
+      setNotice({ kind: 'warn', text: (error as Error).message });
+    } finally {
+      setPublicProbing(false);
+    }
+  };
+
   const handleDeleteBatch = async () => {
     if (!batchId) return;
     const batch = batches.find(row => row.batch_id === batchId);
@@ -505,6 +555,9 @@ export default function Selection() {
           </p>
         </div>
         <div className="page-heading-actions">
+          <button type="button" className="btn" onClick={() => void handleProbePublic()} disabled={publicProbing}>
+            {publicProbing ? '测试中…' : '测试主图接口'}
+          </button>
           <button type="button" className="btn" onClick={() => void handleProbeCatalogue()} disabled={probing}>
             {probing ? '探测中…' : '探测竞品重尺接口'}
           </button>
@@ -563,6 +616,27 @@ export default function Selection() {
               ? `。未识别的列：${importResult.unknown_headers.slice(0, 6).join('、')}${importResult.unknown_headers.length > 6 ? ' 等' : ''}`
               : ''}
           </p>
+        )}
+        {publicProbe && (
+          <details className="selection-import-result" open={!publicProbe.success || !publicProbe.image_ok}>
+            <summary>
+              主图接口测试：PLID {publicProbe.plid} —— {publicProbe.hint}
+            </summary>
+            <ul>
+              <li>接口结果：{publicProbe.success ? '通了' : '失败'}</li>
+              {publicProbe.warnings.length > 0 && (
+                <li>错误：{publicProbe.warnings.join('；')}</li>
+              )}
+              <li>商品名：{publicProbe.product_name || '（没拿到）'}</li>
+              <li>
+                主图：{publicProbe.image_ok
+                  ? <code>{publicProbe.product_image_url}</code>
+                  : '（没拿到）'}
+              </li>
+              <li>前台类目：{publicProbe.takealot_category_path || '（没拿到）'}</li>
+              <li>售价：{formatPrice(publicProbe.actual_sale_price_zar, 'ZAR')}</li>
+            </ul>
+          </details>
         )}
         {probeReport && (
           <details className="selection-import-result" open={!probeReport.ok}>
@@ -694,6 +768,7 @@ export default function Selection() {
               busy={busyIds.has(item.id)}
               onPatch={patch => void handlePatch(item.id, patch)}
               onToggle={() => handleToggle(item)}
+              feeCategories={feeCategoryState.categories}
             />
           ))}
         </div>

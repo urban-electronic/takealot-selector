@@ -905,3 +905,25 @@ export interface CatalogueProbeReport {
 }
 export const probeSelectionCatalogue = (plid: string): Promise<CatalogueProbeReport> =>
   request<CatalogueProbeReport>(`/api/selection/diag/catalogue?plid=${encodeURIComponent(plid)}`);
+
+/**
+ * 让**服务器**去读一次公开接口，把真实结果原样返回。
+ *
+ * 抓不到主图时界面只有一句「公开接口返回 403」，看不出是 PLID 不对、接口变了，
+ * 还是这台服务器到 Takealot 的链路被挡——在本地测又永远成功（家庭 IP 和机房 IP
+ * 在 Cloudflare 眼里不是一回事）。所以只能让服务器自己回答。
+ */
+export interface PublicApiProbeReport {
+  plid: string;
+  success: boolean;
+  warnings: string[];
+  product_name: string | null;
+  product_image_url: string;
+  image_ok: boolean;
+  takealot_category_path: string | null;
+  actual_sale_price_zar: number | null;
+  dimensions: Record<string, number | null>;
+  hint: string;
+}
+export const probeSelectionPublicApi = (plid: string): Promise<PublicApiProbeReport> =>
+  request<PublicApiProbeReport>(`/api/selection/diag/public?plid=${encodeURIComponent(plid)}`);

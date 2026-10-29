@@ -31,6 +31,7 @@ from api.selection_routes import (
     SelectQualifiedRequest,
     bulk_patch,
     delete_batch,
+    diag_public,
     enrich,
     import_table,
     patch_item,
@@ -612,3 +613,64 @@ def test_delete_batch_keeps_promoted_items(db, monkeypatch):
     assert len(remaining) == 1
     assert remaining[0].plid == "910"
     assert remaining[0].promoted_product_id
+
+
+class TestDiagPublic:
+    """`/diag/public` 是排查「没抓到主图」的唯一手段。
+
+    抓不到图时界面上只有一句「公开接口返回 403」，看不出是 PLID 错、接口变了，
+    还是服务器到 Takealot 的链路被挡——本地测又永远成功，所以必须让服务器自己
+    回答。这里钉住「成功/失败都要把原因原样带回去」，别让人对着一个空白面板猜。
+    """
+
+    @staticmethod
+    def _record(**over):
+        base = {
+            "plid": 94399784,
+            "success": True,
+            "warnings": [],
+            "product_name": "Adjustable Foot Stool",
+            "product_image_url": "https://media.takealot.com/covers_images/x/s-zoom.file",
+            "takealot_category_path": "Automotive > Exterior Accessories",
+            "actual_sale_price_zar": 1158.0,
+            "dimensions": {"length_mm": 310, "width_mm": 210, "height_mm": 110},
+        }
+        base.update(over)
+        return base
+
+    def test_reports_image_ready(self, monkeypatch):
+        from services import takealot_public_api as pub
+        monkeypatch.setattr(pub, "fetch_product", lambda plid: self._record())
+
+        report = diag_public(plid="94399784", store_id=DEFAULT_STORE_ID)
+
+        assert report["success"] is True
+        assert report["image_ok"] is True
+        assert report["product_image_url"].endswith("s-zoom.file")
+        assert "拿到了" in report["hint"]
+
+    def test_surfaces_the_transport_failure(self, monkeypatch):
+        from services import takealot_public_api as pub
+        monkeypatch.setattr(pub, "fetch_product", lambda plid: self._record(
+            success=False, product_image_url=None, product_name=None,
+            takealot_category_path=None, warnings=["公开接口返回 403"],
+        ))
+
+        report = diag_public(plid="94399784", store_id=DEFAULT_STORE_ID)
+
+        assert report["success"] is False
+        assert report["image_ok"] is False
+        assert report["warnings"] == ["公开接口返回 403"]
+
+    def test_flags_success_without_gallery(self, monkeypatch):
+        """接口通了但图库空，是另一种故障：不算成功，提示要能区分开。"""
+        from services import takealot_public_api as pub
+        monkeypatch.setattr(pub, "fetch_product", lambda plid: self._record(
+            product_image_url=None,
+        ))
+
+        report = diag_public(plid="94399784", store_id=DEFAULT_STORE_ID)
+
+        assert report["success"] is True
+        assert report["image_ok"] is False
+        assert "没返回图库" in report["hint"]

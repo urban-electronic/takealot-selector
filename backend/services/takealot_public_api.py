@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,25 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
+
+# 真实浏览器打这个接口时带的头。只给 UA 在家庭网络够用，机房 IP 上不够。
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-ZA,en;q=0.9",
+    "Referer": "https://www.takealot.com/",
+    "Origin": "https://www.takealot.com",
+    "sec-ch-ua": '"Chromium";v="126", "Not:A-Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
+}
+
+# 这几类状态码是「被当成机器人 / 被限流 / 上游抖动」的信号，等一下再试通常就过。
+RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+RETRY_DELAYS = (0.6, 1.8)
 
 # 图库尺寸令牌。s-thumbnail 只有 40×40，s-pdpxl 459×459，s-zoom 约 1041×1033。
 # 识图要用 zoom；如果下游只要小图，改这个常量即可。
@@ -67,11 +87,28 @@ def parse_plid(value: Any) -> Optional[int]:
 
 
 def _http_json(url: str, timeout: float = 25.0) -> Dict[str, Any]:
-    request = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", "ignore"))
+    """读一次公开接口，被拦时退避重试。
+
+    机房 IP 在 Cloudflare 眼里的风险分比家庭 IP 高，同样的请求在本地跑 40/40
+    成功、部署到 Railway 后整批失败，就是这一层。两件事一起做：把真实浏览器
+    会带的头补齐，以及对 403/429 这类「被当成机器人」的响应退避重试一次。
+    仍然失败就把最后一个异常抛出去，由 `fetch_product` 记成 warnings。
+    """
+    last_error: Optional[BaseException] = None
+    for delay in (0.0,) + RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        request = urllib.request.Request(url, headers=BROWSER_HEADERS)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8", "ignore"))
+        except urllib.error.HTTPError as error:
+            last_error = error
+            if error.code not in RETRY_STATUS:
+                raise
+        except Exception as error:  # 超时、DNS、连接重置都重试
+            last_error = error
+    raise last_error if last_error else RuntimeError("公开接口读取失败")
 
 
 def _first_price(payload: Dict[str, Any]) -> Optional[float]:

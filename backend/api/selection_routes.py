@@ -975,6 +975,43 @@ def diag_catalogue(
     return report
 
 
+@router.get("/diag/public")
+def diag_public(
+    plid: str = Query(..., min_length=1, description="任取一个 PLID，用来测试公开接口"),
+    store_id: str = Depends(get_store_id),
+):
+    """从**服务器**这一侧测一次公开接口，把真实结果原样返回。
+
+    为什么需要它：抓不到主图时，界面上只有一句「公开接口返回 403」或
+    「公开接口读取失败：URLError」，看不出是接口挂了、PLID 不对，还是这台
+    服务器到 Takealot 的链路被挡。在你自己的电脑上测又永远成功（家庭 IP
+    和机房 IP 在 Cloudflare 眼里不是一回事），所以只能让服务器自己回答。
+    """
+    from services import takealot_public_api as pub
+
+    record = pub.fetch_product(plid)
+    image = record.get("product_image_url") or ""
+    return {
+        "plid": plid,
+        "success": bool(record.get("success")),
+        "warnings": record.get("warnings") or [],
+        "product_name": record.get("product_name"),
+        "product_image_url": image,
+        "image_ok": bool(image),
+        "takealot_category_path": record.get("takealot_category_path"),
+        "actual_sale_price_zar": record.get("actual_sale_price_zar"),
+        "dimensions": record.get("dimensions") or {},
+        # 图床是另一个域名（media.takealot.com），它的可用性和接口不是一回事：
+        # 接口通了但图床被挡，照样会显示成「没抓到主图」。
+        "hint": (
+            "接口正常，主图和类目都拿到了"
+            if record.get("success") and image
+            else "接口通了但没返回图库" if record.get("success")
+            else "接口这一层就失败了，看 warnings"
+        ),
+    }
+
+
 @router.post("/items/select-qualified")
 def select_qualified(
     data: SelectQualifiedRequest,

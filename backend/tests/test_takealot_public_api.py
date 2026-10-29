@@ -114,3 +114,76 @@ class TestFirstPrice:
     def test_returns_none_when_no_numeric_price(self):
         assert _first_price({"buybox": {"items": [{"price": None}]}}) is None
         assert _first_price({}) is None
+
+
+class TestRetryPolicy:
+    """重试策略本身是纯逻辑，用假的 urlopen 钉住，不联网。
+
+    背景：同样的请求在本地 40/40 成功，部署到 Railway 后整批失败——机房 IP
+    在 Cloudflare 眼里的风险分更高。这里钉的是「403 要退避重试、404 不许重试」，
+    免得以后有人把重试条件放宽成「什么都重试」，把真正的 404 拖成 3 次慢请求。
+    """
+
+    @staticmethod
+    def _fake_urlopen(responses):
+        """按顺序吐出预置响应；元素是异常就抛，是 bytes 就当成响应体。"""
+        calls = {"n": 0}
+
+        class _Response:
+            def __init__(self, body): self._body = body
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return self._body
+
+        def opener(url, timeout=25.0):
+            index = min(calls["n"], len(responses) - 1)
+            calls["n"] += 1
+            item = responses[index]
+            if isinstance(item, BaseException):
+                raise item
+            return _Response(item)
+
+        return opener, calls
+
+    def test_retries_through_403_then_succeeds(self, monkeypatch):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        opener, calls = self._fake_urlopen([
+            urllib.error.HTTPError("u", 403, "Forbidden", None, None),
+            urllib.error.HTTPError("u", 403, "Forbidden", None, None),
+            b'{"ok": 1}',
+        ])
+        monkeypatch.setattr(api.urllib.request, "urlopen", opener)
+        monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+
+        assert api._http_json("https://example.invalid") == {"ok": 1}
+        assert calls["n"] == 3
+
+    def test_gives_up_after_the_last_retry(self, monkeypatch):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        opener, calls = self._fake_urlopen([
+            urllib.error.HTTPError("u", 429, "Too Many Requests", None, None),
+        ])
+        monkeypatch.setattr(api.urllib.request, "urlopen", opener)
+        monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+
+        with pytest.raises(urllib.error.HTTPError):
+            api._http_json("https://example.invalid")
+        assert calls["n"] == 1 + len(api.RETRY_DELAYS)
+
+    def test_does_not_retry_a_plain_404(self, monkeypatch):
+        import urllib.error
+        from services import takealot_public_api as api
+
+        opener, calls = self._fake_urlopen([
+            urllib.error.HTTPError("u", 404, "Not Found", None, None),
+        ])
+        monkeypatch.setattr(api.urllib.request, "urlopen", opener)
+        monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+
+        with pytest.raises(urllib.error.HTTPError):
+            api._http_json("https://example.invalid")
+        assert calls["n"] == 1
