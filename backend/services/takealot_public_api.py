@@ -9,9 +9,15 @@ Takealot 公开接口读取商品资料（供批量选品使用）
 而且它取的是 `s-pdpxl`（459px），做 1688 识图偏小。
 
 公开接口 `api.takealot.com/rest/v-1-9-0/product-details/PLID{plid}` 一次就返回
-标题、图库、类目树、价格、TSIN，不需要登录态、不触发挑战。实测 8 线程
-88 秒读完 1814 个商品，零失败。图库里把尺寸令牌换成 `zoom` 是 1041×1033，
-足够直接拖进 1688 的识图框。
+标题、图库、类目树、价格、TSIN，不需要登录态、不触发挑战。图库里把尺寸令牌
+换成 `zoom` 是 1041×1033，足够直接拖进 1688 的识图框。
+
+并发与节流（2026-10 补）
+------------------------
+原先写的是「8 线程实测 88 秒读完 1814 个商品，零失败」——那是在家庭网络上测的。
+部署到 Railway 后同一批请求整片 429：机房 IP 在 Cloudflare 眼里的风险分更高，
+配额更小。现在改成「并发上限 4 + 请求之间强制排队（`_Pacer`）+ 429 时整体放慢」，
+吞吐约 5 个/秒，速度让位于成功率。不要为了快把 `workers` 加回去。
 
 不做什么
 --------
@@ -25,6 +31,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -56,7 +63,66 @@ BROWSER_HEADERS = {
 
 # 这几类状态码是「被当成机器人 / 被限流 / 上游抖动」的信号，等一下再试通常就过。
 RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+# 普通抖动：等一小会儿就过。
 RETRY_DELAYS = (0.6, 1.8)
+# 限流：0.6 秒完全不够。Cloudflare 的限流窗口通常是十几秒，短退避只会
+# 把请求继续撞在同一个窗口上，看起来像「重试了还是 429」。
+RATE_LIMIT_DELAYS = (3.0, 10.0, 20.0)
+MAX_RETRIES = 3
+
+
+class _Pacer:
+    """进程内的请求节流：任意两次请求之间至少隔 interval 秒。
+
+    为什么要它：`fetch_many` 并发打过去，从机房 IP 会被 Cloudflare 判成机器人
+    直接 429。光靠「失败了重试」治不好——重试的请求同样挤在窗口里。
+    真正有效的是**主动放慢**：把并发压成「串行排队 + 最小间隔」。
+
+    interval 会随 429 翻倍（只增不减），所以：
+    - 网络宽松时按初始节奏跑，不白等；
+    - 一旦被限流，这次运行剩下的请求自动变慢，而不是继续挨 429。
+    """
+
+    def __init__(self, interval: float = 0.2, max_interval: float = 2.0):
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+        self._initial = interval
+        self.interval = interval
+        self.max_interval = max_interval
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            delay = max(0.0, self._next_at - now)
+            self._next_at = max(now, self._next_at) + self.interval
+        if delay:
+            time.sleep(delay)
+
+    def penalize(self) -> None:
+        """吃到 429 就把整体节奏放慢一档，本次运行内不再调回去。"""
+        with self._lock:
+            self.interval = min(self.interval * 2, self.max_interval)
+
+    def reset(self) -> None:
+        """测试用：把学到的节奏清掉。"""
+        with self._lock:
+            self.interval = self._initial
+            self._next_at = 0.0
+
+
+PACER = _Pacer()
+
+
+def fetch_budget(seconds: float = 45.0) -> int:
+    """按当前节奏，`seconds` 秒内大概能抓多少个。
+
+    为什么需要它：`enrich` 是「先整批抓、最后一次 commit」，一个请求要跑多久
+    完全由抓取速度决定。正常节奏下 400 个约 80 秒，没问题；但被限流后 PACER
+    会把间隔翻倍到 2 秒，400 个就变成 13 分钟——代理层早就把连接掐了，
+    抓到的数据随未提交的事务一起丢。所以调用方按这个数切一刀，剩下的交给
+    下一轮请求，进度才不会白费。
+    """
+    return max(1, int(seconds / max(PACER.interval, 0.05)))
 
 # 图库尺寸令牌。s-thumbnail 只有 40×40，s-pdpxl 459×459，s-zoom 约 1041×1033。
 # 识图要用 zoom；如果下游只要小图，改这个常量即可。
@@ -86,29 +152,83 @@ def parse_plid(value: Any) -> Optional[int]:
     return None
 
 
-def _http_json(url: str, timeout: float = 25.0) -> Dict[str, Any]:
-    """读一次公开接口，被拦时退避重试。
+def _header_value(headers: Any, name: str) -> Optional[str]:
+    """不区分大小写地取一个响应头。
 
-    机房 IP 在 Cloudflare 眼里的风险分比家庭 IP 高，同样的请求在本地跑 40/40
-    成功、部署到 Railway 后整批失败，就是这一层。两件事一起做：把真实浏览器
-    会带的头补齐，以及对 403/429 这类「被当成机器人」的响应退避重试一次。
+    为什么不能直接 `.get()`：HTTP/2 里响应头是小写的（`retry-after`），而
+    curl_cffi 返回的是它自己那套 Headers；只按 `Retry-After` 查会漏掉，
+    于是明明服务端说了「等 12 秒」，我们还是按 3 秒硬撞。
+    """
+    if headers is None:
+        return None
+    try:
+        pairs = list(headers.items())
+    except Exception:
+        return None
+    for key, value in pairs:
+        if str(key).lower() == name.lower():
+            return value
+    return None
+
+
+def _retry_delay(error: Optional[BaseException], attempt: int) -> float:
+    """退避时长。优先听服务端给的 Retry-After，没有就按 429 / 其它两套节奏。
+
+    429 用 3s→10s→20s：0.6 秒的短退避会继续撞在同一个限流窗口上，
+    表现就是「重试了还是 429」。普通抖动用 0.6s→1.8s 就够。
+    """
+    retry_after = _header_value(getattr(error, "headers", None), "Retry-After")
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 1.0), 30.0)
+        except (TypeError, ValueError):
+            pass
+    if getattr(error, "code", None) == 429:
+        return RATE_LIMIT_DELAYS[min(attempt, len(RATE_LIMIT_DELAYS) - 1)]
+    return RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+
+
+def _request_json(url: str, timeout: float) -> Dict[str, Any]:
+    """发一次请求并解析 JSON。
+
+    只用标准库。**不要换成 curl_cffi 的浏览器指纹**：本机实测 `impersonate`
+    传 `chrome124` / `chrome` 会被 Cloudflare 判 403，只有 `chrome110` 能过，
+    而 urllib 带上面这套头反而稳定 200。也就是说这条链路的 429 不是 TLS 指纹
+    问题，而是**出口 IP 的配额**问题——指纹换法只会把它变成更难查的 403。
+    真要换出口，`urllib` 本身认 `HTTPS_PROXY` 环境变量，不用改代码。
+    """
+    request = urllib.request.Request(url, headers=BROWSER_HEADERS)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", "ignore"))
+
+
+def _http_json(url: str, timeout: float = 25.0) -> Dict[str, Any]:
+    """读一次公开接口：先按节奏排队，被限流就放慢并退避重试。
+
+    机房 IP 在 Cloudflare 眼里的风险分比家庭 IP 高。实测 8 线程并发直接整片
+    429——接口是通的，是被限流。所以这里不只做「失败重试」，而是：
+    1. 每次请求先过 PACER 排队（并发不再是 8 个同时打）；
+    2. 吃到 429 就把全局节奏翻倍（本次运行内不再调回去）；
+    3. 429 的退避是 3s→10s→20s，而不是普通抖动那套 0.6s→1.8s。
     仍然失败就把最后一个异常抛出去，由 `fetch_product` 记成 warnings。
     """
-    last_error: Optional[BaseException] = None
-    for delay in (0.0,) + RETRY_DELAYS:
-        if delay:
-            time.sleep(delay)
-        request = urllib.request.Request(url, headers=BROWSER_HEADERS)
+    for attempt in range(MAX_RETRIES + 1):
+        PACER.wait()
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8", "ignore"))
+            return _request_json(url, timeout)
         except urllib.error.HTTPError as error:
-            last_error = error
             if error.code not in RETRY_STATUS:
                 raise
+            if error.code == 429:
+                PACER.penalize()
+            if attempt == MAX_RETRIES:
+                raise
+            time.sleep(_retry_delay(error, attempt))
         except Exception as error:  # 超时、DNS、连接重置都重试
-            last_error = error
-    raise last_error if last_error else RuntimeError("公开接口读取失败")
+            if attempt == MAX_RETRIES:
+                raise
+            time.sleep(_retry_delay(error, attempt))
+    raise RuntimeError("公开接口读取失败")
 
 
 def _first_price(payload: Dict[str, Any]) -> Optional[float]:
@@ -234,7 +354,13 @@ def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
     try:
         payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout)
     except urllib.error.HTTPError as error:
-        result["warnings"].append(f"公开接口返回 {error.code}")
+        if error.code == 429:
+            result["warnings"].append(
+                "公开接口限流（429），已按 3s/10s/20s 退避重试仍失败——"
+                "隔几分钟再点一次「重抓全部资料」即可，已抓到的不会重复抓"
+            )
+        else:
+            result["warnings"].append(f"公开接口返回 {error.code}")
         return result
     except Exception as error:  # 网络超时、DNS、JSON 解析失败都归到这里
         result["warnings"].append(f"公开接口读取失败：{type(error).__name__}")
@@ -266,11 +392,15 @@ def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
     return result
 
 
-def fetch_many(plids: Iterable[Any], workers: int = 8) -> List[Dict[str, Any]]:
+def fetch_many(plids: Iterable[Any], workers: int = 4) -> List[Dict[str, Any]]:
     """并发读取多个 PLID。
 
-    并发数默认 8：实测 8 线程时接口仍稳定返回，且不会触发 Cloudflare 的
-    速率限制。调到 16 以上反而出现零星失败，不值得。
+    并发数默认 4，而不是原来的 8。8 线程在家庭网络上没事，从机房 IP 打过去
+    会整片 429——「本地测 40/40、线上全红」就是这么来的。真正的节流在
+    `_Pacer` 里（请求之间强制排队），这里只是上限；两个一起才稳。
+
+    注意：workers 现在是**上限**不是目标。想调快先看 PACER.interval，
+    盲加线程只会更快撞限流。
     """
     unique: List[int] = []
     seen = set()
@@ -281,5 +411,5 @@ def fetch_many(plids: Iterable[Any], workers: int = 8) -> List[Dict[str, Any]]:
             unique.append(resolved)
     if not unique:
         return []
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 12))) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
         return list(pool.map(fetch_product, unique))

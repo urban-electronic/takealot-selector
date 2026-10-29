@@ -388,6 +388,38 @@ def test_enrich_falls_back_to_network_when_product_incomplete(db, monkeypatch):
     assert item.takealot_category_path == "Home & Kitchen > Kitchen Storage"
 
 
+def test_enrich_defers_network_when_throttled(db, monkeypatch):
+    """被限流时节流会把间隔放大，一轮抓不完就留给下一轮。
+
+    为什么必须切：`enrich` 是「先整批抓、最后 commit」。间隔被放大到 2 秒时，
+    400 个要跑十几分钟，请求会先被代理掐掉，事务没提交——抓到的全白费。
+    切一刀之后每轮都能落库，`remaining` 让前端接着调。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["A", "https://www.takealot.com/a/PLID801"],
+                   ["B", "https://www.takealot.com/b/PLID802"],
+                   ["C", "https://www.takealot.com/c/PLID803"]])
+    calls = []
+
+    def fake(plids, workers=8):
+        calls.append(list(plids))
+        return [_fake_public(p) for p in plids]
+
+    monkeypatch.setattr(pub, "fetch_many", fake)
+    # 间隔 100 秒 → 45 秒预算只够 1 个
+    monkeypatch.setattr(pub.PACER, "interval", 100.0)
+
+    first = enrich(EnrichRequest(), db=db, store_id=STORE)
+    assert [len(c) for c in calls] == [1]
+    assert first["processed"] == 1
+    assert first["skipped_network"] == 0     # 推迟的不是「跳过」，不能算成省了网络
+    assert first["remaining"] == 2           # 前端会接着调下一轮
+
+    second = enrich(EnrichRequest(), db=db, store_id=STORE)
+    assert [len(c) for c in calls] == [1, 1]
+    assert second["remaining"] == 1
+
+
 def test_enrich_skips_already_done_unless_refreshed(db, monkeypatch):
     do_import(db, [["产品名称", "产品链接"],
                    ["Tool", "https://www.takealot.com/t/PLID702"]])
