@@ -18,3 +18,8 @@ reportlab>=4.0
 # 10MB+，跨境链路上要 20 多秒；缩到 160px 宽后每张约 10KB。缺了它图片仍能
 # 显示（代码里降级回原图），但列表会重新变慢。
 pillow>=10.4.0
+# 选品池导入（services/selection_import.py）要读用户上传的 xlsx。
+# packing_excel.py 是**写** WPS 模板，为了保住 DISPIMG 扩展才手写 XML；
+# 读的方向没有这个约束，用 openpyxl 更稳（共享字符串、内联字符串、
+# 多 sheet、合并单元格它都处理了，手写解析很容易漏）。
+openpyxl>=3.1.5
