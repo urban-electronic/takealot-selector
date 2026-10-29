@@ -1,37 +1,8 @@
-"""
-卖家后台目录接口（Search Takealot's Catalogue 背后的那套数据）
-=============================================================
+"""已保存目录接入的只读检查与重尺解析。
 
-为什么需要它
-------------
-公开商品页只有约 10% 的商品带 `Assembled Dimensions`、约 2% 带 `Weight`，格式
-还乱（"22 x 7.2 x 17 cm"、"M-L"、"4400 mAh"），所以**竞品重尺拿不到**。
-但卖家后台的 Search Takealot's Catalogue 界面能看到每个 productline 的
-Consolidated / Merchant Packaged Dimensions —— 那说明这份数据在
-`marketplace-api.takealot.com` 上是有的，只是走卖家鉴权。
-
-无 key 探测的结果（2026-10-29 实测）
------------------------------------
-  /v1/offers                    403  "Schemes not valid for any requirement: [['api_key']]"
-  /v1/catalogue                 401  "API Key not provided"
-  /v1/catalogue/{id}            401  "API Key not provided"
-  /v1/catalogue/search?q=       401  "API Key not provided"
-  /v1/products                  404  Path not found
-  /v1/productlines/{id}         404  Path not found
-
-401（而不是 404）说明**路径存在、只差鉴权**。注意 `/v1/catalogue` 的鉴权方案和
-`/v1/offers` 不是同一套（一个是 401 "API Key not provided"，一个是 403
-"Schemes not valid"），所以 key 到底该放 header 还是 query、用哪个字段名，光看
-错误码猜不出来——必须拿真 key 试。
-
-本模块就干这件事
-----------------
-- `probe()`：用已存的 key 逐个「端点 × 鉴权位置」组合试一遍，报告哪个组合返回
-  200、响应里有哪些重尺字段。结果写进 SystemSettings，之后 enrich 直接复用。
-- `fetch_dims()`：用探测成功的组合抓单个 PLID 的重尺。
-
-安全边界：key 只在内存里拼请求头/查询串，**不写日志、不进返回值、不落库**。
-探测结果里只留「端点 + 鉴权方式 + 状态码 + 字段名」，没有 key 本身。
+没有已保存、有效的连接配置时，不读取密钥或尝试端点/鉴权组合。
+已有连接仅按保存的端点与方式检查一次；认证拒绝或限流立即停止。
+401本身不能证明端点存在或鉴权方式，只能如实报告未接入/读取失败。
 """
 
 from __future__ import annotations
@@ -43,13 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 BASE = "https://marketplace-api.takealot.com"
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-)
+USER_AGENT = "takealot-selector/1.0"
 SETTING_KEY = "takealot_catalogue_auth"
 
-# 端点候选。{plid} 会被替换成纯数字 ID。
+# 历史已保存连接的允许端点；不遍历发现，{plid} 仅接受数字。
 ENDPOINTS: List[Tuple[str, str]] = [
     ("catalogue_by_id", "/v1/catalogue/{plid}"),
     ("catalogue_by_plid", "/v1/catalogue/PLID{plid}"),
@@ -57,7 +25,7 @@ ENDPOINTS: List[Tuple[str, str]] = [
     ("catalogue_search", "/v1/catalogue/search?q={plid}"),
 ]
 
-# 鉴权位置候选。顺序按「最可能是对的」排：卖家 API 文档用的是 X-API-Key。
+# 仅兼容已保存的鉴权方式；不得依次尝试。
 AUTH_STYLES: List[str] = ["header_x_api_key", "bearer", "query_api_key", "query_apikey"]
 
 _AUTH_LABEL = {
@@ -72,6 +40,21 @@ _UNIT_SCALE_MM = {"mm": 1.0, "millimeter": 1.0, "cm": 10.0, "centimeter": 10.0,
                   "m": 1000.0, "meter": 1000.0, "in": 25.4, "inch": 25.4}
 _UNIT_SCALE_KG = {"kg": 1.0, "kilogram": 1.0, "g": 0.001, "gram": 0.001,
                   "lb": 0.4536, "lbs": 0.4536, "pound": 0.4536}
+
+
+class CatalogueAccessDenied(RuntimeError):
+    def __init__(self, status: int):
+        self.status = status
+        reason = {401:'认证未通过',403:'访问被拒绝',429:'请求受限流'}[status]
+        super().__init__(f'目录接口{reason}（HTTP {status}），已停止本轮读取，本轮未提交资料未保存')
+
+
+def _valid_winner(winner: Any) -> bool:
+    return (isinstance(winner, dict)
+            and isinstance(winner.get('endpoint'), str)
+            and winner['endpoint'] in dict(ENDPOINTS)
+            and isinstance(winner.get('auth'), str)
+            and winner['auth'] in AUTH_STYLES)
 
 
 def configured_key(db) -> str:
@@ -108,7 +91,7 @@ def _request(url: str, key: str, style: str, timeout: float = 20.0) -> Tuple[int
 def _walk_dimension_keys(payload: Any, path: str = "", found: Optional[List[str]] = None) -> List[str]:
     """收集所有「名字里带 length/width/height/weight」的字段路径。
 
-    只用来在探测结果里告诉人「响应里到底有什么」，不参与取值。
+    只用来在检查结果里告诉人「响应里到底有什么」，不参与取值。
     """
     if found is None:
         found = []
@@ -229,61 +212,42 @@ def extract_dims(payload: Any) -> Dict[str, Optional[float]]:
 
 
 def probe(db, plid: Any) -> Dict[str, Any]:
-    """逐个组合试一遍，返回可读的探测报告。不修改数据库。"""
+    """仅检查已保存连接一次，不探索端点或更换鉴权方式。"""
+    resolved = str(plid).strip()
+    report: Dict[str, Any] = {'ok':False,'tried':[],'winner':None,'reason':''}
+    if not resolved.isdigit():
+        report['reason'] = 'PLID 无法识别'
+        return report
+    winner = load_winner(db)
+    if not _valid_winner(winner):
+        report['reason'] = '尚未接入已确认的目录接口，已停用端点及鉴权组合探测'
+        return report
+    winner = {"endpoint": winner["endpoint"], "auth": winner["auth"]}
     key = configured_key(db)
     if not key:
-        return {"ok": False, "reason": "没有配置卖家 API 密钥，无法探测", "tried": []}
-
-    resolved = str(plid).strip()
-    if not resolved.isdigit():
-        match = re.search(r"(\d{5,})", resolved)
-        resolved = match.group(1) if match else ""
-    if not resolved:
-        return {"ok": False, "reason": "PLID 无法识别", "tried": []}
-
-    tried: List[Dict[str, Any]] = []
-    winner: Optional[Dict[str, str]] = None
-    for endpoint_id, template in ENDPOINTS:
-        path = template.format(plid=resolved)
-        for style in AUTH_STYLES:
-            try:
-                status, payload = _request(BASE + path, key, style)
-            except Exception as error:
-                tried.append({"endpoint": endpoint_id, "path": path,
-                              "auth": _AUTH_LABEL[style], "status": 0,
-                              "note": f"{type(error).__name__}"})
-                continue
-            record = {
-                "endpoint": endpoint_id,
-                "path": path,
-                "auth": _AUTH_LABEL[style],
-                "status": status,
-            }
-            if status == 200 and payload is not None:
-                keys = _walk_dimension_keys(payload)
-                dims = extract_dims(payload)
-                record["dimension_keys"] = keys[:12]
-                record["dims"] = dims
-                if dims.get("length_mm") and dims.get("width_mm") and dims.get("height_mm"):
-                    winner = {"endpoint": endpoint_id, "auth": style}
-                    record["usable"] = True
-            elif status in (401, 403):
-                record["note"] = "鉴权未通过"
-            elif status == 404:
-                record["note"] = "路径不存在"
-            tried.append(record)
-            if winner:
-                break
-        if winner:
-            break
-
-    return {
-        "ok": winner is not None,
-        "plid": resolved,
-        "tried": tried,
-        "winner": winner,
-        "reason": "" if winner else "所有组合都没拿到完整的长宽高",
-    }
+        report['reason'] = '已保存目录连接的鉴权配置不可用，未发送请求'
+        return report
+    path = dict(ENDPOINTS)[winner['endpoint']].format(plid=resolved)
+    row = {'endpoint':winner['endpoint'],'path':path,'auth':_AUTH_LABEL[winner['auth']],'status':0}
+    report.update(plid=resolved,tried=[row])
+    try:
+        status,payload = _request(BASE+path,key,winner['auth'])
+    except Exception as error:
+        row['note'] = type(error).__name__
+        report['reason'] = '目录连接读取失败，未尝试其他端点或鉴权方式'
+        return report
+    row['status'] = status
+    if status != 200 or payload is None:
+        report['reason'] = f'目录接口返回 HTTP {status}，已停止检查，未尝试其他端点或鉴权方式'
+        return report
+    dims = extract_dims(payload)
+    row.update(dimension_keys=_walk_dimension_keys(payload)[:12],dims=dims)
+    if dims.get('length_mm') and dims.get('width_mm') and dims.get('height_mm'):
+        row['usable'] = True
+        report.update(ok=True,winner=winner)
+    else:
+        report['reason'] = '已保存目录连接返回资料不完整，未尝试其他端点或鉴权方式'
+    return report
 
 
 def save_winner(db, winner: Dict[str, str]) -> None:
@@ -306,21 +270,24 @@ def load_winner(db) -> Optional[Dict[str, str]]:
         data = json.loads(row.value)
     except (TypeError, ValueError):
         return None
-    if not isinstance(data, dict) or not data.get("endpoint") or not data.get("auth"):
+    if not _valid_winner(data):
         return None
-    return data
+    return {"endpoint": data["endpoint"], "auth": data["auth"]}
 
 
 def fetch_dims(plid: Any, key: str, winner: Dict[str, str]) -> Dict[str, Optional[float]]:
-    """用探测成功的组合抓单个 PLID 的重尺。失败返回空字典，不抛异常。"""
-    template = dict(ENDPOINTS).get(winner.get("endpoint", ""))
-    if not template or not key:
+    """用已保存连接读取单个数字PLID；拒绝或限流明确抛出停止信号。"""
+    resolved = str(plid).strip()
+    if not _valid_winner(winner) or not key or not resolved.isdigit():
         return {}
-    path = template.format(plid=str(plid).strip())
+    template = dict(ENDPOINTS)[winner["endpoint"]]
+    path = template.format(plid=resolved)
     try:
         status, payload = _request(BASE + path, key, winner.get("auth", ""))
     except Exception:
         return {}
+    if status in (401, 403, 429):
+        raise CatalogueAccessDenied(status)
     if status != 200 or payload is None:
         return {}
     return extract_dims(payload)

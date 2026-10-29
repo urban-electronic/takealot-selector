@@ -883,12 +883,8 @@ export const deleteSelectionBatch = (batchId: string): Promise<{ deleted: number
   request<{ deleted: number }>(`/api/selection/batches/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
 
 /**
- * 探测卖家目录接口能不能拿到竞品重尺。
- *
- * 后台 Search Takealot's Catalogue 能看到每个 productline 的打包重尺，说明这份
- * 数据在 marketplace-api 上是有的，只是走卖家鉴权。`/v1/catalogue` 系列无 key 时
- * 返回 401（路径存在、只差鉴权），但鉴权方案和 `/v1/offers` 不同，得拿真 key 试。
- * 这个接口就是替人把「端点 × 鉴权位置」的组合试一遍，返回里不含 key。
+ * 只检查已保存的目录连接一次；没有有效连接时不读取密钥或发请求。
+ * 不探索端点，不更换鉴权方式，响应不含密钥。
  */
 export interface CatalogueProbeReport {
   ok: boolean;

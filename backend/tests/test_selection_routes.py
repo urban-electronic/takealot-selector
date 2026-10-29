@@ -786,3 +786,44 @@ def test_enrich_reports_access_stop_without_hiding_pending_or_erasing_cache(db, 
     assert first.actual_sale_price_zar == 269
     assert first.enrich_status == "failed"
     assert "403" in first.enrich_message
+
+
+@pytest.mark.parametrize('status',[401,403,429])
+def test_catalogue_denial_stops_enrich_and_preserves_committed_data(db,monkeypatch,status):
+    from services import takealot_catalogue_api as cat, takealot_seller_api as seller
+    monkeypatch.setattr(seller,'configured_key',lambda _:None)
+    monkeypatch.setattr(cat,'load_winner',lambda _:{'endpoint':'catalogue_by_id','auth':'header_x_api_key'})
+    monkeypatch.setattr(cat,'configured_key',lambda _:'fixture-only')
+    do_import(db,[["产品名称","产品链接"],['A','https://www.takealot.com/x/PLID123456'],
+                  ['B','https://www.takealot.com/x/PLID234567'],['C','https://www.takealot.com/x/PLID345678']])
+    first=db.query(SelectionItem).filter(SelectionItem.plid=='123456').one()
+    first.product_image_url='https://example.invalid/saved-image'
+    first.actual_sale_price_zar=269
+    db.commit()
+    calls=[]
+    def request(url,*args):
+        calls.append(url)
+        return (200,{'length_cm':10,'width_cm':20,'height_cm':30,'weight_kg':1}) if len(calls)==1 else (status,None)
+    monkeypatch.setattr(cat,'_request',request)
+    monkeypatch.setattr(pub,'fetch_many',lambda *a,**k:pytest.fail('public fallback after catalogue denial'))
+    with pytest.raises(HTTPException) as error:
+        enrich(EnrichRequest(),db=db,store_id=STORE)
+    assert error.value.status_code==424
+    assert str(status) in error.value.detail
+    assert 'fixture-only' not in error.value.detail
+    assert len(calls)==2
+    db.refresh(first)
+    assert first.product_image_url=='https://example.invalid/saved-image'
+    assert first.actual_sale_price_zar==269
+    assert first.length_mm is None  # explicitly atomic: this uncommitted attempt rolled back
+    assert not first.enrich_status
+
+
+@pytest.mark.parametrize('ok',[True,False])
+def test_catalogue_check_never_rewrites_connection_even_with_legacy_save_flag(db,monkeypatch,ok):
+    from api.selection_routes import diag_catalogue
+    from services import takealot_catalogue_api as cat
+    monkeypatch.setattr(cat,'probe',lambda *a:{'ok':ok,'tried':[],'winner':{'endpoint':'catalogue_by_id','auth':'header_x_api_key'} if ok else None})
+    monkeypatch.setattr(cat,'save_winner',lambda *a:pytest.fail('read-only check overwrote connection'))
+    result=diag_catalogue(plid='123456',save=True,db=db,store_id=STORE)
+    assert result['saved'] is False

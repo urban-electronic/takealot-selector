@@ -64,6 +64,8 @@ RULE = dict(enabled=False, use_system_min=True, strategy='takealot_buybox', last
 PRICING = dict(product_id=PRODUCT['id'], offer_id='test-offer', sku='TEST-001', name=PRODUCT['product_name'], group='未分类', stock=10, price=269, suggested_min=200, rule=RULE, monitor=dict(status='error', enabled=False, interval_minutes=5, error_code='site_challenge', error='网站要求本人验证', last_success_at=None))
 PRICING['monitor'].update(buybox_price=269,last_success_at='2026-10-15T14:00:00Z',price_ownership=dict(state='matched',own_price=269,own_price_source='official_live',own_price_asof='2026-10-15T14:00:01Z',identity_verified=False))
 DATA = {
+    '/api/selection/diag/catalogue': dict(ok=False,tried=[],winner=None,
+        reason='尚未接入已确认的目录接口，已停用端点及鉴权组合探测',saved=False),
     '/api/stores':[STORE], '/api/inventory/stores-overview':[],
     '/api/products':[PRODUCT], '/api/products/'+PRODUCT['id']:PRODUCT,
     # 详情页底部的「同类商品 / 配套周边」。漏声明时这个请求 404、整块静默降级成
@@ -231,6 +233,7 @@ def main():
         failing=set()
         selection_responses=[]
         selection_calls=[]
+        selection_http_status=200
         def intercept(route):
             from urllib.parse import urlsplit
             url=urlsplit(route.request.url)
@@ -240,7 +243,7 @@ def main():
                     if not selection_responses:
                         unknown.append('unexpected POST /api/selection/enrich');route.abort();return
                     response=selection_responses.pop(0) if len(selection_responses)>1 else selection_responses[0]
-                    route.fulfill(json=response);return
+                    route.fulfill(status=selection_http_status,json=response);return
                 if url.path in failing:
                     route.fulfill(status=500,json={'detail':'Fixture failure'});return
                 allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open', '/api/products/seller-sync/preview')
@@ -604,6 +607,20 @@ def main():
                 failures.append('selection access restriction not explained')
             if f'成功 0 个，失败 {expected_calls} 个' not in page.locator('.selection-notice').inner_text():
                 failures.append('selection processed failures reported as successes')
+        # 目录权限拒绝为依赖失败，不得被当作网页登录失效或继续下一批。
+        selection_calls.clear()
+        selection_http_status=424
+        selection_responses[:]=[dict(detail='目录接口认证未通过（HTTP 401），已停止本轮读取，本轮未提交资料未保存')]
+        page.goto(BASE+'/selection')
+        page.locator('.selection-card').first.wait_for(state='visible')
+        page.get_by_role('button',name='重抓全部资料',exact=True).click()
+        page.locator('.selection-notice').filter(has_text='本轮未提交资料未保存').wait_for()
+        if len(selection_calls)!=1: failures.append('catalogue denial continued frontend enrichment')
+        if page.locator('.selection-card').count()!=2: failures.append('catalogue denial discarded loaded cards')
+        page.get_by_role('button',name='检查目录接入',exact=True).click()
+        page.locator('.selection-notice').filter(has_text='目录连接未就绪').wait_for()
+        if '已停用端点及鉴权组合探测' not in page.locator('.selection-import-result').inner_text():
+            failures.append('unconfigured catalogue check did not explain disabled discovery')
         browser.close()
     report=dict(checked=checked,failures=failures,page_errors=errors,undeclared_api=sorted(set(unknown)))
     print(json.dumps(report,ensure_ascii=False,indent=2))
