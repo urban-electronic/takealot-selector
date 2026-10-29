@@ -177,6 +177,61 @@ export interface RecommendationResult {
   meta: RecommendationMeta;
 }
 
+// ---- 站外货源（1688 / Takealot 上看到的、不属于自己仓库的商品）----
+// 和上面的 RecommendationItem 是两件事：那个在自家库里找邻居，这个读 external_offers 表。
+export type ExternalPlatform = '1688' | 'takealot';
+
+export interface ExternalOffer {
+  id: string;
+  platform: ExternalPlatform;
+  url: string;
+  title: string;
+  title_cn: string;
+  /** 站外标价，未换算。1688 是人民币批发价、Takealot 是兰特零售价 */
+  price: number | null;
+  currency: string;
+  /** 起订量，只有 1688 才有 */
+  moq: number | null;
+  image_url: string;
+  keywords: string[];
+  /** 用途 */
+  usage: string;
+  /** 适用场景 */
+  scenario: string;
+  /** 选择理由 */
+  reason: string;
+  /** 命中了商品的哪几个关键词——界面要能回答「为什么挂在这里」 */
+  matched: string[];
+  is_active?: boolean;
+}
+
+export interface ExternalOfferResult {
+  sourcing: ExternalOffer[];
+  market: ExternalOffer[];
+  meta: {
+    total: number;
+    matched: number;
+    unmatched: number;
+    limit_per_platform: number;
+    match_rule: string;
+    sort: string;
+  };
+}
+
+export interface ExternalOfferInput {
+  platform: ExternalPlatform;
+  url: string;
+  title?: string;
+  title_cn?: string;
+  price?: number | null;
+  moq?: number | null;
+  image_url?: string;
+  keywords?: string;
+  usage?: string;
+  scenario?: string;
+  reason?: string;
+}
+
 export interface ProcurementRecord {
   id: string;
   product_id: string | null;

@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult, ExternalOffer, ExternalOfferInput, ExternalOfferResult, ExternalPlatform } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -233,6 +233,52 @@ export const getRecommendations = (
     `/api/products/${encodeURIComponent(id)}/recommendations${qs ? `?${qs}` : ''}`,
   );
 };
+
+// ---- 站外货源（1688 / Takealot）----
+// 只有服务端一份：桌面端本地库没有这张表，也没有对应 Rust 命令。
+// 在 src/api.ts 里同名转调这里，避免两边各存一份导致数据对不上。
+export const getExternalOffers = (
+  productId: string,
+  options?: { limit?: number },
+): Promise<ExternalOfferResult> => {
+  const params = new URLSearchParams();
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  const qs = params.toString();
+  return request<ExternalOfferResult>(
+    `/api/external-offers/for-product/${encodeURIComponent(productId)}${qs ? `?${qs}` : ''}`,
+  );
+};
+
+export const listExternalOffers = (options?: {
+  platform?: ExternalPlatform;
+  keyword?: string;
+  includeInactive?: boolean;
+}): Promise<{ items: ExternalOffer[]; total: number; counts: Record<string, number> }> => {
+  const params = new URLSearchParams();
+  if (options?.platform) params.set('platform', options.platform);
+  if (options?.keyword) params.set('keyword', options.keyword);
+  if (options?.includeInactive) params.set('include_inactive', 'true');
+  const qs = params.toString();
+  return request(`/api/external-offers${qs ? `?${qs}` : ''}`);
+};
+
+export const createExternalOffer = (data: ExternalOfferInput): Promise<ExternalOffer> =>
+  request<ExternalOffer>('/api/external-offers', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const updateExternalOffer = (
+  id: string,
+  data: Partial<ExternalOfferInput> & { is_active?: boolean },
+): Promise<ExternalOffer> =>
+  request<ExternalOffer>(`/api/external-offers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+
+export const archiveExternalOffer = (id: string): Promise<{ ok: boolean; id: string }> =>
+  request(`/api/external-offers/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export const createProduct = async (data: Partial<Product>): Promise<Product> => {
   const result = await request<Product>('/api/products', {

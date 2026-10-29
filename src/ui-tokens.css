@@ -58,6 +58,16 @@
   --surface-muted: #f4f5f7;     /* 只读输入、图片占位、汇总行 */
   --surface-hover: #eef1f5;     /* 下拉项悬停 */
 
+  /* ---- 站外货源平台徽标 ----
+     详情页「站外货源」里要一眼分清 1688 和 Takealot：前者是采购侧（人民币批发价），
+     后者是零售侧（兰特售价）。混看会把两种钱当成同一种。 */
+  --platform-1688-text: #8a4b00;     /* 6.16:1（#fff2e0 底）*/
+  --platform-1688-bg: #fff2e0;
+  --platform-1688-border: #f0cfa4;
+  --platform-takealot-text: #0b5c3f; /* 7.15:1（#e4f6ee 底）*/
+  --platform-takealot-bg: #e4f6ee;
+  --platform-takealot-border: #b7e3cf;
+
   /* ---- 布局 ---- */
   /* 顶栏高度：workspace.css 的 .app-header 直接引用这个令牌。
      之前这里写 64px、workspace.css 写死 68px，令牌是个对不上现实的死值。 */

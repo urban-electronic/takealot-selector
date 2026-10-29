@@ -100,6 +100,11 @@ DATA["/api/products/" + p2["id"] + "/recommendations"] = copy.deepcopy(
 DATA["/api/products/" + p2["id"] + "/recommendations"]["meta"]["anchor"].update(
     product_id=p2["id"], product_no=2, name=LONG_EN_BAGS)
 
+# 站外货源同样是每个商品一次请求。漏了这一份，上面那 6 个组合每次进详情页都会
+# 404，被记进 request_errors —— 判失败的原因跟长标题布局毫无关系。
+DATA["/api/external-offers/for-product/" + p2["id"]] = copy.deepcopy(
+    DATA["/api/external-offers/for-product/" + p1["id"]])
+
 rows = DATA["/api/automatic-pricing"]["rows"]
 rows[0]["name"] = LONG_EN_CAMERA
 rows[0]["chinese_name"] = p1["chinese_product_name"]

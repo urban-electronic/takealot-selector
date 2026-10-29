@@ -1,7 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, RecommendationResult } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, RecommendationResult, ExternalOffer, ExternalOfferInput, ExternalOfferResult, ExternalPlatform } from './types';
 import { recommendProducts } from './utils/productRecommend';
+import * as remoteApi from './remoteApi';
 
 /** 在系统默认浏览器中打开外部 URL，Tauri 中 target="_blank" 不生效 */
 export const openUrl = (url: string): void => {
@@ -69,6 +70,35 @@ export const getRecommendations = async (
     complementLimit: options?.complementLimit,
   });
 };
+
+// ---- 站外货源 ----
+// 这一块**没有本地实现**，本地模式下也走服务端：
+// 站外货源是登记在服务端 external_offers 表里的，桌面端本地库没有这张表，
+// 也没有对应的 Rust 命令（加命令要重新编译客户端，且会变成两份数据各自维护）。
+// 桌面端连不上服务端时会抛错，由界面降级成「暂时读不到」，不静默当成「没有货源」——
+// 这两件事在用户那里完全不一样：一个是网络问题，一个是「真的没录过」。
+export const getExternalOffers = (
+  productId: string,
+  options?: { limit?: number },
+): Promise<ExternalOfferResult> => remoteApi.getExternalOffers(productId, options);
+
+export const listExternalOffers = (options?: {
+  platform?: ExternalPlatform;
+  keyword?: string;
+  includeInactive?: boolean;
+}): Promise<{ items: ExternalOffer[]; total: number; counts: Record<string, number> }> =>
+  remoteApi.listExternalOffers(options);
+
+export const createExternalOffer = (data: ExternalOfferInput): Promise<ExternalOffer> =>
+  remoteApi.createExternalOffer(data);
+
+export const updateExternalOffer = (
+  id: string,
+  data: Partial<ExternalOfferInput> & { is_active?: boolean },
+): Promise<ExternalOffer> => remoteApi.updateExternalOffer(id, data);
+
+export const archiveExternalOffer = (id: string): Promise<{ ok: boolean; id: string }> =>
+  remoteApi.archiveExternalOffer(id);
 
 // Scraper - uses system curl (Apple TLS) via Rust backend to bypass Cloudflare
 export const scrapeTakealot = (productUrl: string): Promise<ScrapeResult> =>

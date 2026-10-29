@@ -19,6 +19,7 @@ import { isEan13 } from '../utils/ean';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
 import ProductRecommendations from '../ProductRecommendations';
+import ExternalOffers from '../ExternalOffers';
 
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -950,6 +951,13 @@ export default function ProductDetail() {
 
       {/* 同类 / 配套推荐：放在最后一块，选完这条正好顺着看下一条 */}
       <ProductRecommendations productId={product.id} />
+
+      {/* 站外货源：1688 进货价 / Takealot 同类售价，数据在服务端 external_offers 表 */}
+      <ExternalOffers
+        productId={product.id}
+        productName={product.product_name || ''}
+        productNameCn={product.chinese_product_name || ''}
+      />
     </div>
   );
 }

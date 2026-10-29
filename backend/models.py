@@ -382,3 +382,34 @@ class SkuRename(Base):
     source = Column(String, default="seller_api")
     detail = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ExternalOffer(Base):
+    """站外货源：1688 / Takealot 上看到的、**不属于自己仓库**的商品。
+
+    存在的理由：详情页原来只推荐库内商品，而库内只有自己上架过的东西——
+    看到一个品类时，「同类还有谁在卖、进货价大概多少」这类信息库里没有。
+    这张表存的就是站外看到的东西，按 `keywords` 挂到商品下面。
+
+    `price` + `currency` 必须成对存：1688 是人民币批发价、Takealot 是兰特零售价，
+    混成一个数字会在界面上被当成同一种钱直接比大小。
+    """
+    __tablename__ = "external_offers"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    store_id = Column(String, ForeignKey("stores.id"), nullable=False, default=DEFAULT_STORE_ID, index=True)
+    platform = Column(String, nullable=False, default="1688", index=True)   # 1688 / takealot
+    url = Column(String, nullable=False)
+    title = Column(String, default="")
+    title_cn = Column(String, default="")
+    price = Column(Float)                # 站外标价，未换算
+    currency = Column(String, default="CNY")   # CNY / ZAR
+    moq = Column(Integer)                # 起订量，1688 才有
+    image_url = Column(String, default="")
+    keywords = Column(Text, default="")  # 逗号分隔，命中商品标题就挂到该商品下
+    usage = Column(String, default="")   # 用途
+    scenario = Column(String, default="")  # 适用场景
+    reason = Column(String, default="")  # 选择理由
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

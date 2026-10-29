@@ -94,6 +94,34 @@ DATA = {
                   min_score=0.18, limits=dict(similar=6, complement=4), candidate_count=42, scored_count=7,
                   anchor=dict(product_id=PRODUCT['id'], product_no=PRODUCT.get('product_no'), name=PRODUCT['product_name'], fee_category=PRODUCT.get('fee_category'))),
     ),
+    # 站外货源（1688 / Takealot）。和上面同一个坑：漏声明时请求 404、整块降级，
+    # 这块版式就从来没被量过。给两条 1688（一条带起订量、一条无价）+
+    # 两条 Takealot（一条长标题），把两栏都撑开。
+    '/api/external-offers/for-product/'+PRODUCT['id']:dict(
+        sourcing=[
+            dict(id='fixture-ext-1', platform='1688', url='https://detail.1688.com/offer/1.html',
+                 title='Travel storage bag foldable waterproof wholesale',
+                 title_cn='旅行收纳包 折叠 防水 批发', price=12.5, currency='CNY', moq=50,
+                 image_url='', keywords=['travel bag', '收纳包'], usage='装衣物分装', scenario='出差旅行',
+                 reason='单价低、复购高，同款在 Takealot 卖 R299', matched=['收纳包']),
+            dict(id='fixture-ext-2', platform='1688', url='https://detail.1688.com/offer/2.html',
+                 title='Storage bag shoulder strap', title_cn='收纳包肩带', price=None, currency='CNY', moq=None,
+                 image_url='', keywords=['strap'], usage='替换肩带', scenario='原肩带断裂',
+                 reason='价格待议，需问客服', matched=['收纳包']),
+        ],
+        market=[
+            dict(id='fixture-ext-3', platform='takealot', url='https://www.takealot.com/x/PLID999',
+                 title='Travel Storage Bag Extra Large Capacity Foldable Waterproof Multi Compartment Organizer',
+                 title_cn='', price=349.0, currency='ZAR', moq=None, image_url='',
+                 keywords=['travel bag'], usage='', scenario='', reason='同类售价对比', matched=['travel bag']),
+            dict(id='fixture-ext-4', platform='takealot', url='https://www.takealot.com/x/PLID998',
+                 title='Storage Bag', title_cn='收纳包', price=189.0, currency='ZAR', moq=None, image_url='',
+                 keywords=['storage bag'], usage='', scenario='', reason='低价竞品', matched=['收纳包']),
+        ],
+        meta=dict(total=6, matched=4, unmatched=2, limit_per_platform=8,
+                  match_rule='关键词命中（英文整词、中文子串），不看品牌词',
+                  sort='命中关键词数 → 有价格优先 → 价格低优先 → 录入时间'),
+    ),
     '/api/products/stats/dashboard':dict(total=1, qualified=0, not_recommended=0, pending=0, data_incomplete=1, avg_profit_margin=0),
     '/api/inventory':[dict(product_id=PRODUCT['id'], name='收纳包', name_en=PRODUCT['product_name'], sku='TEST-001', available=10, in_transit=2, purchased=10, adjusted=0, shipped=0)],
     '/api/inventory/shipments':[], '/api/inventory/adjustments':[], '/api/activity':[],
