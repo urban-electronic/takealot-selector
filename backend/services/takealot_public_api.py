@@ -8,10 +8,8 @@ Takealot 公开接口读取商品资料（供批量选品使用）
 还会撞 Cloudflare 的 "Just a moment" 挑战。补 1800 个商品的图要跑很久，
 而且它取的是 `s-pdpxl`（459px），做 1688 识图偏小。
 
-公开接口 `api.takealot.com/rest/v-1-9-0/product-details/PLID{plid}` 一次就返回
-标题、图库、类目树、价格、TSIN，不需要登录态、不触发挑战。实测 8 线程
-88 秒读完 1814 个商品，零失败。图库里把尺寸令牌换成 `zoom` 是 1041×1033，
-足够直接拖进 1688 的识图框。
+公开接口可能返回标题、图库、类目树、价格和 TSIN；可访问性取决于上游。
+不模拟浏览器绕过拒绝或验证；收到访问拒绝或限流后停止待发读取。
 
 不做什么
 --------
@@ -26,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from threading import Event
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -33,29 +32,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 API_BASE = "https://api.takealot.com/rest/v-1-9-0"
 
-# 不带浏览器 UA 会被 Cloudflare 直接 403（实测 curl 默认 UA 即被拦）
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-)
-
-# 真实浏览器打这个接口时带的头。只给 UA 在家庭网络够用，机房 IP 上不够。
-BROWSER_HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-ZA,en;q=0.9",
-    "Referer": "https://www.takealot.com/",
-    "Origin": "https://www.takealot.com",
-    "sec-ch-ua": '"Chromium";v="126", "Not:A-Brand";v="24"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"macOS"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-site",
-}
-
-# 这几类状态码是「被当成机器人 / 被限流 / 上游抖动」的信号，等一下再试通常就过。
-RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+REQUEST_HEADERS = {"User-Agent": "takealot-selector/1.0", "Accept": "application/json"}
+ACCESS_STOP_STATUS = {401, 403, 429}
+RETRY_STATUS = {500, 502, 503, 504}
 RETRY_DELAYS = (0.6, 1.8)
 
 # 图库尺寸令牌。s-thumbnail 只有 40×40，s-pdpxl 459×459，s-zoom 约 1041×1033。
@@ -65,6 +44,10 @@ IMAGE_SIZE_TOKEN = "zoom"
 _PLID_RE = re.compile(r"PLID(\d+)", re.I)
 _PLID_QUERY_RE = re.compile(r"[?&]plid=(\d+)", re.I)
 _PATH_PLID_RE = re.compile(r"/p/(\d+)")
+
+
+class PublicReadStopped(RuntimeError):
+    """本批已被另一请求的拒绝/限流停止，本任务不再发送请求。"""
 
 
 def parse_plid(value: Any) -> Optional[int]:
@@ -86,27 +69,32 @@ def parse_plid(value: Any) -> Optional[int]:
     return None
 
 
-def _http_json(url: str, timeout: float = 25.0) -> Dict[str, Any]:
-    """读一次公开接口，被拦时退避重试。
-
-    机房 IP 在 Cloudflare 眼里的风险分比家庭 IP 高，同样的请求在本地跑 40/40
-    成功、部署到 Railway 后整批失败，就是这一层。两件事一起做：把真实浏览器
-    会带的头补齐，以及对 403/429 这类「被当成机器人」的响应退避重试一次。
-    仍然失败就把最后一个异常抛出去，由 `fetch_product` 记成 warnings。
-    """
+def _http_json(url: str, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
+    """仅对暂时性网络/5xx 故障有限重试；认证、拒绝及限流立即交还调用方。"""
     last_error: Optional[BaseException] = None
     for delay in (0.0,) + RETRY_DELAYS:
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
         if delay:
-            time.sleep(delay)
-        request = urllib.request.Request(url, headers=BROWSER_HEADERS)
+            if stop_event is not None:
+                if stop_event.wait(delay):
+                    raise PublicReadStopped()
+            else:
+                time.sleep(delay)
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
+        request = urllib.request.Request(url, headers=REQUEST_HEADERS)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8", "ignore"))
         except urllib.error.HTTPError as error:
+            if error.code in ACCESS_STOP_STATUS and stop_event is not None:
+                stop_event.set()
+            error.close()
             last_error = error
             if error.code not in RETRY_STATUS:
                 raise
-        except Exception as error:  # 超时、DNS、连接重置都重试
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
             last_error = error
     raise last_error if last_error else RuntimeError("公开接口读取失败")
 
@@ -205,7 +193,7 @@ def _first_number(text: str) -> Optional[float]:
     return float(match.group(0).replace(",", "."))
 
 
-def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
+def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
     """读取单个 PLID 的商品资料。
 
     返回结构刻意与 `takealot_scraper.scrape_product` 的常用字段同名，
@@ -232,9 +220,18 @@ def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
         return result
 
     try:
-        payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout)
+        payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout, stop_event=stop_event)
+    except PublicReadStopped:
+        result["public_access_blocked"] = True
+        result["warnings"].append("公开接口访问受限，已停止本批后续读取")
+        return result
     except urllib.error.HTTPError as error:
-        result["warnings"].append(f"公开接口返回 {error.code}")
+        result["http_status"] = error.code
+        reason = {401: "认证未通过", 403: "访问被拒绝", 429: "请求受限流"}.get(error.code)
+        result["warnings"].append(
+            f"公开接口{reason}（HTTP {error.code}），已停止读取"
+            if reason else f"公开接口返回 {error.code}"
+        )
         return result
     except Exception as error:  # 网络超时、DNS、JSON 解析失败都归到这里
         result["warnings"].append(f"公开接口读取失败：{type(error).__name__}")
@@ -269,8 +266,7 @@ def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
 def fetch_many(plids: Iterable[Any], workers: int = 8) -> List[Dict[str, Any]]:
     """并发读取多个 PLID。
 
-    并发数默认 8：实测 8 线程时接口仍稳定返回，且不会触发 Cloudflare 的
-    速率限制。调到 16 以上反而出现零星失败，不值得。
+    首次访问拒绝或限流后，待发任务只返回明确失败；已发请求允许结束。
     """
     unique: List[int] = []
     seen = set()
@@ -281,5 +277,16 @@ def fetch_many(plids: Iterable[Any], workers: int = 8) -> List[Dict[str, Any]]:
             unique.append(resolved)
     if not unique:
         return []
+    stopped = Event()
+
+    def read_one(resolved: int) -> Dict[str, Any]:
+        if stopped.is_set():
+            return {"plid": resolved, "success": False, "public_access_blocked": True,
+                    "warnings": ["公开接口访问受限，已停止本批后续读取"]}
+        record = fetch_product(resolved, stop_event=stopped)
+        if record.get("http_status") in ACCESS_STOP_STATUS:
+            stopped.set()
+        return record
+
     with ThreadPoolExecutor(max_workers=max(1, min(workers, 12))) as pool:
-        return list(pool.map(fetch_product, unique))
+        return list(pool.map(read_one, unique))

@@ -514,6 +514,8 @@ export interface SelectionEnrichResult {
   /** 图/类目/价格主档里已经齐全、没再打网络的条数 */
   skipped_network: number;
   remaining: number;
+  /** 上游拒绝或限流时停止后续轮次；remaining 仍是实际待处理数。 */
+  public_access_blocked?: boolean;
   seller_api: string;
   failures: { id: string; plid: string; tsin: string; message: string }[];
 }

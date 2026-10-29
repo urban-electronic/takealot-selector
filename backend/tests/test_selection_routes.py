@@ -728,3 +728,29 @@ class TestPurchaseCostDerivation:
 
         assert updated["unit_price_cny"] is None
         assert updated["purchase_cost_cny"] == 21.0
+
+
+def test_enrich_reports_access_stop_without_hiding_pending_or_erasing_cache(db, monkeypatch):
+    from services import takealot_seller_api as seller
+    monkeypatch.setattr(seller, "configured_key", lambda _: None)
+    do_import(db, [["产品名称", "产品链接"]] + [
+        [f"Item {i}", f"https://www.takealot.com/x/PLID{900+i}"] for i in range(21)
+    ])
+    first = db.query(SelectionItem).first()
+    first.product_image_url = "https://example.invalid/old-image"
+    first.actual_sale_price_zar = 269
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [
+        {"plid": int(p), "success": False, "http_status": 403,
+         "warnings": ["公开接口访问被拒绝（HTTP 403），已停止读取"]} for p in plids
+    ])
+    result = enrich(EnrichRequest(limit=20), db=db, store_id=STORE)
+    assert result["public_access_blocked"] is True
+    assert result["remaining"] == 1
+    assert result["processed"] == 20
+    assert result["failed"] == 20
+    db.refresh(first)
+    assert first.product_image_url == "https://example.invalid/old-image"
+    assert first.actual_sale_price_zar == 269
+    assert first.enrich_status == "failed"
+    assert "403" in first.enrich_message

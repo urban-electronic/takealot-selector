@@ -381,6 +381,8 @@ export default function Selection() {
   const handleEnrich = async (refreshAll = false) => {
     setEnriching(true);
     let done = 0;
+    let succeeded = 0;
+    let failed = 0;
     let last: SelectionEnrichResult | null = null;
     try {
       for (let round = 0; round < 12; round += 1) {
@@ -390,20 +392,23 @@ export default function Selection() {
         });
         last = result;
         done += result.processed;
+        succeeded += result.ok;
+        failed += result.failed;
         setEnrichResult(result);
         setNotice({
           kind: 'info',
           text: `已抓取 ${done} 个${result.remaining ? `，还剩 ${result.remaining} 个…` : '…'}`,
         });
-        if (!result.processed || !result.remaining) break;
+        if (result.public_access_blocked || !result.processed || !result.remaining) break;
       }
       await refresh();
       if (last) {
-        const bits = [`抓取完成：成功 ${done - last.failed} 个，失败 ${last.failed} 个`];
+        const bits = [`${last.public_access_blocked ? '读取已停止' : '抓取完成'}：成功 ${succeeded} 个，失败 ${failed} 个`];
+        if (last.public_access_blocked) bits.push('公开接口访问受限，已停止后续批次');
         if (last.from_product_list) bits.push(`${last.from_product_list} 个重尺直接取自产品列表`);
         if (last.with_dimensions) bits.push(`${last.with_dimensions} 个从卖家接口带出重尺`);
         if (last.skipped_network) bits.push(`${last.skipped_network} 个资料齐全、没再打网络`);
-        setNotice({ kind: last.failed ? 'warn' : 'ok', text: `${bits.join('，')}。` });
+        setNotice({ kind: last.public_access_blocked || failed ? 'warn' : 'ok', text: `${bits.join('，')}。` });
       }
     } catch (error) {
       setNotice({ kind: 'warn', text: (error as Error).message });

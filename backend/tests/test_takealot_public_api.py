@@ -117,12 +117,7 @@ class TestFirstPrice:
 
 
 class TestRetryPolicy:
-    """重试策略本身是纯逻辑，用假的 urlopen 钉住，不联网。
-
-    背景：同样的请求在本地 40/40 成功，部署到 Railway 后整批失败——机房 IP
-    在 Cloudflare 眼里的风险分更高。这里钉的是「403 要退避重试、404 不许重试」，
-    免得以后有人把重试条件放宽成「什么都重试」，把真正的 404 拖成 3 次慢请求。
-    """
+    """隔离传输：受限即停；只有暂时性故障允许有限重试。"""
 
     @staticmethod
     def _fake_urlopen(responses):
@@ -145,13 +140,13 @@ class TestRetryPolicy:
 
         return opener, calls
 
-    def test_retries_through_403_then_succeeds(self, monkeypatch):
+    def test_retries_transient_503_then_succeeds(self, monkeypatch):
         import urllib.error
         from services import takealot_public_api as api
 
         opener, calls = self._fake_urlopen([
-            urllib.error.HTTPError("u", 403, "Forbidden", None, None),
-            urllib.error.HTTPError("u", 403, "Forbidden", None, None),
+            urllib.error.HTTPError("u", 503, "Unavailable", None, None),
+            urllib.error.HTTPError("u", 503, "Unavailable", None, None),
             b'{"ok": 1}',
         ])
         monkeypatch.setattr(api.urllib.request, "urlopen", opener)
@@ -165,7 +160,7 @@ class TestRetryPolicy:
         from services import takealot_public_api as api
 
         opener, calls = self._fake_urlopen([
-            urllib.error.HTTPError("u", 429, "Too Many Requests", None, None),
+            urllib.error.HTTPError("u", 503, "Unavailable", None, None),
         ])
         monkeypatch.setattr(api.urllib.request, "urlopen", opener)
         monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
@@ -187,3 +182,116 @@ class TestRetryPolicy:
         with pytest.raises(urllib.error.HTTPError):
             api._http_json("https://example.invalid")
         assert calls["n"] == 1
+
+
+    @pytest.mark.parametrize("status", [401, 403, 429])
+    def test_access_restriction_stops_without_retry(self, monkeypatch, status):
+        import urllib.error
+        from services import takealot_public_api as api
+        opener, calls = self._fake_urlopen([
+            urllib.error.HTTPError("https://example.invalid/private-marker", status,
+                                   "private-marker", None, None),
+            b'{"core":{"title":"Must not be fetched"}}',
+        ])
+        sleeps = []
+        monkeypatch.setattr(api.urllib.request, "urlopen", opener)
+        monkeypatch.setattr(api.time, "sleep", sleeps.append)
+        result = api.fetch_product(123)
+        assert result["success"] is False
+        assert result["http_status"] == status
+        assert calls["n"] == 1
+        assert sleeps == []
+        assert str(status) in result["warnings"][0]
+        assert "private-marker" not in str(result)
+        assert "安全验证" not in str(result)  # bare 403 does not prove CAPTCHA
+
+    def test_truthful_request_headers(self, monkeypatch):
+        from services import takealot_public_api as api
+        seen = []
+        opener, _ = self._fake_urlopen([b'{}'])
+        def capture(request, timeout):
+            seen.append(dict((k.lower(), v) for k, v in request.header_items()))
+            return opener(request, timeout)
+        monkeypatch.setattr(api.urllib.request, "urlopen", capture)
+        api._http_json("https://example.invalid")
+        assert seen == [{"user-agent": "takealot-selector/1.0", "accept": "application/json"}]
+
+    @pytest.mark.parametrize("status", [401, 403, 429])
+    def test_batch_stops_queued_reads_and_preserves_order(self, monkeypatch, status):
+        import urllib.error
+        from services import takealot_public_api as api
+        opener, calls = self._fake_urlopen([
+            urllib.error.HTTPError("u", status, "denied", None, None),
+        ])
+        monkeypatch.setattr(api.urllib.request, "urlopen", opener)
+        monkeypatch.setattr(api.time, "sleep", lambda _: None)
+        rows = api.fetch_many([123, 123, 456, 789, 987], workers=1)
+        assert calls["n"] == 1
+        assert [row["plid"] for row in rows] == [123, 456, 789, 987]
+        assert rows[0]["http_status"] == status
+        assert all(not row["success"] for row in rows)
+        assert all(row["public_access_blocked"] and "http_status" not in row for row in rows[1:])
+        assert all("停止" in row["warnings"][0] for row in rows[1:])
+
+    def test_invalid_json_does_not_retry(self, monkeypatch):
+        import json
+        from services import takealot_public_api as api
+        opener, calls = self._fake_urlopen([b'not-json', b'{}'])
+        monkeypatch.setattr(api.urllib.request, 'urlopen', opener)
+        monkeypatch.setattr(api.time, 'sleep', lambda _: pytest.fail('parse errors must not sleep'))
+        with pytest.raises(json.JSONDecodeError):
+            api._http_json('https://example.invalid')
+        assert calls['n'] == 1
+
+    def test_timeout_retries_are_bounded(self, monkeypatch):
+        from services import takealot_public_api as api
+        opener, calls = self._fake_urlopen([TimeoutError()])
+        sleeps = []
+        monkeypatch.setattr(api.urllib.request, 'urlopen', opener)
+        monkeypatch.setattr(api.time, 'sleep', sleeps.append)
+        with pytest.raises(TimeoutError):
+            api._http_json('https://example.invalid')
+        assert calls['n'] == 1 + len(api.RETRY_DELAYS)
+        assert sleeps == list(api.RETRY_DELAYS)
+
+    def test_batch_keeps_success_before_access_denied(self, monkeypatch):
+        import urllib.error
+        from services import takealot_public_api as api
+        opener, calls = self._fake_urlopen([
+            b'{"core":{"title":"Existing success"}}',
+            urllib.error.HTTPError('u', 403, 'denied', None, None),
+        ])
+        monkeypatch.setattr(api.urllib.request, 'urlopen', opener)
+        rows = api.fetch_many([123,456,789],workers=1)
+        assert calls['n'] == 2
+        assert rows[0]['success'] and rows[0]['product_name'] == 'Existing success'
+        assert not rows[1]['success'] and not rows[2]['success']
+        assert [row['plid'] for row in rows] == [123,456,789]
+
+    def test_other_worker_denial_cancels_transient_retry(self, monkeypatch):
+        from threading import Event
+        import urllib.error
+        from services import takealot_public_api as api
+        backoff_started = Event()
+        class ObservedStop(Event):
+            def wait(self, timeout=None):
+                backoff_started.set()
+                return super().wait(2)  # 给另一线程调度余量，仍有明确上限。
+        calls = []
+        def opener(request, timeout=25):
+            plid = request.full_url.rsplit('PLID',1)[1]
+            calls.append(plid)
+            if plid == '123':
+                if calls.count(plid)>1:
+                    return self._fake_urlopen([b'{"core":{"title":"must not retry"}}'])[0](request)
+                raise urllib.error.HTTPError('u',503,'unavailable',None,None)
+            assert plid == '456'
+            assert backoff_started.wait(2), 'first worker did not enter backoff'
+            raise urllib.error.HTTPError('u',403,'denied',None,None)
+        monkeypatch.setattr(api, 'Event', ObservedStop)
+        monkeypatch.setattr(api.urllib.request,'urlopen',opener)
+        rows = api.fetch_many([123,456,789],workers=2)
+        assert sorted(calls) == ['123','456']
+        assert rows[0]['public_access_blocked'] is True
+        assert not any(row['success'] for row in rows)
+        assert [row['plid'] for row in rows] == [123,456,789]
