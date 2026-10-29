@@ -377,19 +377,26 @@ export default function Selection() {
     }
   };
 
-  /** 抓资料：后端一次最多 800 个，remaining 不为 0 就接着调。 */
+  /** 抓资料：后端一次最多 400 个，remaining 不为 0 就接着调。
+   *
+   * 后端被限流时会主动放慢，并按「这一轮抓得完多少」切块（见 fetch_budget），
+   * 所以一轮不一定能清空队列。remaining 还在就再调一轮；跑满上限仍有剩余时
+   * 如实说「还剩多少」，不要报「完成」——用户看到的卡片才是可信的。
+   */
   const handleEnrich = async (refreshAll = false) => {
     setEnriching(true);
     let done = 0;
+    let failed = 0;
     let last: SelectionEnrichResult | null = null;
     try {
-      for (let round = 0; round < 12; round += 1) {
+      for (let round = 0; round < 20; round += 1) {
         const result = await enrichSelection({
           batch_id: batchId || undefined,
           refresh: refreshAll && round === 0,
         });
         last = result;
         done += result.processed;
+        failed += result.failed;   // 每轮的失败要累加：只看最后一轮会漏报
         setEnrichResult(result);
         setNotice({
           kind: 'info',
@@ -399,11 +406,18 @@ export default function Selection() {
       }
       await refresh();
       if (last) {
-        const bits = [`抓取完成：成功 ${done - last.failed} 个，失败 ${last.failed} 个`];
+        const bits = [`成功 ${done - failed} 个，失败 ${failed} 个`];
         if (last.from_product_list) bits.push(`${last.from_product_list} 个重尺直接取自产品列表`);
         if (last.with_dimensions) bits.push(`${last.with_dimensions} 个从卖家接口带出重尺`);
         if (last.skipped_network) bits.push(`${last.skipped_network} 个资料齐全、没再打网络`);
-        setNotice({ kind: last.failed ? 'warn' : 'ok', text: `${bits.join('，')}。` });
+        if (last.remaining) {
+          setNotice({
+            kind: 'warn',
+            text: `本轮${bits.join('，')}；还有 ${last.remaining} 个没抓完（接口限流会自动放慢），再点一次「重抓全部资料」接着抓，已抓到的不会重复抓。`,
+          });
+        } else {
+          setNotice({ kind: failed ? 'warn' : 'ok', text: `抓取完成：${bits.join('，')}。` });
+        }
       }
     } catch (error) {
       setNotice({ kind: 'warn', text: (error as Error).message });
