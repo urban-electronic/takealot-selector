@@ -459,6 +459,57 @@ def test_enrich_budgets_unique_plids_and_applies_to_every_row(db, monkeypatch, r
         assert second["remaining"] == 0
 
 
+@pytest.mark.parametrize("scope", ["batch", "ids", "ids_precedence"])
+@pytest.mark.parametrize("budget", [1, 10])
+def test_enrich_remaining_matches_scope_beyond_chunk(db, monkeypatch, scope, budget):
+    for index in range(3):
+        db.add(SelectionItem(
+            id=f"scope-{index}", store_id=STORE, batch_id="selected",
+            plid=str(810 + index), enrich_status=None if index == 2 else "",
+            created_at=datetime(2026, 10, 29, 0, 0, index),
+        ))
+    db.add(Store(id="other-scope-store", name="other", status="active"))
+    db.add_all([
+        SelectionItem(id="unrelated", store_id=STORE, batch_id="elsewhere", plid="900"),
+        SelectionItem(id="other-store", store_id="other-scope-store", batch_id="selected", plid="901"),
+        SelectionItem(id="completed", store_id=STORE, batch_id="selected", enrich_status="ok"),
+        SelectionItem(id="failed", store_id=STORE, batch_id="selected", enrich_status="failed"),
+        SelectionItem(id="promoted", store_id=STORE, batch_id="selected", promoted_product_id="existing"),
+    ])
+    db.commit()
+    monkeypatch.setattr("services.takealot_seller_api.configured_key", lambda db: None)
+    monkeypatch.setattr("services.takealot_catalogue_api.load_winner", lambda db: None)
+    monkeypatch.setattr(pub, "fetch_budget", lambda seconds: budget)
+    calls = []
+
+    def fake(plids, workers=4):
+        calls.append(list(plids))
+        return [_fake_public(p) for p in plids]
+
+    monkeypatch.setattr(pub, "fetch_many", fake)
+    kwargs = {"batch_id": "selected"} if scope == "batch" else {
+        "ids": ["scope-0", "scope-1", "scope-2", "other-store", "promoted", "completed", "failed"],
+    }
+    if scope == "ids_precedence":
+        kwargs["batch_id"] = "elsewhere"  # ids优先，与实际处理范围保持相同规则
+    results = []
+    for _ in range(4):
+        result = enrich(EnrichRequest(limit=2, **kwargs), db=db, store_id=STORE)
+        results.append(result)
+        if not result["remaining"]:
+            break
+    assert results[0]["remaining"] == (2 if budget == 1 else 1)
+    assert sum(r["processed"] for r in results) == 3
+    assert all(r["processed"] > 0 for r in results)
+    assert results[-1]["remaining"] == 0
+    assert [p for call in calls for p in call] == ["810", "811", "812"]
+    db.expire_all()
+    assert db.get(SelectionItem, "scope-2").enrich_status == "ok"
+    assert not db.get(SelectionItem, "unrelated").enrich_status
+    assert not db.get(SelectionItem, "other-store").enrich_status
+    assert db.get(SelectionItem, "failed").enrich_status == "failed"
+
+
 def test_enrich_skips_already_done_unless_refreshed(db, monkeypatch):
     do_import(db, [["产品名称", "产品链接"],
                    ["Tool", "https://www.takealot.com/t/PLID702"]])
