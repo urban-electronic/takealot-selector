@@ -265,16 +265,15 @@ TMPDIR="$PWD/.tmp-audit" python3 scripts/test-text-overlap.py              # 170
 
 ## 9. 已知缺口（按建议优先级）
 
-### 9.1 `already_in_products` 不刷新 → promote 可能重复建产品 ⚠️
+### 9.1 转正式产品的实时身份核对
 
-只在导入时算一次，之后不更新。而且**只按 PLID 判**（`already = bool(group["plid"]) and group["plid"] in existing_plids`）——销售报表里只有 TSIN 的那批，导入时**永远不会**被标成重复，哪怕商品早就在产品列表里。
-
-`promote` 只信这个标记，**不实时查 `products.plid`**。所以两种情况下会重复建：
-
-- 导入之后又在产品列表里手工建了同 PLID
-- 只有 TSIN 的报表行（标记永远是 False）
-
-修法：`promote` 里按 `item.plid`（或 `item.tsin`）实时查一次 `products`（`store_id + plid`），命中就跳过；导入时也把 TSIN 纳入重复判断。
+`already_in_products` 仍是导入时的提示快照，不能决定是否创建。
+`promote` 在店铺写保留内重读选品和本店产品的PLID、TSIN及旧链接身份，再决定是否创建；
+同批新建产品立即纳入核对，多个请求不会凭各自的旧快照重复建档。
+PLID与TSIN指向不同主档、链接与PLID冲突或规格身份不一致时只提示人工核对，不自动合并、改写或关联已有产品。
+归档主档也参与核对，历史产品及库存/装箱引用得到保留；同名本身不作为重复证据。
+导入时的列表标记仍可能过时，最终创建入口的实时核对才是写入边界。
+历史重复记录不在此处自动清理，其他创建入口也没有新增全表唯一约束。
 
 ### 9.2 竞品重尺覆盖率低（最大体验缺口）
 
