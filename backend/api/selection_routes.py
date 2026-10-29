@@ -307,7 +307,10 @@ def _apply_public(item: SelectionItem, record: Optional[Dict[str, Any]], db: Ses
     if not record or not record.get("success"):
         # 主档里已经把名字和主图给全的，本来就没走公开接口——这不是失败。
         # 不区分的话，1800 条自家商品会整片标成「没抓到」。
-        if item.product_image_url and item.product_name:
+        access_blocked = record and (
+            record.get("public_access_blocked") or record.get("http_status") in pub.ACCESS_STOP_STATUS
+        )
+        if not access_blocked and item.product_image_url and item.product_name:
             item.enrich_status = "ok"
             item.enrich_message = "资料取自产品列表，未走公开接口"
             return
@@ -765,6 +768,10 @@ def enrich(
         "from_product_list": from_product_list,
         "skipped_network": skipped_network,
         "remaining": remaining,
+        "public_access_blocked": any(
+            record.get("public_access_blocked") or record.get("http_status") in pub.ACCESS_STOP_STATUS
+            for record in records.values()
+        ),
         "seller_api": seller_note,
         "failures": failures,
     }

@@ -91,7 +91,7 @@
 | 方法 | 路径 | 入参 | 说明 |
 |---|---|---|---|
 | POST | `/import` | multipart: `file`, `batch_name` | 读表 → 聚合 → 落库。返回合并前后行数、重复数、识别到的列、未识别的列 |
-| POST | `/enrich` | `{batch_id?, ids?, limit≤800, refresh}` | 抓资料。**分块**：一次最多 `ENRICH_CHUNK=400`，`remaining≠0` 由前端接着调 |
+| POST | `/enrich` | `{batch_id?, ids?, limit≤800, refresh}` | 抓资料。**分块**：一次最多 `ENRICH_CHUNK=400`，无访问拒绝/限流时，`remaining≠0` 由前端接着调 |
 | GET | `/items` | `batch_id, status, keyword, tier, only_selected, hide_duplicates, sort, limit≤300, offset` | 列表。`sort` 支持 `tier`(默认) / `sales` / `profit` / `price` |
 | GET | `/batches` | — | 批次列表（含 count、最早 created_at） |
 | GET | `/summary` | `batch_id?` | 汇总计数：total/pending/qualified/rejected/promoted/selected/duplicates/with_image/with_dimensions/no_plid |
@@ -136,7 +136,7 @@
 
 **哪些条目会打网络**：`refresh=false` 时只挑「缺主图 或 缺价格 或 缺费率类目」的。刻意不要求 `takealot_category_path`——`Product` 主档本来就不存前台类目路径（存的是确认过的 `fee_category`），拿它当必要条件会让自家商品永远重抓。
 
-**分块与推迟**：`ENRICH_CHUNK=400`，但单次请求的**网络预算只有 45 秒**（`pub.fetch_budget(45)`）。正常节奏（间隔 0.2s）能抓 225 个；被限流放慢到 2s 就只剩 22 个。抓不完的记进 `deferred_plids`，**原样保留**——不记 failed、不参与本轮计算、仍在 `remaining` 里，下一轮自动接着抓。这是刻意的：`enrich` 是末尾一次 `commit()`，请求被代理掐掉就整块白丢。
+**分块与推迟**：`ENRICH_CHUNK=400`，按45秒和当前间隔**估算**单次发送量（`pub.fetch_budget(45)`；并非强制总deadline）。正常节奏（间隔 0.2s）能抓 225 个；被限流放慢到 2s 就只剩 22 个。抓不完的记进 `deferred_plids`，**原样保留**——不记 failed、不参与本轮计算、仍在 `remaining` 里，没有访问拒绝/限流时下一轮自动接着抓；`public_access_blocked=true` 时停止后续轮次。这是刻意的：`enrich` 是末尾一次 `commit()`，请求被代理掐掉就整块白丢。
 
 ### 5.3 人工补数据（`PATCH` / `bulk`）
 
@@ -210,7 +210,7 @@ Success Fee(ZAR) = 类目费率 × 售价
 
 ### 抓取循环（`handleEnrich`）
 
-最多 20 轮，每轮调一次 `/enrich`，`remaining` 不为 0 就继续。失败数**按轮累加**；跑满上限仍有剩余时明确说「还有 N 个没抓完，再点一次接着抓」，不报「完成」。
+最多20轮，每轮调一次 `/enrich`。收到 `public_access_blocked=true` 即停止，保留实际 `remaining` 和已有数据，不能通过后续批次继续请求；无访问限制且 `remaining` 不为0时才继续。成功/失败按每轮 `ok/failed` 累计；处理上限仍有剩余时显示待处理数量，不报完成。
 
 ### 卡片里的三个下拉/派生
 
@@ -282,13 +282,18 @@ TMPDIR="$PWD/.tmp-audit" python3 scripts/test-text-overlap.py              # 170
 
 `/diag/catalogue` 已经能探测「Search Takealot's Catalogue」那套接口，但**鉴权方案未确认**（`/v1/catalogue` 系列返回 401，路径存在、只差鉴权，且和 `/v1/offers` 不是同一套）。这是目前最有价值的一条待打通路径：通了就能自动补竞品重尺。
 
-### 9.3 429 / 出口 IP 配额（本轮刚修，未在线上验证到位）
+### 9.3 公开接口访问受限（业务接入未验证）
 
-同一批 PLID 本地 40/40 成功、Railway 整片 429 —— 是机房出口 IP 在 Cloudflare 的配额更小，而原来 8 线程并发把额度瞬间打穿。
+裸403只能证明访问被拒，429表示限流，不能据此宣称验证码或出口配额根因已证实。
+使用真实应用标识，不模拟浏览器UA、客户端提示、指纹或切换出口规避验证。
+401/403/429均立即停止自动请求、排队任务和后续前端轮次；已发出的单次请求可结束。
+暂停中的节流等待和暂时性故障退避也响应停止信号。仅暂时性5xx/网络故障有有限重试，
+Retry-After读取不区分大小写，等待有上限。
 
-已做：`_Pacer` 主动节流（起始 0.2s，429 翻倍至 2s 上限，运行内不回退）+ 并发上限 8→4 + 429 退避 3s/10s/20s + 单请求 45 秒网络预算。
-
-**还没解决的可能**：Railway 的出口 IP 与其他租户共享，如果这个 IP 本身已经被打热，本地怎么节流都没用。唯一出路是换出口——`urllib` 原生认 `HTTPS_PROXY`，在 Railway 环境变量里设一个代理即可，不用改代码。**不要**试图改用 curl_cffi 的浏览器指纹：实测 `impersonate="chrome124"` / `"chrome"` 反而被 Cloudflare 判 403，只有 `"chrome110"` 能过，而 urllib 带浏览器头稳定 200。
+保留 `_Pacer` 主动节流、最多4个工作线程及分块推迟逻辑。429可降低未来人工操作的节奏，
+但不能用于继续本次被限流的读取。接入条件未改变时，不重复点诊断或重抓已确认受限页面。
+没有通过真实公共接口恢复验收；隔离测试、发布成功不能替代真实SKU资料回传。
+45秒仅为发送量估算，整批强制deadline仍是单独未解决项。
 
 ### 9.4 大批量时体验受限
 
@@ -335,4 +340,4 @@ npm run dev
 
 打开 `/selection`，传一份只有「产品链接」的 Excel 就能跑通全流程：PLID 从链接取，主图和类目走公开接口，重尺和采购价手填，利润率自动算出来。
 
-想验证抓取是否正常，点「测试主图接口」——它会显示服务器侧的真实结果，比在本地测有意义（本地永远成功，家庭 IP 和机房 IP 在 Cloudflare 眼里不是一回事）。
+想验证抓取是否正常，点「测试主图接口」——它会显示服务器侧的真实结果，需区分本地和服务器网络条件；接入条件未改变时，不重复测试已确认受限页面。

@@ -229,10 +229,18 @@ def main():
         context.add_init_script(f"localStorage.setItem('api_base_url', '{BASE}')")
         # 需要模拟「这个接口读失败」时把路径放进来（见文件末尾的降级界面检查）。
         failing=set()
+        selection_responses=[]
+        selection_calls=[]
         def intercept(route):
             from urllib.parse import urlsplit
             url=urlsplit(route.request.url)
             if url.path.startswith('/api/'):
+                if url.path == '/api/selection/enrich' and route.request.method == 'POST':
+                    selection_calls.append(route.request.post_data)
+                    if not selection_responses:
+                        unknown.append('unexpected POST /api/selection/enrich');route.abort();return
+                    response=selection_responses.pop(0) if len(selection_responses)>1 else selection_responses[0]
+                    route.fulfill(json=response);return
                 if url.path in failing:
                     route.fulfill(status=500,json={'detail':'Fixture failure'});return
                 allowed_write = route.request.method == 'POST' and url.path in ('/api/packing/sync-from-products', '/api/buybox/page-open', '/api/products/seller-sync/preview')
@@ -578,6 +586,24 @@ def main():
                     page.screenshot(path=str(Path(args.screenshots)/f'seller-custom-sku-row-{width}.png'))
         finally:
             DATA['/api/products'] = original_products
+        # 访问受限必须停止前端后续轮次，即使服务端如实报告还有待处理商品。
+        # 正常 remaining 路径仍须继续，不能靠无条件 break 让拒绝场景假绿。
+        for blocked,expected_calls in ((True,1),(False,2)):
+            selection_calls.clear()
+            response=dict(processed=1,ok=0,failed=1,with_dimensions=0,from_product_list=0,
+                          skipped_network=0,remaining=1,seller_api='',failures=[],
+                          public_access_blocked=blocked)
+            selection_responses[:]=[response] if blocked else [response,dict(response,remaining=0)]
+            page.goto(BASE+'/selection')
+            page.locator('.selection-card').first.wait_for(state='visible')
+            page.get_by_role('button',name='重抓全部资料',exact=True).click()
+            page.locator('.selection-notice').filter(has_text='读取已停止' if blocked else '抓取完成').wait_for()
+            if len(selection_calls)!=expected_calls:
+                failures.append(f'selection access stop={blocked}: expected {expected_calls} requests, got {len(selection_calls)}')
+            if blocked and '已停止后续批次' not in page.locator('.selection-notice').inner_text():
+                failures.append('selection access restriction not explained')
+            if f'成功 0 个，失败 {expected_calls} 个' not in page.locator('.selection-notice').inner_text():
+                failures.append('selection processed failures reported as successes')
         browser.close()
     report=dict(checked=checked,failures=failures,page_errors=errors,undeclared_api=sorted(set(unknown)))
     print(json.dumps(report,ensure_ascii=False,indent=2))

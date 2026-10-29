@@ -8,16 +8,8 @@ Takealot 公开接口读取商品资料（供批量选品使用）
 还会撞 Cloudflare 的 "Just a moment" 挑战。补 1800 个商品的图要跑很久，
 而且它取的是 `s-pdpxl`（459px），做 1688 识图偏小。
 
-公开接口 `api.takealot.com/rest/v-1-9-0/product-details/PLID{plid}` 一次就返回
-标题、图库、类目树、价格、TSIN，不需要登录态、不触发挑战。图库里把尺寸令牌
-换成 `zoom` 是 1041×1033，足够直接拖进 1688 的识图框。
-
-并发与节流（2026-10 补）
-------------------------
-原先写的是「8 线程实测 88 秒读完 1814 个商品，零失败」——那是在家庭网络上测的。
-部署到 Railway 后同一批请求整片 429：机房 IP 在 Cloudflare 眼里的风险分更高，
-配额更小。现在改成「并发上限 4 + 请求之间强制排队（`_Pacer`）+ 429 时整体放慢」，
-吞吐约 5 个/秒，速度让位于成功率。不要为了快把 `workers` 加回去。
+公开接口可能返回标题、图库、类目树、价格和 TSIN；可访问性取决于上游。
+不模拟浏览器绕过拒绝或验证；收到访问拒绝或限流后停止待发读取。
 
 不做什么
 --------
@@ -33,6 +25,7 @@ import json
 import re
 import threading
 import time
+from threading import Event
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -40,34 +33,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 API_BASE = "https://api.takealot.com/rest/v-1-9-0"
 
-# 不带浏览器 UA 会被 Cloudflare 直接 403（实测 curl 默认 UA 即被拦）
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-)
-
-# 真实浏览器打这个接口时带的头。只给 UA 在家庭网络够用，机房 IP 上不够。
-BROWSER_HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-ZA,en;q=0.9",
-    "Referer": "https://www.takealot.com/",
-    "Origin": "https://www.takealot.com",
-    "sec-ch-ua": '"Chromium";v="126", "Not:A-Brand";v="24"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"macOS"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-site",
-}
-
-# 这几类状态码是「被当成机器人 / 被限流 / 上游抖动」的信号，等一下再试通常就过。
-RETRY_STATUS = {403, 429, 500, 502, 503, 504}
-# 普通抖动：等一小会儿就过。
+REQUEST_HEADERS = {"User-Agent": "takealot-selector/1.0", "Accept": "application/json"}
+ACCESS_STOP_STATUS = {401, 403, 429}
+RETRY_STATUS = {500, 502, 503, 504}
 RETRY_DELAYS = (0.6, 1.8)
-# 限流：0.6 秒完全不够。Cloudflare 的限流窗口通常是十几秒，短退避只会
-# 把请求继续撞在同一个窗口上，看起来像「重试了还是 429」。
-RATE_LIMIT_DELAYS = (3.0, 10.0, 20.0)
+
 MAX_RETRIES = 3
 
 
@@ -80,7 +50,7 @@ class _Pacer:
 
     interval 会随 429 翻倍（只增不减），所以：
     - 网络宽松时按初始节奏跑，不白等；
-    - 一旦被限流，这次运行剩下的请求自动变慢，而不是继续挨 429。
+    - 一旦被限流，停止本批；保留更慢节奏供接入条件改变后的人工操作使用。
     """
 
     def __init__(self, interval: float = 0.2, max_interval: float = 2.0):
@@ -90,13 +60,21 @@ class _Pacer:
         self.interval = interval
         self.max_interval = max_interval
 
-    def wait(self) -> None:
+    def wait(self, stop_event: Optional[Event] = None) -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
         with self._lock:
             now = time.monotonic()
             delay = max(0.0, self._next_at - now)
             self._next_at = max(now, self._next_at) + self.interval
         if delay:
-            time.sleep(delay)
+            if stop_event is not None:
+                if stop_event.wait(delay):
+                    raise PublicReadStopped()
+            else:
+                time.sleep(delay)
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
 
     def penalize(self) -> None:
         """吃到 429 就把整体节奏放慢一档，本次运行内不再调回去。"""
@@ -117,7 +95,7 @@ def fetch_budget(seconds: float = 45.0) -> int:
     """按当前节奏，`seconds` 秒内大概能抓多少个。
 
     为什么需要它：`enrich` 是「先整批抓、最后一次 commit」，一个请求要跑多久
-    完全由抓取速度决定。正常节奏下 400 个约 80 秒，没问题；但被限流后 PACER
+    完全由抓取速度决定。这是按间隔估算的数量，并非强制总时限。被限流后 PACER
     会把间隔翻倍到 2 秒，400 个就变成 13 分钟——代理层早就把连接掐了，
     抓到的数据随未提交的事务一起丢。所以调用方按这个数切一刀，剩下的交给
     下一轮请求，进度才不会白费。
@@ -131,6 +109,10 @@ IMAGE_SIZE_TOKEN = "zoom"
 _PLID_RE = re.compile(r"PLID(\d+)", re.I)
 _PLID_QUERY_RE = re.compile(r"[?&]plid=(\d+)", re.I)
 _PATH_PLID_RE = re.compile(r"/p/(\d+)")
+
+
+class PublicReadStopped(RuntimeError):
+    """本批已被另一请求的拒绝/限流停止，本任务不再发送请求。"""
 
 
 def parse_plid(value: Any) -> Optional[int]:
@@ -153,12 +135,7 @@ def parse_plid(value: Any) -> Optional[int]:
 
 
 def _header_value(headers: Any, name: str) -> Optional[str]:
-    """不区分大小写地取一个响应头。
-
-    为什么不能直接 `.get()`：HTTP/2 里响应头是小写的（`retry-after`），而
-    curl_cffi 返回的是它自己那套 Headers；只按 `Retry-After` 查会漏掉，
-    于是明明服务端说了「等 12 秒」，我们还是按 3 秒硬撞。
-    """
+    """不区分大小写读取响应头，不输出其余响应内容。"""
     if headers is None:
         return None
     try:
@@ -172,62 +149,54 @@ def _header_value(headers: Any, name: str) -> Optional[str]:
 
 
 def _retry_delay(error: Optional[BaseException], attempt: int) -> float:
-    """退避时长。优先听服务端给的 Retry-After，没有就按 429 / 其它两套节奏。
-
-    429 用 3s→10s→20s：0.6 秒的短退避会继续撞在同一个限流窗口上，
-    表现就是「重试了还是 429」。普通抖动用 0.6s→1.8s 就够。
-    """
+    """暂时性故障的退避；按大小写不敏感的 Retry-After 等待，最多30秒。"""
     retry_after = _header_value(getattr(error, "headers", None), "Retry-After")
     if retry_after:
         try:
             return min(max(float(retry_after), 1.0), 30.0)
         except (TypeError, ValueError):
             pass
-    if getattr(error, "code", None) == 429:
-        return RATE_LIMIT_DELAYS[min(attempt, len(RATE_LIMIT_DELAYS) - 1)]
     return RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
 
 
 def _request_json(url: str, timeout: float) -> Dict[str, Any]:
-    """发一次请求并解析 JSON。
-
-    只用标准库。**不要换成 curl_cffi 的浏览器指纹**：本机实测 `impersonate`
-    传 `chrome124` / `chrome` 会被 Cloudflare 判 403，只有 `chrome110` 能过，
-    而 urllib 带上面这套头反而稳定 200。也就是说这条链路的 429 不是 TLS 指纹
-    问题，而是**出口 IP 的配额**问题——指纹换法只会把它变成更难查的 403。
-    真要换出口，`urllib` 本身认 `HTTPS_PROXY` 环境变量，不用改代码。
-    """
-    request = urllib.request.Request(url, headers=BROWSER_HEADERS)
+    """真实应用标识，只读JSON；不模拟浏览器或切换指纹/出口。"""
+    request = urllib.request.Request(url, headers=REQUEST_HEADERS)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8", "ignore"))
 
 
-def _http_json(url: str, timeout: float = 25.0) -> Dict[str, Any]:
-    """读一次公开接口：先按节奏排队，被限流就放慢并退避重试。
-
-    机房 IP 在 Cloudflare 眼里的风险分比家庭 IP 高。实测 8 线程并发直接整片
-    429——接口是通的，是被限流。所以这里不只做「失败重试」，而是：
-    1. 每次请求先过 PACER 排队（并发不再是 8 个同时打）；
-    2. 吃到 429 就把全局节奏翻倍（本次运行内不再调回去）；
-    3. 429 的退避是 3s→10s→20s，而不是普通抖动那套 0.6s→1.8s。
-    仍然失败就把最后一个异常抛出去，由 `fetch_product` 记成 warnings。
-    """
+def _http_json(url: str, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
+    """主动节流；仅暂时性故障有限重试，拒绝/限流立即停止。"""
+    last_error: Optional[BaseException] = None
     for attempt in range(MAX_RETRIES + 1):
-        PACER.wait()
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
+        if attempt:
+            delay = _retry_delay(last_error, attempt - 1)
+            if stop_event is not None:
+                if stop_event.wait(delay):
+                    raise PublicReadStopped()
+            else:
+                time.sleep(delay)
+        PACER.wait(stop_event)
+        if stop_event is not None and stop_event.is_set():
+            raise PublicReadStopped()
         try:
             return _request_json(url, timeout)
         except urllib.error.HTTPError as error:
-            if error.code not in RETRY_STATUS:
-                raise
+            if error.code in ACCESS_STOP_STATUS and stop_event is not None:
+                stop_event.set()
             if error.code == 429:
                 PACER.penalize()
+            error.close()
+            if error.code not in RETRY_STATUS or attempt == MAX_RETRIES:
+                raise
+            last_error = error
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
             if attempt == MAX_RETRIES:
                 raise
-            time.sleep(_retry_delay(error, attempt))
-        except Exception as error:  # 超时、DNS、连接重置都重试
-            if attempt == MAX_RETRIES:
-                raise
-            time.sleep(_retry_delay(error, attempt))
+            last_error = error
     raise RuntimeError("公开接口读取失败")
 
 
@@ -325,7 +294,7 @@ def _first_number(text: str) -> Optional[float]:
     return float(match.group(0).replace(",", "."))
 
 
-def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
+def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
     """读取单个 PLID 的商品资料。
 
     返回结构刻意与 `takealot_scraper.scrape_product` 的常用字段同名，
@@ -352,15 +321,18 @@ def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
         return result
 
     try:
-        payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout)
+        payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout, stop_event=stop_event)
+    except PublicReadStopped:
+        result["public_access_blocked"] = True
+        result["warnings"].append("公开接口访问受限，已停止本批后续读取")
+        return result
     except urllib.error.HTTPError as error:
-        if error.code == 429:
-            result["warnings"].append(
-                "公开接口限流（429），已按 3s/10s/20s 退避重试仍失败——"
-                "隔几分钟再点一次「重抓全部资料」即可，已抓到的不会重复抓"
-            )
-        else:
-            result["warnings"].append(f"公开接口返回 {error.code}")
+        result["http_status"] = error.code
+        reason = {401: "认证未通过", 403: "访问被拒绝", 429: "请求受限流"}.get(error.code)
+        result["warnings"].append(
+            f"公开接口{reason}（HTTP {error.code}），已停止读取"
+            if reason else f"公开接口返回 {error.code}"
+        )
         return result
     except Exception as error:  # 网络超时、DNS、JSON 解析失败都归到这里
         result["warnings"].append(f"公开接口读取失败：{type(error).__name__}")
@@ -395,12 +367,7 @@ def fetch_product(plid: Any, timeout: float = 25.0) -> Dict[str, Any]:
 def fetch_many(plids: Iterable[Any], workers: int = 4) -> List[Dict[str, Any]]:
     """并发读取多个 PLID。
 
-    并发数默认 4，而不是原来的 8。8 线程在家庭网络上没事，从机房 IP 打过去
-    会整片 429——「本地测 40/40、线上全红」就是这么来的。真正的节流在
-    `_Pacer` 里（请求之间强制排队），这里只是上限；两个一起才稳。
-
-    注意：workers 现在是**上限**不是目标。想调快先看 PACER.interval，
-    盲加线程只会更快撞限流。
+    首次访问拒绝或限流后，待发任务只返回明确失败；已发请求允许结束。
     """
     unique: List[int] = []
     seen = set()
@@ -411,5 +378,16 @@ def fetch_many(plids: Iterable[Any], workers: int = 4) -> List[Dict[str, Any]]:
             unique.append(resolved)
     if not unique:
         return []
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
-        return list(pool.map(fetch_product, unique))
+    stopped = Event()
+
+    def read_one(resolved: int) -> Dict[str, Any]:
+        if stopped.is_set():
+            return {"plid": resolved, "success": False, "public_access_blocked": True,
+                    "warnings": ["公开接口访问受限，已停止本批后续读取"]}
+        record = fetch_product(resolved, stop_event=stopped)
+        if record.get("http_status") in ACCESS_STOP_STATUS:
+            stopped.set()
+        return record
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 4))) as pool:
+        return list(pool.map(read_one, unique))
