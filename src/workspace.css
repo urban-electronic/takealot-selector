@@ -705,6 +705,9 @@ button:focus-visible,
   .management-menu-trigger, .header-create-button { padding: 7px 9px; font-size: 12px; }
   .app-header .primary-nav { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 4px; padding-bottom: 2px; overflow: visible; }
   .app-header .primary-nav a { padding: 7px 4px; font-size: 13px; text-align: center; }
+  /* 导航项数是 3n+1 时（现在是 7 项），最后一项会独占新的一行、只占左边一格，
+     看着像漏了一项。让它横跨整行，落单的那项就变成一条完整的收尾。 */
+  .app-header .primary-nav a:nth-child(3n+1):last-child { grid-column: 1 / -1; }
   .container :is(.dashboard-heading, .product-list-header, .inventory-heading, .stores-heading, .packing-hero, .create-page-heading, .page-heading) :is(h1,h2) { font-size: 23px; }
   .card, .operations-workspace .card { padding: 16px; }
   .operations-workspace .operations-table-card { padding: 0; }

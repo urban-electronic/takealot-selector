@@ -157,7 +157,13 @@ DATA = {
         skipped=[dict(plid='96097290',skus=['9901','9902'],reason='本地 SKU 与卖家后台不一致，多规格无法自动对应，请人工核对')],
         token='fixture-only',truncated=False),
 }
-PAGES = [('/', '运营工作台'),('/products','产品列表'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
+PAGES = [('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
+
+# 主导航必须一字不差地渲染这几项。原来这里写的是 links.count()!=6：能挡住「某项
+# 消失」，但挡住的方式太粗——真正漏了哪一项它不说，而且每次合法地加一项导航都会
+# 撞上它（2026-10-29 加「选品池」就挂在这里）。改成比对标签本身：漏项、改名、
+# 多出未登记的项，三种情况都能点名到具体那一项。
+EXPECTED_NAV = ('主页','产品列表','选品池','库存','Buybox与调价','补货计划','装箱单')
 
 def main():
     cli=argparse.ArgumentParser();cli.add_argument('--observe',action='store_true');cli.add_argument('--screenshots');args=cli.parse_args()
@@ -203,7 +209,8 @@ def main():
                 if page.get_by_role('main').count()!=1: failures.append(f'{width}: missing main landmark')
                 nav=page.locator('.primary-nav')
                 links=nav.locator('a')
-                if links.count()!=6:failures.append('missing primary navigation entry')
+                labels=tuple(t.strip() for t in links.all_inner_texts())
+                if labels!=EXPECTED_NAV: failures.append(f'{width}: primary navigation changed, expected {EXPECTED_NAV}, got {labels}')
                 for link in links.all():
                     if link.evaluate("e=>getComputedStyle(e).whiteSpace")!='nowrap':failures.append(f'{width}: navigation label wraps')
                     b=link.bounding_box()

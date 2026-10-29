@@ -3385,7 +3385,10 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-grid-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  /* min(320px, 100%) 而不是写死 320px：容器比 320px 还窄时（320px 屏 + 两侧
+     内边距只剩约 296px），auto-fill 会把轨道撑到 320px 从而横向溢出整页。
+     写成 min() 之后，窄容器退化成整宽一列，不依赖 720px 那个断点兜底。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: var(--sp-3);
 }
 
