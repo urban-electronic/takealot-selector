@@ -157,6 +157,58 @@ DATA = {
         skipped=[dict(plid='96097290',skus=['9901','9902'],reason='本地 SKU 与卖家后台不一致，多规格无法自动对应，请人工核对')],
         token='fixture-only',truncated=False),
 }
+
+
+def _selection_item(**over):
+    """选品池卡片把每个字段都摊开渲染，缺一个就是 undefined。这里给一份完整默认值，
+    用例只覆盖需要变化的几项，免得后端加字段就要回来补夹具。"""
+    base = dict(
+        id='', batch_id='fixture-batch', batch_name='竞品样本 2026-10', plid='', tsin='',
+        takealot_url='', product_name='', chinese_product_name='', brand='',
+        product_image_url='', image_urls=[], takealot_category_path='',
+        fee_category='', fee_category_confidence='', fee_category_reason='',
+        actual_sale_price_zar=None, rating_value=None, review_count=None,
+        sales_qty=None, net_sales_zar=None, gross_sales_zar=None, net_sales_cny=None, tier='',
+        already_in_products=False, promoted_product_id=None,
+        length_mm=None, width_mm=None, height_mm=None, actual_weight_kg=None, dimensions_source='',
+        purchase_url='', purchase_cost_cny=None, purchase_shipping_cny=None, purchase_quantity=1,
+        unit_price_cny=None, packaging_cost_per_unit_cny=None, shipping_method=None,
+        fulfillment_fee_zar=None, success_fee_zar=None, chargeable_weight_kg=None,
+        unit_product_cost_cny=None, international_shipping_per_unit_cny=None,
+        cost_to_sa_warehouse_zar=None, total_cost_zar=None, profit_zar=None, profit_margin=None,
+        status='待核算', selected=False, enrich_status='', enrich_message='', note='')
+    base.update(over)
+    return base
+
+
+# 选品池（/selection）。声明成空列表也能跑通，但那样卡片区、汇总条、分页全是空态，
+# 「0 处问题」并不代表版式真的被量过。给两条真实形状的草稿：一条已算出利润率、带
+# 长英文名（撑开单行省略号），一条缺 PLID、重尺待填（撑开待补字段的提示）。
+DATA.update({
+    '/api/selection/batches': [dict(batch_id='fixture-batch', batch_name='竞品样本 2026-10',
+                                    count=2, created_at='2026-10-29T10:00:00')],
+    '/api/selection/summary': dict(total=2, pending=1, qualified=1, rejected=0, promoted=0,
+                                   selected=1, duplicates=0, with_image=2, with_dimensions=1,
+                                   no_plid=1),
+    '/api/selection/items': dict(total=2, items=[
+        _selection_item(id='fixture-sel-1', plid='104410843', tsin='104410843',
+            takealot_url='https://www.takealot.com/x/PLID104410843',
+            product_name='Travel storage bag with a deliberately long English product title for truncation check',
+            chinese_product_name='旅行收纳包 加大号 可折叠 防水 多隔层',
+            brand='Fixture', product_image_url='',
+            takealot_category_path='Luggage & Travel / Travel Accessories',
+            fee_category='Bags', fee_category_confidence='high',
+            fee_category_reason='类目关键词命中 Bags',
+            actual_sale_price_zar=299.0, rating_value=4.6, review_count=128,
+            length_mm=310, width_mm=210, height_mm=110, actual_weight_kg=1.35,
+            dimensions_source='product_list', profit_margin=0.31, status='合格', selected=True,
+            enrich_status='ok', enrich_message='资料取自产品列表'),
+        _selection_item(id='fixture-sel-2', chinese_product_name='待补 PLID 的竞品',
+            actual_sale_price_zar=189.0, status='待核算', enrich_status='partial',
+            enrich_message='缺少 PLID，无法查重尺'),
+    ]),
+})
+
 PAGES = [('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
 
 # 主导航必须一字不差地渲染这几项。原来这里写的是 links.count()!=6：能挡住「某项

@@ -131,8 +131,16 @@ function SelectionCard({
     <article className={`selection-card ${item.selected ? 'is-selected' : ''} ${locked ? 'is-locked' : ''}`}>
       <header>
         <label className="selection-pick">
-          <input type="checkbox" checked={item.selected} disabled={locked} onChange={onToggle} />
-          <span className="visually-hidden">选中 {item.product_name || item.plid}</span>
+          {/* 无障碍名直接挂在 input 上。原来是一个 .visually-hidden 的 span 装
+              「选中 + 商品名」——sr-only 本身没问题，但那段长英文标题会被版式审计
+              判成「文字被裁且无省略号」，还把卡片的 scrollWidth 撑宽 20px。 */}
+          <input
+            type="checkbox"
+            checked={item.selected}
+            disabled={locked}
+            onChange={onToggle}
+            aria-label={`选中 ${item.product_name || item.plid}`}
+          />
         </label>
         {tier ? <span className={`selection-tier ${tier.className}`}>{tier.label}</span> : null}
         {item.already_in_products ? <span className="selection-flag is-dup">已在产品列表</span> : null}
