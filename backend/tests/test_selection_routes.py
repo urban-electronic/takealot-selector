@@ -420,6 +420,45 @@ def test_enrich_defers_network_when_throttled(db, monkeypatch):
     assert second["remaining"] == 1
 
 
+@pytest.mark.parametrize("refresh", [False, True])
+@pytest.mark.parametrize("budget", [1, 2])
+def test_enrich_budgets_unique_plids_and_applies_to_every_row(db, monkeypatch, refresh, budget):
+    # 同一商品可来自不同导入批次；预算按实际请求算，结果仍按选品行计数。
+    for index, plid in enumerate(["801", "801", "802"]):
+        db.add(SelectionItem(
+            id=f"budget-{index}", store_id=STORE, batch_id=f"batch-{index}",
+            plid=plid, product_name="", enrich_status="",
+            created_at=datetime(2026, 10, 29, 0, 0, index),
+        ))
+    db.commit()
+    monkeypatch.setattr("services.takealot_seller_api.configured_key", lambda db: None)
+    monkeypatch.setattr("services.takealot_catalogue_api.load_winner", lambda db: None)
+    monkeypatch.setattr(pub, "fetch_budget", lambda seconds: budget)
+    calls = []
+
+    def fake(plids, workers=4):
+        calls.append(list(plids))
+        return [_fake_public(p) for p in plids]
+
+    monkeypatch.setattr(pub, "fetch_many", fake)
+    first = enrich(EnrichRequest(refresh=refresh), db=db, store_id=STORE)
+    assert calls == [["801", "802"][:budget]]
+    assert first["processed"] == (2 if budget == 1 else 3)
+    assert first["ok"] == first["processed"]
+    assert first["failed"] == 0
+    assert first["skipped_network"] == 0
+    assert first["remaining"] == (1 if budget == 1 else 0)
+    db.expire_all()
+    rows = db.query(SelectionItem).order_by(SelectionItem.created_at).all()
+    assert [row.enrich_status for row in rows] == ["ok", "ok", "" if budget == 1 else "ok"]
+    assert rows[0].product_image_url == rows[1].product_image_url != ""
+    if budget == 1:
+        second = enrich(EnrichRequest(), db=db, store_id=STORE)
+        assert calls == [["801"], ["802"]]
+        assert second["processed"] == second["ok"] == 1
+        assert second["remaining"] == 0
+
+
 def test_enrich_skips_already_done_unless_refreshed(db, monkeypatch):
     do_import(db, [["产品名称", "产品链接"],
                    ["Tool", "https://www.takealot.com/t/PLID702"]])
