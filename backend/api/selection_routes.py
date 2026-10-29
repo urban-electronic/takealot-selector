@@ -705,6 +705,9 @@ def enrich(
                 and item.fee_category
             )
         ]
+    # 同一 PLID 可来自多个导入批次。先按首次出现顺序去重，再按请求预算切分，
+    # 否则已抓到的 PLID 也可能出现在推迟集合里，导致对应行全部跳过。
+    need_fetch = list(dict.fromkeys(need_fetch))
     records: Dict[str, Dict[str, Any]] = {}
     deferred_plids: set = set()
     all_needed = set(need_fetch)
