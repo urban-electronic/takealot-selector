@@ -1,4 +1,4 @@
-// 用真实 ProductList 组件跑一遍「同步卖家后台」：预览 → 确认 → 刷新普通列表。
+// 用真实 ProductList 组件跑一遍「同步卖家后台」：只读预览 → 暂停写入 → 不触发应用。
 // 不连后端、不写任何业务数据，seller 资料全是本地 fixture。
 //
 // 这组断言对应的是用户明确提的那个要求：同步只改商品主档，展示仍是原来那张表，
@@ -29,9 +29,9 @@ const types = compile(path.resolve(__dirname, '../src/types.ts'));
 const page = compile(path.resolve(__dirname, '../src/pages/ProductList.tsx'), { '../DataSourceContext': { useApi: () => api, useDataSource: () => ({ dataSource: source }) }, '../api': { openUrl: () => {} }, '../remoteApi': remote, '../types': types, '../utils/imageFallback': { ProductImage: () => null } }).default;
 
 const PLAN = {
-  stats: { seller_offer_count: 3, seller_group_count: 3, local_product_count: 2, update_count: 1, create_count: 1, unchanged_count: 0, skip_count: 1, rename_count: 1 },
+  stats: { seller_offer_count: 3, seller_group_count: 3, local_product_count: 2, update_count: 1, create_count: 0, unchanged_count: 0, skip_count: 1, rename_count: 1 },
   updates: [{ plid: '104036518', product_id: 'p1', product_no: 1, name: 'Fixture', matched_by: 'plid', warnings: [], changes: [{ field: 'sku', label: 'SKU', value: 'W-S-12-04', current: '9902357746192' }] }],
-  creates: [{ plid: '104410843', sku: 'W-S-12-02', tsin: '104410843', product_name: 'Fixture New', product_image_url: '', takealot_url: 'https://www.takealot.com/x/PLID104410843', actual_sale_price_zar: 299 }],
+  creates: [],
   skipped: [{ plid: '96097290', skus: ['9901', '9902'], reason: '多规格无法自动对应，请人工核对' }],
   token: 'fixture-token', truncated: false,
 };
@@ -60,19 +60,24 @@ const body = () => document.body.textContent;
   await act(async () => pendingPreview.shift().resolve(PLAN));
   const dialog = document.querySelector('[aria-label="同步卖家后台预览"]');
   assert.ok(dialog, '预览要弹窗');
-  assert.match(dialog.textContent, /将更新 1 个、新增 1 个，跳过 1 个/);
+  assert.match(dialog.textContent, /拟更新 1 个、新增 0 个，跳过 1 个/);
   assert.match(dialog.textContent, /多规格无法自动对应/, '跳过项必须连原因一起列出来');
   assert.match(dialog.textContent, /9902357746192/, '更正 SKU 要显示旧值');
   assert.match(dialog.textContent, /采购成本、库存、利润不会被写入/, '必须说清哪些字段不会被写');
 
-  // 3. 确认同步：带预览 token，完成后刷新普通列表并给出结果。
+  // 3. 上一批回退未核实：确认禁用，不能发送任何apply或刷新伪装成功。
   const before = listCalls;
-  await act(async () => click([...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('确认同步'))));
-  assert.deepEqual(appliedTokens, ['fixture-token'], '写入必须带预览 token');
-  assert.equal(listCalls, before + 1, '同步完要刷新现有列表');
-  assert.equal(document.querySelector('[aria-label="同步卖家后台预览"]'), null, '成功后关闭弹窗');
-  assert.match(body(), /同步完成：新增 1 个商品，更新 1 个商品/);
-  assert.match(body(), /采购成本、库存和利润没有被写入/);
+  const paused = button('同步写入已暂停');
+  assert.ok(paused);
+  assert.equal(paused.disabled, true);
+  assert.match(dialog.textContent, /先核对并回退上一批同步/);
+  assert.match(dialog.textContent, /不新增商品/);
+  await act(async () => click(paused));
+  assert.deepEqual(appliedTokens, [], '暂停时不能发出apply请求');
+  assert.equal(listCalls, before, '未应用不能刷新列表伪装同步完成');
+  assert.ok(document.querySelector('[aria-label="同步卖家后台预览"]'));
+  await act(async () => click(button('关闭')));
+  assert.equal(document.querySelector('[aria-label="同步卖家后台预览"]'), null);
 
   // 4. 本地数据源不显示同步入口（卖家资料只有远程库有）。
   source = 'local';
@@ -96,5 +101,5 @@ const body = () => document.body.textContent;
   assert.match(body(), /当前没有匹配的自建 SKU/);
 
   await act(async () => root.unmount());
-  console.log('PASS seller sync page: plain empty state, one preview read, token-bound apply, list refresh, source isolation, read failure != empty; zero business writes');
+  console.log('PASS seller sync page: plain empty state, one preview read, paused apply sends no request, source isolation, read failure != empty; zero business writes');
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => { clearTimeout(watchdog); dom.window.close(); });

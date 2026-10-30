@@ -140,7 +140,7 @@ export default function ProductList() {
       ].filter(Boolean);
       setAssistNotice(parts.length
         ? `同步完成：${parts.join('，')}。采购成本、库存和利润没有被写入，仍需人工补。`
-        : '同步完成：本地主档已经和卖家后台一致，没有需要写入的变更。');
+        : '同步完成：当前预览范围没有需要写入的变更。');
     } catch (e) { setAssistError(e instanceof Error ? e.message : '同步失败，请重新预览'); }
     finally { setAssistBusy(false); }
   };
@@ -1240,7 +1240,7 @@ export default function ProductList() {
       <div className="product-list-header">
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading} onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
-        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading} title="按卖家后台更正 SKU、补齐空字段，并把本地还没有的商品导入成正式产品" onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading} title="仅更新2026年10月1日起在程序登记的已有产品，不新增卖家商品" onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
         {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
       </div>
@@ -1253,10 +1253,11 @@ export default function ProductList() {
       {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
       {syncPlan && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="同步卖家后台预览" onClick={e => { if (e.target === e.currentTarget) setSyncPlan(null); }}>
         <div className="seller-assist-dialog">
-          <div className="seller-assist-header"><strong>同步卖家后台</strong><button className="btn btn-outline btn-sm" onClick={() => setSyncPlan(null)}>关闭 ×</button></div>
+          <div className="seller-assist-header"><strong>同步卖家后台（只读预览）</strong><button className="btn btn-outline btn-sm" onClick={() => setSyncPlan(null)}>关闭 ×</button></div>
           <div className="seller-assist-body">
-          <h3>将更新 {syncPlan.stats.update_count} 个、新增 {syncPlan.stats.create_count} 个，跳过 {syncPlan.stats.skip_count} 个</h3>
-          <p>来源：本店卖家 API（可能来自最多 30 分钟的缓存）。只写卖家资料里确实有的字段：SKU、标题、图片、TSIN、尺寸重量、本店售价、链接。<strong>采购成本、库存、利润不会被写入</strong>，同步完仍需人工补。同步只改商品主档，不改展示方式——商品还是原来那张表里的行。</p>
+          <p role="status">同步写入已暂停：先核对并回退上一批同步，当前预览不会修改产品。</p>
+          <h3>拟更新 {syncPlan.stats.update_count} 个、新增 {syncPlan.stats.create_count} 个，跳过 {syncPlan.stats.skip_count} 个</h3>
+          <p>范围：仅2026年10月1日起在程序登记的已有产品，不新增商品。来源：本店卖家 API（可能来自最多 30 分钟的缓存）。只写卖家资料里确实有的字段：SKU、标题、图片、TSIN、尺寸重量、本店售价、链接。<strong>采购成本、库存、利润不会被写入</strong>，同步完仍需人工补。同步只改商品主档，不改展示方式——商品还是原来那张表里的行。</p>
           {syncPlan.stats.rename_count > 0 && <p>{syncPlan.stats.rename_count} 个 SKU 会按卖家后台更正；旧值留档，库存流水与发运记录一并迁移。多规格对不上的一律跳过，不猜。</p>}
           <div className="seller-assist-table-scroll" role="region" aria-label="同步明细" tabIndex={0}><table style={{ width: '100%' }}><thead><tr><th>商品</th><th>将写入</th><th>说明</th></tr></thead><tbody>
             {syncPlan.updates.map(item => <tr key={`u-${item.plid}`}>
@@ -1278,7 +1279,7 @@ export default function ProductList() {
           {syncPlan.truncated && <p>明细超过 200 条，上面只列前 200 条；同步会按完整计划执行。</p>}
           </div>
           <div className="seller-assist-footer">
-            <button className="btn btn-primary" disabled={assistBusy || syncPlan.stats.update_count + syncPlan.stats.create_count === 0} onClick={applyAssist}>确认同步 ({syncPlan.stats.update_count + syncPlan.stats.create_count})</button>
+            <button className="btn btn-primary" disabled={true} title="上一批同步回退尚未核实，暂不开放写入" onClick={applyAssist}>同步写入已暂停</button>
             <button className="btn btn-outline" disabled={assistBusy} onClick={previewAssist}>重新读取</button>
             <button className="btn btn-outline" onClick={() => setSyncPlan(null)}>关闭</button>
           </div>
@@ -1532,7 +1533,7 @@ export default function ProductList() {
               <p style={{ color: 'var(--color-text-secondary)' }}>当前没有匹配的自建 SKU。</p>
               <p style={{ color: 'var(--color-text-secondary)', maxWidth: 560, margin: '8px auto 0' }}>
                 如果卖家后台已经改成了自建命名（例如 W-S-12-02），说明本地主档还没同步过来。
-                点右上角「同步卖家后台」，系统会按卖家后台更正 SKU，并把本地还没有的商品导入成正式产品；
+                点右上角「同步卖家后台」，仅更新2026年10月1日起在程序登记的已有产品，不导入未登记商品；
                 同步完回到这里，用搜索框就能搜到。
               </p>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 12 }}>
