@@ -9,7 +9,7 @@ const React = require('react'), {act} = React, {createRoot} = require('react-dom
 const file = path.resolve(__dirname,'../src/pages/Selection.tsx');
 const m = new Module(file,module); m.filename=file; m.paths=Module._nodeModulePaths(path.dirname(file));
 const orig=m.require.bind(m);
-m.require=n=> n==='../remoteApi'?{getImageUrl:x=>x}:n==='../types'?{SHIPPING_METHODS:[],formatPercent:String,formatPrice:String}:n==='../utils/useFeeCategories'?{}:n==='../utils/imageFallback'?{ProductImage:()=>null}:orig(n);
+m.require=n=> n==='../utils/selectionPromotion'?{}:n==='../remoteApi'?{getImageUrl:x=>x}:n==='../types'?{SHIPPING_METHODS:[],formatPercent:String,formatPrice:String}:n==='../utils/useFeeCategories'?{}:n==='../utils/imageFallback'?{ProductImage:()=>null}:orig(n);
 m._compile(ts.transpileModule(fs.readFileSync(file,'utf8')+'\nexport { SelectionCard };',{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2020}}).outputText,file);
 const root=createRoot(document.getElementById('root'));
 const fields={'长':'length_mm','宽':'width_mm','高':'height_mm','重量':'actual_weight_kg','供货单价':'unit_price_cny','采购数量':'purchase_quantity','采购价':'purchase_cost_cny','国内运费':'purchase_shipping_cny'};

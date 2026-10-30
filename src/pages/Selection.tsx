@@ -22,6 +22,7 @@ import {
   deleteSelectionBatch,
   enrichSelection,
   getFeeCategories,
+  getActiveStoreId,
   getImageUrl,
   getSelectionBatches,
   getSelectionItems,
@@ -45,6 +46,8 @@ import type {
   SelectionItemPatch,
   SelectionSummary,
 } from '../types';
+
+import { selectedPromotionIds } from '../utils/selectionPromotion';
 
 const PAGE_SIZE = 24;
 
@@ -154,7 +157,7 @@ function SelectionCard({
   feeCategories: FeeCategory[];
 }) {
   const tier = TIER_STYLE[item.tier];
-  const locked = Boolean(item.promoted_product_id);
+  const locked = Boolean(item.promoted_product_id) || busy;
   const dimsMissing = item.length_mm == null || item.width_mm == null
     || item.height_mm == null || item.actual_weight_kg == null;
   // 供货单价填了就以它为准：采购价 = 单价 × 数量。后端 _calc 里是同一个口径，
@@ -331,6 +334,12 @@ export default function Selection() {
   const [importing, setImporting] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const promoteLock = useRef(false);
+  const promotionMounted = useRef(true);
+  useEffect(() => {
+    promotionMounted.current = true;
+    return () => { promotionMounted.current = false; };
+  }, []);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<{ kind: 'info' | 'warn' | 'ok'; text: string } | null>(null);
   const [importResult, setImportResult] = useState<SelectionImportResult | null>(null);
@@ -382,6 +391,7 @@ export default function Selection() {
   };
 
   const handleUpload = async (file: File) => {
+    if (promoteLock.current) return;
     setImporting(true);
     setNotice({ kind: 'info', text: `正在读取 ${file.name}…` });
     try {
@@ -411,6 +421,7 @@ export default function Selection() {
    * 如实说「还剩多少」，不要报「完成」——用户看到的卡片才是可信的。
    */
   const handleEnrich = async (refreshAll = false) => {
+    if (promoteLock.current) return;
     setEnriching(true);
     let done = 0;
     let succeeded = 0;
@@ -458,6 +469,7 @@ export default function Selection() {
   };
 
   const handlePatch = async (id: string, patch: SelectionItemPatch) => {
+    if (promoteLock.current) return;
     setBusyIds(prev => new Set(prev).add(id));
     try {
       const updated = await patchSelectionItem(id, patch);
@@ -475,11 +487,13 @@ export default function Selection() {
   };
 
   const handleToggle = (item: SelectionItem) => {
+    if (promoteLock.current) return;
     setItems(prev => prev.map(row => (row.id === item.id ? { ...row, selected: !row.selected } : row)));
     void handlePatch(item.id, { selected: !item.selected });
   };
 
   const handleSelectQualified = async () => {
+    if (promoteLock.current) return;
     try {
       const result = await selectQualifiedSelection({ batch_id: batchId || undefined, min_margin: 0.15 });
       setNotice({
@@ -495,6 +509,7 @@ export default function Selection() {
   };
 
   const handleClearSelection = async () => {
+    if (promoteLock.current) return;
     const ids = items.filter(item => item.selected).map(item => item.id);
     if (!ids.length) return;
     await bulkPatchSelection(ids, { selected: false });
@@ -502,6 +517,7 @@ export default function Selection() {
   };
 
   const handleBulkShipping = async () => {
+    if (promoteLock.current) return;
     const ids = items.filter(item => item.selected).map(item => item.id);
     if (!ids.length || !bulkShipping) return;
     try {
@@ -514,25 +530,46 @@ export default function Selection() {
   };
 
   const handlePromote = async () => {
-    const ids = items.filter(item => item.selected && !item.promoted_product_id).map(item => item.id);
-    if (!ids.length) {
-      setNotice({ kind: 'info', text: '还没有勾选任何商品' });
-      return;
-    }
+    if (promoteLock.current) return;
+    promoteLock.current = true;
     setPromoting(true);
+    const initiatingStore = getActiveStoreId();
+    const ensureCurrent = () => {
+      if (!promotionMounted.current || getActiveStoreId() !== initiatingStore) throw Error('页面或店铺已变化，批量建档已停止');
+    };
+    let created = 0;
+    let skipped = 0;
     try {
-      const result = await promoteSelection(ids);
-      setNotice({
-        kind: result.created ? 'ok' : 'info',
-        text: result.created
-          ? `已新建 ${result.created} 个产品${result.skipped ? `，跳过 ${result.skipped} 个（${result.skip_details[0]?.reason || ''}）` : ''}`
-          : `没有新建：${result.skip_details[0]?.reason || '未满足新建条件'}`,
-      });
+      // Read all pages first. Filters on the visible page must not hide selected drafts.
+      const ids = await selectedPromotionIds(async params => {
+        ensureCurrent();
+        const result = await getSelectionItems(params);
+        ensureCurrent();
+        return result;
+      }, batchId || undefined);
+      ensureCurrent();
+      if (!ids.length) {
+        setNotice({ kind: 'info', text: '当前批次没有尚未建档的勾选商品' });
+        return;
+      }
+      if (!window.confirm(`将${batchId ? '本批次' : '全部批次'}已勾选的 ${ids.length} 个商品加入产品列表？包含其他页勾选的商品。`)) return;
+      for (let offset = 0; offset < ids.length; offset += 500) {
+        ensureCurrent();
+        const result = await promoteSelection(ids.slice(offset, offset + 500));
+        ensureCurrent();
+        created += result.created;
+        skipped += result.skipped;
+      }
+      ensureCurrent();
       await refresh();
+      ensureCurrent();
+      setNotice({ kind: created ? 'ok' : 'info', text: `已新建 ${created} 个产品，跳过 ${skipped} 个（已建档或身份重复等）。` });
     } catch (error) {
-      setNotice({ kind: 'warn', text: (error as Error).message });
+      if (!promotionMounted.current) return;
+      setNotice({ kind: 'warn', text: `本次已确认新建 ${created} 个、跳过 ${skipped} 个；后续处理停止：${(error as Error).message}。请刷新核对后再继续。` });
     } finally {
-      setPromoting(false);
+      promoteLock.current = false;
+      if (promotionMounted.current) setPromoting(false);
     }
   };
 
@@ -588,6 +625,7 @@ export default function Selection() {
   };
 
   const handleDeleteBatch = async () => {
+    if (promoteLock.current) return;
     if (!batchId) return;
     const batch = batches.find(row => row.batch_id === batchId);
     if (!window.confirm(`删除批次「${batch?.batch_name || batchId}」里还没建产品的记录？已建产品的会保留。`)) return;
@@ -622,11 +660,11 @@ export default function Selection() {
           <button type="button" className="btn" onClick={() => void handleProbeCatalogue()} disabled={probing}>
             {probing ? '检查中…' : '检查目录接入'}
           </button>
-          <button type="button" className="btn" onClick={() => void handleEnrich(true)} disabled={enriching || importing}>
+          <button type="button" className="btn" onClick={() => void handleEnrich(true)} disabled={promoting || enriching || importing}>
             {enriching ? '抓取中…' : '重抓全部资料'}
           </button>
-          <button type="button" className="btn-primary" onClick={() => void handlePromote()} disabled={promoting || !selectedOnPage}>
-            {promoting ? '新建中…' : `一键新建产品${selectedOnPage ? `（${selectedOnPage}）` : ''}`}
+          <button type="button" className="btn-primary" onClick={() => void handlePromote()} disabled={promoting || enriching || importing || busyIds.size > 0 || !summary?.selected}>
+            {promoting ? '新建中…' : `批量加入产品列表${summary?.selected ? `（${summary.selected}）` : ''}`}
           </button>
         </div>
       </div>
@@ -645,7 +683,7 @@ export default function Selection() {
               ref={fileRef}
               type="file"
               accept=".xlsx,.xlsm,.csv"
-              disabled={importing}
+              disabled={promoting || importing}
               onChange={event => {
                 const file = event.target.files?.[0];
                 if (file) void handleUpload(file);
@@ -656,10 +694,10 @@ export default function Selection() {
           <label className="selection-field is-wide">
             <span>批次名（可空，默认用文件名）</span>
             <input value={batchName} onChange={event => setBatchName(event.target.value)}
-              placeholder="例如：竞品店铺 10-26" disabled={importing} />
+              placeholder="例如：竞品店铺 10-26" disabled={promoting || importing} />
           </label>
           <button type="button" className="btn" onClick={() => void handleEnrich(false)}
-            disabled={enriching || !summary?.total}>
+            disabled={promoting || enriching || !summary?.total}>
             {enriching ? '抓取中…' : '抓取主图与类目'}
           </button>
         </div>
@@ -787,10 +825,10 @@ export default function Selection() {
       </section>
 
       <section className="selection-actions">
-        <button type="button" className="btn" onClick={() => void handleSelectQualified()}>
+        <button type="button" className="btn" onClick={() => void handleSelectQualified()} disabled={promoting}>
           按 15% 勾选达标商品
         </button>
-        <button type="button" className="btn" onClick={() => void handleClearSelection()} disabled={!selectedOnPage}>
+        <button type="button" className="btn" onClick={() => void handleClearSelection()} disabled={promoting || !selectedOnPage}>
           取消本页勾选
         </button>
         <label className="selection-field">
@@ -801,11 +839,11 @@ export default function Selection() {
           </select>
         </label>
         <button type="button" className="btn" onClick={() => void handleBulkShipping()}
-          disabled={!bulkShipping || !selectedOnPage}>
+          disabled={promoting || !bulkShipping || !selectedOnPage}>
           应用到本页选中
         </button>
         {batchId && (
-          <button type="button" className="btn-link-danger" onClick={() => void handleDeleteBatch()}>
+          <button type="button" className="btn-link-danger" onClick={() => void handleDeleteBatch()} disabled={promoting}>
             删除本批次
           </button>
         )}
@@ -826,7 +864,7 @@ export default function Selection() {
             <SelectionCard
               key={item.id}
               item={item}
-              busy={busyIds.has(item.id)}
+              busy={promoting || busyIds.has(item.id)}
               onPatch={patch => void handlePatch(item.id, patch)}
               onToggle={() => handleToggle(item)}
               feeCategories={feeCategoryState.categories}
