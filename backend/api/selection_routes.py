@@ -279,7 +279,7 @@ def _fill_catalogue_dims(db: Session, items: List[SelectionItem]) -> int:
     仅复用有效的已保存连接；检查接口不发现或写入新连接。
     拿不到的留空，等人工填——绝不用类目默认值冒充。
     """
-    from services.takealot_catalogue_api import fetch_dims, load_winner, configured_key
+    from services.takealot_catalogue_api import fetch_dims_many, load_winner, configured_key
 
     winner = load_winner(db)
     if not winner:
@@ -288,11 +288,11 @@ def _fill_catalogue_dims(db: Session, items: List[SelectionItem]) -> int:
     if not key:
         return 0
 
+    eligible = [item for item in items if not item.dimensions_source and item.plid]
+    records = fetch_dims_many([item.plid for item in eligible], key, winner)
     filled = 0
-    for item in items:
-        if item.dimensions_source or not item.plid:
-            continue
-        dims = fetch_dims(item.plid, key, winner)
+    for item in eligible:
+        dims = records.get(str(item.plid).strip())
         if not dims:
             continue
         item.length_mm = dims.get("length_mm")
@@ -680,13 +680,17 @@ def enrich(
             item.product_image_url = str(offer.get("image_url") or "")
 
     # --- 第三优先：竞品重尺走卖家目录接口（已有保存连接）---
-    from services.takealot_catalogue_api import CatalogueAccessDenied
+    from services.takealot_catalogue_api import CatalogueAccessDenied, CatalogueReadPending
     try:
         dims_from_catalogue = _fill_catalogue_dims(db, targets)
     except CatalogueAccessDenied as error:
         # 本轮事务未提交：保留之前已保存资料，不把未完成抓取伪装成成功。
         db.rollback()
         raise HTTPException(status_code=424, detail=str(error)) from None
+
+    except CatalogueReadPending as error:
+        db.rollback()
+        raise HTTPException(status_code=504, detail=str(error)) from None
 
     # --- 公开接口补齐图/类目/价格（并发上限 4，真正的节流在 PACER 里）---
     #

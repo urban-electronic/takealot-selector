@@ -1072,3 +1072,64 @@ def test_promote_refreshes_preloaded_item_after_other_connection_promoted(tmp_pa
         assert cached.promoted_product_id is not None
     finally:
         first.close();second.close();engine.dispose()
+
+
+def test_catalogue_pending_rolls_back_and_stops_public_fallback(db, monkeypatch):
+    from services import takealot_catalogue_api as cat, takealot_seller_api as seller
+    monkeypatch.setattr(seller, 'configured_key', lambda _:None)
+    monkeypatch.setattr(cat, 'load_winner', lambda _:{'endpoint':'catalogue_by_id','auth':'header_x_api_key'})
+    monkeypatch.setattr(cat, 'configured_key', lambda _:'fixture')
+    item = SelectionItem(id='cat-pending', store_id=STORE, plid='123', product_name='saved',
+                         product_image_url='saved-image', actual_sale_price_zar=269)
+    db.add(item)
+    db.commit()
+    def pending(*args): raise cat.CatalogueReadPending()
+    monkeypatch.setattr(cat, 'fetch_dims_many', pending)
+    monkeypatch.setattr(pub, 'fetch_many', lambda *a, **k:pytest.fail('public fallback after catalogue pending'))
+    with pytest.raises(HTTPException) as error:
+        enrich(EnrichRequest(), db=db, store_id=STORE)
+    assert error.value.status_code == 504
+    db.expire_all()
+    saved = db.get(SelectionItem, 'cat-pending')
+    assert (saved.product_name, saved.product_image_url, saved.actual_sale_price_zar) == ('saved','saved-image',269)
+    assert not saved.dimensions_source and not saved.enrich_status
+
+
+def test_catalogue_helper_timeout_has_no_late_object_writes(monkeypatch):
+    from threading import Event, Thread
+    from types import SimpleNamespace
+    from api.selection_routes import _fill_catalogue_dims
+    from services import takealot_catalogue_api as cat
+    release, entered, exited = Event(), Event(), Event()
+    monkeypatch.setattr(cat, 'CATALOGUE_BATCH_WAIT_SECONDS', 0.02)
+    monkeypatch.setattr(cat, '_active_catalogue_read', None)
+    monkeypatch.setattr(cat, 'load_winner', lambda _:{'endpoint':'catalogue_by_id','auth':'header_x_api_key'})
+    monkeypatch.setattr(cat, 'configured_key', lambda _:'fixture')
+    item = SimpleNamespace(plid='123', dimensions_source=None, length_mm=None,
+                           width_mm=None, height_mm=None, actual_weight_kg=None)
+    errors = []
+    def fetch(*a, **k):
+        entered.set()
+        assert release.wait(2)
+        return {'length_mm':100,'width_mm':20,'height_mm':10,'weight_kg':0.3}
+    monkeypatch.setattr(cat, 'fetch_dims', fetch)
+    def run():
+        try: _fill_catalogue_dims(object(), [item])
+        except BaseException as error: errors.append(error)
+        finally: exited.set()
+    thread = Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(1)
+        assert exited.wait(0.3), 'catalogue helper did not return on budget'
+        assert len(errors) == 1 and isinstance(errors[0], cat.CatalogueReadPending)
+        item.dimensions_source = 'manual'
+        item.length_mm = 999
+    finally:
+        release.set()
+        thread.join(1)
+        active = cat._active_catalogue_read
+        if active: active['future'].result(timeout=1)
+    assert _fill_catalogue_dims(object(), [item]) == 0
+    assert item.dimensions_source == 'manual' and item.length_mm == 999
+    assert item.actual_weight_kg is None

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import threading
+import hashlib
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -16,6 +20,16 @@ import httpx
 BASE = "https://marketplace-api.takealot.com"
 USER_AGENT = "takealot-selector/1.0"
 SETTING_KEY = "takealot_catalogue_auth"
+CATALOGUE_BATCH_WAIT_SECONDS = 45.0
+_catalogue_dispatch_lock = threading.Lock()
+_catalogue_pool = ThreadPoolExecutor(max_workers=1)
+_active_catalogue_read = None
+
+
+class CatalogueReadPending(RuntimeError):
+    def __init__(self):
+        super().__init__('目录资料读取未完成或仍在忙，本轮未提交资料未保存，请稍后重试')
+
 
 # 历史已保存连接的允许端点；不遍历发现，{plid} 仅接受数字。
 ENDPOINTS: List[Tuple[str, str]] = [
@@ -275,7 +289,7 @@ def load_winner(db) -> Optional[Dict[str, str]]:
     return {"endpoint": data["endpoint"], "auth": data["auth"]}
 
 
-def fetch_dims(plid: Any, key: str, winner: Dict[str, str]) -> Dict[str, Optional[float]]:
+def fetch_dims(plid: Any, key: str, winner: Dict[str, str], timeout: Optional[float] = None) -> Dict[str, Optional[float]]:
     """用已保存连接读取单个数字PLID；拒绝或限流明确抛出停止信号。"""
     resolved = str(plid).strip()
     if not _valid_winner(winner) or not key or not resolved.isdigit():
@@ -283,7 +297,10 @@ def fetch_dims(plid: Any, key: str, winner: Dict[str, str]) -> Dict[str, Optiona
     template = dict(ENDPOINTS)[winner["endpoint"]]
     path = template.format(plid=resolved)
     try:
-        status, payload = _request(BASE + path, key, winner.get("auth", ""))
+        if timeout is None:
+            status, payload = _request(BASE + path, key, winner.get("auth", ""))
+        else:
+            status, payload = _request(BASE + path, key, winner.get("auth", ""), timeout)
     except Exception:
         return {}
     if status in (401, 403, 429):
@@ -291,3 +308,64 @@ def fetch_dims(plid: Any, key: str, winner: Dict[str, str]) -> Dict[str, Optiona
     if status != 200 or payload is None:
         return {}
     return extract_dims(payload)
+
+
+
+def _read_dims_batch(plids, key, winner, deadline):
+    results = {}
+    for plid in plids:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break  # 只返回已完成的逐商品结果，未读商品不伪造为空重尺。
+        results[plid] = fetch_dims(plid, key, winner, timeout=min(20.0, remaining))
+    return results
+
+
+def fetch_dims_many(plids, key, winner):
+    """只读worker不接触DB；调用方到时回滚，同一未交付批次复用在途结果。"""
+    global _active_catalogue_read
+    if not _valid_winner(winner) or not key:
+        return {}
+    unique = tuple(dict.fromkeys(str(p).strip() for p in plids if str(p).strip().isdigit()))
+    if not unique:
+        return {}
+    identity = (hashlib.sha256(key.encode()).hexdigest(), winner['endpoint'], winner['auth'], unique)
+    with _catalogue_dispatch_lock:
+        active = _active_catalogue_read
+        if active is not None and not active['consumed']:
+            future = active['future']
+            if active['identity'] != identity:
+                if not future.done():
+                    raise CatalogueReadPending()
+                error = future.exception()
+                if isinstance(error, CatalogueAccessDenied):
+                    active['consumed'] = True
+                    raise error  # 迟到拒绝必须先交付，不能直接开启另一批。
+                active = None
+        else:
+            active = None
+        if active is None:
+            deadline = time.monotonic() + CATALOGUE_BATCH_WAIT_SECONDS
+            future = _catalogue_pool.submit(_read_dims_batch, unique, key, dict(winner), deadline)
+            active = {'identity':identity, 'future':future, 'consumed':False}
+            _active_catalogue_read = active
+        future = active['future']
+    try:
+        result = future.result(timeout=CATALOGUE_BATCH_WAIT_SECONDS)
+    except FutureTimeout:
+        if not future.done():
+            raise CatalogueReadPending() from None
+        # 任务自身的异常也须被交付，不当作等待超时。
+        try:
+            result = future.result()
+        finally:
+            with _catalogue_dispatch_lock:
+                active['consumed'] = True
+    except BaseException:
+        with _catalogue_dispatch_lock:
+            active['consumed'] = True
+        raise
+    else:
+        with _catalogue_dispatch_lock:
+            active['consumed'] = True
+    return result
