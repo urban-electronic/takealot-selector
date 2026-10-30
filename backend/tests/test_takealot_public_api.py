@@ -126,7 +126,7 @@ class TestRetryPolicy:
         from services import takealot_public_api as api
 
         api.PACER.reset()
-        monkeypatch.setattr(api.PACER, "wait", lambda stop_event=None: None)
+        monkeypatch.setattr(api.PACER, "wait", lambda stop_event=None, deadline=None: None)
         yield
         api.PACER.reset()
 
@@ -512,3 +512,163 @@ class TestHeaderValue:
         message = Message()
         message["Retry-After"] = "9"
         assert api._header_value(message, "retry-after") == "9"
+
+
+class TestBatchDeadline:
+    def test_deadline_returns_completed_rows_without_waiting_for_running_read(self, monkeypatch):
+        from threading import Event
+        import time
+        from services import takealot_public_api as api
+        release = Event()
+        entered = Event()
+        calls = []
+        exited = Event()
+        def read(plid, **kwargs):
+            calls.append(plid)
+            if plid == 123:
+                return {"plid": plid, "success": True, "product_name": "kept"}
+            entered.set()
+            assert release.wait(2)
+            exited.set()
+            return {"plid": plid, "success": True, "product_name": "late"}
+        monkeypatch.setattr(api, 'fetch_product', read)
+        monkeypatch.setattr(api, 'BATCH_BUDGET_SECONDS', 0.05, raising=False)
+        started = time.monotonic()
+        try:
+            rows = api.fetch_many([123,456,789], workers=1)
+            assert entered.is_set()
+            assert time.monotonic() - started < 0.5
+            assert rows[0]['success'] and rows[0]['product_name'] == 'kept'
+            assert all(row['budget_deferred'] and not row['success'] for row in rows[1:])
+            assert all(not row.get('public_access_blocked') for row in rows)
+            second = api.fetch_many([456,789], workers=1)
+            assert all(row['budget_deferred'] for row in second)
+            assert calls == [123,456]  # 旧线程退出之前不能再开新批读取。
+        finally:
+            release.set()
+            assert exited.wait(1)
+        assert calls == [123,456]  # 排队的789不得在返回后再发出。
+
+    def test_deadline_caps_transport_and_prevents_retry(self, monkeypatch):
+        from services import takealot_public_api as api
+        now = [100.0]
+        monkeypatch.setattr(api.time, 'monotonic', lambda: now[0])
+        monkeypatch.setattr(api.PACER, 'wait', lambda *a, **k: None)
+        calls = []
+        def request(url, timeout):
+            calls.append(timeout)
+            now[0] = 103.0
+            raise TimeoutError()
+        monkeypatch.setattr(api, '_request_json', request)
+        with pytest.raises(api.PublicBudgetExpired):
+            api._http_json('https://example.invalid', deadline=103.0)
+        assert calls == [pytest.approx(3.0)]
+
+    def test_pacing_does_not_wait_past_deadline(self, monkeypatch):
+        from services import takealot_public_api as api
+        now = [100.0]
+        monkeypatch.setattr(api.time, 'monotonic', lambda: now[0])
+        delays = []
+        def sleep(delay):
+            delays.append(delay)
+            now[0] += delay
+        monkeypatch.setattr(api.time, 'sleep', sleep)
+        pacer = api._Pacer(interval=20)
+        pacer.wait()
+        with pytest.raises(api.PublicBudgetExpired):
+            pacer.wait(deadline=103.0)
+        assert delays == [pytest.approx(3.0)]
+
+
+    def test_retry_backoff_is_capped_by_shared_deadline(self, monkeypatch):
+        from services import takealot_public_api as api
+        import urllib.error
+        now = [100.0]
+        delays = []
+        monkeypatch.setattr(api.time, 'monotonic', lambda: now[0])
+        monkeypatch.setattr(api.PACER, 'wait', lambda *a, **k: None)
+        def sleep(delay):
+            delays.append(delay)
+            now[0] += delay
+        monkeypatch.setattr(api.time, 'sleep', sleep)
+        calls = []
+        def request(url, timeout):
+            calls.append(timeout)
+            raise urllib.error.HTTPError('u', 503, 'unavailable', {'Retry-After':'30'}, None)
+        monkeypatch.setattr(api, '_request_json', request)
+        with pytest.raises(api.PublicBudgetExpired):
+            api._http_json('https://example.invalid', deadline=103.0)
+        assert calls == [pytest.approx(3.0)]
+        assert delays == [pytest.approx(3.0)]
+
+
+    def test_late_denial_stops_next_batch_before_new_transport(self, monkeypatch):
+        from threading import Event
+        from services import takealot_public_api as api
+        release = Event()
+        finished = Event()
+        calls = []
+        def read(plid, **kwargs):
+            calls.append(plid)
+            assert release.wait(2)
+            return {"plid": plid, "success": False, "http_status": 403}
+        monkeypatch.setattr(api, 'fetch_product', read)
+        monkeypatch.setattr(api, 'BATCH_BUDGET_SECONDS', 0.02)
+        # 回调全部执行后再继续，不能靠sleep猜线程已退出。
+        original_release = api._BATCH_LEASE
+        class Lease:
+            def acquire(self, **kwargs): return original_release.acquire(**kwargs)
+            def release(self):
+                original_release.release()
+                finished.set()
+        monkeypatch.setattr(api, '_BATCH_LEASE', Lease())
+        try:
+            first = api.fetch_many([123], workers=1)
+            assert first[0]['budget_deferred']
+            assert api.fetch_many([123], workers=1)[0]['budget_deferred']
+            release.set()
+            assert finished.wait(1)
+            later = api.fetch_many([123,456], workers=1)
+            assert all(row['public_access_blocked'] for row in later)
+            assert calls == [123]
+        finally:
+            release.set()
+            api._LATE_ACCESS_DENIAL.clear()
+
+    def test_lease_covers_result_delivery_before_clearing_denial(self, monkeypatch):
+        from threading import Event, Thread, current_thread
+        from services import takealot_public_api as api
+        held = Event()
+        resume = Event()
+        calls = []
+        results = []
+        errors = []
+        original_wait = api.wait
+        def controlled_wait(*args, **kwargs):
+            result = original_wait(*args, **kwargs)
+            if current_thread().name == 'held-coordinator':
+                held.set()
+                assert resume.wait(2)
+            return result
+        def read(plid, **kwargs):
+            calls.append(plid)
+            return {'plid': plid, 'success': False, 'http_status': 403}
+        monkeypatch.setattr(api, 'wait', controlled_wait)
+        monkeypatch.setattr(api, 'fetch_product', read)
+        def run():
+            try: results.extend(api.fetch_many([123], workers=1))
+            except BaseException as error: errors.append(error)
+        thread = Thread(target=run, name='held-coordinator')
+        thread.start()
+        try:
+            assert held.wait(1)
+            # future已退出但A尚未交付结果：B/C都必须被租约挡住。
+            for plid in [456,789]:
+                assert api.fetch_many([plid], workers=1)[0]['budget_deferred']
+            assert calls == [123]
+        finally:
+            resume.set()
+            thread.join(1)
+        assert not thread.is_alive() and not errors
+        assert results[0]['http_status'] == 403
+        assert not api._LATE_ACCESS_DENIAL.is_set()

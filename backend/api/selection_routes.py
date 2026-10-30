@@ -725,6 +725,8 @@ def enrich(
         for record in pub.fetch_many(need_fetch, workers=4):
             if record.get("plid") is not None:
                 records[str(record["plid"])] = record
+                if record.get("budget_deferred"):
+                    deferred_plids.add(str(record["plid"]))
     # 按条数算，不按 plid 去重后的个数算：同一 PLID 可能对应多条选品记录，
     # 用集合长度会让这两个计数偏小，前端看到的「省了多少 / 处理了多少」就对不上。
     skipped_network = sum(1 for item in targets if item.plid and item.plid not in all_needed)

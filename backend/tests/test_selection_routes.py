@@ -510,6 +510,30 @@ def test_enrich_remaining_matches_scope_beyond_chunk(db, monkeypatch, scope, bud
     assert db.get(SelectionItem, "failed").enrich_status == "failed"
 
 
+def test_enrich_budget_expiry_keeps_deferred_rows_pending_and_saved_data(db, monkeypatch):
+    db.add_all([
+        SelectionItem(id="deadline-kept", store_id=STORE, batch_id="deadline", plid="811"),
+        SelectionItem(id="deadline-later", store_id=STORE, batch_id="deadline", plid="812",
+                      product_name="saved", product_image_url="saved-image", actual_sale_price_zar=77),
+    ])
+    db.commit()
+    monkeypatch.setattr("services.takealot_seller_api.configured_key", lambda db: None)
+    monkeypatch.setattr("services.takealot_catalogue_api.load_winner", lambda db: None)
+    monkeypatch.setattr(pub, "fetch_many", lambda *a, **k: [
+        _fake_public("811"),
+        {"plid": 812, "success": False, "budget_deferred": True},
+    ])
+    result = enrich(EnrichRequest(batch_id="deadline"), db=db, store_id=STORE)
+    assert result["processed"] == result["ok"] == 1
+    assert result["failed"] == 0
+    assert result["remaining"] == 1
+    assert not result["public_access_blocked"]
+    db.expire_all()
+    later = db.get(SelectionItem, "deadline-later")
+    assert not later.enrich_status
+    assert (later.product_name, later.product_image_url, later.actual_sale_price_zar) == ("saved", "saved-image", 77)
+
+
 def test_enrich_skips_already_done_unless_refreshed(db, monkeypatch):
     do_import(db, [["产品名称", "产品链接"],
                    ["Tool", "https://www.takealot.com/t/PLID702"]])
