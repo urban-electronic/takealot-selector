@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +15,18 @@ from cryptography.fernet import Fernet, InvalidToken
 SECRET_SETTING = '_takealot_seller_api_secret'
 _lock = threading.Lock()
 _cache = {}
+OFFERS_LOCK_WAIT_SECONDS = 20.0
+
+
+@contextmanager
+def _offers_read_lock():
+    # 只有拿到本次占用才允许释放；忙时不碰缓存、不发额外请求。
+    if not _lock.acquire(timeout=OFFERS_LOCK_WAIT_SECONDS):
+        raise ValueError('卖家资料读取正忙，请稍后重试')
+    try:
+        yield
+    finally:
+        _lock.release()
 
 
 def _cipher():
@@ -69,7 +82,7 @@ def _unavailable_reason(status):
 def _load_offers(key):
     """At most five pages per refresh; serialized and cached for 30 minutes."""
     digest = hashlib.sha256(key.encode()).hexdigest()
-    with _lock:
+    with _offers_read_lock():
         state = _cache.setdefault(digest, {'rows': [], 'expires': 0, 'retry': 0})
         now = time.monotonic()
         if now < state['expires']:
