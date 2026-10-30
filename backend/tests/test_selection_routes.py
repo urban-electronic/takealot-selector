@@ -1133,3 +1133,28 @@ def test_catalogue_helper_timeout_has_no_late_object_writes(monkeypatch):
     assert _fill_catalogue_dims(object(), [item]) == 0
     assert item.dimensions_source == 'manual' and item.length_mm == 999
     assert item.actual_weight_kg is None
+
+
+@pytest.mark.parametrize("fulfillment", [42.0, 0.0])
+def test_promote_preserves_calculated_selection_costs(db, monkeypatch, fulfillment):
+    item = _prepare_item(db, monkeypatch)
+    patch_item(item.id, ItemPatch(length_mm=100, width_mm=100, height_mm=100,
+        actual_weight_kg=0.2, actual_sale_price_zar=499, unit_price_cny=10,
+        purchase_quantity=2, purchase_shipping_cny=0, shipping_method="海运普货",
+        fee_category="Homeware"), db=db, store_id=STORE)
+    item.fulfillment_fee_zar = fulfillment
+    from api.selection_routes import _calc, _fee_rate, _exchange_rate
+    _calc(item, _exchange_rate(db), _fee_rate(db, item.fee_category))
+    db.commit()
+    before = {key: getattr(item, key) for key in (
+        "fulfillment_fee_zar", "total_cost_zar", "profit_zar", "profit_margin",
+        "cost_to_sa_warehouse_zar", "success_fee_zar")}
+    result = promote(IdList(ids=[item.id]), db=db, store_id=STORE)
+    product = db.get(Product, result["products"][0]["product_id"])
+    assert {key: getattr(product, key) for key in before} == before
+    assert [product.inbound_listing_fee_cny, product.outbound_operation_fee_cny,
+            product.last_mile_delivery_fee_cny, product.other_fee_cny] == [0.75, 0.7, 2, 2]
+    # Recalculation after ORM defaults materialize must not change the saved quote.
+    from api.product_routes import _apply_calculated_fields
+    _apply_calculated_fields(db, product)
+    assert {key: getattr(product, key) for key in before} == before

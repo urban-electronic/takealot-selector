@@ -1213,7 +1213,15 @@ def promote(
             rating_value=item.rating_value,
             review_count=item.review_count,
             note=item.note or "",
-            fulfillment_fee_zar=default_fulfillment_fee_zar(item.fee_category),
+            # ORM defaults are populated only at INSERT; initialize every fee
+            # used by the pre-flush calculation from the selection policy.
+            inbound_listing_fee_cny=INBOUND_FEE_CNY,
+            outbound_operation_fee_cny=OUTBOUND_FEE_CNY,
+            last_mile_delivery_fee_cny=LAST_MILE_FEE_CNY,
+            other_fee_cny=OTHER_FEE_CNY,
+            fulfillment_fee_zar=(item.fulfillment_fee_zar
+                if item.fulfillment_fee_zar is not None
+                else default_fulfillment_fee_zar(item.fee_category)),
         )
         product.success_fee_rate = _fee_rate(db, item.fee_category)
         max_no = (
