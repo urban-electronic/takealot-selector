@@ -25,5 +25,24 @@ const fields={'长':'length_mm','宽':'width_mm','高':'height_mm','重量':'act
   await act(async()=>input.blur());
   assert.deepEqual(patches,[{[field]:null}],`${label}: clearing must survive JSON serialization`);
  }
+ for (const [label,field,text] of [
+  ['中文品名','chinese_product_name','蓝色便携搅拌杯'],
+  ['1688 / 货源链接','purchase_url','https://detail.1688.com/offer/123.html'],
+  ['选品备注','note','2件装；供应商已核对'],
+ ]) {
+  const patches=[];
+  const item={id:'text-fixture',product_name:'Fixture',selected:false,fee_category:'',tier:'',[field]:''};
+  const render=()=>root.render(React.createElement(m.exports.SelectionCard,{item,busy:false,onPatch:p=>patches.push(JSON.parse(JSON.stringify(p))),onToggle:()=>{},feeCategories:[]}));
+  await act(async()=>render());
+  const input=[...document.querySelectorAll('label.selection-field')].find(el=>el.querySelector('span')?.textContent===label).querySelector('input');
+  await act(async()=>input.focus());
+  await act(async()=>{Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value').set.call(input,text);input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));});
+  assert.deepEqual(patches,[],'typing must not submit per character');
+  await act(async()=>input.blur());
+  assert.deepEqual(patches,[{[field]:text}],label);
+  item[field]=text;
+  await act(async()=>render());
+  assert.equal(input.value,text,'saved readback remains visible');
+ }
  await act(async()=>root.unmount()); console.log('PASS selection card: 8 clear-field payloads preserve explicit null');
 })().catch(e=>{console.error(e);process.exitCode=1;});
