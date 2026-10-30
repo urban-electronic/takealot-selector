@@ -199,26 +199,26 @@ function SelectionCard({
 
       <div className="selection-grid">
         <NumberCell label="长" unit="mm" value={item.length_mm} disabled={locked}
-          onCommit={next => onPatch({ length_mm: next ?? undefined })} />
+          onCommit={next => onPatch({ length_mm: next })} />
         <NumberCell label="宽" unit="mm" value={item.width_mm} disabled={locked}
-          onCommit={next => onPatch({ width_mm: next ?? undefined })} />
+          onCommit={next => onPatch({ width_mm: next })} />
         <NumberCell label="高" unit="mm" value={item.height_mm} disabled={locked}
-          onCommit={next => onPatch({ height_mm: next ?? undefined })} />
+          onCommit={next => onPatch({ height_mm: next })} />
         <NumberCell label="重量" unit="kg" step={0.01} value={item.actual_weight_kg} disabled={locked}
-          onCommit={next => onPatch({ actual_weight_kg: next ?? undefined })} />
+          onCommit={next => onPatch({ actual_weight_kg: next })} />
         {/* 顺序按「单价 × 数量 = 采购价」排：先填单价和数量，采购价自动出来，
             不用先算总价再除。 */}
         <NumberCell label="供货单价" unit="¥" step={0.01} value={item.unit_price_cny} disabled={locked}
-          onCommit={next => onPatch({ unit_price_cny: next ?? undefined })} />
+          onCommit={next => onPatch({ unit_price_cny: next })} />
         <NumberCell label="采购数量" value={item.purchase_quantity} disabled={locked}
-          onCommit={next => onPatch({ purchase_quantity: next ?? undefined })} />
+          onCommit={next => onPatch({ purchase_quantity: next })} />
         <NumberCell label="采购价" unit="¥" step={0.01}
           value={derivedCost ?? item.purchase_cost_cny}
           disabled={locked || derivedCost != null}
           hint={derivedCost != null ? '= 单价×数量' : undefined}
-          onCommit={next => onPatch({ purchase_cost_cny: next ?? undefined })} />
+          onCommit={next => onPatch({ purchase_cost_cny: next })} />
         <NumberCell label="国内运费" unit="¥" step={0.01} value={item.purchase_shipping_cny} disabled={locked}
-          onCommit={next => onPatch({ purchase_shipping_cny: next ?? undefined })} />
+          onCommit={next => onPatch({ purchase_shipping_cny: next })} />
       </div>
 
       <div className="selection-row">
