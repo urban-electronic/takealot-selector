@@ -239,13 +239,16 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from api import product_routes
+from unittest.mock import patch
 from api.product_routes import SellerSyncRequest, seller_sync
 
 
 def call_route(db, offers, path='/api/products/seller-sync/preview', token=None, plids=None):
     product_routes._seller_offers = _fake_offers(offers)
     request = SimpleNamespace(url=SimpleNamespace(path=path))
-    return asyncio.run(seller_sync(SellerSyncRequest(token=token, plids=plids), request, db=db, store_id=STORE))
+    # 保留回退核实后范围规则的隔离验证；默认生产写入口另有暂停断言。
+    with patch('services.seller_catalog_sync.SELLER_SYNC_WRITE_PAUSED', False):
+        return asyncio.run(seller_sync(SellerSyncRequest(token=token, plids=plids), request, db=db, store_id=STORE))
 
 
 def _fake_offers(offers):
@@ -256,7 +259,8 @@ def _fake_offers(offers):
 
 def test_preview_does_not_write_anything(db):
     payload = call_route(db, [offer('104410843', '104410843', 'W-S-12-02')])
-    assert payload['stats']['create_count'] == 1
+    assert payload['stats']['create_count'] == 0
+    assert payload['stats']['skip_count'] == 1
     assert payload['token']
     assert db.query(Product).count() == 0, '预览绝不能落库'
 
@@ -270,10 +274,12 @@ def test_apply_without_token_is_rejected(db):
 
 
 def test_apply_with_the_preview_token_writes_once(db):
+    add(db, plid='104410843', product_name='existing')
     rows = [offer('104410843', '104410843', 'W-S-12-02')]
     token = call_route(db, rows)['token']
     payload = call_route(db, rows, path='/api/products/seller-sync/apply', token=token)
-    assert payload['applied']['created'] == 1
+    assert payload['applied']['created'] == 0
+    assert payload['applied']['updated'] == 1
     assert db.query(Product).filter(Product.plid == '104410843').count() == 1
     # 同一个 token 再放一次：本地已经有这条 PLID，计划会变成 0 新增，
     # 不会因为重复提交再建一条。
@@ -302,10 +308,12 @@ def test_scope_is_part_of_the_token(db):
 
 
 def test_scoped_apply_writes_only_the_named_plids(db):
+    add(db, plid='111', product_name='existing')
     rows = [offer('1', '111', 'A-1'), offer('2', '222', 'A-2')]
     token = call_route(db, rows, plids=['111'])['token']
     payload = call_route(db, rows, path='/api/products/seller-sync/apply', token=token, plids=['111'])
-    assert payload['applied']['created'] == 1
+    assert payload['applied']['created'] == 0
+    assert payload['applied']['updated'] == 1
     assert [product.plid for product in db.query(Product).all()] == ['111']
 
 
@@ -365,18 +373,20 @@ def test_intervening_edit_rejects_prepared_plan(db):
 
 
 @pytest.mark.parametrize('field,value', [
-    ('tsin_id', '2'), ('selling_price', 399.0),
+    ('tsin_id', '2'),
     ('image_url', 'https://media.takealot.com/covers_images/2.jpg'),
     ('length_cm', 20), ('weight_grams', 500),
 ])
 def test_create_payload_change_requires_new_preview(db, field, value):
+    add(db, plid='800', product_name='existing')
     row = offer('1', '800', 'W-A')
     token = call_route(db, [row])['token']
     with pytest.raises(HTTPException) as caught:
         call_route(db, [dict(row, **{field: value})],
                    path='/api/products/seller-sync/apply', token=token)
     assert caught.value.status_code == 409
-    assert db.query(Product).count() == 0
+    assert db.query(Product).count() == 1
+    assert not db.query(Product).first().sku
 
 
 def test_concurrent_creates_are_serialized(tmp_path):
@@ -399,3 +409,61 @@ def test_concurrent_creates_are_serialized(tmp_path):
             apply_plan(second, STORE, b)
         second.rollback()
         assert second.query(Product).filter(Product.plid == '800').count() == 1
+
+
+def test_october_existing_scope_skips_old_and_missing_products(db):
+    from datetime import datetime
+    cutoff = datetime(2026,9,30,16)  # 中国时间10月1日
+    old = add(db, plid='111', product_name='old', created_at=datetime(2026,9,30,15,59))
+    recent = add(db, plid='222', product_name='recent', created_at=cutoff)
+    rows = [offer('1','111','old-sku'),offer('2','222','new-sku'),offer('3','333','absent')]
+    plan = build_plan(db, STORE, rows, existing_since=cutoff)
+    assert plan['creates'] == []
+    assert [u['product_id'] for u in plan['updates']] == [recent.id]
+    assert {s['plid'] for s in plan['skipped']} == {'111','333'}
+    result = apply_plan(db, STORE, plan)
+    db.commit()
+    assert result['created'] == 0 and result['updated'] == 1
+    assert db.query(Product).count() == 2
+    db.refresh(old)
+    db.refresh(recent)
+    assert not old.sku and recent.sku == 'new-sku'
+
+
+
+def test_old_unrestricted_preview_cannot_create_through_current_route(db):
+    rows = [offer('1','999','unregistered')]
+    old = build_plan(db, STORE, rows)['token']
+    with pytest.raises(HTTPException) as error:
+        call_route(db, rows, path='/api/products/seller-sync/apply', token=old)
+    assert error.value.status_code == 409
+    assert db.query(Product).count() == 0
+
+
+
+def test_internal_create_price_still_invalidates_legacy_plan(db):
+    row = offer('1','800','W-A')
+    assert build_plan(db, STORE, [row])['token'] != build_plan(db, STORE, [dict(row, selling_price=399)])['token']
+
+
+
+def test_seller_sync_write_pause_blocks_before_seller_read(db, monkeypatch):
+    async def forbidden(db): pytest.fail('paused write must not read seller data')
+    monkeypatch.setattr(product_routes, '_seller_offers', forbidden)
+    request = SimpleNamespace(url=SimpleNamespace(path='/api/products/seller-sync/apply'))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(seller_sync(SellerSyncRequest(token='old'), request, db=db, store_id=STORE))
+    assert error.value.status_code == 409
+    assert '暂停' in error.value.detail
+    assert db.query(Product).count() == 0
+
+
+
+def test_october_scope_skips_missing_local_creation_time(db):
+    from datetime import datetime
+    row = add(db, plid='777', product_name='unknown-date')
+    db.query(Product).filter(Product.id == row.id).update({'created_at':None})
+    db.commit()
+    plan = build_plan(db, STORE, [offer('7','777','unsafe')], existing_since=datetime(2026,9,30,16))
+    assert not plan['updates'] and not plan['creates']
+    assert plan['skipped'][0]['plid'] == '777'

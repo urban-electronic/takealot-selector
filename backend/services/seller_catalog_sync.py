@@ -18,6 +18,12 @@
 本模块只负责算计划，不提交事务；调用方拿到 `apply_plan` 的结果后统一 commit。
 """
 
+from datetime import datetime
+
+# 中国时间2026-10-01零点；候选范围仅限2026-10-01起本地登记的已有产品。
+SYNC_EXISTING_SINCE = datetime(2026, 9, 30, 16)
+SELLER_SYNC_WRITE_PAUSED = True  # 上一批误导入未核实回退前，预览不能写入。
+
 import hashlib
 import math
 import re
@@ -179,7 +185,7 @@ def _create_payload(plid: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
-               plids: Optional[List[str]] = None) -> Dict[str, Any]:
+               plids: Optional[List[str]] = None, existing_since: Optional[datetime] = None) -> Dict[str, Any]:
     """算出「要更正什么、要新增什么、哪些跳过」，不写库。
 
     `plids` 用来收窄范围。整库同步会一次新增一百多个商品，而用户常常只关心其中
@@ -217,6 +223,9 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
             continue
         product, basis = _locate(plid, rows, indexes)
         if product is None:
+            if existing_since is not None:
+                skipped.append({'plid':plid,'skus':skus,'reason':'程序中未登记，按当前范围不新增'})
+                continue
             if plid in archived_plids:
                 skipped.append({'plid': plid, 'skus': skus,
                                 'reason': '本地有同 PLID 的归档商品，先确认是否恢复，不重复新建'})
@@ -229,6 +238,9 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
                                 'reason': '卖家资料里这条没有标题，先不新建，等资料补齐再同步'})
                 continue
             creates.append(payload)
+            continue
+        if existing_since is not None and (product.created_at is None or product.created_at < existing_since):
+            skipped.append({'plid':plid,'skus':skus,'reason':'程序登记时间早于2026年10月1日或时间缺失，未同步'})
             continue
         if len(claims.get(product.id, set())) > 1:
             skipped.append({'plid': plid, 'skus': skus,
@@ -282,6 +294,7 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
         'skipped': skipped,
         'orphans': len(orphans),
         'scope': sorted(wanted),
+        'existing_since': existing_since.isoformat() if existing_since is not None else None,
     }
     plan['token'] = _token(plan)
     return plan
@@ -298,6 +311,7 @@ def _token(plan: Dict[str, Any]) -> str:
         # 范围也进签名：只同步 A 的预览不能拿去执行「整库」或「A+B」，否则用户以为
         # 只动了那几条，实际多写了一百多条。
         plan.get('scope') or [],
+        plan.get('existing_since'),
         [(item['plid'], item['product_id'], item['expected_updated_at'],
           [(c['field'], c['value'], c.get('current')) for c in item['changes']])
          for item in plan['updates']],
@@ -333,6 +347,9 @@ def apply_plan(db, store_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     from api.product_routes import _apply_calculated_fields
     from services.sku_migration import SkuMigrationConflict, migrate_sku
 
+    cutoff = datetime.fromisoformat(plan['existing_since']) if plan.get('existing_since') else None
+    if cutoff is not None and plan['creates']:
+        raise SellerSyncConflict('当前范围禁止新增，请重新预览')
     created = 0
     updated = 0
     renamed = 0
@@ -344,6 +361,8 @@ def apply_plan(db, store_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
                                            Product.is_archived == False).first()
         if product is None:
             raise SellerSyncConflict('产品已删除或归档，请重新同步')
+        if cutoff is not None and (product.created_at is None or product.created_at < cutoff):
+            raise SellerSyncConflict('产品不在10月以来登记范围内，请重新预览')
         values = {change['field']: change['value'] for change in item['changes']}
         values['updated_at'] = datetime.utcnow()
         count = db.query(Product).filter(Product.id == product.id,

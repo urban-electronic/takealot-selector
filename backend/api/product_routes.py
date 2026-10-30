@@ -672,7 +672,7 @@ async def _seller_offers(db: Session) -> List[Dict[str, Any]]:
 @router.post('/seller-sync/preview')
 @router.post('/seller-sync/apply')
 async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    """把卖家后台的商品同步进正式产品主档：已有的更正，缺的新建。
+    """卖家同步仅提供限定范围的只读预览；上一批回退核实前暂停写入。
 
     这是用户明确要的那个动作——「你接入卖家后台这样去找，而且是在产品里面修改，
     在产品列表中显示」。所以这里只改主档数据，不改展示方式：同步完，商品就是
@@ -681,10 +681,12 @@ async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = D
     两段式：先预览（列出要更正/新增/跳过的），确认后再 apply。token 绑定整份
     计划，预览与写入之间只要本地商品或卖家资料变了，apply 就会被拒。
     """
-    from services.seller_catalog_sync import SellerSyncConflict, apply_plan, build_plan
+    from services.seller_catalog_sync import SellerSyncConflict, apply_plan, build_plan, SYNC_EXISTING_SINCE, SELLER_SYNC_WRITE_PAUSED
     if store_id != 'default-store':
         raise HTTPException(400, '当前店铺尚未接入卖家资料')
-    plan = build_plan(db, store_id, await _seller_offers(db), plids=data.plids)
+    if request.url.path.endswith('/apply') and SELLER_SYNC_WRITE_PAUSED:
+        raise HTTPException(409, '卖家同步写入已暂停：需先核对并回退上一批同步，请勿重复确认')
+    plan = build_plan(db, store_id, await _seller_offers(db), plids=data.plids, existing_since=SYNC_EXISTING_SINCE)
     applied = None
     if request.url.path.endswith('/apply'):
         if not data.token or data.token != plan['token']:
