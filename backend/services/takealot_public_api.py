@@ -28,7 +28,7 @@ import time
 from threading import Event
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Dict, Iterable, List, Optional
 
 API_BASE = "https://api.takealot.com/rest/v-1-9-0"
@@ -39,6 +39,35 @@ RETRY_STATUS = {500, 502, 503, 504}
 RETRY_DELAYS = (0.6, 1.8)
 
 MAX_RETRIES = 3
+BATCH_BUDGET_SECONDS = 45.0
+_BATCH_LEASE = threading.Lock()  # 到时返回后，未退出的读线程仍持有租约。
+_LATE_ACCESS_DENIAL = Event()  # 未随上一批返回的迟到拒绝，下一批必须先报告停止。
+
+
+class PublicBudgetExpired(Exception):
+    """本批等待预算耗尽，不代表上游拒绝或失败。"""
+
+
+def _time_left(deadline: Optional[float]) -> float:
+    if deadline is None:
+        return float("inf")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise PublicBudgetExpired()
+    return remaining
+
+
+def _wait_with_budget(delay: float, stop_event: Optional[Event], deadline: Optional[float]) -> None:
+    delay = min(delay, _time_left(deadline))
+    if stop_event is not None:
+        if stop_event.wait(delay):
+            # 到时优先保留预算语义；不能冒充上游拒绝。
+            _time_left(deadline)
+            raise PublicReadStopped()
+    else:
+        time.sleep(delay)
+    _time_left(deadline)
+
 
 
 class _Pacer:
@@ -60,7 +89,8 @@ class _Pacer:
         self.interval = interval
         self.max_interval = max_interval
 
-    def wait(self, stop_event: Optional[Event] = None) -> None:
+    def wait(self, stop_event: Optional[Event] = None, deadline: Optional[float] = None) -> None:
+        _time_left(deadline)
         if stop_event is not None and stop_event.is_set():
             raise PublicReadStopped()
         with self._lock:
@@ -68,11 +98,8 @@ class _Pacer:
             delay = max(0.0, self._next_at - now)
             self._next_at = max(now, self._next_at) + self.interval
         if delay:
-            if stop_event is not None:
-                if stop_event.wait(delay):
-                    raise PublicReadStopped()
-            else:
-                time.sleep(delay)
+            _wait_with_budget(delay, stop_event, deadline)
+        _time_left(deadline)
         if stop_event is not None and stop_event.is_set():
             raise PublicReadStopped()
 
@@ -166,24 +193,24 @@ def _request_json(url: str, timeout: float) -> Dict[str, Any]:
         return json.loads(response.read().decode("utf-8", "ignore"))
 
 
-def _http_json(url: str, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
+def _http_json(url: str, timeout: float = 25.0, stop_event: Optional[Event] = None, deadline: Optional[float] = None) -> Dict[str, Any]:
     """主动节流；仅暂时性故障有限重试，拒绝/限流立即停止。"""
     last_error: Optional[BaseException] = None
     for attempt in range(MAX_RETRIES + 1):
+        _time_left(deadline)
         if stop_event is not None and stop_event.is_set():
             raise PublicReadStopped()
         if attempt:
-            delay = _retry_delay(last_error, attempt - 1)
-            if stop_event is not None:
-                if stop_event.wait(delay):
-                    raise PublicReadStopped()
-            else:
-                time.sleep(delay)
-        PACER.wait(stop_event)
+            _wait_with_budget(_retry_delay(last_error, attempt - 1), stop_event, deadline)
+        if deadline is None:
+            PACER.wait(stop_event)
+        else:
+            PACER.wait(stop_event, deadline=deadline)
+        remaining = _time_left(deadline)
         if stop_event is not None and stop_event.is_set():
             raise PublicReadStopped()
         try:
-            return _request_json(url, timeout)
+            return _request_json(url, min(timeout, remaining))
         except urllib.error.HTTPError as error:
             if error.code in ACCESS_STOP_STATUS and stop_event is not None:
                 stop_event.set()
@@ -294,7 +321,7 @@ def _first_number(text: str) -> Optional[float]:
     return float(match.group(0).replace(",", "."))
 
 
-def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] = None) -> Dict[str, Any]:
+def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] = None, deadline: Optional[float] = None) -> Dict[str, Any]:
     """读取单个 PLID 的商品资料。
 
     返回结构刻意与 `takealot_scraper.scrape_product` 的常用字段同名，
@@ -321,7 +348,11 @@ def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] 
         return result
 
     try:
-        payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout, stop_event=stop_event)
+        payload = _http_json(f"{API_BASE}/product-details/PLID{resolved}", timeout=timeout, stop_event=stop_event, deadline=deadline)
+    except PublicBudgetExpired:
+        result["budget_deferred"] = True
+        result["warnings"].append("公开资料批读已到时，保留待处理")
+        return result
     except PublicReadStopped:
         result["public_access_blocked"] = True
         result["warnings"].append("公开接口访问受限，已停止本批后续读取")
@@ -368,6 +399,8 @@ def fetch_many(plids: Iterable[Any], workers: int = 4) -> List[Dict[str, Any]]:
     """并发读取多个 PLID。
 
     首次访问拒绝或限流后，待发任务只返回明确失败；已发请求允许结束。
+    本公开阶段最多等待45秒；返回已完成结果，其余保持待处理。线程不接触DB，
+    已发读取只能等待socket退出；返回后不得重试或发送排队请求。
     """
     unique: List[int] = []
     seen = set()
@@ -379,15 +412,79 @@ def fetch_many(plids: Iterable[Any], workers: int = 4) -> List[Dict[str, Any]]:
     if not unique:
         return []
     stopped = Event()
+    deadline = time.monotonic() + BATCH_BUDGET_SECONDS
+
+    def deferred(resolved: int) -> Dict[str, Any]:
+        return {"plid": resolved, "success": False, "budget_deferred": True,
+                "warnings": ["公开资料批读已到时，保留待处理"]}
 
     def read_one(resolved: int) -> Dict[str, Any]:
+        if time.monotonic() >= deadline:
+            return deferred(resolved)
         if stopped.is_set():
             return {"plid": resolved, "success": False, "public_access_blocked": True,
                     "warnings": ["公开接口访问受限，已停止本批后续读取"]}
-        record = fetch_product(resolved, stop_event=stopped)
+        record = fetch_product(resolved, stop_event=stopped, deadline=deadline)
         if record.get("http_status") in ACCESS_STOP_STATUS:
             stopped.set()
         return record
 
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, 4))) as pool:
-        return list(pool.map(read_one, unique))
+    if not _BATCH_LEASE.acquire(blocking=False):
+        return [deferred(resolved) for resolved in unique]
+    if _LATE_ACCESS_DENIAL.is_set():
+        _LATE_ACCESS_DENIAL.clear()
+        _BATCH_LEASE.release()
+        return [{"plid": resolved, "success": False, "public_access_blocked": True,
+                 "warnings": ["上一批公开读取收到迟到的访问拒绝，已停止后续批次"]}
+                for resolved in unique]
+    futures = {}
+    remaining_count = [0]
+    coordinator_finished = [False]
+    completion_lock = threading.Lock()
+
+    def finished(future) -> None:
+        if not future.cancelled() and future.exception() is None:
+            if future.result().get("http_status") in ACCESS_STOP_STATUS:
+                _LATE_ACCESS_DENIAL.set()
+        with completion_lock:
+            remaining_count[0] -= 1
+            if remaining_count[0] == 0 and coordinator_finished[0]:
+                _BATCH_LEASE.release()
+
+    def retain_lease_until_finished() -> None:
+        remaining_count[0] = len(futures)
+        for future in futures:
+            future.add_done_callback(finished)
+
+    def finish_coordinator() -> None:
+        with completion_lock:
+            coordinator_finished[0] = True
+            if remaining_count[0] == 0:
+                _BATCH_LEASE.release()
+
+    pool = None
+    try:
+        pool = ThreadPoolExecutor(max_workers=max(1, min(workers, 4)))
+        for resolved in unique:
+            futures[pool.submit(read_one, resolved)] = resolved
+    except BaseException:
+        stopped.set()
+        retain_lease_until_finished()
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+        finish_coordinator()
+        raise
+    retain_lease_until_finished()
+    try:
+        done, pending = wait(futures, timeout=max(0.0, deadline - time.monotonic()))
+        records = {futures[future]: future.result() for future in done}
+        if pending:
+            stopped.set()  # 唤醒节流/退避；不能等正在读取的线程退出才返回。
+            for future in pending:
+                future.cancel()
+        if any(record.get("http_status") in ACCESS_STOP_STATUS for record in records.values()):
+            _LATE_ACCESS_DENIAL.clear()  # 本轮已经把拒绝证据交给调用方。
+        return [records.get(resolved) or deferred(resolved) for resolved in unique]
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+        finish_coordinator()
