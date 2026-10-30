@@ -46,6 +46,8 @@ import type {
   SelectionSummary,
 } from '../types';
 
+import { selectedPromotionIds } from '../utils/selectionPromotion';
+
 const PAGE_SIZE = 24;
 
 const TIER_STYLE: Record<string, { label: string; className: string }> = {
@@ -331,6 +333,7 @@ export default function Selection() {
   const [importing, setImporting] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const promoteLock = useRef(false);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<{ kind: 'info' | 'warn' | 'ok'; text: string } | null>(null);
   const [importResult, setImportResult] = useState<SelectionImportResult | null>(null);
@@ -514,24 +517,30 @@ export default function Selection() {
   };
 
   const handlePromote = async () => {
-    const ids = items.filter(item => item.selected && !item.promoted_product_id).map(item => item.id);
-    if (!ids.length) {
-      setNotice({ kind: 'info', text: '还没有勾选任何商品' });
-      return;
-    }
+    if (promoteLock.current) return;
+    promoteLock.current = true;
     setPromoting(true);
+    let created = 0;
+    let skipped = 0;
     try {
-      const result = await promoteSelection(ids);
-      setNotice({
-        kind: result.created ? 'ok' : 'info',
-        text: result.created
-          ? `已新建 ${result.created} 个产品${result.skipped ? `，跳过 ${result.skipped} 个（${result.skip_details[0]?.reason || ''}）` : ''}`
-          : `没有新建：${result.skip_details[0]?.reason || '未满足新建条件'}`,
-      });
+      // Read all pages first. Filters on the visible page must not hide selected drafts.
+      const ids = await selectedPromotionIds(getSelectionItems, batchId || undefined);
+      if (!ids.length) {
+        setNotice({ kind: 'info', text: '当前批次没有尚未建档的勾选商品' });
+        return;
+      }
+      if (!window.confirm(`将${batchId ? '本批次' : '全部批次'}已勾选的 ${ids.length} 个商品加入产品列表？包含其他页勾选的商品。`)) return;
+      for (let offset = 0; offset < ids.length; offset += 500) {
+        const result = await promoteSelection(ids.slice(offset, offset + 500));
+        created += result.created;
+        skipped += result.skipped;
+      }
       await refresh();
+      setNotice({ kind: created ? 'ok' : 'info', text: `已新建 ${created} 个产品，跳过 ${skipped} 个（已建档或身份重复等）。` });
     } catch (error) {
-      setNotice({ kind: 'warn', text: (error as Error).message });
+      setNotice({ kind: 'warn', text: `本次已确认新建 ${created} 个、跳过 ${skipped} 个；后续处理停止：${(error as Error).message}。请刷新核对后再继续。` });
     } finally {
+      promoteLock.current = false;
       setPromoting(false);
     }
   };
@@ -625,8 +634,8 @@ export default function Selection() {
           <button type="button" className="btn" onClick={() => void handleEnrich(true)} disabled={enriching || importing}>
             {enriching ? '抓取中…' : '重抓全部资料'}
           </button>
-          <button type="button" className="btn-primary" onClick={() => void handlePromote()} disabled={promoting || !selectedOnPage}>
-            {promoting ? '新建中…' : `一键新建产品${selectedOnPage ? `（${selectedOnPage}）` : ''}`}
+          <button type="button" className="btn-primary" onClick={() => void handlePromote()} disabled={promoting || enriching || importing || busyIds.size > 0 || !summary?.selected}>
+            {promoting ? '新建中…' : `批量加入产品列表${summary?.selected ? `（${summary.selected}）` : ''}`}
           </button>
         </div>
       </div>
