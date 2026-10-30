@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from urllib.parse import urlparse
 
 import httpx
@@ -16,6 +17,18 @@ SECRET_SETTING = '_takealot_seller_api_secret'
 _lock = threading.Lock()
 _cache = {}
 OFFERS_LOCK_WAIT_SECONDS = 20.0
+OFFERS_READ_WAIT_SECONDS = 45.0
+_offer_dispatch_lock = threading.Lock()
+_offer_pool = ThreadPoolExecutor(max_workers=1)
+_active_offer_read = None
+
+
+def _offer_time_left(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError('卖家资料读取已到时，未取得完整分页，请稍后重试')
+    return remaining
+
 
 
 @contextmanager
@@ -80,6 +93,31 @@ def _unavailable_reason(status):
 
 
 def _load_offers(key):
+    """调用方最多等45秒；单个在途读取完成前，同一配置复用它，其他配置报忙。
+
+    在途线程只读平台并更新真实缓存，不触碰调用方DB；超时不伪造完整/空列表。
+    """
+    global _active_offer_read
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    with _offer_dispatch_lock:
+        active = _active_offer_read
+        if active is not None and not active[1].done():
+            if active[0] != digest:
+                raise ValueError('卖家资料读取正忙，请稍后重试')
+            future = active[1]
+        else:
+            deadline = time.monotonic() + OFFERS_READ_WAIT_SECONDS
+            future = _offer_pool.submit(_load_offers_serialized, key, deadline)
+            _active_offer_read = (digest, future)
+    try:
+        return future.result(timeout=OFFERS_READ_WAIT_SECONDS)
+    except FutureTimeout:
+        if future.done():
+            return future.result()  # 保留任务自身的TimeoutError类别，不当作等待超时。
+        raise ValueError('卖家资料读取已到时，尚有请求未退出，请稍后重试') from None
+
+
+def _load_offers_serialized(key, deadline):
     """At most five pages per refresh; serialized and cached for 30 minutes."""
     digest = hashlib.sha256(key.encode()).hexdigest()
     with _offers_read_lock():
@@ -97,15 +135,17 @@ def _load_offers(key):
         token = None
         with httpx.Client(timeout=20, follow_redirects=False) as client:
             for page in range(5):
+                remaining = _offer_time_left(deadline)
                 if page:
-                    time.sleep(10)
+                    time.sleep(min(10, remaining))
+                    remaining = _offer_time_left(deadline)
                 params = [('limit', '1000')] if token is None else [('continuation_token', token)]
                 if token is None:
                     params += [('fields', field) for field in ('title', 'image_url', 'sku', 'tsin_id', 'productline_id', 'selling_price', 'status', 'length_cm', 'width_cm', 'height_cm', 'weight_grams')]
-                response = client.get('https://marketplace-api.takealot.com/v1/offers', params=params, headers={'X-API-Key': key})
+                response = client.get('https://marketplace-api.takealot.com/v1/offers', params=params, headers={'X-API-Key': key}, timeout=min(20.0, remaining))
                 if response.status_code != 200:
-                    if response.status_code == 429:
-                        state['retry'] = time.monotonic() + 1800
+                    cooldown = 1800 if response.status_code == 429 else 300
+                    state['retry'] = max(state['retry'], time.monotonic() + cooldown)
                     state['last_error'] = _unavailable_reason(response.status_code)
                     raise ValueError(state['last_error'])
                 payload = response.json()
