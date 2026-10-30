@@ -117,6 +117,22 @@ function NumberCell({
   );
 }
 
+/** Keep edits local until blur; only committed values go to the saved draft. */
+function TextCell({ label, value, disabled, onCommit, placeholder }: {
+  label: string; value: string; disabled: boolean;
+  onCommit: (value: string) => void; placeholder?: string;
+}) {
+  const [draft, setDraft] = useState(value || '');
+  useEffect(() => { setDraft(value || ''); }, [value]);
+  return <label className="selection-field is-wide">
+    <span>{label}</span>
+    <input value={draft} disabled={disabled} placeholder={placeholder}
+      onChange={event => setDraft(event.target.value)}
+      onBlur={() => { if (draft !== (value || '')) onCommit(draft.trim()); }}
+      onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
+  </label>;
+}
+
 function MarginBadge({ item }: { item: SelectionItem }) {
   if (item.promoted_product_id) return <span className="selection-margin is-done">已建产品</span>;
   if (item.profit_margin == null) return <span className="selection-margin is-pending">待补数据</span>;
@@ -196,6 +212,17 @@ function SelectionCard({
           ? <small title={item.takealot_category_path}>{item.takealot_category_path.split(' > ').slice(-2).join(' > ')}</small>
           : null}
       </div>
+
+      <div className="selection-row">
+        <TextCell label="中文品名" value={item.chinese_product_name} disabled={locked || busy}
+          onCommit={value => onPatch({ chinese_product_name: value })} />
+        <TextCell label="1688 / 货源链接" value={item.purchase_url} disabled={locked || busy}
+          placeholder="粘贴已核对的货源链接"
+          onCommit={value => onPatch({ purchase_url: value })} />
+      </div>
+      <TextCell label="选品备注" value={item.note} disabled={locked || busy}
+        placeholder="规格、颜色、供应商与核算依据"
+        onCommit={value => onPatch({ note: value })} />
 
       <div className="selection-grid">
         <NumberCell label="长" unit="mm" value={item.length_mm} disabled={locked}
