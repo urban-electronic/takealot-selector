@@ -617,6 +617,7 @@ def enrich(
     elif data.batch_id:
         query = query.filter(SelectionItem.batch_id == data.batch_id)
     query = query.filter(SelectionItem.promoted_product_id.is_(None))
+    scoped_query = query  # 后续计数复用同一店铺/ids/批次范围，不带本轮limit。
     if not data.refresh:
         query = query.filter(
             or_(SelectionItem.enrich_status == "", SelectionItem.enrich_status.is_(None))
@@ -757,17 +758,9 @@ def enrich(
                 })
     db.commit()
 
-    remaining = (
-        db.query(func.count(SelectionItem.id))
-        .filter(
-            SelectionItem.store_id == store_id,
-            SelectionItem.promoted_product_id.is_(None),
-            or_(SelectionItem.enrich_status == "", SelectionItem.enrich_status.is_(None)),
-        )
-        .scalar()
-    ) or 0
-    if (data.ids or data.batch_id) and not deferred_plids:
-        remaining = 0   # 指定了范围就只跑这一批，不诱导前端无限循环
+    remaining = scoped_query.filter(
+        or_(SelectionItem.enrich_status == "", SelectionItem.enrich_status.is_(None)),
+    ).count()
 
     return {
         # 推迟到下一轮的不算「已处理」——否则前端的「已抓取 N 个」会虚高，
