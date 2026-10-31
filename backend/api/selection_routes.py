@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -48,7 +49,7 @@ from services.product_calculator import (
     calculate_all,
     default_fulfillment_fee_zar,
 )
-from services.selection_import import build_takealot_url, normalize_row, read_table
+from services.selection_import import build_takealot_url, normalize_row, read_table, to_number
 
 router = APIRouter(prefix="/api/selection", tags=["selection"])
 
@@ -491,6 +492,14 @@ async def import_table(
     skipped = 0
     for index, raw in enumerate(rows):
         row = normalize_row(raw)
+        for field in ("unit_price_cny", "purchase_cost_cny", "purchase_shipping_cny", "purchase_quantity"):
+            if raw.get(field) in (None, ""):
+                continue
+            value = to_number(raw[field])
+            if value is None or not math.isfinite(value) or value < 0 or (
+                field == "purchase_quantity" and (value < 1 or not float(value).is_integer())
+            ):
+                raise HTTPException(status_code=400, detail=f"第{index + 2}行{field}无效，请核对来源数据")
         if row["plid"]:
             key = f"plid:{row['plid']}"
         elif row["tsin"]:
@@ -516,8 +525,10 @@ async def import_table(
             if value is not None:
                 current[field] = (current[field] or 0) + value
         for field in ("actual_sale_price_zar", "rating_value", "review_count",
-                      "takealot_url", "chinese_product_name", "product_name"):
-            if not current.get(field) and row.get(field):
+                      "takealot_url", "chinese_product_name", "product_name",
+                      "purchase_url", "unit_price_cny", "purchase_cost_cny",
+                      "purchase_shipping_cny", "purchase_quantity"):
+            if current.get(field) in (None, "") and row.get(field) not in (None, ""):
                 current[field] = row[field]
 
     if not groups:
@@ -566,9 +577,15 @@ async def import_table(
                 if group["net_sales_zar"] is not None else None
             ),
             already_in_products=already,
+            purchase_url=group["purchase_url"],
+            unit_price_cny=group["unit_price_cny"],
+            purchase_cost_cny=group["purchase_cost_cny"],
+            purchase_shipping_cny=group["purchase_shipping_cny"],
+            purchase_quantity=group["purchase_quantity"] if group["purchase_quantity"] is not None else 4,
             note=group["note"],
             status="待核算",
         )
+        _derive_purchase_cost(item)
         items.append(item)
 
     _assign_tiers(items)

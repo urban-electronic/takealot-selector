@@ -1158,3 +1158,40 @@ def test_promote_preserves_calculated_selection_costs(db, monkeypatch, fulfillme
     from api.product_routes import _apply_calculated_fields
     _apply_calculated_fields(db, product)
     assert {key: getattr(product, key) for key in before} == before
+
+
+def test_import_supplier_columns_without_retyping_or_price_collision(db):
+    do_import(db, [["货源链接", "产品链接", "1688价格", "售价", "起订量", "国内运费"],
+        ["https://detail.1688.com/offer/123.html", "https://www.takealot.com/p/PLID991234", 20, 499, "50 pcs", 0]])
+    item = db.query(SelectionItem).one()
+    assert item.plid == "991234"
+    assert item.purchase_url == "https://detail.1688.com/offer/123.html"
+    assert item.actual_sale_price_zar == 499
+    assert item.unit_price_cny == 20
+    assert item.purchase_quantity == 50
+    assert item.purchase_cost_cny == 1000
+    assert item.purchase_shipping_cny == 0
+    assert item.profit_margin is None  # Missing dimensions/logistics never guessed.
+
+
+@pytest.mark.parametrize("header,value", [("供货价", -20), ("国内运费", -1), ("起订量", 0), ("起订量", 1.5), ("起订量", "bad")])
+def test_import_rejects_invalid_supplier_values_without_partial_batch(db, header, value):
+    with pytest.raises(HTTPException) as error:
+        do_import(db, [["产品链接", header], ["https://www.takealot.com/p/PLID991234", value]])
+    assert error.value.status_code == 400
+    assert db.query(SelectionItem).count() == 0
+
+
+def test_import_duplicate_supplier_rows_preserve_zero(db):
+    do_import(db, [["产品链接", "供货价", "起订量", "国内运费"],
+        ["https://www.takealot.com/p/PLID991234", 0, 4, 0],
+        ["https://www.takealot.com/p/PLID991234", 20, 8, 18]])
+    item = db.query(SelectionItem).one()
+    assert (item.unit_price_cny, item.purchase_quantity, item.purchase_shipping_cny, item.purchase_cost_cny) == (0, 4, 0, 0)
+
+
+def test_import_does_not_treat_usd_supplier_price_as_cny(db):
+    with pytest.raises(HTTPException) as error:
+        do_import(db, [["产品链接", "Unit Price (USD)"], ["https://www.takealot.com/p/PLID991234", 20]])
+    assert error.value.status_code == 400
+    assert db.query(SelectionItem).count() == 0
