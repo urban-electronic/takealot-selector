@@ -30,6 +30,7 @@ from services.takealot_public_api import parse_plid
 # 字段 -> 列名别名。顺序即优先级：同一列同时像两个字段时归给靠前的那个
 # （例："评分数量" 既像 rating 又像 review_count，必须归 review_count）。
 FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
+    ("purchase_url", ("1688链接", "货源链接", "采购链接", "supplier url", "purchase url")),
     ("takealot_url", ("产品链接", "商品链接", "链接", "takealot链接", "url", "link")),
     ("tsin", ("tsin", "tsin号")),
     ("plid", ("plid", "productline", "product_line")),
@@ -37,6 +38,11 @@ FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("review_count", ("评分数量", "评价数量", "评论数量", "评论数", "评价数",
                       "review count", "reviews", "review")),
     ("rating_value", ("产品评分", "评分", "星级", "rating", "star")),
+    # Supplier columns must precede generic link/price aliases.
+    ("unit_price_cny", ("供货价", "1688价格", "1688单价", "采购单价", "unit price", "wholesale")),
+    ("purchase_cost_cny", ("采购成本", "采购价", "进货价")),
+    ("purchase_shipping_cny", ("国内运费", "国内快递", "domestic shipping")),
+    ("purchase_quantity", ("起订量", "最小起订", "moq", "min order")),
     ("actual_sale_price_zar", ("产品价格", "售价", "销售价", "价格", "price")),
     ("sales_qty", ("销量", "销售数量", "已售", "qty", "quantity", "units", "sold")),
     ("net_sales_zar", ("net sale", "net sales", "净销售", "净额")),
@@ -141,6 +147,9 @@ def _rows_from_matrix(matrix: List[List[Any]]) -> Tuple[List[Dict[str, Any]], Di
         return [], {}, []
     headers = matrix[0]
     mapping = detect_columns(headers)
+    for field in ("unit_price_cny", "purchase_cost_cny", "purchase_shipping_cny"):
+        if field in mapping and re.search(r"\b(?:usd|eur|gbp|zar|rand|jpy|hkd|twd|sgd|aud|cad|nzd|chf|inr|krw|thb|myr|idr|php|vnd|rub|aed|sar|sek|nok|dkk|pln|brl|mxn|try)\b|美元|欧元|英镑|兰特|日元|港币|港元|台币|韩元|新币|澳元|加元|[$€£₩₹]", _norm(headers[mapping[field]])):
+            raise ValueError(f"{headers[mapping[field]]}不是人民币金额，不能作为人民币采购成本导入")
     unknown = [
         _cell_text(h) for idx, h in enumerate(headers)
         if idx not in mapping.values() and _cell_text(h)
@@ -246,6 +255,11 @@ def normalize_row(raw: Dict[str, Any]) -> Dict[str, Any]:
         "sales_qty": to_int(raw.get("sales_qty")),
         "net_sales_zar": to_number(raw.get("net_sales_zar")),
         "gross_sales_zar": to_number(raw.get("gross_sales_zar")),
+        "purchase_url": _cell_text(raw.get("purchase_url")),
+        "unit_price_cny": to_number(raw.get("unit_price_cny")),
+        "purchase_cost_cny": to_number(raw.get("purchase_cost_cny")),
+        "purchase_shipping_cny": to_number(raw.get("purchase_shipping_cny")),
+        "purchase_quantity": to_int(raw.get("purchase_quantity")),
         "note": _cell_text(raw.get("note")),
     }
 
