@@ -1190,8 +1190,9 @@ def test_import_duplicate_supplier_rows_preserve_zero(db):
     assert (item.unit_price_cny, item.purchase_quantity, item.purchase_shipping_cny, item.purchase_cost_cny) == (0, 4, 0, 0)
 
 
-def test_import_does_not_treat_usd_supplier_price_as_cny(db):
+@pytest.mark.parametrize("currency", ["USD", "JPY", "HKD", "SGD", "TWD", "$"])
+def test_import_does_not_treat_usd_supplier_price_as_cny(db, currency):
     with pytest.raises(HTTPException) as error:
-        do_import(db, [["产品链接", "Unit Price (USD)"], ["https://www.takealot.com/p/PLID991234", 20]])
+        do_import(db, [["产品链接", f"Unit Price ({currency})"], ["https://www.takealot.com/p/PLID991234", 20]])
     assert error.value.status_code == 400
     assert db.query(SelectionItem).count() == 0

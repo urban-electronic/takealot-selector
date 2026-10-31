@@ -148,7 +148,7 @@ def _rows_from_matrix(matrix: List[List[Any]]) -> Tuple[List[Dict[str, Any]], Di
     headers = matrix[0]
     mapping = detect_columns(headers)
     for field in ("unit_price_cny", "purchase_cost_cny", "purchase_shipping_cny"):
-        if field in mapping and re.search(r"\b(?:usd|eur|gbp|zar|rand)\b|美元|欧元|英镑|兰特", _norm(headers[mapping[field]])):
+        if field in mapping and re.search(r"\b(?:usd|eur|gbp|zar|rand|jpy|hkd|twd|sgd|aud|cad|nzd|chf|inr|krw|thb|myr|idr|php|vnd|rub|aed|sar|sek|nok|dkk|pln|brl|mxn|try)\b|美元|欧元|英镑|兰特|日元|港币|港元|台币|韩元|新币|澳元|加元|[$€£₩₹]", _norm(headers[mapping[field]])):
             raise ValueError(f"{headers[mapping[field]]}不是人民币金额，不能作为人民币采购成本导入")
     unknown = [
         _cell_text(h) for idx, h in enumerate(headers)
