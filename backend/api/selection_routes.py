@@ -953,17 +953,17 @@ class ItemPatch(BaseModel):
     chinese_product_name: Optional[str] = None
     fee_category: Optional[str] = None
     takealot_url: Optional[str] = None
-    actual_sale_price_zar: Optional[float] = None
-    length_mm: Optional[float] = None
-    width_mm: Optional[float] = None
-    height_mm: Optional[float] = None
-    actual_weight_kg: Optional[float] = None
+    actual_sale_price_zar: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    length_mm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    width_mm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    height_mm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    actual_weight_kg: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     purchase_url: Optional[str] = None
-    purchase_cost_cny: Optional[float] = None
-    purchase_shipping_cny: Optional[float] = None
-    purchase_quantity: Optional[int] = None
-    unit_price_cny: Optional[float] = None
-    packaging_cost_per_unit_cny: Optional[float] = None
+    purchase_cost_cny: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    purchase_shipping_cny: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    purchase_quantity: Optional[int] = Field(default=None, ge=1)
+    unit_price_cny: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    packaging_cost_per_unit_cny: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     shipping_method: Optional[str] = None
     selected: Optional[bool] = None
     note: Optional[str] = None
