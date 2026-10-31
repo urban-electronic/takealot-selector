@@ -38,6 +38,12 @@
   --fs-title: 17px;
   --fs-page-title: 26px;
 
+  /* ---- 等宽字体 ----
+     SKU / TSIN / 货号这类要逐位核对的编号必须等宽，否则 0 和 O、1 和 l 分不清。
+     此前这条字体栈在 index.css 里重复了 4 遍（.sku-value / .sku-variant /
+     .sku-audit-values span / .packing-sku），改一处漏三处，收敛成令牌。 */
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+
   /* ---- 控件高度 ---- */
   --control-h: 36px;
   --control-h-compact: 28px;  /* 表格行内控件 */

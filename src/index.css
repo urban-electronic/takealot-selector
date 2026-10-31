@@ -330,7 +330,7 @@ button {
 .packing-col-sku { min-width: 0; }
 .packing-sku {
   display: block; margin-top: 2px; overflow-wrap: anywhere;
-  color: var(--text-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text-strong); font-family: var(--font-mono);
   font-size: var(--fs-label); font-weight: 600;
 }
 
@@ -632,7 +632,7 @@ button {
   color: var(--color-text-secondary);
 }
 
-.mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.mono { font-family: var(--font-mono); }
 .muted { color: var(--text-subtle); font-size: 12px; }
 .stock-value { color: var(--link-strong); }
 .stock-danger { color: #c22f38; }
@@ -897,7 +897,7 @@ button {
   border: 1px solid #dfe4ea;
   border-radius: 4px;
   background: #fff;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   cursor: pointer;
 }
@@ -927,22 +927,75 @@ button {
   background: var(--color-primary);
 }
 
-.sku-branch-summary { display: flex; flex-direction: column; gap: 3px; }
-.sku-branch-summary button { width: max-content; min-height: var(--control-h-min); padding: 0; border: 0; background: transparent; color: var(--link-strong); font-size: var(--fs-caption); cursor: pointer; }
 /* SKU 只读：它是平台侧的唯一标识，改了采集/调价/装箱单就对不上号。
-   所以这里只有「看」和「复制」，没有输入框。数字用等宽字体，逐位对齐好核对。 */
-.sku-cell { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
-.sku-cell .sku-branch-summary { min-width: 0; }
-.sku-value { min-width: 0; overflow-wrap: anywhere; color: var(--text-body); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--fs-label); }
-.sku-value.is-empty { color: var(--text-subtle); font-family: inherit; font-size: var(--fs-caption); }
+   所以这里只有「看」和「复制」，没有输入框。
+
+   排版约定（2026-10-31 收敛）：
+   1. 主标识只有一套字 —— 12px / 600 / 等宽。多规格分支原来用 <b> 继承表格的
+      13px 无衬线，于是同一列里「单规格 = 等宽 12px、多规格 = 粗体 13px」，
+      看起来像两种不同性质的数据。
+   2. 「复制」固定在第 2 列（grid 的 auto 列），不再跟在文本后面 inline 排。
+      原来按钮的 x 位置随 SKU 文字宽度漂移，整列按钮永远对不齐。
+   3. 单元格整体垂直居中：单规格一行、多规格两行，重心要落在同一条线上。 */
+.sku-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+}
+.sku-main { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
+.sku-line { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: 6px; }
+.sku-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.5;
+}
+.sku-value.is-empty { color: var(--text-subtle); font-family: inherit; font-size: var(--fs-caption); font-weight: 400; }
+/* 辅助行：只是摊开看，不是编辑入口，所以做成无边框文字按钮而不是链接样式。 */
+.sku-toggle {
+  width: max-content;
+  min-height: var(--control-h-min);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--link-strong);
+  font: inherit;
+  font-size: var(--fs-caption);
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+.sku-toggle:hover { text-decoration: underline; }
+/* 异常标记：采集会把变体名（中文）写进 products.sku，这类值不是平台标识，
+   混在等宽数字里看着像乱码。用警示徽标点出来，别让人以为是显示错误。 */
+.sku-flag {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  background: var(--surface-warning);
+  color: var(--warning-strong);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  line-height: 1.5;
+}
 .sku-copy {
-  flex: none; min-height: var(--control-h-min); padding: 0 6px;
-  border: 1px solid var(--surface-border); border-radius: 6px; background: var(--color-card);
+  justify-self: end; flex: none; min-height: var(--control-h-compact); padding: 0 6px;
+  border: 1px solid var(--surface-border); border-radius: var(--r-xs); background: var(--color-card);
   color: var(--text-muted); font: inherit; font-size: var(--fs-caption); line-height: 1; cursor: pointer;
 }
 .sku-copy:hover, .sku-copy:focus-visible { border-color: var(--link-strong); color: var(--link-strong); }
 .sku-copy.is-done { border-color: var(--color-success); color: var(--color-success); }
 .sku-copy.is-failed { border-color: var(--danger-strong); color: var(--danger-strong); }
+.sku-copy:disabled { color: var(--text-subtle); border-color: var(--line-hairline); cursor: not-allowed; }
+/* 详情页的表单里，「复制」不该被推到输入框的最右边（那里离 SKU 文字隔着一整行）。
+   让容器收缩到内容宽度，按钮就还贴在值后面 —— 布局只有一套，差的是容器宽度。 */
+.form-group > .sku-cell { width: max-content; max-width: 100%; }
 .product-parent-row td { border-bottom: 0; }
 .product-branch-row td { padding: 0; background: #fbfdff; border-top: 0; }
 .product-branch-rail { display: flex; flex-direction: column; border-left: 3px solid #d6e4ff; background: #fbfdff; }
@@ -955,7 +1008,7 @@ button {
 .branch-image i { color: var(--text-subtle); font-size: var(--fs-caption); font-style: normal; }
 .branch-role { justify-self: start; padding: 2px 6px; border-radius: 4px; background: var(--badge-neutral-bg); color: var(--badge-neutral-fg); font-size: var(--fs-caption); font-weight: 700; }
 .branch-role.primary { background: #1677ff; }
-.product-branch-item code { color: #24344d; font-family: inherit; font-size: 13px; }
+.product-branch-item code { color: var(--text-body); font-family: var(--font-mono); font-size: var(--fs-label); font-weight: 600; }
 .branch-names { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .branch-names strong, .branch-names small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-names strong { color: #24344d; font-size: 13px; }
@@ -1029,7 +1082,7 @@ button {
 .packing-selected-item-head small {
   margin-top: 2px;
   color: var(--text-subtle);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .packing-remove-btn {
@@ -1742,6 +1795,14 @@ table tbody tr:hover {
   min-width: 100%;
 }
 
+/* 表格默认按基线对齐：一行里有 28px 下拉、12px 等宽编号、24px 按钮时，
+   文字各按自己的基线落位，扫视时是锯齿状的。产品表整表改为居中，
+   单行/两行的单元格（SKU 那种）重心才会落在同一条线上。 */
+.product-table tbody td,
+.product-table thead th {
+  vertical-align: middle;
+}
+
 .product-table-scroll .product-table thead th {
   position: sticky;
   top: 0;
@@ -1871,7 +1932,7 @@ table tbody tr:hover {
 .sku-audit-product span, .sku-audit-values small { color: var(--text-muted); font-size: var(--fs-caption); }
 .sku-audit-values { display: grid; grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr); align-items: center; gap: 7px; }
 .sku-audit-values div { display: flex; min-width: 0; flex-direction: column; }
-.sku-audit-values span { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.sku-audit-values span { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
 .sku-audit-values b { color: var(--text-subtle); text-align: center; }
 .sku-audit-actions { display: flex; gap: 7px; white-space: nowrap; }
 .sku-audit-footer, .sku-audit-clear { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 12px; }
@@ -2073,7 +2134,7 @@ table tbody tr:hover { background: #f8fafc; }
 .integration-status-badge { color: #536367; }
 .integration-status-badge.local { background: #e8eeeb; color: #4d666a; }
 
-.dashboard-task b, .sku-branch-summary button, .branch-spec { color: #3e707b; }
+.dashboard-task b, .branch-spec { color: #3e707b; }
 .branch-spec { background: #e9f0ed; border-color: #c7d7d1; }
 .packing-hero h1 { color: #293b3d; }
 .packing-subtitle, .packing-subtitle small, .packing-section-note { color: #59686b; }

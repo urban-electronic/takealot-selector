@@ -9,7 +9,7 @@ import { ProductImage } from '../utils/imageFallback';
 import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, staleNote, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { beijingClock } from '../utils/datetime';
-import { skuVariants, variantLabels } from '../utils/variants';
+import { isSuspiciousSkuToken, skuVariants, variantLabels } from '../utils/variants';
 import { isAgencyStoreName } from '../utils/agencyStore';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { isEan13 } from '../utils/ean';
@@ -1101,24 +1101,31 @@ export default function ProductList() {
         const sku = p.sku;
         const skuOptions = skuVariants(sku);
         const expanded = expandedVariantRows.has(p.id);
+        const multi = skuOptions.length > 1;
+        // 中文/过短的 token 不是平台编号（采集把变体名写进了 sku），标出来免得当成渲染错误。
+        const suspicious = skuOptions.some(isSuspiciousSkuToken);
         return (
           <span className="sku-cell">
-            {skuOptions.length > 1 ? (
-              <span className="sku-branch-summary">
-                <b translate="no">{skuOptions[0]}</b>
+            <span className="sku-main">
+              <span className="sku-line">
+                <span className="sku-value" translate="no" title={sku}>{skuOptions[0]}</span>
+                {suspicious ? (
+                  <span className="sku-flag" title="这个值不像平台 SKU（含中文或长度异常），可能是采集时写入了规格名">非SKU</span>
+                ) : null}
+              </span>
+              {multi ? (
                 <button
-                  type="button" aria-expanded={expanded}
+                  type="button" className="sku-toggle" aria-expanded={expanded}
                   onClick={() => setExpandedVariantRows(prev => { const next = new Set(prev); if (next.has(p.id)) next.delete(p.id); else next.add(p.id); return next; })}
                 >{expanded ? '收起规格' : `展开 ${skuOptions.length} 个规格`}</button>
-              </span>
-            ) : (
-              <span className="sku-value" translate="no" title={sku}>{sku}</span>
-            )}
+              ) : null}
+            </span>
             <button
               type="button"
               className={`sku-copy${copiedSku === sku ? ' is-done' : ''}${copyFailedSku === sku ? ' is-failed' : ''}`}
               aria-label={`复制SKU：${sku}`}
-              title={skuOptions.length > 1 ? `复制 ${skuOptions.length} 个规格的 SKU（空格分隔）` : '复制 SKU'}
+              aria-live="polite"
+              title={multi ? `复制 ${skuOptions.length} 个规格的 SKU（空格分隔）` : '复制 SKU'}
               onClick={() => { void copySku(sku); }}
             >{copyFailedSku === sku ? '复制失败' : copiedSku === sku ? '已复制' : '复制'}</button>
           </span>
@@ -1188,7 +1195,7 @@ export default function ProductList() {
       return (
         <th
           key={colKey}
-          style={{ width: 40, position: 'relative', whiteSpace: 'nowrap', userSelect: 'none', textAlign: 'center' }}
+          style={{ width: 40, whiteSpace: 'nowrap', userSelect: 'none', textAlign: 'center' }}
         >
           <input
             type="checkbox"
@@ -1218,7 +1225,9 @@ export default function ProductList() {
         onMouseDown={(e) => handleColDragStart(e, colKey, idx)}
         style={{
           width: w,
-          position: 'relative',
+          // 不要在这里写 position:'relative'：表头靠 CSS 的 position:sticky 吸顶，
+          // 内联 relative 会把它盖掉，这两列就变成「别人吸顶、它跟着滚」。
+          // 拖拽手柄是 absolute 定位，sticky 本身就是定位元素，照样有包含块。
           whiteSpace: 'nowrap',
           cursor: 'grab',
           borderLeft: isDragTarget ? '2px solid var(--color-primary)' : undefined,

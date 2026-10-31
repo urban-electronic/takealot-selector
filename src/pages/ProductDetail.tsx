@@ -13,7 +13,7 @@ import { useFxRates } from '../utils/useFxRates';
 import { beijingDateTime } from '../utils/datetime';
 import { toneOf } from '../utils/number';
 import { copyText } from '../utils/clipboard';
-import { skuVariants, variantLabels } from '../utils/variants';
+import { isSuspiciousSkuToken, skuVariants, variantLabels } from '../utils/variants';
 import { isAgencyStoreName } from '../utils/agencyStore';
 import { isEan13 } from '../utils/ean';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
@@ -454,10 +454,16 @@ export default function ProductDetail() {
               <label>SKU</label>
               {/* SKU 是平台侧唯一标识，改了它采集/调价/装箱单就对不上号，所以只读 + 复制。 */}
               <div className="sku-cell">
-                <span className="sku-value" translate="no">{product.sku || '-'}</span>
+                <span className="sku-line">
+                  <span className="sku-value" translate="no">{product.sku || '-'}</span>
+                  {skuVariants(product.sku).some(isSuspiciousSkuToken) ? (
+                    <span className="sku-flag" title="这个值不像平台 SKU（含中文或长度异常），可能是采集时写入了规格名">非SKU</span>
+                  ) : null}
+                </span>
                 <button
                   type="button" className={`sku-copy${copiedSku ? ' is-done' : ''}`}
                   aria-label={`复制SKU：${product.sku || ''}`}
+                  aria-live="polite"
                   disabled={!product.sku}
                   onClick={() => { void copySku(); }}
                 >{copiedSku ? '已复制' : '复制'}</button>

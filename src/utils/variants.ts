@@ -37,3 +37,31 @@ export function variantLabels(product: Pick<Product, 'sku' | 'chinese_product_na
 export function isPlaceholderLabel(label: string): boolean {
   return /待识别|待确认|历史分支/.test(label);
 }
+
+/**
+ * 单个 SKU token 的形态判定。
+ *
+ * 为什么需要：`products.sku` 没有格式约束，采集时会把变体名（「缠绕支架」这类中文）
+ * 或残缺值写进去。它们和 8~14 位的平台编号混在同一列、同一套等宽字里，
+ * 看起来就像渲染出了乱码 —— 实际是数据本身不是 SKU。
+ * 这里只做形态分类，不改数据；真正的清理是后端 `POST /api/products/sku-cleanup` 的事。
+ */
+export type SkuTokenKind = 'ok' | 'barcode' | 'cjk' | 'short' | 'odd';
+
+export function skuTokenKind(token: string | null | undefined): SkuTokenKind {
+  const value = (token || '').trim();
+  if (!value) return 'short';
+  // 中日韩文字：平台编号里不会出现，出现即说明写进来的是商品名。
+  if (/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]/.test(value)) return 'cjk';
+  if (/^\d{13}$/.test(value)) return 'barcode';           // EAN-13，合法但不是 TSIN
+  if (/^\d{8,14}$/.test(value)) return 'ok';              // Takealot TSIN / 卖家编号
+  if (/^[0-9A-Za-z][0-9A-Za-z._-]{5,}$/.test(value)) return 'ok'; // 字母数字型卖家 SKU
+  if (value.length < 6) return 'short';                   // 太短，基本是脏值
+  return 'odd';
+}
+
+/** 需要在界面上标出来的 SKU（不是平台标识的那几种形态）。 */
+export function isSuspiciousSkuToken(token: string | null | undefined): boolean {
+  const kind = skuTokenKind(token);
+  return kind === 'cjk' || kind === 'short' || kind === 'odd';
+}

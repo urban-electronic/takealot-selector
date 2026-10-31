@@ -372,4 +372,42 @@ const outlineColorOf = (ruleSource) => {
   assert.match(block, /transition-duration:\s*0?\.01ms\s*!important/, 'reduced-motion 下必须把 transition-duration 压到近零');
 }
 
-console.log('视觉一致性检查通过：字号下限、文字对比度黑名单、控件尺寸、表头度量、令牌引入顺序、状态配色（含对比度计算与白字突变自测）、占位提示、焦点圈、静态全量扫描、渐变底文字（含突变自测）、渲染层白字禁令、组件裸色值禁令、reduced-motion 兜底 共 16 组约束均满足。');
+// --- 16. SKU 单元格：一列只允许一套排版 -------------------------------------------
+// 2026-10-31 现场：同一列里单规格走 .sku-value（12px 等宽），多规格走
+// .sku-branch-summary <b>（继承表格 13px 无衬线粗体），于是同一列出现两种字；
+// 「复制」按钮又是 inline 跟在文本后面，x 位置随 SKU 文字宽度漂移，整列对不齐。
+// 这条护栏钉三件事：主标识只有一套字、复制按钮在独立的 grid 列、旧类不许回潮。
+{
+  const cssRule = (css, selector) => {
+    const marker = `\n${selector} {`;
+    const at = css.indexOf(marker);
+    if (at < 0) return '';
+    const start = at + marker.length;
+    return css.slice(start, css.indexOf('}', start));
+  };
+
+  assert.ok(!indexCss.includes('.sku-branch-summary'), '旧的 .sku-branch-summary 已删除（它让多规格 SKU 用表格默认字体），不要加回来');
+
+  const cellRule = cssRule(indexCss, '.sku-cell');
+  assert.match(cellRule, /display:\s*grid/, '.sku-cell 必须是 grid：复制按钮要落在独立列里，才可能整列对齐');
+  assert.match(cellRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/, '.sku-cell 必须是「标识 1fr + 操作 auto」两列');
+  assert.match(cellRule, /align-items:\s*center/, '.sku-cell 必须垂直居中，单行/两行单元格重心才会在同一条线上');
+
+  const valueRule = cssRule(indexCss, '.sku-value');
+  assert.match(valueRule, /font-family:\s*var\(--font-mono\)/, '.sku-value 必须用等宽令牌，逐位核对才看得清');
+  assert.match(valueRule, /font-size:\s*var\(--fs-label\)/, '.sku-value 字号必须走令牌（12px）');
+  assert.match(valueRule, /font-weight:\s*600/, '.sku-value 字重固定 600，不要靠 <b> 继承表格字重');
+
+  assert.match(cssRule(indexCss, '.sku-copy'), /justify-self:\s*end/, '.sku-copy 必须靠右钉在操作列');
+
+  const listTsx = read('src/pages/ProductList.tsx');
+  assert.ok(!/<b translate="no">/.test(listTsx), 'SKU 主标识不得再用 <b>（会继承表格字体，与单规格行不一致）');
+  assert.match(listTsx, /className="sku-line"/, 'SKU 主标识必须走 .sku-line 结构');
+
+  // 突变自测：把 grid 改回 flex，上面的断言必须变红，否则这条护栏是摆设。
+  const mutated = indexCss.replace(/(\.sku-cell \{[\s\S]*?)display: grid;/, '$1display: flex;');
+  assert.notEqual(mutated, indexCss, '突变自测未能改写 .sku-cell，说明规则形态变了，请同步更新本组断言');
+  assert.ok(!/display:\s*grid/.test(cssRule(mutated, '.sku-cell')), '突变自测：.sku-cell 改回 flex 时必须被拦住');
+}
+
+console.log('视觉一致性检查通过：字号下限、文字对比度黑名单、控件尺寸、表头度量、令牌引入顺序、状态配色（含对比度计算与白字突变自测）、占位提示、焦点圈、静态全量扫描、渐变底文字（含突变自测）、渲染层白字禁令、组件裸色值禁令、reduced-motion 兜底、SKU 单元格单一排版 共 17 组约束均满足。');
