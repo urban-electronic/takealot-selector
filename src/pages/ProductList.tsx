@@ -1102,7 +1102,7 @@ export default function ProductList() {
         const skuOptions = skuVariants(sku);
         const expanded = expandedVariantRows.has(p.id);
         const multi = skuOptions.length > 1;
-        // 中文/过短的 token 不是平台编号（采集把变体名写进了 sku），标出来免得当成渲染错误。
+        // 仅按形态提示核对，不据此认定编号无效或改变原值。
         const suspicious = skuOptions.some(isSuspiciousSkuToken);
         return (
           <span className="sku-cell">
@@ -1110,7 +1110,7 @@ export default function ProductList() {
               <span className="sku-line">
                 <span className="sku-value" translate="no" title={sku}>{skuOptions[0]}</span>
                 {suspicious ? (
-                  <span className="sku-flag" title="这个值不像平台 SKU（含中文或长度异常），可能是采集时写入了规格名">非SKU</span>
+                  <span className="sku-flag" title="仅按文字形态提示，请对照卖家后台核对；未确认无效，原值与复制保持不变">需核对</span>
                 ) : null}
               </span>
               {multi ? (

@@ -457,7 +457,7 @@ export default function ProductDetail() {
                 <span className="sku-line">
                   <span className="sku-value" translate="no">{product.sku || '-'}</span>
                   {skuVariants(product.sku).some(isSuspiciousSkuToken) ? (
-                    <span className="sku-flag" title="这个值不像平台 SKU（含中文或长度异常），可能是采集时写入了规格名">非SKU</span>
+                    <span className="sku-flag" title="仅按文字形态提示，请对照卖家后台核对；未确认无效，原值与复制保持不变">需核对</span>
                   ) : null}
                 </span>
                 <button
