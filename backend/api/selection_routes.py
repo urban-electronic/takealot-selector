@@ -583,6 +583,8 @@ async def import_table(
             purchase_cost_cny=group["purchase_cost_cny"],
             purchase_shipping_cny=group["purchase_shipping_cny"],
             purchase_quantity=group["purchase_quantity"] if group["purchase_quantity"] is not None else 4,
+            dimensions_source="import" if any(group[f] is not None for f in
+                ("length_mm", "width_mm", "height_mm", "actual_weight_kg")) else "",
             length_mm=group["length_mm"],
             width_mm=group["width_mm"],
             height_mm=group["height_mm"],

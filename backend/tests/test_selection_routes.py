@@ -1248,3 +1248,13 @@ def test_import_ambiguous_weight_separator_rejected(db):
         do_import(db, [["产品链接", "重量(g)"], ["https://www.takealot.com/p/PLID991234", "1,000"]])
     assert error.value.status_code == 400
     assert db.query(SelectionItem).count() == 0
+
+
+def test_enrich_preserves_imported_measurements(db):
+    from api.selection_routes import _apply_public
+    do_import(db, [["产品链接", "长度(cm)", "宽度(cm)", "高度(cm)", "重量(g)"],
+        ["https://www.takealot.com/p/PLID991234", 25, 10, 5, 350]])
+    item = db.query(SelectionItem).one()
+    _apply_public(item, {"success": True, "dimensions": {"length_mm": 1, "width_mm": 2, "height_mm": 3, "weight_kg": 0.001}}, db)
+    assert (item.length_mm, item.width_mm, item.height_mm, item.actual_weight_kg) == pytest.approx((250, 100, 50, 0.35))
+    assert item.dimensions_source == "import"
