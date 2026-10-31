@@ -64,6 +64,7 @@ const DIMENSION_SOURCE_LABEL: Record<string, string> = {
   catalogue_api: '卖家目录',
   public_api: '公开页预填',
   manual: '人工填写',
+  import: '表格导入',
 };
 
 const STATUS_OPTIONS = ['待核算', '合格', '不合格', '已建产品'];

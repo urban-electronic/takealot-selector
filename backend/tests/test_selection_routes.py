@@ -1196,3 +1196,65 @@ def test_import_does_not_treat_usd_supplier_price_as_cny(db, currency):
         do_import(db, [["产品链接", f"Unit Price ({currency})"], ["https://www.takealot.com/p/PLID991234", 20]])
     assert error.value.status_code == 400
     assert db.query(SelectionItem).count() == 0
+
+
+@pytest.mark.parametrize("headers,values,expected", [
+    (["长度(cm)", "宽度(cm)", "高度(cm)", "重量(g)"], [25, 10, 5, 350], (250, 100, 50, 0.35)),
+    (["Length (mm)", "Width (mm)", "Height (mm)", "Weight (kg)"], [250, 100, 50, 0.35], (250, 100, 50, 0.35)),
+    (["length_mm", "width_mm", "height_mm", "actual_weight_kg"], [250, 100, 50, 0.35], (250, 100, 50, 0.35)),
+    (["长度(cm)", "宽度(cm)", "高度(cm)", "重量(g)"], ["250mm", "10 cm", "5厘米", "0.35kg"], (250, 100, 50, 0.35)),
+])
+def test_import_measurements_without_manual_reentry(db, headers, values, expected):
+    do_import(db, [["产品链接"] + headers, ["https://www.takealot.com/p/PLID991234"] + values])
+    item = db.query(SelectionItem).one()
+    assert (item.length_mm, item.width_mm, item.height_mm, item.actual_weight_kg) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", [-5, 0, "bad", "25-30", "20kg", "NaN", "1e309", "1,000"])
+def test_import_invalid_measurements_are_not_silently_saved(db, value):
+    with pytest.raises(HTTPException) as error:
+        do_import(db, [["产品链接", "长度(cm)"],
+            ["https://www.takealot.com/p/PLID991234", 25],
+            ["https://www.takealot.com/p/PLID991235", value]])
+    assert error.value.status_code == 400
+    assert db.query(SelectionItem).count() == 0
+
+
+def test_import_unitless_measurements_remain_unknown(db):
+    result = do_import(db, [["产品链接", "长度", "重量"], ["https://www.takealot.com/p/PLID991234", 25, 350]])
+    item = db.query(SelectionItem).one()
+    assert item.length_mm is None and item.actual_weight_kg is None
+    assert set(result["unknown_headers"]) == {"长度", "重量"}
+
+
+def test_import_missing_measurements_filled_from_duplicate_row(db):
+    do_import(db, [["产品链接", "长度(cm)", "重量(g)"],
+        ["https://www.takealot.com/p/PLID991234", "", 350],
+        ["https://www.takealot.com/p/PLID991234", 25, ""]])
+    item = db.query(SelectionItem).one()
+    assert item.length_mm == 250 and item.actual_weight_kg == pytest.approx(0.35)
+
+
+def test_csv_measurement_units_and_empty_values():
+    from services.selection_import import read_table, normalize_row
+    table = read_table("fixture.csv", "产品链接;长度(厘米);宽度(毫米);重量(千克)\nhttps://www.takealot.com/p/PLID991234;25;100;0,35\nhttps://www.takealot.com/p/PLID991235;;;\n".encode())
+    first = normalize_row(table["rows"][0])
+    assert (first["length_mm"], first["width_mm"], first["actual_weight_kg"]) == pytest.approx((250, 100, 0.35))
+    assert normalize_row(table["rows"][1])["actual_weight_kg"] is None
+
+
+def test_import_ambiguous_weight_separator_rejected(db):
+    with pytest.raises(HTTPException) as error:
+        do_import(db, [["产品链接", "重量(g)"], ["https://www.takealot.com/p/PLID991234", "1,000"]])
+    assert error.value.status_code == 400
+    assert db.query(SelectionItem).count() == 0
+
+
+def test_enrich_preserves_imported_measurements(db):
+    from api.selection_routes import _apply_public
+    do_import(db, [["产品链接", "长度(cm)", "宽度(cm)", "高度(cm)", "重量(g)"],
+        ["https://www.takealot.com/p/PLID991234", 25, 10, 5, 350]])
+    item = db.query(SelectionItem).one()
+    _apply_public(item, {"success": True, "dimensions": {"length_mm": 1, "width_mm": 2, "height_mm": 3, "weight_kg": 0.001}}, db)
+    assert (item.length_mm, item.width_mm, item.height_mm, item.actual_weight_kg) == pytest.approx((250, 100, 50, 0.35))
+    assert item.dimensions_source == "import"
