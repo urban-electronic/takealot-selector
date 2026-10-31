@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -64,11 +65,71 @@ def _norm(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().lower()
 
 
+# Only explicit units are accepted: an unlabeled 25 must never become 25mm
+# when the source author meant 25cm. Canonical keys also carry their unit.
+MEASUREMENT_LABELS = {
+    "length_mm": r"length|长度|长",
+    "width_mm": r"width|宽度|宽",
+    "height_mm": r"height|高度|高",
+    "actual_weight_kg": r"weight|重量|毛重",
+}
+MEASUREMENT_FACTORS = {
+    "length_mm": {"mm": 1, "毫米": 1, "cm": 10, "厘米": 10},
+    "width_mm": {"mm": 1, "毫米": 1, "cm": 10, "厘米": 10},
+    "height_mm": {"mm": 1, "毫米": 1, "cm": 10, "厘米": 10},
+    "actual_weight_kg": {"kg": 1, "千克": 1, "公斤": 1, "g": 0.001, "克": 0.001},
+}
+
+
+def _header_unit(header: Any, field: str) -> Optional[str]:
+    text = _norm(header)
+    if not re.search(MEASUREMENT_LABELS[field], text):
+        return None
+    # Extract complete matches, including Chinese unit names.
+    units = [m.group(0) for m in re.finditer(
+        r"(?<![a-z])(mm|cm|kg|g)(?![a-z])|毫米|厘米|千克|公斤|克", text)]
+    allowed = MEASUREMENT_FACTORS[field]
+    return units[0] if len(units) == 1 and units[0] in allowed else None
+
+
+def _measurement_number(value: Any, header: Any, field: str) -> Optional[float]:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    unit = _header_unit(header, field)
+    if isinstance(value, bool):
+        raise ValueError("不是有效的重尺数值")
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        match = re.fullmatch(r"\s*([+-]?(?:\d+(?:[.,]\d+)?|\.\d+))\s*(mm|cm|kg|g|毫米|厘米|千克|公斤|克)?\s*",
+                             str(value), flags=re.I)
+        if not match:
+            raise ValueError("不是单一重尺数值")
+        # A comma with three trailing digits can be either a decimal or a
+        # thousands separator. Refuse to guess in measurements used for freight.
+        if "," in match[1] and len(match[1].split(",")[1]) >= 3:
+            raise ValueError("重尺逗号含义不明确，请使用点小数或纯数字")
+        number = float(match[1].replace(",", "."))
+        unit = match[2].lower() if match[2] else unit
+    if unit not in MEASUREMENT_FACTORS[field]:
+        raise ValueError("重尺单位不匹配")
+    number *= MEASUREMENT_FACTORS[field][unit]
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError("重尺必须为有限正数")
+    return number
+
+
 def detect_columns(headers: Iterable[Any]) -> Dict[str, int]:
     """把表头映射成 {字段: 列下标}。认不出的列直接忽略。"""
     normed = [_norm(h) for h in headers]
     mapping: Dict[str, int] = {}
     used: set = set()
+    for field in MEASUREMENT_LABELS:
+        for idx, header in enumerate(normed):
+            if idx not in used and _header_unit(header, field):
+                mapping[field] = idx
+                used.add(idx)
+                break
     for field, aliases in FIELD_ALIASES:
         for idx, header in enumerate(normed):
             if not header or idx in used:
@@ -155,13 +216,19 @@ def _rows_from_matrix(matrix: List[List[Any]]) -> Tuple[List[Dict[str, Any]], Di
         if idx not in mapping.values() and _cell_text(h)
     ]
     rows: List[Dict[str, Any]] = []
-    for raw in matrix[1:]:
+    for row_no, raw in enumerate(matrix[1:], start=2):
         if not any(_cell_text(c) for c in raw):
             continue
         item: Dict[str, Any] = {}
         for field, idx in mapping.items():
             if idx < len(raw):
-                item[field] = raw[idx]
+                if field in MEASUREMENT_LABELS:
+                    try:
+                        item[field] = _measurement_number(raw[idx], headers[idx], field)
+                    except ValueError as error:
+                        raise ValueError(f"第{row_no}行{headers[idx]}无效：{error}") from error
+                else:
+                    item[field] = raw[idx]
         if any(_cell_text(item.get(f)) for f in IDENTITY_FIELDS):
             rows.append(item)
     return rows, mapping, unknown
@@ -260,6 +327,7 @@ def normalize_row(raw: Dict[str, Any]) -> Dict[str, Any]:
         "purchase_cost_cny": to_number(raw.get("purchase_cost_cny")),
         "purchase_shipping_cny": to_number(raw.get("purchase_shipping_cny")),
         "purchase_quantity": to_int(raw.get("purchase_quantity")),
+        **{field: raw.get(field) for field in MEASUREMENT_LABELS},
         "note": _cell_text(raw.get("note")),
     }
 

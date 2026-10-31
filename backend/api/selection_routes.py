@@ -527,7 +527,8 @@ async def import_table(
         for field in ("actual_sale_price_zar", "rating_value", "review_count",
                       "takealot_url", "chinese_product_name", "product_name",
                       "purchase_url", "unit_price_cny", "purchase_cost_cny",
-                      "purchase_shipping_cny", "purchase_quantity"):
+                      "purchase_shipping_cny", "purchase_quantity", "length_mm",
+                      "width_mm", "height_mm", "actual_weight_kg"):
             if current.get(field) in (None, "") and row.get(field) not in (None, ""):
                 current[field] = row[field]
 
@@ -582,6 +583,10 @@ async def import_table(
             purchase_cost_cny=group["purchase_cost_cny"],
             purchase_shipping_cny=group["purchase_shipping_cny"],
             purchase_quantity=group["purchase_quantity"] if group["purchase_quantity"] is not None else 4,
+            length_mm=group["length_mm"],
+            width_mm=group["width_mm"],
+            height_mm=group["height_mm"],
+            actual_weight_kg=group["actual_weight_kg"],
             note=group["note"],
             status="待核算",
         )
