@@ -20,6 +20,9 @@ import httpx
 BASE = "https://marketplace-api.takealot.com"
 USER_AGENT = "takealot-selector/1.0"
 SETTING_KEY = "takealot_catalogue_auth"
+# 用户主动点「探测竞品重尺接口」时最多试多久。最坏 5 端点 × 4 鉴权位置 = 20 次
+# 请求，不设上限会把一次点击拖成几分钟。
+DISCOVERY_BUDGET_SECONDS = 30.0
 CATALOGUE_BATCH_WAIT_SECONDS = 45.0
 _catalogue_dispatch_lock = threading.Lock()
 _catalogue_pool = ThreadPoolExecutor(max_workers=1)
@@ -149,13 +152,99 @@ def _to_number(value: Any) -> Optional[float]:
     return None
 
 
-def extract_dims(payload: Any) -> Dict[str, Optional[float]]:
-    """从目录响应里抠出 mm / kg。
+# 后台商品页上的尺寸是**字符串**，不是分开的数值字段：
+#   Consolidated Packaged Dimensions: 86.0 x 50.0 x 190.0 mm
+#   Merchant Packaged Dimensions:     3 x 8 x 18 cm
+# 只认 `length_cm` 这种结构化字段的话，从后台抓回来的数据一条都解析不出来。
+_DIM_TEXT_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(?:x|×|\*)\s*(\d+(?:[.,]\d+)?)\s*(?:x|×|\*)\s*(\d+(?:[.,]\d+)?)",
+    re.I,
+)
 
-    响应结构未知，所以按「找一组同时含长宽高的兄弟字段」来定位，再按字段名或
-    同级 unit 字段判断单位。宁可返回空字典，也不要瞎猜——重尺错一位，运费和
-    利润率全错。
-    """
+# 同一个商品在后台有三套打包数据，含义不同：
+#   Consolidated —— Takealot 合并后用于**计费**的口径
+#   Cubisan      —— Takealot 体积重扫描仪量出来的
+#   Merchant     —— 卖家自己申报的打包尺寸
+# 核算要跟 Takealot 账单对得上，所以按计费口径优先，卖家申报的放最后。
+_DIM_KEY_PRIORITY = ("consolidated", "cubisan", "merchant")
+
+# 这些词说明是「承重上限 / 推荐载荷」，不是商品自重。
+_NOT_WEIGHT = ("maximum", "recommend", "capacity", "limit", "load", "max ")
+
+
+def _key_priority(name: str) -> int:
+    lowered = name.lower()
+    for index, word in enumerate(_DIM_KEY_PRIORITY):
+        if word in lowered:
+            return index
+    return len(_DIM_KEY_PRIORITY)
+
+
+def _walk_dicts(node: Any):
+    """深度遍历，把每个 dict 交给调用方。"""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _walk_dicts(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk_dicts(value)
+
+
+def _text_dims(payload: Any) -> Optional[Dict[str, float]]:
+    """从字符串字段里抠三边，例如 "86.0 x 50.0 x 190.0 mm" / "3 x 8 x 18 cm"。"""
+    found: List[Tuple[int, Dict[str, float]]] = []
+    for node in _walk_dicts(payload):
+        for name, value in node.items():
+            if not isinstance(value, str):
+                continue
+            lowered = str(name).lower()
+            if "dimension" not in lowered and "size" not in lowered:
+                continue
+            match = _DIM_TEXT_RE.search(value)
+            if not match:
+                continue
+            scale = _scale_from_text(value, _UNIT_SCALE_MM) or 10.0
+            numbers = [float(part.replace(",", ".")) for part in match.groups()]
+            found.append((_key_priority(lowered), {
+                "length_mm": round(numbers[0] * scale, 1),
+                "width_mm": round(numbers[1] * scale, 1),
+                "height_mm": round(numbers[2] * scale, 1),
+            }))
+    if not found:
+        return None
+    found.sort(key=lambda pair: pair[0])
+    return found[0][1]
+
+
+def _text_weight(payload: Any) -> Optional[float]:
+    """从字符串字段里抠重量，例如 "0.16 kg" / "165 g"。"""
+    found: List[Tuple[int, float]] = []
+    for node in _walk_dicts(payload):
+        for name, value in node.items():
+            lowered = str(name).lower()
+            if "weight" not in lowered:
+                continue
+            if any(bad in lowered for bad in _NOT_WEIGHT):
+                continue
+            text = str(value)
+            number = _to_number(text)
+            if number is None:
+                continue
+            scale = _scale_from_text(lowered, _UNIT_SCALE_KG)
+            if scale is None:
+                scale = _scale_from_text(text, _UNIT_SCALE_KG)
+            if scale is None:
+                scale = 1.0   # 目录接口的重量字段一般是 kg
+            found.append((_key_priority(lowered), round(number * scale, 3)))
+    if not found:
+        return None
+    found.sort(key=lambda pair: pair[0])
+    return found[0][1]
+
+
+def _structured_dims(payload: Any) -> Optional[Dict[str, Optional[float]]]:
+    """长宽高是分开的数值字段时（`length_cm` / `width` + `unit`）怎么取。"""
     candidates: List[Dict[str, Any]] = []
 
     def collect(node: Any) -> None:
@@ -203,7 +292,7 @@ def extract_dims(payload: Any) -> Dict[str, Optional[float]]:
         weight_kg = None
         for raw_key, value in node.items():
             name = str(raw_key).lower()
-            if "weight" not in name or "maximum" in name or "recommend" in name:
+            if "weight" not in name or any(bad in name for bad in _NOT_WEIGHT):
                 continue
             number = _to_number(value)
             if number is None:
@@ -222,16 +311,60 @@ def extract_dims(payload: Any) -> Dict[str, Optional[float]]:
             "height_mm": values.get("height"),
             "weight_kg": weight_kg,
         }
-    return {}
+    return None
 
 
-def probe(db, plid: Any) -> Dict[str, Any]:
-    """仅检查已保存连接一次，不探索端点或更换鉴权方式。"""
+def extract_dims(payload: Any) -> Dict[str, Optional[float]]:
+    """从目录响应里抠出 mm / kg。
+
+    响应结构未知，而且**同一个商品在后台有两种完全不同的表示**：结构化
+    （`length_cm: 86`）和字符串（`"86.0 x 50.0 x 190.0 mm"`）。只认其中一种，
+    就会有一半商品解析不出来——这正是「后台明明有重尺、程序一直补不上」的
+    原因，探测通了也白通，因为解析结果永远是空。
+
+    所以两种都试，缺的字段互相补。宁可返回空字典，也不要瞎猜——重尺错一位，
+    运费和利润率全错。
+    """
+    out: Dict[str, Optional[float]] = dict(_structured_dims(payload) or {})
+
+    if not (out.get("length_mm") and out.get("width_mm") and out.get("height_mm")):
+        textual = _text_dims(payload)
+        if textual:
+            out.update(textual)
+
+    if out.get("weight_kg") is None:
+        weight = _text_weight(payload)
+        if weight is not None:
+            out["weight_kg"] = weight
+
+    if not (out.get("length_mm") and out.get("width_mm") and out.get("height_mm")):
+        return {}
+    return {
+        "length_mm": out.get("length_mm"),
+        "width_mm": out.get("width_mm"),
+        "height_mm": out.get("height_mm"),
+        "weight_kg": out.get("weight_kg"),
+    }
+
+
+def probe(db, plid: Any, discover: bool = False) -> Dict[str, Any]:
+    """检查（或在用户明确请求时接入）目录接口。
+
+    `discover=False`（默认）：只检查已保存的连接一次，不读密钥、不探索端点。
+    enrich 这类后台流程走这条，符合「不主动扫描上游」的边界。
+
+    `discover=True`：**只有用户主动点「探测竞品重尺接口」时才传**。一次性试
+    「端点 × 鉴权位置」，把能用的组合报告出来，由调用方决定是否保存。
+    这是唯一会产生写入的路径——少了它 `takealot_catalogue_auth` 永远是空，
+    `_fill_catalogue_dims` 直接 return 0，重尺功能整体不可用（线上就是这样）。
+    """
     resolved = str(plid).strip()
     report: Dict[str, Any] = {'ok':False,'tried':[],'winner':None,'reason':''}
     if not resolved.isdigit():
         report['reason'] = 'PLID 无法识别'
         return report
+    if discover:
+        return _discover(db, resolved, report)
     winner = load_winner(db)
     if not _valid_winner(winner):
         report['reason'] = '尚未接入已确认的目录接口，已停用端点及鉴权组合探测'
@@ -261,6 +394,53 @@ def probe(db, plid: Any) -> Dict[str, Any]:
         report.update(ok=True,winner=winner)
     else:
         report['reason'] = '已保存目录连接返回资料不完整，未尝试其他端点或鉴权方式'
+    return report
+
+
+def _discover(db, resolved: str, report: Dict[str, Any]) -> Dict[str, Any]:
+    """一次性试「端点 × 鉴权位置」，只为「用户主动点按钮」这个场景服务。
+
+    不做「key 无效就立刻收手」的短路：`_request` 只回状态码，拿不到服务端那句
+    `Authentication failed`，分不出「这个头没被读」和「key 不对」，所以靠总
+    时长兜底，别让它把请求拖住。
+    """
+    key = configured_key(db)
+    if not key:
+        report['reason'] = '没有配置卖家 API 密钥，无法探测'
+        return report
+
+    started = time.monotonic()
+    for endpoint_id, template in ENDPOINTS:
+        path = template.format(plid=resolved)
+        for style in AUTH_STYLES:
+            if time.monotonic() - started > DISCOVERY_BUDGET_SECONDS:
+                report['reason'] = f'探测超过 {DISCOVERY_BUDGET_SECONDS:.0f} 秒未完成，请稍后再试'
+                return report
+            row: Dict[str, Any] = {'endpoint': endpoint_id, 'path': path,
+                                   'auth': _AUTH_LABEL[style], 'status': 0}
+            try:
+                status, payload = _request(BASE + path, key, style)
+            except Exception as error:
+                row['note'] = type(error).__name__
+                report['tried'].append(row)
+                continue
+            row['status'] = status
+            if status == 200 and payload is not None:
+                dims = extract_dims(payload)
+                row.update(dimension_keys=_walk_dimension_keys(payload)[:12], dims=dims)
+                if dims.get('length_mm') and dims.get('width_mm') and dims.get('height_mm'):
+                    row['usable'] = True
+                    report['tried'].append(row)
+                    report.update(ok=True,
+                                  winner={'endpoint': endpoint_id, 'auth': style})
+                    return report
+            elif status in (401, 403):
+                row['note'] = '鉴权未通过'
+            elif status == 404:
+                row['note'] = '路径不存在'
+            report['tried'].append(row)
+
+    report['reason'] = '所有组合都没拿到完整的长宽高'
     return report
 
 

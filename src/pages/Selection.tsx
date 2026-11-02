@@ -448,6 +448,8 @@ export default function Selection() {
       await refresh();
       if (last) {
         const bits = [`成功 ${succeeded} 个，失败 ${failed} 个`];
+        // 被限流的不是「抓不到」，只是还没轮到——分开说，别让人以为这些商品废了。
+        if (last.pending) bits.push(`${last.pending} 个被限流、稍后再抓`);
         if (last.from_product_list) bits.push(`${last.from_product_list} 个重尺直接取自产品列表`);
         if (last.with_dimensions) bits.push(`${last.with_dimensions} 个从卖家接口带出重尺`);
         if (last.skipped_network) bits.push(`${last.skipped_network} 个资料齐全、没再打网络`);

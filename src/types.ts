@@ -507,6 +507,8 @@ export interface SelectionEnrichResult {
   processed: number;
   ok: number;
   failed: number;
+  /** 被限流 / 被 stop 波及，这一轮没结论，下一轮接着抓。不算失败。 */
+  pending?: number;
   /** 从卖家 API 或目录接口拿到重尺的条数 */
   with_dimensions: number;
   /** 直接从产品主档抄到重尺的条数（自家商品的主路径） */

@@ -317,6 +317,15 @@ def _apply_public(item: SelectionItem, record: Optional[Dict[str, Any]], db: Ses
             item.enrich_status = "ok"
             item.enrich_message = "资料取自产品列表，未走公开接口"
             return
+        # 429 是**限流**，不是拒绝——过一会儿还能读；被 stop 波及、自己压根没
+        # 拿到状态码的行也只是「没轮到」。这两种都不能标 failed：`remaining`
+        # 只统计 enrich_status 为空的行，标了 failed 就永久退出待抓队列，
+        # 用户点多少次「重抓」都补不上——这正是「反复抓仍有一片没主图」的原因。
+        if record and (record.get("http_status") == 429
+                       or record.get("public_access_blocked")):
+            item.enrich_status = ""
+            item.enrich_message = "公开接口限流，已留待下一轮重试"
+            return
         item.enrich_status = "failed"
         warnings = (record or {}).get("warnings") or []
         item.enrich_message = "；".join(warnings) or "公开接口没有返回可用数据"
@@ -761,7 +770,7 @@ def enrich(
 
     exchange_rate = _exchange_rate(db)
     fee_rates: Dict[str, Optional[float]] = {}
-    ok = failed = handled = 0
+    ok = failed = pending = handled = 0
     failures: List[Dict[str, str]] = []
     for item in targets:
         # 被推迟的这几条这一轮压根没打网络。如果照常走一遍，会被记成「抓取失败」，
@@ -777,6 +786,10 @@ def enrich(
         _refresh_status(item)
         if item.enrich_status == "ok":
             ok += 1
+        elif item.enrich_status in ("", None):
+            # 留待下一轮（限流或被 stop 波及）。既不算成功也不算失败——算进
+            # failed 会让「失败 N 个」虚高，用户会以为这些商品永远抓不到。
+            pending += 1
         else:
             failed += 1
             if len(failures) < 20:
@@ -798,6 +811,9 @@ def enrich(
         "processed": handled,
         "ok": ok,
         "failed": failed,
+        # 限流 / 被 stop 波及：这一轮没结论，下一轮接着抓。前端据此区分
+        # 「抓不到」和「还没轮到」，否则会把待重试的也报成失败。
+        "pending": pending,
         "with_dimensions": dims_from_seller + dims_from_catalogue,
         "from_product_list": from_product_list,
         "skipped_network": skipped_network,
@@ -1037,19 +1053,34 @@ class SelectQualifiedRequest(BaseModel):
 
 @router.get("/diag/catalogue")
 def diag_catalogue(
-    plid: str = Query(..., min_length=1, description="检查已保存目录连接的数字 PLID"),
-    save: bool = Query(True, description="兼容旧参数；检查只读，不修改已保存连接"),
+    plid: str = Query(..., min_length=1, description="检查/接入目录连接用的数字 PLID"),
+    discover: bool = Query(False, description="用户主动接入时传 true：一次性试端点×鉴权位置"),
+    save: bool = Query(True, description="探测成功时记住这套连接，enrich 直接复用"),
     db: Session = Depends(get_db),
     store_id: str = Depends(get_store_id),
 ):
-    """仅检查已保存的目录连接一次；未接入时不读取密钥或发现鉴权方式。
+    """检查目录连接；**用户主动点按钮时**（discover=true）才允许发现并保存。
 
-    返回安全状态和重尺字段，不返回密钥或响应正文。
+    默认只读：不读密钥、不试端点、不覆盖已保存的连接——后台流程不会自动
+    调这条去扫上游。前端「探测竞品重尺接口」按钮传 discover=true，那是一次
+    明确的用户授权；成功就存下来，之后 enrich 只复用、不再探测。
+
+    返回里只有端点、鉴权方式、状态码和字段名，**不含密钥和响应正文**。
     """
     from services import takealot_catalogue_api as catalogue
 
-    report = catalogue.probe(db, plid)
-    report["saved"] = False  # 兼容旧调用参数，但检查不得覆盖并发更新的连接。
+    # `Query(False)` 在「直接调用函数」时是 Query 对象而不是 bool，而 Query
+    # 对象是 truthy——不归一化的话，一次只读检查会被当成 discover=True，
+    # 把用户已保存的连接覆盖掉。只有明确传了 True 才算用户授权。
+    discover = discover is True
+
+    # 默认路径刻意保持旧签名：只读检查不传第三个参数，行为和以前完全一致，
+    # 也不会因为新参数把调用方的桩函数打穿（位置参数，不用 discover=）。
+    report = catalogue.probe(db, plid, True) if discover else catalogue.probe(db, plid)
+    report["saved"] = False
+    if discover and save and report.get("ok") and report.get("winner"):
+        catalogue.save_winner(db, report["winner"])
+        report["saved"] = True
     return report
 
 

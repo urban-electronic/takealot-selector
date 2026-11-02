@@ -1258,3 +1258,91 @@ def test_enrich_preserves_imported_measurements(db):
     _apply_public(item, {"success": True, "dimensions": {"length_mm": 1, "width_mm": 2, "height_mm": 3, "weight_kg": 0.001}}, db)
     assert (item.length_mm, item.width_mm, item.height_mm, item.actual_weight_kg) == pytest.approx((250, 100, 50, 0.35))
     assert item.dimensions_source == "import"
+
+
+def test_enrich_keeps_429_rows_pending_for_next_round(db, monkeypatch):
+    """429 是限流、不是拒绝：留在待抓队列里，下一轮自动重试。
+
+    标成 failed 的话 `remaining` 不再统计它（只数 enrich_status 为空的行），
+    用户点多少次「重抓」都补不上——这就是「反复抓仍有一片没主图」的直接原因。
+    401/403 才该标 failed，因为那是真的被拒，重试没用。
+    """
+    from services import takealot_seller_api as seller
+    monkeypatch.setattr(seller, "configured_key", lambda _: None)
+    do_import(db, [["产品名称", "产品链接"],
+                   ["A", "https://www.takealot.com/x/PLID901"],
+                   ["B", "https://www.takealot.com/x/PLID902"]])
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [
+        {"plid": int(p), "success": False, "http_status": 429,
+         "warnings": ["公开接口请求受限流（HTTP 429），已停止读取"]} for p in plids
+    ])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["failed"] == 0
+    assert result["remaining"] == 2
+    for item in db.query(SelectionItem).all():
+        assert item.enrich_status in ("", None)
+        assert "限流" in (item.enrich_message or "")
+
+
+def test_enrich_keeps_stop_affected_rows_pending(db, monkeypatch):
+    """被上一批的 stop 波及、自己没拿到状态码的行只是「没轮到」，不标失败。
+
+    它们可能本来可读，只是同批里有别的 PLID 被拒。标 failed 等于替上游
+    永久判死，下一轮不会再试。
+    """
+    from services import takealot_seller_api as seller
+    monkeypatch.setattr(seller, "configured_key", lambda _: None)
+    do_import(db, [["产品名称", "产品链接"],
+                   ["A", "https://www.takealot.com/x/PLID911"],
+                   ["B", "https://www.takealot.com/x/PLID912"]])
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [
+        {"plid": int(p), "success": False, "public_access_blocked": True,
+         "warnings": ["公开接口访问受限，已停止本批后续读取"]} for p in plids
+    ])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["failed"] == 0
+    assert result["remaining"] == 2
+    for item in db.query(SelectionItem).all():
+        assert item.enrich_status in ("", None)
+
+
+def test_catalogue_discover_saves_winning_connection(db, monkeypatch):
+    """用户主动点按钮（discover=true）才允许发现并保存连接。
+
+    这是 `takealot_catalogue_auth` **唯一的写入路径**。之前这条路径被删掉，
+    `load_winner` 永远是 None，`_fill_catalogue_dims` 直接 return 0——重尺
+    功能整体不可用，界面上一片「未抓取」。
+    """
+    from api.selection_routes import diag_catalogue
+    from services import takealot_catalogue_api as cat
+
+    saved = {}
+    monkeypatch.setattr(cat, 'probe', lambda *a: {
+        'ok': True, 'tried': [],
+        'winner': {'endpoint': 'catalogue_by_plid', 'auth': 'header_x_api_key'},
+    })
+    monkeypatch.setattr(cat, 'save_winner', lambda _db, winner: saved.update(winner))
+
+    result = diag_catalogue(plid='123456', discover=True, db=db, store_id=STORE)
+
+    assert result['saved'] is True
+    assert saved == {'endpoint': 'catalogue_by_plid', 'auth': 'header_x_api_key'}
+
+
+def test_catalogue_discover_failure_does_not_save(db, monkeypatch):
+    """没探通就不能写——否则会把一个用不了的连接存下来，之后每次都失败。"""
+    from api.selection_routes import diag_catalogue
+    from services import takealot_catalogue_api as cat
+
+    monkeypatch.setattr(cat, 'probe', lambda *a: {
+        'ok': False, 'tried': [], 'winner': None, 'reason': '所有组合都没拿到完整的长宽高',
+    })
+    monkeypatch.setattr(cat, 'save_winner', lambda *a: pytest.fail('没探通不该写连接'))
+
+    result = diag_catalogue(plid='123456', discover=True, db=db, store_id=STORE)
+
+    assert result['saved'] is False

@@ -900,7 +900,11 @@ export interface CatalogueProbeReport {
   }[];
 }
 export const probeSelectionCatalogue = (plid: string): Promise<CatalogueProbeReport> =>
-  request<CatalogueProbeReport>(`/api/selection/diag/catalogue?plid=${encodeURIComponent(plid)}`);
+  request<CatalogueProbeReport>(
+    // discover=true 是**用户主动授权**：点这个按钮就是明确要试一次端点×鉴权。
+    // 后台 enrich 走的是默认只读路径，不会自动扫上游。
+    `/api/selection/diag/catalogue?plid=${encodeURIComponent(plid)}&discover=true`,
+  );
 
 /**
  * 让**服务器**去读一次公开接口，把真实结果原样返回。

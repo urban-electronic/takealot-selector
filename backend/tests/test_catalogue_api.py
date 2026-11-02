@@ -189,3 +189,136 @@ def test_request_uses_truthful_headers_and_never_follows_redirects(monkeypatch):
     assert api._request(api.BASE+'/v1/catalogue/123456','fixture-only','header_x_api_key')==(403,None)
     assert seen[0]['follow_redirects'] is False
     assert seen[1]['headers']=={'User-Agent':'takealot-selector/1.0','Accept':'application/json','X-API-Key':'fixture-only'}
+
+
+# --- 后台商品页那种「字符串」形态 -----------------------------------------
+#
+# 卖家后台（sellers.takealot.com/catalogue/mvp/PILID...）上显示的是
+#   Consolidated Packaged Dimensions: 86.0 x 50.0 x 190.0 mm
+#   Merchant Packaged Weight:         165 g
+# 而原来的解析只认 `length_cm` 这种分开的数值字段，所以从后台抓回来的
+# 数据一条都解析不出来——「重尺一直补不上」的真正原因就在这里。
+# 探测通了也没用：dims 永远是空字典。
+
+
+def test_string_dimensions_from_seller_backend():
+    payload = {"catalogue": {
+        "Consolidated Packaged Dimensions": "86.0 x 50.0 x 190.0 mm",
+        "Cubisan Packaged dimensions": "86.0 x 190.0 x 50.0 mm",
+        "Merchant Packaged Dimensions": "3 x 8 x 18 cm",
+    }}
+    dims = extract_dims(payload)
+    assert dims["length_mm"] == 86.0
+    assert dims["width_mm"] == 50.0
+    assert dims["height_mm"] == 190.0
+
+
+def test_consolidated_wins_over_merchant():
+    """计费口径是 Consolidated，不是卖家申报的 Merchant。"""
+    payload = {
+        "Merchant Packaged Dimensions": "3 x 8 x 18 cm",
+        "Consolidated Packaged Dimensions": "86.0 x 50.0 x 190.0 mm",
+    }
+    assert extract_dims(payload)["length_mm"] == 86.0
+
+
+def test_string_dimensions_without_unit_default_cm():
+    dims = extract_dims({"Merchant Packaged Dimensions": "3 x 8 x 18"})
+    assert dims["length_mm"] == 30.0
+    assert dims["width_mm"] == 80.0
+    assert dims["height_mm"] == 180.0
+
+
+def test_string_weight_units_and_priority():
+    """Cubisan（Takealot 扫描）优先于 Merchant（卖家申报）。"""
+    payload = {
+        "Consolidated Packaged Dimensions": "86.0 x 50.0 x 190.0 mm",
+        "Cubisan packaged weight": "0.16 kg",
+        "Merchant Packaged Weight": "165 g",
+    }
+    assert extract_dims(payload)["weight_kg"] == 0.16
+
+
+def test_string_weight_grams_converted():
+    payload = {
+        "Consolidated Packaged Dimensions": "86.0 x 50.0 x 190.0 mm",
+        "Merchant Packaged Weight": "165 g",
+    }
+    assert extract_dims(payload)["weight_kg"] == 0.165
+
+
+def test_string_maximum_weight_ignored():
+    """承重上限不是商品自重。"""
+    payload = {
+        "Consolidated Packaged Dimensions": "86.0 x 50.0 x 190.0 mm",
+        "Maximum Weight Recommendation": "30 kg",
+    }
+    assert extract_dims(payload)["weight_kg"] is None
+
+
+def test_weight_falls_back_to_text_when_structured_missing():
+    """结构化字段只给了三边，重量从字符串字段补。"""
+    payload = {
+        "d": {"length_cm": 22, "width_cm": 7.2, "height_cm": 17},
+        "Merchant Packaged Weight": "165 g",
+    }
+    dims = extract_dims(payload)
+    assert dims["length_mm"] == 220.0
+    assert dims["weight_kg"] == 0.165
+
+
+def test_string_dimensions_need_all_three_sides():
+    """只有 "22 x 7 cm" 这种两维的，算不出体积重，宁可返回空。"""
+    assert extract_dims({"Merchant Packaged Dimensions": "22 x 7 cm"}) == {}
+
+
+class TestDiscover:
+    """用户主动授权的一次性探测。
+
+    后台 enrich 走只读路径（不扫上游）；只有前端那个按钮传 discover=True。
+    没有这条路径，重尺功能整体是死的。
+    """
+
+    def test_finds_first_working_combination(self, monkeypatch):
+        from services import takealot_catalogue_api as api
+
+        def fake_request(url, key, style, timeout=20.0):
+            if style == 'header_x_api_key':
+                return 200, {'Consolidated Packaged Dimensions': '10 x 20 x 30 cm'}
+            return 401, None
+
+        monkeypatch.setattr(api, '_request', fake_request)
+        monkeypatch.setattr(api, 'configured_key', lambda db: 'k')
+
+        report = api.probe(None, '94399784', True)
+
+        assert report['ok'] is True
+        # 线上到底哪个端点在用是未知数（纯数字和 PLID 前缀都可能），这里只钉
+        # 「必须用 X-API-Key 且命中 ENDPOINTS 里的某个端点」——顺序不该被测试锁死。
+        assert report['winner']['auth'] == 'header_x_api_key'
+        assert report['winner']['endpoint'] in dict(api.ENDPOINTS)
+        assert report['tried'][0]['dims']['length_mm'] == 100.0
+
+    def test_read_only_by_default(self, monkeypatch):
+        """默认不发现：没保存过连接就直接说没接入，一个请求都不发。"""
+        from services import takealot_catalogue_api as api
+
+        monkeypatch.setattr(api, '_request', lambda *a, **k: pytest.fail('默认路径不该发请求'))
+        monkeypatch.setattr(api, 'load_winner', lambda db: None)
+        monkeypatch.setattr(api, 'configured_key', lambda db: 'k')
+
+        report = api.probe(None, '94399784')
+
+        assert report['ok'] is False
+        assert '未接入' in report['reason']
+
+    def test_discover_needs_a_key(self, monkeypatch):
+        from services import takealot_catalogue_api as api
+
+        monkeypatch.setattr(api, '_request', lambda *a, **k: pytest.fail('没 key 不该发请求'))
+        monkeypatch.setattr(api, 'configured_key', lambda db: '')
+
+        report = api.probe(None, '94399784', True)
+
+        assert report['ok'] is False
+        assert '没有配置卖家 API 密钥' in report['reason']
