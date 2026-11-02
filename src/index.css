@@ -3332,6 +3332,19 @@ table tbody tr:hover { background: #f8fafc; }
   padding-left: 18px;
 }
 
+/* 取令牌的一行脚本。长串必须能折行，否则窄屏会把面板撑破（版式审计会红）。 */
+.selection-portal-snippet {
+  margin: 6px 0;
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border: 1px solid var(--border-subtle, #dbe3ee);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-sunken, #f5f7fa);
+  font-size: var(--fs-label);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+}
+
 .selection-file {
   position: relative;
   display: inline-flex;

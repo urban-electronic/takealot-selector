@@ -61,6 +61,16 @@ import { beijingDateTime } from '../utils/datetime';
 const formatTokenExpiry = (epochSeconds: number | null | undefined): string =>
   epochSeconds ? beijingDateTime(new Date(epochSeconds * 1000).toISOString()) : '—';
 
+/**
+ * 从卖家门户控制台取令牌的一行脚本。
+ *
+ * `copy()` 是 Chrome / Edge 开发者工具自带的函数（不是网页 API），所以这行只能
+ * 粘在控制台里跑。手动路径（Application → Local Storage）也写在下面，给不想开
+ * 控制台的人兜底。
+ */
+const PORTAL_TOKEN_SNIPPET =
+  "copy(JSON.parse(localStorage.getItem('usr_st_auth')).api_key)";
+
 const PAGE_SIZE = 24;
 
 const TIER_STYLE: Record<string, { label: string; className: string }> = {
@@ -830,10 +840,17 @@ export default function Selection() {
                   : `有效${portalState.days_left != null ? `（还剩 ${portalState.days_left} 天）` : ''}`}
           </summary>
           <p className="selection-import-hint">
-            取法：浏览器打开 <code>sellers.takealot.com</code> 并登录 → F12 → Application →
-            Local Storage → <code>usr_st_auth</code> → 复制里面的 <code>api_key</code>（一长串以
-            <code>eyJ</code> 开头的字符）。有效期 24 小时，过期后重新取一次即可。
-            有了它，主图和长宽高走卖家门户自己的目录接口，不再受公开接口限流影响。
+            取法：浏览器打开 <code>sellers.takealot.com</code> 并<strong>先登录</strong>，然后按 F12
+            打开控制台，粘这一行——令牌会直接进剪贴板，回来按 Ctrl/⌘+V 就行：
+          </p>
+          <pre className="selection-portal-snippet">
+            <code>{PORTAL_TOKEN_SNIPPET}</code>
+          </pre>
+          <p className="selection-import-hint">
+            不想用控制台就手动取：Application → Local Storage → <code>sellers.takealot.com</code> →
+            <code>usr_st_auth</code> → 复制 <code>api_key</code> 那一长串 <code>eyJ</code> 开头的内容。
+            有效期 24 小时，过期后重新取一次即可。有了它，主图和长宽高走卖家门户自己的目录接口，
+            不再受公开接口限流影响。
           </p>
           <div className="selection-import-main">
             <label className="selection-field is-wide">
