@@ -1581,3 +1581,61 @@ def test_enrich_reports_zero_wait_when_quota_is_fine(db, monkeypatch):
     result = enrich(EnrichRequest(), db=db, store_id=STORE)
 
     assert result["portal_retry_after"] == 0.0
+
+
+# ---------------------------------------------------- 被限流误标成失败的历史行
+#
+# 线上 1112 行是旧版本留下的 `failed / 公开接口返回 429`。它们既不在目标查询
+# 里、也不在 `remaining` 里，于是「点抓取什么也不发生」——用户看到的就是
+# 「429 一直没解决、重尺也补不上」。这几条锁住「限流不是结论」。
+
+
+def _mark_failed(db, message):
+    item = db.query(SelectionItem).first()
+    item.enrich_status = "failed"
+    item.enrich_message = message
+    db.commit()
+    return item
+
+
+def test_rate_limited_rows_are_retried_on_the_next_round(db, monkeypatch):
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _mark_failed(db, "公开接口返回 429")
+    _configure_portal(db, monkeypatch, {})
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["processed"] == 1
+    assert result["ok"] == 1
+    assert db.query(SelectionItem).first().product_image_url.endswith("700-zoom.jpg")
+
+
+def test_rate_limited_rows_count_as_remaining_so_the_loop_keeps_going(db, monkeypatch):
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _mark_failed(db, "公开接口返回 429")
+    # 门户没配：这一轮抓不到，但行必须还留在队列里，不能就这么算了
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [dict(plid=p, success=False,
+                                                       http_status=429) for p in plids])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["failed"] == 0
+    assert result["pending"] == 1
+    assert result["remaining"] == 1
+
+
+def test_genuine_failures_stay_failed(db, monkeypatch):
+    """真的没有这个商品，就别每轮再打一次。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _mark_failed(db, "公开接口没有返回可用数据")
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["processed"] == 0
+    assert result["remaining"] == 0
+    assert db.query(SelectionItem).first().enrich_status == "failed"

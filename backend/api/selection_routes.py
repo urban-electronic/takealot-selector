@@ -21,10 +21,13 @@
 1. **自家店铺的商品**（销售报表里只有 TSIN 的那种）：卖家 API `/v1/offers`
    本来就返回 `length_cm / width_cm / height_cm / weight_grams`，直接换算成
    mm / kg 填进来。`seller_catalog_sync` 早就在用这几个字段，这里只是复用。
-2. **竞品商品**：`/v1/offers` 只返回本店 offer，拿不到别人的。公开商品页
-   的 `Assembled Dimensions` 实测只有约 10% 的商品有、`Weight` 约 2%，格式
-   还乱（"22 x 7.2 x 17 cm"、"M-L"），只能当**预填**，必须人工确认。
-   拿不到就留空，绝不用类目默认值冒充——重尺错了利润就全错。
+2. **竞品商品**：`/v1/offers` 只返回本店 offer，拿不到别人的。主路径是
+   卖家门户自己的目录接口（`services/takealot_portal_api.py`）——它给的是
+   Takealot 用 Cubiscan 实测的 `consolidated_packaged_dimensions`，实测
+   1798 个候选里 1797 个都有，还顺带给了主图，绕开了公开接口的 Cloudflare 429。
+3. **公开商品页**：兜底。`Assembled Dimensions` 实测只有约 10% 的商品有、
+   `Weight` 约 2%，格式还乱（"22 x 7.2 x 17 cm"、"M-L"），只能当**预填**，
+   必须人工确认。拿不到就留空，绝不用类目默认值冒充——重尺错了利润就全错。
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from api.store_routes import get_store_id
@@ -706,6 +709,26 @@ class EnrichRequest(BaseModel):
     refresh: bool = False   # True 时连已抓过的也重抓
 
 
+# 「还没结论」的行，`enrich` 的目标查询和 `remaining` 都必须用同一套判定。
+#
+# 三类：从没抓过（空）、被限流留待下一轮（空）、以及旧版本把 429 直接标成
+# `failed` 的历史行。最后一类不能漏——线上有 1112 行是这么卡住的：它们既不在
+# 目标查询里、也不在 `remaining` 里，于是「点抓取什么也不发生」，用户看到的就是
+# 「429 一直没解决、重尺也补不上」。限流不是结论，重新排队就是了。
+RETRYABLE_FAILURE_PATTERNS = ("%429%", "%限流%")
+
+
+def _pending_rows():
+    return or_(
+        SelectionItem.enrich_status == "",
+        SelectionItem.enrich_status.is_(None),
+        and_(
+            SelectionItem.enrich_status == "failed",
+            or_(*[SelectionItem.enrich_message.like(p) for p in RETRYABLE_FAILURE_PATTERNS]),
+        ),
+    )
+
+
 @router.post("/enrich")
 def enrich(
     data: EnrichRequest,
@@ -724,15 +747,17 @@ def enrich(
     query = query.filter(SelectionItem.promoted_product_id.is_(None))
     scoped_query = query  # 后续计数复用同一店铺/ids/批次范围，不带本轮limit。
     if not data.refresh:
-        query = query.filter(
-            or_(SelectionItem.enrich_status == "", SelectionItem.enrich_status.is_(None))
-        )
+        query = query.filter(_pending_rows())
     targets = query.order_by(SelectionItem.created_at).limit(data.limit).all()
 
     if not targets:
-        return {"processed": 0, "ok": 0, "failed": 0, "with_dimensions": 0,
-                "from_product_list": 0, "skipped_network": 0,
-                "remaining": 0, "seller_api": "", "failures": []}
+        # 字段要和正常返回一致：前端读 `pending` / `portal_*` 时不该突然是
+        # undefined，否则收尾文案会漏掉「还有多少没抓」。
+        return {"processed": 0, "ok": 0, "failed": 0, "pending": 0,
+                "with_dimensions": 0, "from_product_list": 0, "skipped_network": 0,
+                "remaining": 0, "seller_api": "", "failures": [],
+                "portal_configured": False, "portal_limited": False,
+                "portal_retry_after": 0.0}
 
     # --- 第一优先：产品主档。自家商品的图/类目/重尺库里已经有了 ---
     #
@@ -919,9 +944,7 @@ def enrich(
                 })
     db.commit()
 
-    remaining = scoped_query.filter(
-        or_(SelectionItem.enrich_status == "", SelectionItem.enrich_status.is_(None)),
-    ).count()
+    remaining = scoped_query.filter(_pending_rows()).count()
 
     return {
         # 推迟到下一轮的不算「已处理」——否则前端的「已抓取 N 个」会虚高，
