@@ -59,7 +59,13 @@ from services.product_calculator import (
     calculate_all,
     default_fulfillment_fee_zar,
 )
-from services.selection_import import build_takealot_url, normalize_row, read_table, to_number
+from services.selection_import import (
+    build_takealot_url,
+    normalize_row,
+    read_table,
+    real_brand,
+    to_number,
+)
 
 router = APIRouter(prefix="/api/selection", tags=["selection"])
 
@@ -357,6 +363,10 @@ def _fill_portal(db: Session, items: List[SelectionItem],
                 item.takealot_category_path = record["takealot_category_path"]
             if not item.tsin and record.get("tsin"):
                 item.tsin = record["tsin"]
+            # 蓝色品牌名。有品牌的商品要清出去（品牌授权/侵权风险），所以这个
+            # 字段得先抓回来——以前门户不返回品牌，靠它判断就永远判不出来。
+            if record.get("brand"):
+                item.brand = record["brand"]
             if not item.takealot_url:
                 item.takealot_url = build_takealot_url(item.plid)
             # 门户给了描述和「包装里有什么」，比标题可靠得多——重判一次带电。
@@ -651,9 +661,18 @@ async def import_table(
     batch_id = datetime.utcnow().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
     label = (batch_name or "").strip() or (file.filename or "未命名批次")
 
-    # 已在产品列表里的，提前标出来，避免重复建
+    # 已在产品列表里的、有品牌的、池子里已经有的，导入时直接不建。
+    #
+    # 以前是「建出来再打个标记」（`already_in_products`），结果 1804 条里有
+    # 25 条重复、22 条有品牌混在里面，还得人工挑。现在三道过滤都放在这里：
+    #   1. 有品牌 —— 品牌授权/侵权风险，不做
+    #   2. 已在产品主档 —— 已经上架过的，不用再选一次
+    #   3. 池子里已有同 PLID —— 重复导入不该翻倍
     candidate_plids = [g["plid"] for g in groups.values() if g["plid"]]
+    candidate_tsins = [g["tsin"] for g in groups.values() if g["tsin"]]
+
     existing_plids: set = set()
+    existing_tsins: set = set()
     for start in range(0, len(candidate_plids), 500):
         chunk = candidate_plids[start:start + 500]
         existing_plids |= {
@@ -661,14 +680,44 @@ async def import_table(
                 Product.store_id == store_id, Product.plid.in_(chunk)
             ).all()
         }
+    for start in range(0, len(candidate_tsins), 500):
+        chunk = candidate_tsins[start:start + 500]
+        existing_tsins |= {
+            row[0] for row in db.query(Product.tsin).filter(
+                Product.store_id == store_id, Product.tsin.in_(chunk)
+            ).all()
+        }
+
+    pooled_plids: set = set()
+    for start in range(0, len(candidate_plids), 500):
+        chunk = candidate_plids[start:start + 500]
+        pooled_plids |= {
+            row[0] for row in db.query(SelectionItem.plid).filter(
+                SelectionItem.store_id == store_id,
+                SelectionItem.plid.in_(chunk),
+                SelectionItem.plid != "",
+            ).all()
+        }
 
     items: List[SelectionItem] = []
     duplicates = 0
+    pool_duplicates = 0
+    branded = 0
     for key in order:
         group = groups[key]
-        already = bool(group["plid"]) and group["plid"] in existing_plids
+        if real_brand(group.get("brand")):
+            branded += 1
+            continue
+        already = (
+            (bool(group["plid"]) and group["plid"] in existing_plids)
+            or (bool(group["tsin"]) and group["tsin"] in existing_tsins)
+        )
         if already:
             duplicates += 1
+            continue
+        if group["plid"] and group["plid"] in pooled_plids:
+            pool_duplicates += 1
+            continue
         # 表里自带中文品名就用表里的（人工填的优先），没有才按标题现生成。
         # 生成不出来留空——品名要印标签、进报关单，宁缺勿错。
         auto_name = "" if group["chinese_product_name"] else short_chinese_name(group["product_name"])
@@ -694,7 +743,8 @@ async def import_table(
                 round(group["net_sales_zar"] * exchange_rate, 2)
                 if group["net_sales_zar"] is not None else None
             ),
-            already_in_products=already,
+            # 走到这里说明前面三道过滤都没命中，所以不可能是重复
+            already_in_products=False,
             purchase_url=group["purchase_url"],
             unit_price_cny=group["unit_price_cny"],
             purchase_cost_cny=group["purchase_cost_cny"],
@@ -729,7 +779,11 @@ async def import_table(
         "source_rows": parsed["total_rows"],
         "merged_rows": len(rows),
         "created": len(items),
+        # 三个过滤各自挡掉多少，前端要分开说——「有品牌」和「重复」是两件事，
+        # 混成一个数字用户看不出到底为什么少了这么多行。
         "already_in_products": duplicates,
+        "branded": branded,
+        "pool_duplicates": pool_duplicates,
         "skipped": skipped,
         "with_sales_data": sum(1 for i in items if i.net_sales_zar),
         "columns": {k: v for k, v in parsed["mapping"].items()},
@@ -1673,6 +1727,125 @@ def delete_items(
     )
     db.commit()
     return {"deleted": deleted}
+
+
+class PurgeRequest(BaseModel):
+    branded: bool = True
+    in_products: bool = True
+    duplicates: bool = True
+    dry_run: bool = False
+
+
+@router.post("/items/purge")
+def purge_items(
+    data: PurgeRequest,
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """清掉「有品牌 / 已在产品主档 / 池内重复」的选品记录。
+
+    这三类都是「留着没用、还会干扰判断」的行：
+      - 有品牌：品牌授权/侵权风险，不做
+      - 已在产品主档：已经上架过了，不用再选一次
+      - 池内重复：同一个 PLID 有多条（重复导入造成），只留信息最全的一条
+
+    已经建过产品的记录（`promoted_product_id` 有值）一律不动——那是产品列表
+    的溯源记录，删了产品详情里就看不到「这条是从哪个批次来的」。
+
+    `dry_run=True` 只算不删，返回每一类会删几条 + 前 10 条标题，先在界面上
+    给人看一眼再动手。
+    """
+    base = db.query(SelectionItem).filter(
+        SelectionItem.store_id == store_id,
+        SelectionItem.promoted_product_id.is_(None),
+    )
+    rows = base.all()
+
+    product_plids = {p for (p,) in db.query(Product.plid).filter(
+        Product.store_id == store_id, Product.plid.isnot(None), Product.plid != ""
+    ).all()}
+    product_tsins = {t for (t,) in db.query(Product.tsin).filter(
+        Product.store_id == store_id, Product.tsin.isnot(None), Product.tsin != ""
+    ).all()}
+
+    doomed: Dict[str, SelectionItem] = {}   # id -> item，去重（一行可能命中多条规则）
+    reasons: Dict[str, List[SelectionItem]] = {"branded": [], "in_products": [], "duplicates": []}
+
+    def mark(reason: str, item: SelectionItem) -> None:
+        if item.id in doomed:
+            return
+        doomed[item.id] = item
+        reasons[reason].append(item)
+
+    if data.branded:
+        for item in rows:
+            if (item.brand or "").strip():
+                mark("branded", item)
+
+    if data.in_products:
+        for item in rows:
+            plid = (item.plid or "").strip()
+            tsin = (item.tsin or "").strip()
+            if (plid and plid in product_plids) or (tsin and tsin in product_tsins):
+                mark("in_products", item)
+
+    if data.duplicates:
+        # 同 PLID 留一条：优先信息最全的（有图 + 有重尺 + 有货源链接），
+        # 再按创建时间新的在前。其余进待删。
+        by_plid: Dict[str, List[SelectionItem]] = {}
+        for item in rows:
+            plid = (item.plid or "").strip()
+            if plid:
+                by_plid.setdefault(plid, []).append(item)
+        for plid, group in by_plid.items():
+            if len(group) < 2:
+                continue
+
+            def keep_score(item: SelectionItem) -> Tuple[int, float]:
+                score = 0
+                score += 2 if item.product_image_url else 0
+                score += 2 if item.dimensions_source else 0
+                score += 1 if item.purchase_url else 0
+                score += 1 if item.unit_price_cny is not None else 0
+                return score, item.created_at.timestamp() if item.created_at else 0.0
+
+            group.sort(key=keep_score, reverse=True)
+            for item in group[1:]:
+                mark("duplicates", item)
+
+    payload = {
+        "dry_run": data.dry_run,
+        "counts": {key: len(value) for key, value in reasons.items()},
+        "total": len(doomed),
+        "samples": {
+            key: [
+                {
+                    "id": item.id,
+                    "brand": item.brand,
+                    "product_name": item.product_name,
+                    "chinese_product_name": item.chinese_product_name,
+                }
+                for item in value[:10]
+            ]
+            for key, value in reasons.items()
+        },
+    }
+
+    if data.dry_run or not doomed:
+        return payload
+
+    deleted = (
+        db.query(SelectionItem)
+        .filter(
+            SelectionItem.id.in_(list(doomed)),
+            SelectionItem.store_id == store_id,
+            SelectionItem.promoted_product_id.is_(None),
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    payload["deleted"] = deleted
+    return payload
 
 
 @router.delete("/batches/{batch_id}")

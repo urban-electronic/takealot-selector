@@ -240,6 +240,29 @@ def _attribute_map(variant: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return {k: v for k, v in attrs.items() if isinstance(v, dict)}
 
 
+def extract_brand(payload: Dict[str, Any]) -> Optional[str]:
+    """取品牌名——就是商品页标题下面那个蓝色品牌。
+
+    它在 mpv 里不在顶层，藏在 `attributes.brand.value`（`{"name": "Brand",
+    "value": "HUAOI", ...}`）。原来只读 `payload["brand"]`，所以永远是 None，
+    选品池里 1804 条只有 22 条有品牌——那 22 条是走公开页拿到的。
+
+    顶层也读一次做兜底：不同类目的返回结构不完全一样。
+    """
+    top = payload.get("brand")
+    if isinstance(top, str) and top.strip():
+        return top.strip()
+
+    attrs = payload.get("attributes")
+    if isinstance(attrs, dict):
+        entry = attrs.get("brand")
+        if isinstance(entry, dict):
+            value = entry.get("value")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def extract_dimensions(payload: Dict[str, Any]) -> Dict[str, Any]:
     """从 mpv 详情里取长宽高和重量。
 
@@ -364,7 +387,7 @@ def extract(plid: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
         "takealot_category_path": extract_category(payload),
         "actual_sale_price_zar": price,
         "tsin": str(first.get("tsinId")) if first.get("tsinId") else None,
-        "brand": payload.get("brand"),
+        "brand": extract_brand(payload),
         "dimensions": extract_dimensions(payload),
         "warnings": [],
         "source": "seller_portal",

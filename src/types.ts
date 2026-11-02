@@ -514,7 +514,12 @@ export interface SelectionImportResult {
   source_rows: number;
   merged_rows: number;
   created: number;
+  /** 已在产品列表里、导入时直接跳过的条数 */
   already_in_products: number;
+  /** 有品牌、导入时直接跳过的条数（品牌授权/侵权风险，不做） */
+  branded?: number;
+  /** 选品池里已有同一 PLID、这次没重复建的条数 */
+  pool_duplicates?: number;
   skipped: number;
   with_sales_data: number;
   columns: Record<string, number>;

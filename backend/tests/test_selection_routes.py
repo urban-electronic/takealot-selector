@@ -28,6 +28,7 @@ from api.selection_routes import (
     EnrichRequest,
     IdList,
     ItemPatch,
+    PurgeRequest,
     SelectQualifiedRequest,
     bulk_patch,
     delete_batch,
@@ -36,6 +37,7 @@ from api.selection_routes import (
     import_table,
     patch_item,
     promote,
+    purge_items,
     query_items,
     select_qualified,
     summarize,
@@ -216,7 +218,8 @@ def test_import_accepts_links_only_and_extracts_plid(db):
     assert item.tier == ""
 
 
-def test_import_marks_products_already_in_catalog(db):
+def test_import_drops_products_already_in_catalog(db):
+    """已在产品列表的直接不建——以前是建出来打个标记，还得人工挑。"""
     db.add(Product(store_id=STORE, plid="102501867", product_name="已有商品"))
     db.commit()
     result = do_import(db, [
@@ -224,9 +227,9 @@ def test_import_marks_products_already_in_catalog(db):
         ["BMW Timing Tool", "https://www.takealot.com/x/PLID102501867"],
         ["New Thing", "https://www.takealot.com/y/PLID555"],
     ])
+    assert result["created"] == 1
     assert result["already_in_products"] == 1
-    flags = {i.plid: i.already_in_products for i in db.query(SelectionItem).all()}
-    assert flags == {"102501867": True, "555": False}
+    assert [i.plid for i in db.query(SelectionItem).all()] == ["555"]
 
 
 def test_import_rejects_table_without_identity_columns(db):
@@ -346,7 +349,9 @@ def test_enrich_copies_dimensions_from_product_list(db, monkeypatch):
         length_mm=310.0, width_mm=210.0, height_mm=110.0, actual_weight_kg=1.35,
     ))
     db.commit()
-    do_import(db, [["Product Title", "TSIN"], ["Own Product", "88880002"]])
+    # 直接建一行：现在导入会跳过「已在产品列表」的，构造不出这个场景
+    db.add(SelectionItem(store_id=STORE, tsin="88880002", product_name="Own Product"))
+    db.commit()
 
     called = []
     monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: called.append(list(plids)) or [])
@@ -376,7 +381,8 @@ def test_enrich_falls_back_to_network_when_product_incomplete(db, monkeypatch):
     db.add(Product(store_id=STORE, tsin="88880003", plid="555002",
                    product_name="Half Product", actual_sale_price_zar=500.0))
     db.commit()
-    do_import(db, [["Product Title", "TSIN"], ["Half Product", "88880003"]])
+    db.add(SelectionItem(store_id=STORE, tsin="88880003", product_name="Half Product"))
+    db.commit()
     monkeypatch.setattr(pub, "fetch_many",
                         lambda plids, workers=8: [_fake_public(p) for p in plids])
 
@@ -683,9 +689,11 @@ def test_promote_creates_product_once(db, monkeypatch):
 
 
 def test_promote_skips_duplicate_plid(db, monkeypatch):
+    item = _prepare_item(db, monkeypatch)
+    # 产品是在选品之后才建的（现在导入会跳过「已在产品列表」的行，
+    # 先建产品就构造不出这个场景了）
     db.add(Product(store_id=STORE, plid="703", product_name="已有"))
     db.commit()
-    item = _prepare_item(db, monkeypatch)
     result = promote(IdList(ids=[item.id]), db=db, store_id=STORE)
     assert result["created"] == 0
     assert result["skip_details"][0]["reason"] == "产品列表里已有同一 PLID"
@@ -1993,3 +2001,146 @@ def test_hand_written_name_is_never_recomputed(db, monkeypatch):
     enrich(EnrichRequest(), db=db, store_id=STORE)
 
     assert db.query(SelectionItem).first().chinese_product_name == "瑜伽垫（加厚）"
+
+
+# ------------------------------------------------------------ 导入时过滤：品牌 / 重复
+#
+# 有品牌的商品不做（授权/侵权），已在产品列表的不用再选。这两类以前只是「打个
+# 标记」留在池子里，1804 条里混了 22 条品牌 + 25 条重复，还得人工挑。
+
+def test_import_skips_branded_rows(db):
+    """表里「品牌」列有真品牌的，导入时直接不建。"""
+    result = do_import(db, [
+        ["标题", "品牌", "PLID"],
+        ["Yoga Mat - Black", "", "900001"],
+        ["Wireless Earbuds Pro", "HUAOI", "900002"],
+        ["Bike Wall Mount", "WiIdHaven", "900003"],
+    ])
+
+    assert result["created"] == 1
+    assert result["branded"] == 2
+    assert db.query(SelectionItem).count() == 1
+    assert db.query(SelectionItem).first().plid == "900001"
+
+
+def test_import_keeps_suspected_brand_rows(db):
+    """"疑似品牌:RFID" 不是品牌，是标题里的大写词猜的，不能因此丢掉整行。"""
+    result = do_import(db, [
+        ["标题", "品牌", "PLID"],
+        ["RFID Card Holder Slim", "疑似品牌:RFID", "900011"],
+        ["Portable Camera Rig", "疑似品牌:DSLR", "900012"],
+    ])
+
+    assert result["created"] == 2
+    assert result["branded"] == 0
+
+
+def test_import_skips_products_already_in_catalogue(db):
+    """PLID 已在产品主档的，导入时不建；只对得上 TSIN 的也要挡住。"""
+    db.add(Product(store_id=STORE, product_no="P-1", plid="900021", tsin="TS-1",
+                   product_name="已有商品"))
+    db.add(Product(store_id=STORE, product_no="P-2", plid="", tsin="TS-2",
+                   product_name="只有 TSIN 的已有商品"))
+    db.commit()
+
+    result = do_import(db, [
+        ["标题", "PLID", "TSIN"],
+        ["Yoga Mat", "900021", ""],
+        ["Water Bottle", "", "TS-2"],
+        ["Brand New Thing", "900023", "TS-3"],
+    ])
+
+    assert result["created"] == 1
+    assert result["already_in_products"] == 2
+    assert db.query(SelectionItem).first().plid == "900023"
+
+
+def test_import_does_not_duplicate_pool_rows(db):
+    """同一份表导两次，第二次不该把池子翻倍。"""
+    rows = [["标题", "PLID"], ["Yoga Mat", "900031"], ["Water Bottle", "900032"]]
+    first = do_import(db, rows, name="第一次")
+    second = do_import(db, rows, name="第二次")
+
+    assert first["created"] == 2
+    assert second["created"] == 0
+    assert second["pool_duplicates"] == 2
+    assert db.query(SelectionItem).count() == 2
+
+
+# ------------------------------------------------------------ 清理存量
+
+def test_purge_dry_run_does_not_delete(db):
+    """dry-run 只算不删，界面先给人看一眼清单。"""
+    db.add(SelectionItem(store_id=STORE, product_name="A", plid="900041", brand="HUAOI"))
+    db.add(SelectionItem(store_id=STORE, product_name="B", plid="900042"))
+    db.commit()
+
+    result = purge_items(PurgeRequest(dry_run=True), db=db, store_id=STORE)
+
+    assert result["counts"]["branded"] == 1
+    assert result["total"] == 1
+    assert "deleted" not in result
+    assert db.query(SelectionItem).count() == 2
+
+
+def test_purge_removes_branded_and_product_duplicates(db):
+    db.add(Product(store_id=STORE, product_no="P-9", plid="900051",
+                   product_name="已上架"))
+    db.add(SelectionItem(store_id=STORE, product_name="A", plid="900041", brand="HUAOI"))
+    db.add(SelectionItem(store_id=STORE, product_name="B", plid="900051"))
+    db.add(SelectionItem(store_id=STORE, product_name="C", plid="900052"))
+    db.commit()
+
+    result = purge_items(PurgeRequest(), db=db, store_id=STORE)
+
+    assert result["deleted"] == 2
+    left = [i.plid for i in db.query(SelectionItem).all()]
+    assert left == ["900052"]
+
+
+def test_purge_keeps_the_most_complete_duplicate(db):
+    """同 PLID 多条时留信息最全的，别把有图有重尺的那条删了。"""
+    thin = SelectionItem(store_id=STORE, product_name="只有标题", plid="900061")
+    rich = SelectionItem(store_id=STORE, product_name="资料齐全", plid="900061",
+                         product_image_url="https://x/1.jpg",
+                         dimensions_source="portal", length_mm=100, width_mm=50, height_mm=30,
+                         purchase_url="https://1688/x")
+    db.add_all([thin, rich])
+    db.commit()
+
+    result = purge_items(PurgeRequest(branded=False, in_products=False),
+                         db=db, store_id=STORE)
+
+    assert result["counts"]["duplicates"] == 1
+    left = db.query(SelectionItem).all()
+    assert len(left) == 1
+    assert left[0].product_name == "资料齐全"
+
+
+def test_purge_never_touches_promoted_rows(db):
+    """已经建过产品的记录是溯源用的，清理不能动它。"""
+    db.add(SelectionItem(store_id=STORE, product_name="A", plid="900071",
+                         brand="HUAOI", promoted_product_id="prod-1"))
+    db.commit()
+
+    result = purge_items(PurgeRequest(), db=db, store_id=STORE)
+
+    assert result["total"] == 0
+    assert db.query(SelectionItem).count() == 1
+
+
+def test_real_brand_rejects_suspected_and_placeholders():
+    """「疑似品牌:X」和占位符都不算品牌。
+
+    表里那一列混着两种东西：真品牌（HUAOI）和没抓到品牌时按标题大写词猜的
+    （疑似品牌:RFID / DSLR / MOLLE）。后者当品牌删，会白白丢掉几十条候选。
+    """
+    from services.selection_import import real_brand
+
+    assert real_brand("HUAOI") == "HUAOI"
+    assert real_brand("  Killer Deals ") == "Killer Deals"
+    assert real_brand("疑似品牌:RFID") == ""
+    assert real_brand("疑似品牌:KIMTINO") == ""
+    assert real_brand("无") == ""
+    assert real_brand("-") == ""
+    assert real_brand(None) == ""

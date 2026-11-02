@@ -20,6 +20,7 @@ import { ProductImage } from '../utils/imageFallback';
 import {
   bulkPatchSelection,
   deleteSelectionBatch,
+  purgeSelection,
   enrichSelection,
   getFeeCategories,
   getActiveStoreId,
@@ -470,8 +471,10 @@ export default function Selection() {
       setPage(0);
       setNotice({
         kind: 'ok',
-        text: `读入 ${result.source_rows} 行，合并成 ${result.created} 个商品`
-          + (result.already_in_products ? `，其中 ${result.already_in_products} 个已在产品列表` : '')
+        text: `读入 ${result.source_rows} 行，新建 ${result.created} 个商品`
+          + (result.branded ? `，跳过 ${result.branded} 个有品牌` : '')
+          + (result.already_in_products ? `，跳过 ${result.already_in_products} 个已在产品列表` : '')
+          + (result.pool_duplicates ? `，跳过 ${result.pool_duplicates} 个池子里已有` : '')
           + '。下一步点「抓取主图与类目」。',
       });
       await refresh();
@@ -778,6 +781,42 @@ export default function Selection() {
     }
   };
 
+  /** 清理：有品牌 / 已在产品列表 / 池内重复。
+   *
+   * 先 dry-run 拿到清单给人看一眼，确认了才真删——这三类删掉是不可逆的，
+   * 尤其「有品牌」判错的代价是丢候选。
+   */
+  const handlePurge = async () => {
+    if (promoting) return;
+    try {
+      const preview = await purgeSelection(true);
+      if (!preview.total) {
+        setNotice({ kind: 'ok', text: '没有需要清理的记录：没有有品牌的、没有已在产品列表的、池子里也没有重复的。' });
+        return;
+      }
+      const bits = [
+        preview.counts.branded ? `有品牌 ${preview.counts.branded} 条` : '',
+        preview.counts.in_products ? `已在产品列表 ${preview.counts.in_products} 条` : '',
+        preview.counts.duplicates ? `重复 ${preview.counts.duplicates} 条` : '',
+      ].filter(Boolean).join('、');
+      const sample = (preview.samples.branded || []).slice(0, 5)
+        .map(row => `· ${row.brand || '—'} ${row.product_name || row.chinese_product_name}`)
+        .join('\n');
+      const ok = window.confirm(
+        `将删除 ${preview.total} 条：${bits}。\n`
+        + (sample ? `\n其中部分有品牌商品：\n${sample}\n\n` : '\n')
+        + '已建过产品的记录会保留。删除后不可恢复，确定继续？',
+      );
+      if (!ok) return;
+      const result = await purgeSelection(false);
+      setNotice({ kind: 'ok', text: `已清理 ${result.deleted ?? 0} 条记录` });
+      setPage(0);
+      await refresh();
+    } catch (error) {
+      setNotice({ kind: 'warn', text: (error as Error).message });
+    }
+  };
+
   const handleDeleteBatch = async () => {
     if (promoteLock.current) return;
     if (!batchId) return;
@@ -949,8 +988,10 @@ export default function Selection() {
         </details>
         {importResult && (
           <p className="selection-import-result">
-            {importResult.sheet}：读入 {importResult.source_rows} 行 → 合并为 {importResult.created} 个商品
-            {importResult.already_in_products ? `，${importResult.already_in_products} 个已在产品列表` : ''}
+            {importResult.sheet}：读入 {importResult.source_rows} 行 → 新建 {importResult.created} 个商品
+            {importResult.branded ? `，跳过 ${importResult.branded} 个有品牌` : ''}
+            {importResult.already_in_products ? `，跳过 ${importResult.already_in_products} 个已在产品列表` : ''}
+            {importResult.pool_duplicates ? `，跳过 ${importResult.pool_duplicates} 个池子里已有` : ''}
             {importResult.with_sales_data ? `，${importResult.with_sales_data} 个带销售数据（已分档）` : ''}
             {importResult.skipped ? `，${importResult.skipped} 行无法识别已跳过` : ''}
             {importResult.unknown_headers.length
@@ -1089,6 +1130,9 @@ export default function Selection() {
             删除本批次
           </button>
         )}
+        <button type="button" className="btn-link-danger" onClick={() => void handlePurge()} disabled={promoting}>
+          清理有品牌 / 重复
+        </button>
       </section>
 
       {loading ? (

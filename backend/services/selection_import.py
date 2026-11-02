@@ -49,6 +49,7 @@ FIELD_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
     ("net_sales_zar", ("net sale", "net sales", "净销售", "净额")),
     ("gross_sales_zar", ("gross sale", "gross sales", "总销售", "销售额")),
     ("chinese_product_name", ("中文品名", "中文名称", "中文名", "chinese")),
+    ("brand", ("品牌", "品牌名", "brand")),
     ("product_name", ("产品名称", "商品名称", "产品标题", "商品标题", "标题",
                       "product title", "product name", "title", "name")),
     ("note", ("备注", "畅销变体", "note", "remark")),
@@ -328,8 +329,29 @@ def normalize_row(raw: Dict[str, Any]) -> Dict[str, Any]:
         "purchase_shipping_cny": to_number(raw.get("purchase_shipping_cny")),
         "purchase_quantity": to_int(raw.get("purchase_quantity")),
         **{field: raw.get(field) for field in MEASUREMENT_LABELS},
+        "brand": _cell_text(raw.get("brand")),
         "note": _cell_text(raw.get("note")),
     }
+
+
+# 表里「品牌」列可能混着两种东西：
+#   1. 真正的品牌名（HUAOI / WiIdHaven / Killer Deals）—— 商品页标题下面的蓝色品牌
+#   2. `疑似品牌:RFID` 这种猜测 —— 没抓到品牌时按标题里的大写词猜的，
+#      RFID / DSLR / MOLLE / BLACK 全在里面，是误判不是品牌
+#
+# 只有第 1 种才算「有品牌」。把第 2 种当品牌删，会白白丢掉几十条候选。
+_SUSPECT_PREFIX = "疑似品牌"
+_PLACEHOLDER_BRANDS = {"", "-", "无", "n/a", "na", "none", "null", "—"}
+
+
+def real_brand(value: Any) -> str:
+    """这一格是不是「真品牌」。是就返回品牌名，不是（含疑似/占位符）返回空串。"""
+    text = _cell_text(value).strip()
+    if text.lower() in _PLACEHOLDER_BRANDS:
+        return ""
+    if text.startswith(_SUSPECT_PREFIX):
+        return ""
+    return text
 
 
 def build_takealot_url(plid: Any, slug: str = "") -> str:

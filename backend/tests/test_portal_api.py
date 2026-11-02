@@ -428,3 +428,29 @@ class TestQuota:
         portal.QUOTA.observe({"x-ratelimit-remaining": "not-a-number"})
         portal.QUOTA.observe({})
         portal.QUOTA.observe(None)
+
+
+# --------------------------------------------------------------- 品牌（蓝色品牌名）
+#
+# 有品牌的商品要清出选品池（授权/侵权风险），所以品牌必须抓得到。它在 mpv 里
+# 不在顶层，藏在 `attributes.brand.value`——原来只读 `payload["brand"]`，
+# 结果 1804 条只有 22 条有品牌，那 22 条还是走公开页拿到的。
+
+def test_brand_comes_from_attributes():
+    payload = {"attributes": {"brand": {"name": "Brand", "value": "HUAOI",
+                                        "isDisplay": True}}}
+    assert portal.extract_brand(payload) == "HUAOI"
+
+
+def test_brand_strips_whitespace_and_prefers_top_level():
+    assert portal.extract_brand({"brand": "  Mix Box  "}) == "Mix Box"
+    assert portal.extract_brand({"brand": "Amigo",
+                                 "attributes": {"brand": {"value": "别的"}}}) == "Amigo"
+
+
+def test_brand_is_none_when_missing():
+    """没品牌就是没品牌，不能返回空串冒充——导入时要靠 None/空 判断能不能留。"""
+    assert portal.extract_brand({}) is None
+    assert portal.extract_brand({"attributes": {}}) is None
+    assert portal.extract_brand({"attributes": {"brand": {"value": "   "}}}) is None
+    assert portal.extract_brand({"attributes": {"brand": "not-a-dict"}}) is None

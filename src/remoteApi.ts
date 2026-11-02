@@ -882,6 +882,21 @@ export const deleteSelectionItems = (ids: string[]): Promise<{ deleted: number }
 export const deleteSelectionBatch = (batchId: string): Promise<{ deleted: number }> =>
   request<{ deleted: number }>(`/api/selection/batches/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
 
+export interface SelectionPurgeResult {
+  dry_run: boolean;
+  counts: { branded: number; in_products: number; duplicates: number };
+  total: number;
+  deleted?: number;
+  samples: Record<string, { id: string; brand: string; product_name: string; chinese_product_name: string }[]>;
+}
+
+/** 清掉有品牌 / 已在产品列表 / 池内重复的记录。dry_run 只算不删。 */
+export const purgeSelection = (dryRun = false): Promise<SelectionPurgeResult> =>
+  request<SelectionPurgeResult>('/api/selection/items/purge', {
+    method: 'POST',
+    body: JSON.stringify({ dry_run: dryRun }),
+  });
+
 /**
  * 只检查已保存的目录连接一次；没有有效连接时不读取密钥或发请求。
  * 不探索端点，不更换鉴权方式，响应不含密钥。
