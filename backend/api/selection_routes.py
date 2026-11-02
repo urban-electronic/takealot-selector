@@ -47,6 +47,8 @@ from api.store_routes import get_store_id
 from database import get_db
 from models import FeeCategory, Product, SelectionItem
 from services import takealot_public_api as pub
+from services.battery_guess import guess_battery, suggested_shipping
+from services.chinese_short_name import short_chinese_name
 from services.fee_category_matcher import match_fee_category
 from services.product_calculator import (
     calculate_all,
@@ -350,6 +352,23 @@ def _fill_portal(db: Session, items: List[SelectionItem],
                 item.tsin = record["tsin"]
             if not item.takealot_url:
                 item.takealot_url = build_takealot_url(item.plid)
+            # 门户给了描述和「包装里有什么」，比标题可靠得多——重判一次带电。
+            # 只在「还没结论」或「只是可能」时重判：已经有明确结论的（含用户
+            # 手工改过的运输方式）不动，避免每轮抓取把人的判断冲掉。
+            if item.battery_status in ("", "maybe"):
+                verdict, reason = guess_battery(
+                    item.product_name,
+                    record.get("description"),
+                    record.get("whats_in_the_box"),
+                )
+                if verdict:
+                    previous = item.shipping_method or ""
+                    item.battery_status = verdict
+                    item.battery_reason = reason
+                    # 只有当运输方式还是「我们之前按旧判定自动填的那个」时才跟着改。
+                    # 用户手改成别的（比如改走空运）就保留他的选择。
+                    if previous in ("", suggested_shipping("")):
+                        item.shipping_method = suggested_shipping(verdict)
             # 类目路径拿到了就顺手定费率类目。放在这里而不是只靠 `_apply_public`：
             # 否则门户已经补齐的行会因为「还没有 fee_category」被再判一次待抓，
             # 白白多打一轮公开接口。
@@ -516,6 +535,8 @@ def _to_dict(item: SelectionItem) -> Dict[str, Any]:
         "unit_price_cny": item.unit_price_cny,
         "packaging_cost_per_unit_cny": item.packaging_cost_per_unit_cny,
         "shipping_method": item.shipping_method,
+        "battery_status": item.battery_status or "",
+        "battery_reason": item.battery_reason or "",
         "fulfillment_fee_zar": item.fulfillment_fee_zar,
         "success_fee_zar": item.success_fee_zar,
         "chargeable_weight_kg": item.chargeable_weight_kg,
@@ -650,7 +671,11 @@ async def import_table(
             tsin=group["tsin"],
             takealot_url=group["takealot_url"] or build_takealot_url(group["plid"]),
             product_name=group["product_name"],
-            chinese_product_name=group["chinese_product_name"],
+            # 表里自带中文品名就用表里的（人工填的优先），没有就按标题现生成。
+            # 生成不出来留空——品名要印标签、进报关单，宁缺勿错。
+            chinese_product_name=(
+                group["chinese_product_name"] or short_chinese_name(group["product_name"])
+            ),
             actual_sale_price_zar=group["actual_sale_price_zar"],
             rating_value=group["rating_value"],
             review_count=group["review_count"],
@@ -676,6 +701,12 @@ async def import_table(
             note=group["note"],
             status="待核算",
         )
+        # 普货 / 带电先按标题判一次，运输方式跟着判定走（默认海运）。
+        # 拿到 Takealot 的描述后 `_fill_portal` 会用更全的文本再判一次。
+        verdict, reason = guess_battery(group["product_name"], group["note"])
+        item.battery_status = verdict
+        item.battery_reason = reason
+        item.shipping_method = suggested_shipping(verdict)
         _derive_purchase_cost(item)
         items.append(item)
 
@@ -729,6 +760,29 @@ def _pending_rows():
     )
 
 
+def _backfill_chinese_names(db: Session, query) -> int:
+    """给还没有中文品名的行生成五字品名，返回补了几个。
+
+    纯本地词表匹配、不发网络请求，所以放在 `enrich` 最前面——这一轮即使没有
+    要抓的行，品名也能补齐。空标题、一个词都对不上的标题保持为空（不猜）。
+    """
+    rows = query.filter(
+        or_(
+            SelectionItem.chinese_product_name == "",
+            SelectionItem.chinese_product_name.is_(None),
+        )
+    ).all()
+    filled = 0
+    for item in rows:
+        name = short_chinese_name(item.product_name)
+        if name:
+            item.chinese_product_name = name
+            filled += 1
+    if filled:
+        db.commit()
+    return filled
+
+
 @router.post("/enrich")
 def enrich(
     data: EnrichRequest,
@@ -746,6 +800,10 @@ def enrich(
         query = query.filter(SelectionItem.batch_id == data.batch_id)
     query = query.filter(SelectionItem.promoted_product_id.is_(None))
     scoped_query = query  # 后续计数复用同一店铺/ids/批次范围，不带本轮limit。
+
+    # 中文品名是纯本地计算，先补上——这一步不花配额、不会失败，所以放在最前面，
+    # 保证「即使这轮没有要抓的行」品名也能生成。
+    names_filled = _backfill_chinese_names(db, scoped_query)
 
     # 有可用的门户通道时，「已经 ok 但还没有重尺」的行也值得再跑一轮：门户一个
     # 请求就同时给图和 Takealot 实测的长宽高，补一次就到位。
@@ -778,6 +836,7 @@ def enrich(
         return {"processed": 0, "ok": 0, "failed": 0, "pending": 0,
                 "with_dimensions": 0, "from_product_list": 0, "skipped_network": 0,
                 "remaining": 0, "seller_api": "", "failures": [],
+                "names_filled": names_filled,
                 "portal_configured": False, "portal_limited": False,
                 "portal_retry_after": 0.0}
 
@@ -998,6 +1057,8 @@ def enrich(
         ),
         # 配额什么时候回来。前端按这个值等一会儿再继续，而不是立刻重试空转。
         "portal_retry_after": portal_retry_after,
+        # 这一轮顺手补了几个中文品名（纯本地计算，不占配额）
+        "names_filled": names_filled,
         "failures": failures,
     }
 
@@ -1163,6 +1224,8 @@ class ItemPatch(BaseModel):
     unit_price_cny: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     packaging_cost_per_unit_cny: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     shipping_method: Optional[str] = None
+    # 人工确认普货/带电：yes / no / maybe / ""（未判定）
+    battery_status: Optional[str] = None
     selected: Optional[bool] = None
     note: Optional[str] = None
 

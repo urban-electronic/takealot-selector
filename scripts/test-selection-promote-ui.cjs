@@ -11,7 +11,7 @@ const remote={getActiveStoreId:()=>store,getSelectionItems:async p=>{reads.push(
  // 选品池进页面会读一次门户令牌状态；这里只要它别抛，面板渲染成「有效」即可。
  getPortalTokenState:async()=>({configured:true,expires_at:null,expired:false,days_left:null}),
  setPortalToken:async()=>({configured:true,expires_at:null,expired:false,days_left:null})};
-const page=compile('src/pages/Selection.tsx',{'../remoteApi':remote,'../types':{SHIPPING_METHODS:[],formatPrice:String,formatPercent:String},'../utils/useFeeCategories':{useFeeCategories:()=>({categories:[]})},'../utils/imageFallback':{ProductImage:()=>null},'../utils/selectionPromotion':compile('src/utils/selectionPromotion.ts'),'../utils/datetime':compile('src/utils/datetime.ts')}).default;
+const page=compile('src/pages/Selection.tsx',{'../remoteApi':remote,'../types':{SHIPPING_METHODS:[],DEFAULT_SHIPPING_METHOD:'海运普货',BATTERY_STATUS_LABEL:{yes:{label:'带电',tone:'danger'},maybe:{label:'待确认',tone:'warn'},no:{label:'普货',tone:'muted'}},formatPrice:String,formatPercent:String},'../utils/useFeeCategories':{useFeeCategories:()=>({categories:[]})},'../utils/imageFallback':{ProductImage:()=>null},'../utils/selectionPromotion':compile('src/utils/selectionPromotion.ts'),'../utils/datetime':compile('src/utils/datetime.ts')}).default;
 window.confirm=s=>{confirmations.push(s);return true;};
 const root=createRoot(document.getElementById('root'));
 (async()=>{

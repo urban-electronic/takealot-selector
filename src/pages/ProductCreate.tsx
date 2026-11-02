@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '../DataSourceContext';
 import type { ScrapeResult, Product } from '../types';
-import { SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
+import { DEFAULT_SHIPPING_METHOD, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { importSavedTakealotPage, makeTakealotBookmarklet, parseTakealotPageImport } from '../takealotPageImport';
 import { ProductImage } from '../utils/imageFallback';
 import { useFeeCategories } from '../utils/useFeeCategories';
@@ -65,7 +65,8 @@ export default function ProductCreate() {
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
   const [packagingCost, setPackagingCost] = useState('');
-  const [shippingMethod, setShippingMethod] = useState('');
+  // 默认海运普货：实际走货代以海运为主，空运只在赶时效时用。
+  const [shippingMethod, setShippingMethod] = useState<string>(DEFAULT_SHIPPING_METHOD);
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [linkStatus, setLinkStatus] = useState('未购买');
@@ -195,7 +196,9 @@ export default function ProductCreate() {
     copyIfEmpty(width, source.width_mm, setWidth);
     copyIfEmpty(height, source.height_mm, setHeight);
     copyIfEmpty(weight, source.actual_weight_kg, setWeight);
-    if (!shippingMethod && source.shipping_method) {
+    // 运输方式现在有默认值（海运普货），不能再用 `!shippingMethod` 判空，
+    // 否则「沿用上一件成本」永远填不进来。默认值等同于「没选过」。
+    if ((!shippingMethod || shippingMethod === DEFAULT_SHIPPING_METHOD) && source.shipping_method) {
       setShippingMethod(source.shipping_method);
       copied += 1;
     }

@@ -127,7 +127,21 @@ export interface DashboardStats {
   top_profit_margin: number | null;
 }
 
-export const SHIPPING_METHODS = ['空运普货', '空运带电', '海运普货', '海运带电'] as const;
+// 顺序即默认：第一项是「默认运输方式」。实际用货代走海运，空运只在赶时效时用，
+// 所以海运排在前面；`DEFAULT_SHIPPING_METHOD` 单独导出，别靠数组下标猜。
+export const SHIPPING_METHODS = ['海运普货', '海运带电', '空运普货', '空运带电'] as const;
+export const DEFAULT_SHIPPING_METHOD = SHIPPING_METHODS[0];
+
+// 普货 / 带电的判定结果（后端 services/battery_guess.py）
+//   yes    包装里确定有电池 → 自动选「海运带电」
+//   maybe  有线索但判不准   → 仍是「海运普货」，界面打「待确认」
+//   no     明写不含电池
+//   ''     标题里没线索
+export const BATTERY_STATUS_LABEL: Record<string, { label: string; tone: 'danger' | 'warn' | 'muted' }> = {
+  yes: { label: '带电', tone: 'danger' },
+  maybe: { label: '待确认', tone: 'warn' },
+  no: { label: '普货', tone: 'muted' },
+};
 
 export const LINK_STATUS_OPTIONS = ['未购买', '已购买', '已上架', '已发货'] as const;
 
@@ -473,6 +487,10 @@ export interface SelectionItem {
   unit_price_cny: number | null;
   packaging_cost_per_unit_cny: number | null;
   shipping_method: string | null;
+  /** 普货/带电判定：yes / maybe / no / ''（见 BATTERY_STATUS_LABEL） */
+  battery_status: string;
+  /** 判定依据，比如「可充电」「明写不含电池」，用于提示 */
+  battery_reason: string;
   fulfillment_fee_zar: number | null;
   success_fee_zar: number | null;
   chargeable_weight_kg: number | null;
@@ -515,6 +533,8 @@ export interface SelectionEnrichResult {
   portal_limited?: boolean;
   /** 配额还要多少秒才回来。前端照着实等，避免连续空转。 */
   portal_retry_after?: number;
+  /** 这一轮顺手补了几个中文品名（纯本地词表匹配，不占配额） */
+  names_filled?: number;
   /** 从卖家 API 或目录接口拿到重尺的条数 */
   with_dimensions: number;
   /** 直接从产品主档抄到重尺的条数（自家商品的主路径） */
@@ -565,6 +585,7 @@ export interface SelectionItemPatch {
   unit_price_cny?: number | null;
   packaging_cost_per_unit_cny?: number | null;
   shipping_method?: string;
+  battery_status?: string;
   selected?: boolean;
   note?: string;
 }

@@ -38,7 +38,7 @@ import {
   setPortalToken,
 } from '../remoteApi';
 import { useFeeCategories } from '../utils/useFeeCategories';
-import { SHIPPING_METHODS, formatPercent, formatPrice } from '../types';
+import { BATTERY_STATUS_LABEL, SHIPPING_METHODS, formatPercent, formatPrice } from '../types';
 import type { CatalogueProbeReport, PortalProbeReport, PortalTokenState, PublicApiProbeReport } from '../remoteApi';
 import type {
   FeeCategory,
@@ -172,6 +172,18 @@ function MarginBadge({ item }: { item: SelectionItem }) {
   );
 }
 
+/**
+ * 点「带电 / 待确认」标记时一起把运输方式改对。
+ *
+ * 只改普货↔带电那一半，海/空运不动：用户选空运是因为赶时效，不是因为电池。
+ */
+function toggleBattery(item: SelectionItem): SelectionItemPatch {
+  const next = item.battery_status === 'yes' ? 'no' : 'yes';
+  const current = item.shipping_method || '海运普货';
+  const prefix = current.startsWith('空运') ? '空运' : '海运';
+  return { battery_status: next, shipping_method: `${prefix}${next === 'yes' ? '带电' : '普货'}` };
+}
+
 function SelectionCard({
   item, busy, onPatch, onToggle, feeCategories,
 }: {
@@ -182,6 +194,7 @@ function SelectionCard({
   feeCategories: FeeCategory[];
 }) {
   const tier = TIER_STYLE[item.tier];
+  const battery = BATTERY_STATUS_LABEL[item.battery_status || ''];
   const locked = Boolean(item.promoted_product_id) || busy;
   const dimsMissing = item.length_mm == null || item.width_mm == null
     || item.height_mm == null || item.actual_weight_kg == null;
@@ -236,6 +249,24 @@ function SelectionCard({
           title={item.fee_category_reason || item.takealot_category_path}>
           {item.fee_category || '类目待定'}
         </span>
+        {/* 带电标记：判成 yes 的运输方式已经自动切成「海运带电」，
+            maybe 的仍是普货、需要人看一眼货源页确认。
+            已建产品（locked）时只展示不可点。 */}
+        {battery && battery.tone !== 'muted' ? (
+          <span className={`selection-chip is-battery ${battery.tone}${locked ? ' is-static' : ''}`}
+            title={`判定依据：${item.battery_reason || '—'}${locked ? '' : '（点一下可手动确认）'}`}
+            role={locked ? undefined : 'button'}
+            tabIndex={locked ? undefined : 0}
+            onClick={locked ? undefined : () => onPatch(toggleBattery(item))}
+            onKeyDown={locked ? undefined : event => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onPatch(toggleBattery(item));
+              }
+            }}>
+            {battery.label}
+          </span>
+        ) : null}
         {item.takealot_category_path
           ? <small title={item.takealot_category_path}>{item.takealot_category_path.split(' > ').slice(-2).join(' > ')}</small>
           : null}
@@ -505,6 +536,9 @@ export default function Selection() {
         if (last.from_product_list) bits.push(`${last.from_product_list} 个重尺直接取自产品列表`);
         if (last.with_dimensions) bits.push(`${last.with_dimensions} 个从卖家接口带出重尺`);
         if (last.skipped_network) bits.push(`${last.skipped_network} 个资料齐全、没再打网络`);
+        // 品名是本地生成的，不占配额，但用户得知道「这些名字是机器起的」，
+        // 抽查几条再往下走。
+        if (last.names_filled) bits.push(`${last.names_filled} 个补了中文品名（按标题自动生成，建议抽查）`);
         if (last.public_access_blocked) {
           setNotice({kind:'warn',text:`读取已停止：${bits.join('，')}；公开接口访问受限，已停止后续批次${last.remaining ? `，还有 ${last.remaining} 个待处理` : ''}。`});
         } else if (last.remaining) {

@@ -498,6 +498,18 @@ class SelectionItem(Base):
     packaging_cost_per_unit_cny = Column(Float, default=1.0)
     shipping_method = Column(String, nullable=True)
 
+    # ---- 普货 / 带电 ----
+    #
+    # `battery_status` 是**判定结果**，`shipping_method` 是**决定**。两者分开：
+    # 判定可以改（拿到描述后重判），决定是用户可能手改过的，不能被自动覆盖。
+    #    yes    包装里确定有电池
+    #    maybe  有线索但判不准，要人工看一眼货源页
+    #    no     明写不含电池
+    #    ""     标题里没线索
+    # `battery_reason` 存命中的依据（"可充电" / "明写不含电池"），用于界面提示。
+    battery_status = Column(String, default="")
+    battery_reason = Column(String, default="")
+
     # ---- 计算结果（由 calculate_all 写入，只做展示与排序，不参与再计算）----
     fulfillment_fee_zar = Column(Float, nullable=True)
     success_fee_zar = Column(Float, nullable=True)

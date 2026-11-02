@@ -3647,6 +3647,14 @@ table tbody tr:hover { background: #f8fafc; }
 .selection-chip.confidence-medium { background: var(--surface-warning); color: var(--warning-strong); }
 .selection-chip.confidence-low { background: #fdecee; color: var(--danger-strong); }
 
+/* 带电标记。danger = 已判带电（运输方式已切「海运带电」），
+   warn = 待确认（仍是普货，要人看一眼货源页）。点击可手动切换。 */
+.selection-chip.is-battery { cursor: pointer; font-weight: 600; }
+.selection-chip.is-battery.is-static { cursor: default; }
+.selection-chip.is-battery.danger { background: #fdecee; color: var(--danger-strong); }
+.selection-chip.is-battery.warn { background: var(--surface-warning); color: var(--warning-strong); }
+.selection-chip.is-battery:focus-visible { outline: 2px solid var(--focus-ring, #2563eb); outline-offset: 1px; }
+
 .selection-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

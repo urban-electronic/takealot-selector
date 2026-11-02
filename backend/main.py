@@ -391,6 +391,22 @@ def _ensure_columns():
             _migrate_packing_products_store_scope()
         if "shipments" in insp.get_table_names():
             _migrate_shipments_store_scope()
+        if "selection_items" in insp.get_table_names():
+            # 选品池的列是边用边加的：`create_all` 只建新表、不改老表，所以
+            # 每个新列都得在这里显式补一次，否则线上老库一启动就 500。
+            selection_cols = {c["name"] for c in insp.get_columns("selection_items")}
+            selection_additions = {
+                "chinese_product_name": "TEXT DEFAULT ''",
+                "dimensions_source": "TEXT DEFAULT ''",
+                "shipping_method": "TEXT",
+                "battery_status": "TEXT DEFAULT ''",
+                "battery_reason": "TEXT DEFAULT ''",
+            }
+            with engine.begin() as conn:
+                for name, sql_type in selection_additions.items():
+                    if name not in selection_cols:
+                        conn.execute(text(f"ALTER TABLE selection_items ADD COLUMN {name} {sql_type}"))
+                        print(f"[startup] selection_items 表已补列 {name}", flush=True)
         if "stores" in insp.get_table_names():
             store_cols = {c["name"] for c in insp.get_columns("stores")}
             store_additions = {

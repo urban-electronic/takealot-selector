@@ -1706,3 +1706,143 @@ def test_expired_portal_token_does_not_trigger_dimension_backfill(db, monkeypatc
 
     assert result["processed"] == 0
     assert result["remaining"] == 0
+
+
+# ---------------------------------------------------------------- 中文品名 / 普货带电
+#
+# 品名要印标签、进报关单，运输方式决定运费和会不会被货代退运。这两块都不是
+# 「算错了再改」的事，所以各自钉住几条。
+
+def test_import_generates_short_chinese_name(db):
+    """英文标题进来就带一个五字以内的中文品名，省得 1800 条一条条手打。"""
+    do_import(db, [
+        ["产品名称", "产品链接"],
+        ["Stainless Steel Kitchen Knife Set - Black",
+         "https://www.takealot.com/k/PLID800"],
+    ])
+
+    item = db.query(SelectionItem).first()
+    assert item.chinese_product_name == "厨房刀"
+    assert len(item.chinese_product_name) <= 5
+
+
+def test_import_keeps_chinese_name_from_the_sheet(db):
+    """表里自带中文品名时以表为准，不能被自动生成覆盖。"""
+    do_import(db, [
+        ["产品名称", "中文品名", "产品链接"],
+        ["Yoga Mat - Black", "瑜伽垫（加厚）", "https://www.takealot.com/y/PLID801"],
+    ])
+
+    assert db.query(SelectionItem).first().chinese_product_name == "瑜伽垫（加厚）"
+
+
+def test_import_leaves_name_empty_when_nothing_matches(db):
+    """一个词都对不上就留空，让人工填——填个错的比空着更麻烦。"""
+    do_import(db, [
+        ["产品名称", "产品链接"],
+        ["Qwertyuiop Zxcvbn", "https://www.takealot.com/x/PLID802"],
+    ])
+
+    assert db.query(SelectionItem).first().chinese_product_name == ""
+
+
+def test_import_defaults_shipping_to_sea(db):
+    """默认海运：货代走海运为主，空运只在赶时效时用。"""
+    do_import(db, [
+        ["产品名称", "产品链接"],
+        ["Yoga Mat - Black", "https://www.takealot.com/y/PLID803"],
+    ])
+
+    item = db.query(SelectionItem).first()
+    assert item.shipping_method == "海运普货"
+    assert item.battery_status == ""
+
+
+def test_import_flags_battery_and_switches_to_battery_shipping(db):
+    """确定带电的直接切「海运带电」，不用等人一条条改。"""
+    do_import(db, [
+        ["产品名称", "产品链接"],
+        ["USB Rechargeable LED Torch", "https://www.takealot.com/t/PLID804"],
+    ])
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == "yes"
+    assert item.battery_reason
+    assert item.shipping_method == "海运带电"
+
+
+def test_import_keeps_general_cargo_for_accessories(db):
+    """充电器、遥控器收纳架本身不带电池，不能因为标题里有 battery 就报带电。"""
+    do_import(db, [
+        ["产品名称", "产品链接"],
+        ["Battery Charger for AA AAA", "https://www.takealot.com/c/PLID805"],
+    ])
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == ""
+    assert item.shipping_method == "海运普货"
+
+
+def test_enrich_backfills_chinese_names_without_network(db, monkeypatch):
+    """品名是纯本地词表匹配，不发请求；即使这一轮没东西可抓也要补上。"""
+    item = SelectionItem(
+        store_id=STORE, product_name="Stainless Steel Kitchen Knife Set",
+        chinese_product_name="", enrich_status="ok", dimensions_source="manual",
+    )
+    db.add(item)
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["processed"] == 0
+    assert result["names_filled"] == 1
+    assert db.query(SelectionItem).first().chinese_product_name == "厨房刀"
+
+
+def test_portal_description_upgrades_battery_guess(db, monkeypatch):
+    """标题只写 LED 灯 → 待确认；描述写了内置电池 → 带电，运输方式跟着切。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["LED Desk Lamp", "https://www.takealot.com/l/PLID806"]])
+    record = _fake_portal(806)
+    record["product_name"] = "LED Desk Lamp"
+    record["description"] = "Built-in rechargeable battery, 8 hours runtime."
+    _configure_portal(db, monkeypatch, {"806": record})
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == "yes"
+    assert item.shipping_method == "海运带电"
+
+
+def test_portal_does_not_override_manual_shipping_choice(db, monkeypatch):
+    """用户已经手改成空运的，重判带电也不许把运输方式冲掉。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["LED Desk Lamp", "https://www.takealot.com/l/PLID807"]])
+    item = db.query(SelectionItem).first()
+    item.shipping_method = "空运普货"
+    db.commit()
+
+    record = _fake_portal(807)
+    record["product_name"] = "LED Desk Lamp"
+    record["description"] = "Built-in rechargeable battery."
+    _configure_portal(db, monkeypatch, {"807": record})
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    db.refresh(item)
+    assert item.battery_status == "yes"
+    assert item.shipping_method == "空运普货"
+
+
+def test_patch_can_confirm_battery_status(db):
+    """界面上点一下就能人工确认普货/带电。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["LED Outdoor 30W Flood Light", "https://www.takealot.com/f/PLID808"]])
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == "maybe"
+
+    updated = patch_item(item.id, ItemPatch(battery_status="no"), db=db, store_id=STORE)
+
+    assert updated["battery_status"] == "no"

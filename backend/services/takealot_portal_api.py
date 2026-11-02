@@ -355,6 +355,10 @@ def extract(plid: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
         "plid": str(plid),
         "success": True,
         "product_name": payload.get("title") or first.get("title"),
+        # 描述和「包装里有什么」是判普货/带电的关键证据：标题只写
+        # "LED Desk Lamp"，描述里才有 "built-in battery" 或 "batteries not included"。
+        "description": payload.get("description") or "",
+        "whats_in_the_box": payload.get("whatsInTheBox") or "",
         "product_image_url": images[0] if images else None,
         "image_urls": images[:6],
         "takealot_category_path": extract_category(payload),
