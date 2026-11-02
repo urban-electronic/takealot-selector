@@ -927,3 +927,51 @@ export interface PublicApiProbeReport {
 }
 export const probeSelectionPublicApi = (plid: string): Promise<PublicApiProbeReport> =>
   request<PublicApiProbeReport>(`/api/selection/diag/public?plid=${encodeURIComponent(plid)}`);
+
+/**
+ * 卖家门户目录接口 —— 主图和重尺的真正来源。
+ *
+ * 公开接口批量抓会被 Cloudflare 429（1804 个候选只有 632 个拿到主图），而且
+ * 根本没有长宽高和重量。卖家门户自己的「Search Takealot's Catalogue」走另一套
+ * 主机，不限流，一个请求同时给主图、图库、类目和重尺。
+ *
+ * 令牌是门户登录后下发到 localStorage `usr_st_auth.api_key` 的 JWT，24 小时
+ * 有效，过期后重抓会退回公开接口——那时主图重新开始吃 429、重尺也补不上。
+ */
+export interface PortalTokenState {
+  configured: boolean;
+  expires_at: number | null;
+  expired: boolean;
+  days_left: number | null;
+}
+export const getPortalTokenState = (): Promise<PortalTokenState> =>
+  request<PortalTokenState>('/api/selection/portal/token');
+
+export const setPortalToken = (token: string): Promise<PortalTokenState> =>
+  request<PortalTokenState>('/api/selection/portal/token', {
+    method: 'PUT',
+    body: JSON.stringify({ token }),
+  });
+
+export interface PortalProbeReport {
+  configured: boolean;
+  ok: boolean;
+  plid: string;
+  reason: string;
+  http_status?: number;
+  product_name: string | null;
+  product_image_url: string | null;
+  image_count: number;
+  takealot_category_path: string | null;
+  dimensions: {
+    length_mm?: number | null;
+    width_mm?: number | null;
+    height_mm?: number | null;
+    weight_kg?: number | null;
+    source?: string;
+  };
+  token: PortalTokenState;
+}
+export const probeSelectionPortal = (plid: string): Promise<PortalProbeReport> =>
+  request<PortalProbeReport>(`/api/selection/diag/portal?plid=${encodeURIComponent(plid)}`);
+

@@ -24,19 +24,22 @@ import {
   getFeeCategories,
   getActiveStoreId,
   getImageUrl,
+  getPortalTokenState,
   getSelectionBatches,
   getSelectionItems,
   getSelectionSummary,
   importSelectionTable,
   patchSelectionItem,
   probeSelectionCatalogue,
+  probeSelectionPortal,
   probeSelectionPublicApi,
   promoteSelection,
   selectQualifiedSelection,
+  setPortalToken,
 } from '../remoteApi';
 import { useFeeCategories } from '../utils/useFeeCategories';
 import { SHIPPING_METHODS, formatPercent, formatPrice } from '../types';
-import type { CatalogueProbeReport, PublicApiProbeReport } from '../remoteApi';
+import type { CatalogueProbeReport, PortalProbeReport, PortalTokenState, PublicApiProbeReport } from '../remoteApi';
 import type {
   FeeCategory,
   SelectionBatch,
@@ -48,6 +51,15 @@ import type {
 } from '../types';
 
 import { selectedPromotionIds } from '../utils/selectionPromotion';
+import { beijingDateTime } from '../utils/datetime';
+
+/**
+ * 令牌的 `expires_at` 是 epoch 秒（JWT 的 exp）。统一交给 `beijingDateTime`
+ * 按业务时区格式化——直接 `toLocaleString()` 取的是运行机器的时区，换台机器
+ * 显示的时间就对不上了。
+ */
+const formatTokenExpiry = (epochSeconds: number | null | undefined): string =>
+  epochSeconds ? beijingDateTime(new Date(epochSeconds * 1000).toISOString()) : '—';
 
 const PAGE_SIZE = 24;
 
@@ -62,6 +74,8 @@ const DIMENSION_SOURCE_LABEL: Record<string, string> = {
   product_list: '产品列表已有',
   seller_api: '卖家后台',
   catalogue_api: '卖家目录',
+  portal: '卖家门户实测',
+  portal_empty: '门户也没有',
   public_api: '公开页预填',
   manual: '人工填写',
   import: '表格导入',
@@ -352,6 +366,12 @@ export default function Selection() {
   const [probeReport, setProbeReport] = useState<CatalogueProbeReport | null>(null);
   const [publicProbing, setPublicProbing] = useState(false);
   const [publicProbe, setPublicProbe] = useState<PublicApiProbeReport | null>(null);
+  // 卖家门户令牌：主图和重尺的唯一可靠来源。状态单独存，因为它会过期。
+  const [portalState, setPortalState] = useState<PortalTokenState | null>(null);
+  const [portalInput, setPortalInput] = useState('');
+  const [portalSaving, setPortalSaving] = useState(false);
+  const [portalProbing, setPortalProbing] = useState(false);
+  const [portalProbe, setPortalProbe] = useState<PortalProbeReport | null>(null);
   // 类目下拉的候选：全量 Fee 类目，卡片里选一个就带出成功率。
   const feeCategoryState = useFeeCategories(FEE_CATEGORY_SOURCE);
 
@@ -386,6 +406,13 @@ export default function Selection() {
   }, [loadList, loadSummary]);
 
   useEffect(() => { void loadBatches().catch(() => undefined); }, [loadBatches]);
+
+  // 门户令牌会过期，进页面就读一次状态，好在过期时提前提示而不是等抓完才发现。
+  useEffect(() => {
+    void getPortalTokenState()
+      .then(setPortalState)
+      .catch(() => undefined);
+  }, []);
 
   const refresh = async () => {
     await Promise.all([loadList(), loadSummary(), loadBatches()]);
@@ -429,7 +456,7 @@ export default function Selection() {
     let failed = 0;
     let last: SelectionEnrichResult | null = null;
     try {
-      for (let round = 0; round < 20; round += 1) {
+      for (let round = 0; round < 40; round += 1) {
         const result = await enrichSelection({
           batch_id: batchId || undefined,
           refresh: refreshAll && round === 0,
@@ -443,13 +470,28 @@ export default function Selection() {
           kind: 'info',
           text: `已抓取 ${done} 个${result.remaining ? `，还剩 ${result.remaining} 个…` : '…'}`,
         });
-        if (result.public_access_blocked || !result.processed || !result.remaining) break;
+        // 门户配额用完时这一轮可能一条都没处理完（`processed === 0`），但那不是
+        // 「没得抓了」——下一轮配额就回来了。只有 pending 也是 0 才真的收手。
+        if (result.public_access_blocked) break;
+        if (!result.remaining) break;
+        if (!result.processed && !result.pending) break;
+        // 门户是 200 次/分钟的硬配额。配额见底时后端会把「还要等多久」告诉我们，
+        // 这里照着实等——不这样的话会连续空转几十次，每次都被整批推迟。
+        if (result.portal_limited && result.portal_retry_after) {
+          const wait = Math.min(result.portal_retry_after, 65);
+          setNotice({
+            kind: 'info',
+            text: `门户配额已用完（200 次/分钟），等 ${Math.ceil(wait)} 秒继续，还剩 ${result.remaining} 个…`,
+          });
+          await new Promise(resolve => setTimeout(resolve, wait * 1000));
+        }
       }
       await refresh();
       if (last) {
         const bits = [`成功 ${succeeded} 个，失败 ${failed} 个`];
         // 被限流的不是「抓不到」，只是还没轮到——分开说，别让人以为这些商品废了。
         if (last.pending) bits.push(`${last.pending} 个被限流、稍后再抓`);
+        if (last.portal_limited) bits.push('门户配额这一轮用完了（200 次/分钟），再点一次接着抓');
         if (last.from_product_list) bits.push(`${last.from_product_list} 个重尺直接取自产品列表`);
         if (last.with_dimensions) bits.push(`${last.with_dimensions} 个从卖家接口带出重尺`);
         if (last.skipped_network) bits.push(`${last.skipped_network} 个资料齐全、没再打网络`);
@@ -604,9 +646,72 @@ export default function Selection() {
     }
   };
 
-  /** 让服务器自己去读一次公开接口，确认「抓不到主图」到底卡在哪一层。 */
-  const handleProbePublic = async () => {
+  /**
+   * 保存卖家门户令牌。
+   *
+   * 令牌从卖家门户的 localStorage 里取：打开 sellers.takealot.com → F12 →
+   * Application → Local Storage → `usr_st_auth` → 复制里面的 `api_key`。
+   * 有效期 24 小时，过期后主图会重新开始吃 429、重尺也补不上。
+   */
+  const handleSavePortalToken = async () => {
+    const value = portalInput.trim();
+    if (!value) return;
+    setPortalSaving(true);
+    try {
+      const state = await setPortalToken(value);
+      setPortalState(state);
+      setPortalInput('');
+      setNotice({
+        kind: 'ok',
+        text: state.expires_at
+          ? `门户令牌已保存，${formatTokenExpiry(state.expires_at)} 前有效。`
+          : '门户令牌已保存。',
+      });
+    } catch (error) {
+      setNotice({ kind: 'warn', text: (error as Error).message });
+    } finally {
+      setPortalSaving(false);
+    }
+  };
+
+  const handleClearPortalToken = async () => {
+    setPortalSaving(true);
+    try {
+      setPortalState(await setPortalToken(''));
+      setNotice({ kind: 'info', text: '已清除门户令牌，抓取将退回公开接口。' });
+    } catch (error) {
+      setNotice({ kind: 'warn', text: (error as Error).message });
+    } finally {
+      setPortalSaving(false);
+    }
+  };
+
+  /** 用服务器这一侧的令牌实测一个样本，把主图和重尺的结果摊开看。 */
+  const handleProbePortal = async () => {
     const sample = items.find(item => item.plid)?.plid;
+    if (!sample) {
+      setNotice({ kind: 'info', text: '列表里至少要有带 PLID 的商品才能测' });
+      return;
+    }
+    setPortalProbing(true);
+    setPortalProbe(null);
+    try {
+      const report = await probeSelectionPortal(sample);
+      setPortalProbe(report);
+      setPortalState(report.token);
+      setNotice({
+        kind: report.ok ? 'ok' : 'warn',
+        text: `PLID ${report.plid}：${report.reason}`,
+      });
+    } catch (error) {
+      setNotice({ kind: 'warn', text: (error as Error).message });
+    } finally {
+      setPortalProbing(false);
+    }
+  };
+
+  /** 让服务器自己去读一次公开接口，确认「抓不到主图」到底卡在哪一层。 */
+  const handleProbePublic = async () => {    const sample = items.find(item => item.plid)?.plid;
     if (!sample) {
       setNotice({ kind: 'info', text: '列表里至少要有带 PLID 的商品才能测' });
       return;
@@ -708,6 +813,87 @@ export default function Selection() {
           表头认这些列（中英文都行）：产品链接 / 产品名称 / TSIN / PLID / 产品价格(R) / 产品评分 / 评分数量 /
           Qty / Net Sales Amount。只给链接、只给 TSIN 都能跑；同一商品的多行会按 PLID 或 TSIN 合并。
         </p>
+
+        {/*
+          卖家门户令牌。放在这里而不是设置页，是因为它和「抓主图/重尺」是同一件
+          事：没有它，1804 个候选里有一多半拿不到主图，长宽高更是完全没有。
+        */}
+        <details className="selection-portal-token" open={!portalState?.configured || portalState?.expired}>
+          <summary>
+            卖家门户令牌：
+            {portalState === null
+              ? '读取中…'
+              : !portalState.configured
+                ? '未配置 —— 重尺抓不到、主图容易限流'
+                : portalState.expired
+                  ? '已过期，需要重新取一次'
+                  : `有效${portalState.days_left != null ? `（还剩 ${portalState.days_left} 天）` : ''}`}
+          </summary>
+          <p className="selection-import-hint">
+            取法：浏览器打开 <code>sellers.takealot.com</code> 并登录 → F12 → Application →
+            Local Storage → <code>usr_st_auth</code> → 复制里面的 <code>api_key</code>（一长串以
+            <code>eyJ</code> 开头的字符）。有效期 24 小时，过期后重新取一次即可。
+            有了它，主图和长宽高走卖家门户自己的目录接口，不再受公开接口限流影响。
+          </p>
+          <div className="selection-import-main">
+            <label className="selection-field is-wide">
+              <span>粘贴令牌</span>
+              <input
+                type="password"
+                value={portalInput}
+                onChange={event => setPortalInput(event.target.value)}
+                placeholder="eyJhbGciOiJIUzI1NiIs..."
+                disabled={portalSaving}
+              />
+            </label>
+            <button type="button" className="btn" onClick={() => void handleSavePortalToken()}
+              disabled={portalSaving || !portalInput.trim()}>
+              {portalSaving ? '保存中…' : '保存令牌'}
+            </button>
+            <button type="button" className="btn" onClick={() => void handleProbePortal()}
+              disabled={portalProbing || !portalState?.configured}>
+              {portalProbing ? '测试中…' : '测一次主图与重尺'}
+            </button>
+            {portalState?.configured && (
+              <button type="button" className="btn" onClick={() => void handleClearPortalToken()}
+                disabled={portalSaving}>
+                清除
+              </button>
+            )}
+          </div>
+          {portalState?.expires_at && (
+            <p className="selection-portal-token">
+              到期时间：{formatTokenExpiry(portalState.expires_at)}
+            </p>
+          )}
+          {portalProbe && (
+            <details className="selection-portal-token" open={!portalProbe.ok}>
+              <summary>
+                门户接口测试：PLID {portalProbe.plid} —— {portalProbe.reason}
+              </summary>
+              <ul>
+                <li>HTTP：{portalProbe.http_status ?? '—'}</li>
+                <li>商品名：{portalProbe.product_name || '（没拿到）'}</li>
+                <li>
+                  主图：{portalProbe.product_image_url
+                    ? <code>{portalProbe.product_image_url}</code>
+                    : '（没拿到）'}
+                  {portalProbe.image_count > 1 ? `，共 ${portalProbe.image_count} 张` : ''}
+                </li>
+                <li>前台类目：{portalProbe.takealot_category_path || '（没拿到）'}</li>
+                <li>
+                  长宽高：{portalProbe.dimensions.length_mm
+                    ? `${portalProbe.dimensions.length_mm} × ${portalProbe.dimensions.width_mm} × ${portalProbe.dimensions.height_mm} mm`
+                    : '（Takealot 目录里没有实测尺寸）'}
+                  {portalProbe.dimensions.weight_kg
+                    ? `，重 ${portalProbe.dimensions.weight_kg} kg`
+                    : ''}
+                  {portalProbe.dimensions.source ? `（来源：${portalProbe.dimensions.source}）` : ''}
+                </li>
+              </ul>
+            </details>
+          )}
+        </details>
         {importResult && (
           <p className="selection-import-result">
             {importResult.sheet}：读入 {importResult.source_rows} 行 → 合并为 {importResult.created} 个商品

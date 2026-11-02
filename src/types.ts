@@ -509,6 +509,12 @@ export interface SelectionEnrichResult {
   failed: number;
   /** 被限流 / 被 stop 波及，这一轮没结论，下一轮接着抓。不算失败。 */
   pending?: number;
+  /** 是否配置了卖家门户令牌（主图和重尺的主要来源）。 */
+  portal_configured?: boolean;
+  /** 这一轮是否被门户配额（200 次/分钟）卡住，需要再点一次接着抓。 */
+  portal_limited?: boolean;
+  /** 配额还要多少秒才回来。前端照着实等，避免连续空转。 */
+  portal_retry_after?: number;
   /** 从卖家 API 或目录接口拿到重尺的条数 */
   with_dimensions: number;
   /** 直接从产品主档抄到重尺的条数（自家商品的主路径） */

@@ -33,7 +33,7 @@ import json
 import math
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
@@ -303,6 +303,78 @@ def _fill_catalogue_dims(db: Session, items: List[SelectionItem]) -> int:
         item.dimensions_source = "catalogue_api"
         filled += 1
     return filled
+
+
+def _fill_portal(db: Session, items: List[SelectionItem],
+                 plids: List[str]) -> Tuple[Dict[str, Dict[str, Any]], int]:
+    """卖家门户目录接口：主图 + 图库 + 类目 + 价格 + 重尺，一次拿全。
+
+    为什么它排在最前面
+    ------------------
+    公开接口 `api.takealot.com` 从机房 IP 批量抓会被 Cloudflare 429（1804 个
+    候选只有 632 个拿到主图），而且**根本没有**长宽高和重量。卖家门户自己的
+    「Search Takealot's Catalogue」走的是另一套主机，实测不限流、且一个请求
+    就把图和重尺都给全了。
+
+    没配令牌时整段跳过，退回原来的公开接口路径——不影响已经能用的场景。
+    """
+    from services import takealot_portal_api as portal
+
+    token = portal.configured_token(db)
+    if not token or not plids:
+        return {}, 0
+
+    records = portal.fetch_many(plids, token)
+    by_plid = {str(record.get("plid") or ""): record for record in records}
+    dims_filled = 0
+
+    for item in items:
+        record = by_plid.get(str(item.plid or "").strip())
+        if not record:
+            continue
+        if record.get("success"):
+            if not item.product_name:
+                item.product_name = record.get("product_name") or ""
+            if not item.product_image_url:
+                item.product_image_url = record.get("product_image_url") or ""
+            if not item.image_urls and record.get("image_urls"):
+                item.image_urls = json.dumps(record["image_urls"], ensure_ascii=False)
+            if item.actual_sale_price_zar is None and record.get("actual_sale_price_zar") is not None:
+                item.actual_sale_price_zar = record["actual_sale_price_zar"]
+            if not item.takealot_category_path and record.get("takealot_category_path"):
+                item.takealot_category_path = record["takealot_category_path"]
+            if not item.tsin and record.get("tsin"):
+                item.tsin = record["tsin"]
+            if not item.takealot_url:
+                item.takealot_url = build_takealot_url(item.plid)
+            # 类目路径拿到了就顺手定费率类目。放在这里而不是只靠 `_apply_public`：
+            # 否则门户已经补齐的行会因为「还没有 fee_category」被再判一次待抓，
+            # 白白多打一轮公开接口。
+            if not item.fee_category and item.takealot_category_path:
+                matched = match_fee_category(db, item.takealot_category_path, item.product_name)
+                if matched.get("fee_category"):
+                    item.fee_category = matched["fee_category"]
+                    item.fee_category_confidence = matched.get("confidence") or ""
+                    item.fee_category_reason = matched.get("match_reason") or ""
+            if not item.dimensions_source:
+                dims = record.get("dimensions") or {}
+                if (dims.get("length_mm") and dims.get("width_mm")
+                        and dims.get("height_mm")):
+                    item.length_mm = dims["length_mm"]
+                    item.width_mm = dims["width_mm"]
+                    item.height_mm = dims["height_mm"]
+                    if dims.get("weight_kg"):
+                        item.actual_weight_kg = dims["weight_kg"]
+                    item.dimensions_source = "portal"
+                    dims_filled += 1
+                else:
+                    # 门户确实没有重尺。记一笔，免得每轮重抓都白跑一趟。
+                    item.dimensions_source = "portal_empty"
+        elif record.get("not_found"):
+            # 目录里没有这个 PLID：重尺永远补不上，别让它一直卡在待抓队列。
+            if not item.dimensions_source:
+                item.dimensions_source = "portal_empty"
+    return by_plid, dims_filled
 
 
 def _apply_public(item: SelectionItem, record: Optional[Dict[str, Any]], db: Session) -> None:
@@ -725,7 +797,41 @@ def enrich(
         db.rollback()
         raise HTTPException(status_code=504, detail=str(error)) from None
 
-    # --- 公开接口补齐图/类目/价格（并发上限 4，真正的节流在 PACER 里）---
+    # --- 卖家门户目录接口：主图 + 类目 + 价格 + 重尺，一次拿全 ---
+    #
+    # 排在最前面是因为它**不限流**且**重尺只有它给**。公开接口那套要放慢到
+    # 0.2 秒一次还照样吃 429，1804 个商品抓下来一半没主图；这里连打 20 次全
+    # 200。所以先走它，剩下的零头才回落到公开接口。
+    need_portal = [
+        item.plid for item in targets
+        if item.plid and (
+            data.refresh
+            or not item.product_image_url
+            or item.actual_sale_price_zar is None
+            or not item.fee_category
+            or not item.dimensions_source
+        )
+    ]
+    need_portal = list(dict.fromkeys(need_portal))
+    portal_records: Dict[str, Dict[str, Any]] = {}
+    portal_deferred: set = set()
+    dims_from_portal = 0
+    portal_configured = False
+    portal_retry_after = 0.0
+    if need_portal:
+        from services import takealot_portal_api as _portal
+        portal_configured = bool(_portal.configured_token(db))
+        portal_records, dims_from_portal = _fill_portal(db, targets, need_portal)
+        portal_deferred = {
+            plid for plid, record in portal_records.items()
+            if record.get("budget_deferred")
+        }
+        # 配额见底时这一轮可能一条都抓不到。把「还要等多久」明确回给前端，
+        # 否则它会立刻再发一轮、再被整批推迟，白白空转几十次。
+        if portal_deferred:
+            portal_retry_after = round(_portal.QUOTA.wait_seconds(), 1)
+
+    # --- 公开接口补齐门户没覆盖到的（没配令牌 / 目录里没有 / 令牌过期）---
     #
     # 主档里已经把图/类目/价格都给全的，不用再打一次网络——1800 条销售报表
     # 里绝大多数是这种情况，省下来的是几十秒。
@@ -743,11 +849,22 @@ def enrich(
                 and item.fee_category
             )
         ]
+    # 门户已经把这些行补齐了，不必再打一次公开接口。
+    if portal_records:
+        still_missing = {
+            item.plid for item in targets
+            if item.plid and not (
+                item.product_image_url
+                and item.actual_sale_price_zar is not None
+                and item.fee_category
+            )
+        }
+        need_fetch = [plid for plid in need_fetch if plid in still_missing]
     # 同一 PLID 可来自多个导入批次。先按首次出现顺序去重，再按请求预算切分，
     # 否则已抓到的 PLID 也可能出现在推迟集合里，导致对应行全部跳过。
     need_fetch = list(dict.fromkeys(need_fetch))
     records: Dict[str, Dict[str, Any]] = {}
-    deferred_plids: set = set()
+    deferred_plids: set = set(portal_deferred)
     all_needed = set(need_fetch)
     if need_fetch:
         # 被限流时 PACER 会把间隔翻倍，400 个能拖成十几分钟——这个请求会在
@@ -755,7 +872,7 @@ def enrich(
         # 剩下的留给前端下一轮（`remaining` 会让它接着调）。
         afford = pub.fetch_budget(ENRICH_NETWORK_BUDGET_SECONDS)
         if len(need_fetch) > afford:
-            deferred_plids = set(need_fetch[afford:])
+            deferred_plids.update(need_fetch[afford:])
             need_fetch = need_fetch[:afford]
         # workers 是并发**上限**不是目标：请求之间由 PACER 强制排队。
         # 写死 8 会把 fetch_many 的新默认值（4）抵消掉，机房 IP 上就是整片 429。
@@ -767,6 +884,7 @@ def enrich(
     # 按条数算，不按 plid 去重后的个数算：同一 PLID 可能对应多条选品记录，
     # 用集合长度会让这两个计数偏小，前端看到的「省了多少 / 处理了多少」就对不上。
     skipped_network = sum(1 for item in targets if item.plid and item.plid not in all_needed)
+
 
     exchange_rate = _exchange_rate(db)
     fee_rates: Dict[str, Optional[float]] = {}
@@ -813,8 +931,9 @@ def enrich(
         "failed": failed,
         # 限流 / 被 stop 波及：这一轮没结论，下一轮接着抓。前端据此区分
         # 「抓不到」和「还没轮到」，否则会把待重试的也报成失败。
-        "pending": pending,
-        "with_dimensions": dims_from_seller + dims_from_catalogue,
+        # 推迟到下一轮的那批也算「待处理」：它们既没成功也没失败，只是没轮到。
+        "pending": pending + sum(1 for item in targets if item.plid in deferred_plids),
+        "with_dimensions": dims_from_seller + dims_from_catalogue + dims_from_portal,
         "from_product_list": from_product_list,
         "skipped_network": skipped_network,
         "remaining": remaining,
@@ -823,6 +942,15 @@ def enrich(
             for record in records.values()
         ),
         "seller_api": seller_note,
+        # 门户配额（200 次/分钟）这一轮是否被卡住。前端据此决定「接着点」还是
+        # 「等一会儿」——1804 个商品要 9~15 轮才跑得完，这是接口的硬限制。
+        "portal_configured": portal_configured,
+        "portal_limited": any(
+            record.get("budget_deferred") or record.get("portal_rate_limited")
+            for record in portal_records.values()
+        ),
+        # 配额什么时候回来。前端按这个值等一会儿再继续，而不是立刻重试空转。
+        "portal_retry_after": portal_retry_after,
         "failures": failures,
     }
 
@@ -1082,6 +1210,58 @@ def diag_catalogue(
         catalogue.save_winner(db, report["winner"])
         report["saved"] = True
     return report
+
+
+@router.get("/diag/portal")
+def diag_portal(
+    plid: str = Query(..., min_length=1, description="任取一个 PLID，用来测卖家门户目录接口"),
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """从**服务器**这一侧测一次卖家门户目录接口。
+
+    这条通道是重尺的唯一来源，也是主图绕过 429 的通道：公开接口批量抓会被
+    Cloudflare 限流，而卖家门户自己的目录接口不限流，一个请求同时给主图、
+    图库、类目和长宽高。
+    """
+    from services import takealot_portal_api as portal
+
+    return portal.probe(db, plid)
+
+
+class PortalTokenIn(BaseModel):
+    token: str = ""
+
+
+@router.get("/portal/token")
+def get_portal_token_state(
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """门户令牌状态。只返回是否配置和到期时间，**不返回令牌本身**。"""
+    from services import takealot_portal_api as portal
+
+    return portal.token_state(db)
+
+
+@router.put("/portal/token")
+def set_portal_token(
+    data: PortalTokenIn,
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """保存卖家门户令牌（浏览器 localStorage 里 `usr_st_auth` 的 `api_key`）。
+
+    令牌有效期 24 小时，过期后重抓会退回公开接口——那时主图会重新开始吃
+    429、重尺也补不上。所以这里把到期时间一并返回，前端可以提前提示。
+    """
+    from services import takealot_portal_api as portal
+
+    value = (data.token or "").strip()
+    if value and len(value.split(".")) != 3:
+        raise HTTPException(400, "这不像一个卖家门户令牌（应为三段式的 JWT）")
+    portal.save_token(db, value)
+    return portal.token_state(db)
 
 
 @router.get("/diag/public")

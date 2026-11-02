@@ -1346,3 +1346,238 @@ def test_catalogue_discover_failure_does_not_save(db, monkeypatch):
     result = diag_catalogue(plid='123456', discover=True, db=db, store_id=STORE)
 
     assert result['saved'] is False
+
+
+# ---------------------------------------------------------------- 卖家门户通道
+#
+# 门户目录接口是重尺的唯一来源，也是主图绕过公开接口 429 的通道。这几条测的是
+# 「有令牌就走门户、没令牌退回公开接口、门户没重尺不要无限重试」。
+
+PORTAL_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"
+
+
+def _fake_portal(plid, dims=None, image=True):
+    record = {
+        "plid": str(plid),
+        "success": True,
+        "product_name": f"Portal {plid}",
+        "product_image_url": f"https://media.takealot.com/{plid}-zoom.jpg" if image else None,
+        "image_urls": [f"https://media.takealot.com/{plid}-zoom.jpg"] if image else [],
+        "takealot_category_path": "Home & Kitchen > Kitchen Storage",
+        "actual_sale_price_zar": 480.0,
+        "tsin": None,
+        "brand": None,
+        "dimensions": dims if dims is not None else {
+            "length_mm": 300.0, "width_mm": 200.0, "height_mm": 100.0,
+            "weight_kg": 0.45, "source": "consolidated",
+        },
+        "warnings": [],
+        "source": "seller_portal",
+        "http_status": 200,
+    }
+    return record
+
+
+MASTER_KEY = "test-master-key-for-portal-token-encryption"
+
+
+def _configure_portal(db, monkeypatch, records_by_plid):
+    from services import takealot_portal_api as portal
+
+    # 令牌是加密存的，派生密钥来自服务端访问密钥；测试里给一个够长的。
+    monkeypatch.setenv("API_KEY", MASTER_KEY)
+    portal.save_token(db, PORTAL_TOKEN)
+    monkeypatch.setattr(
+        portal, "fetch_many",
+        lambda plids, token, workers=4, budget_seconds=45.0:
+            [records_by_plid.get(str(p)) or _fake_portal(p) for p in plids],
+    )
+
+
+def test_enrich_fills_image_and_dimensions_from_portal(db, monkeypatch):
+    """门户一个请求就把主图和重尺都给了，公开接口不该再被调用。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _configure_portal(db, monkeypatch, {})
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: pytest.fail("门户已补齐，不该再打公开接口"))
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["ok"] == 1
+    item = db.query(SelectionItem).first()
+    assert item.product_image_url.endswith("700-zoom.jpg")
+    assert item.length_mm == 300.0
+    assert item.height_mm == 100.0
+    assert item.actual_weight_kg == 0.45
+    assert item.dimensions_source == "portal"
+    assert item.fee_category == "Homeware"
+
+
+def test_enrich_marks_portal_empty_when_takealot_has_no_dimensions(db, monkeypatch):
+    """门户通了但没有重尺：记一笔，否则每轮重抓都白跑一趟。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _configure_portal(db, monkeypatch, {"700": _fake_portal("700", dims={})})
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.dimensions_source == "portal_empty"
+    assert item.length_mm is None
+
+
+def test_enrich_marks_not_found_plid_so_it_does_not_loop(db, monkeypatch):
+    """目录里没有这个 PLID：重尺永远补不上，别让它一直卡在待抓队列。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _configure_portal(db, monkeypatch, {"700": {
+        "plid": "700", "success": False, "not_found": True,
+        "warnings": ["Takealot 目录里没有这个商品"], "http_status": 404,
+        "source": "seller_portal",
+    }})
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert db.query(SelectionItem).first().dimensions_source == "portal_empty"
+
+
+def test_enrich_falls_back_to_public_without_a_portal_token(db, monkeypatch):
+    """没配令牌时行为不变，公开接口照旧兜底。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_fake_public(p) for p in plids])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["ok"] == 1
+    item = db.query(SelectionItem).first()
+    assert item.product_image_url.endswith("700.jpg")
+    assert item.dimensions_source == ""
+
+
+def test_portal_token_state_never_returns_the_token(db, monkeypatch):
+    """令牌状态只给「配没配、什么时候过期」，不把令牌本身回给前端。"""
+    from api.selection_routes import get_portal_token_state
+    from services import takealot_portal_api as portal
+
+    monkeypatch.setenv("API_KEY", MASTER_KEY)
+    portal.save_token(db, PORTAL_TOKEN)
+    state = get_portal_token_state(db=db, store_id=STORE)
+
+    assert state["configured"] is True
+    assert state["expires_at"] == 9999999999
+    assert PORTAL_TOKEN not in str(state)
+
+
+def test_portal_token_rejects_something_that_is_not_a_jwt(db):
+    from fastapi import HTTPException
+
+    from api.selection_routes import PortalTokenIn, set_portal_token
+
+    with pytest.raises(HTTPException) as error:
+        set_portal_token(PortalTokenIn(token="not-a-jwt"), db=db, store_id=STORE)
+    assert error.value.status_code == 400
+
+
+def test_diag_portal_reports_dimensions(db, monkeypatch):
+    from api.selection_routes import diag_portal
+    from services import takealot_portal_api as portal
+
+    monkeypatch.setenv("API_KEY", MASTER_KEY)
+    portal.save_token(db, PORTAL_TOKEN)
+    monkeypatch.setattr(portal, "fetch", lambda plid, token, timeout=25.0: _fake_portal(plid))
+
+    report = diag_portal(plid="700", db=db, store_id=STORE)
+
+    assert report["ok"] is True
+    assert report["image_count"] == 1
+    assert report["dimensions"]["length_mm"] == 300.0
+
+
+def test_enrich_defers_rows_when_portal_quota_is_exhausted(db, monkeypatch):
+    """门户配额用尽时，那批必须留到下一轮，不能记成失败。
+
+    上一版把 429 塞进「整批停下」，1804 个商品在第 201 个开始全部放弃，
+    重尺一个都没补上。这里锁住「推迟而不是失败」。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"],
+                   ["Other", "https://www.takealot.com/t/PLID701"]])
+    _configure_portal(db, monkeypatch, {
+        "700": {"plid": "700", "success": False, "budget_deferred": True,
+                "portal_rate_limited": True, "warnings": ["门户接口限流，留到下一轮"],
+                "source": "seller_portal"},
+        "701": {"plid": "701", "success": False, "budget_deferred": True,
+                "portal_rate_limited": True, "warnings": ["门户接口限流，留到下一轮"],
+                "source": "seller_portal"},
+    })
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["failed"] == 0
+    assert result["portal_limited"] is True
+    assert result["pending"] == 2
+    assert result["remaining"] == 2
+    # 留待下一轮的行不能被打成 failed，否则永远退出待抓队列
+    assert all(row.enrich_status in ("", None) for row in db.query(SelectionItem).all())
+
+
+def test_enrich_reports_portal_configured_flag(db, monkeypatch):
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _configure_portal(db, monkeypatch, {})
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["portal_configured"] is True
+    assert result["portal_limited"] is False
+
+
+def test_enrich_without_portal_token_reports_it_as_unconfigured(db, monkeypatch):
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_fake_public(p) for p in plids])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["portal_configured"] is False
+
+
+def test_enrich_tells_the_client_how_long_to_wait_for_quota(db, monkeypatch):
+    """配额见底时把「还要等多久」回给前端。
+
+    没有这个值，前端会立刻再发一轮、再被整批推迟，几十秒里空转几十次；
+    有了它就能实等一个窗口，把 1804 个商品按 200 次/分钟稳稳推完。
+    """
+    from services import takealot_portal_api as portal
+
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _configure_portal(db, monkeypatch, {
+        "700": {"plid": "700", "success": False, "budget_deferred": True,
+                "portal_rate_limited": True, "warnings": ["配额用完"],
+                "source": "seller_portal"},
+    })
+    monkeypatch.setattr(portal.QUOTA, "wait_seconds", lambda: 42.0)
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["portal_limited"] is True
+    assert result["portal_retry_after"] == 42.0
+
+
+def test_enrich_reports_zero_wait_when_quota_is_fine(db, monkeypatch):
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _configure_portal(db, monkeypatch, {})
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["portal_retry_after"] == 0.0

@@ -19,3 +19,6 @@ backend/packing_images/
 
 # 自检给 pytest 的临时目录（每次一个新目录，避免批量删除被拦）
 backend/.pytest-tmp/
+
+# 本地抓包/审计脚本的临时目录（含浏览器 profile 副本与登录凭据，绝不入库）
+.tmp-audit/

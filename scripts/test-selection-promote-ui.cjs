@@ -7,8 +7,11 @@ function compile(p,mocks={}){const f=path.resolve(__dirname,'../'+p),m=new Modul
 const rows=Array.from({length:625},(_,i)=>({id:`s${i}`,selected:true,product_name:`Fixture ${i}`,fee_category:'',tier:'',promoted_product_id:null}));
 let reads=[],writes=[],confirmations=[],pending;
 let store='fixture-store';
-const remote={getActiveStoreId:()=>store,getSelectionItems:async p=>{reads.push(p);return p.only_selected?{total:625,items:rows.slice(p.offset,p.offset+p.limit)}:{total:625,items:[rows[0]]};},getSelectionSummary:async()=>({total:625,selected:625}),getSelectionBatches:async()=>[],getImageUrl:x=>x,promoteSelection:ids=>{writes.push(ids);if(writes.length===1)return new Promise(r=>pending=r);return Promise.resolve({created:ids.length,skipped:0});}};
-const page=compile('src/pages/Selection.tsx',{'../remoteApi':remote,'../types':{SHIPPING_METHODS:[],formatPrice:String,formatPercent:String},'../utils/useFeeCategories':{useFeeCategories:()=>({categories:[]})},'../utils/imageFallback':{ProductImage:()=>null},'../utils/selectionPromotion':compile('src/utils/selectionPromotion.ts')}).default;
+const remote={getActiveStoreId:()=>store,getSelectionItems:async p=>{reads.push(p);return p.only_selected?{total:625,items:rows.slice(p.offset,p.offset+p.limit)}:{total:625,items:[rows[0]]};},getSelectionSummary:async()=>({total:625,selected:625}),getSelectionBatches:async()=>[],getImageUrl:x=>x,promoteSelection:ids=>{writes.push(ids);if(writes.length===1)return new Promise(r=>pending=r);return Promise.resolve({created:ids.length,skipped:0});},
+ // 选品池进页面会读一次门户令牌状态；这里只要它别抛，面板渲染成「有效」即可。
+ getPortalTokenState:async()=>({configured:true,expires_at:null,expired:false,days_left:null}),
+ setPortalToken:async()=>({configured:true,expires_at:null,expired:false,days_left:null})};
+const page=compile('src/pages/Selection.tsx',{'../remoteApi':remote,'../types':{SHIPPING_METHODS:[],formatPrice:String,formatPercent:String},'../utils/useFeeCategories':{useFeeCategories:()=>({categories:[]})},'../utils/imageFallback':{ProductImage:()=>null},'../utils/selectionPromotion':compile('src/utils/selectionPromotion.ts'),'../utils/datetime':compile('src/utils/datetime.ts')}).default;
 window.confirm=s=>{confirmations.push(s);return true;};
 const root=createRoot(document.getElementById('root'));
 (async()=>{

@@ -209,6 +209,11 @@ DATA.update({
             actual_sale_price_zar=189.0, status='待核算', enrich_status='partial',
             enrich_message='缺少 PLID，无法查重尺'),
     ]),
+    # 卖家门户令牌状态。选品池进页面就读它，缺了这一条会被 404 掉、面板静默降级成
+    # 「未配置」——那样「令牌面板版式没问题」这句结论就是空的。
+    # 给一个未来的到期时间，让「到期时间：…」那行也真的渲染出来被量到。
+    '/api/selection/portal/token': dict(configured=True, expires_at=1796162000,
+                                        expired=False, days_left=30.0),
 })
 
 PAGES = [('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]

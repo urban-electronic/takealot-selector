@@ -3318,14 +3318,16 @@ table tbody tr:hover { background: #f8fafc; }
 }
 
 .selection-import-hint,
-.selection-import-result {
+.selection-import-result,
+.selection-portal-token {
   margin: 0;
   font-size: var(--fs-label);
   line-height: 1.6;
   color: var(--text-muted);
 }
 
-.selection-import-result ul {
+.selection-import-result ul,
+.selection-portal-token ul {
   margin: 6px 0 0;
   padding-left: 18px;
 }
