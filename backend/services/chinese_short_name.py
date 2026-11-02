@@ -344,6 +344,10 @@ HEAD_PHRASES: Tuple[Tuple[str, str], ...] = (
     ("paper towel holder", "纸巾架"),
     ("tissue holder", "纸巾架"),
     ("flood light", "泛光灯"),
+    ("light bar", "灯条"),
+    ("led bar", "灯条"),
+    ("battery pack", "电池"),
+    ("battery holder", "电池盒"),
     ("display shelf", "展示架"),
     ("resistance band", "弹力带"),
     ("gear knob", "挡把"),
@@ -411,15 +415,55 @@ def _keep(word: str) -> bool:
     return word not in _ATTRIBUTE_WORDS
 
 
-def _head_phrase(text: str) -> str:
-    """砍掉属性尾巴，只留「商品本体」那一段。"""
+def _strip_tail(text: str) -> str:
+    """砍掉 `with…` / `for…` 这类附带物，以及开头的 `Compatible with` 引子。"""
+    # 标题以 "Compatible with XXX" 开头时，主语在 XXX 后面，只去掉引子本身。
+    trimmed = re.sub(
+        r"^(?:compatible|suitable|replacement)\s+(?:with|for)\s+", "", text
+    )
+    for phrase in _TAIL_PHRASES:
+        # 从下标 1 开始找：短语正好在开头时不砍（砍完就什么都不剩了）
+        cut = trimmed.find(phrase, 1)
+        if cut > 0:
+            trimmed = trimmed[:cut]
+    return trimmed.strip()
+
+
+def _bodies(text: str) -> List[str]:
+    """候选「商品本体」片段，按精度从高到低排。
+
+    第一段是最干净的：先按 `-` / `,` / `/` 切断，再砍 `with…`。绝大多数标题
+    到这里就够了，而且不会把 `- Black` 这种尾巴算进本体。
+
+    但有些标题的前半段是**规格**而不是商品：`4 Pieces/Set Women's PU Messenger
+    Tote Bag` 一切断就只剩 "4 pieces"，一个名词都没有；`2 Packs Of 100, 215mm x
+    315mm Plastic Zip Lock Bags` 同理。所以留一个不按分隔符切的兜底版本——颜色、
+    尺寸、数字都在 `_ATTRIBUTE_WORDS` / `_STOP_WORDS` 里，不会被当成本体。
+    """
     lowered = (text or "").lower().replace("&", " and ")
     for source, glued in _GLUED:
         lowered = lowered.replace(source, glued)
-    trimmed = _TAIL_SEPARATORS.split(lowered)[0]
-    for phrase in _TAIL_PHRASES:
-        trimmed = trimmed.split(phrase)[0]
-    return trimmed.strip()
+
+    cut = _TAIL_SEPARATORS.split(lowered)[0]
+    # 四级兜底，前面的抽不出名词才退到后面一级。越往后越宽松，也越容易把
+    # `- Black` 这种尾巴算进来，所以只在前面全军覆没时才用。
+    candidates = [
+        _strip_tail(cut),          # 最干净：分隔符 + with/for 都砍
+        cut.strip(),               # 只砍分隔符（"…for Men and Women Travel Backpack" 不能被 for 砍断）
+        _strip_tail(lowered),      # 只砍 with/for（"4 Pieces/Set … Tote Bag"）
+        lowered.strip(),           # 原样（"Compatible with … (8.7") Case"）
+    ]
+    bodies: List[str] = []
+    for body in candidates:
+        if body and body not in bodies:
+            bodies.append(body)
+    return bodies
+
+
+def _head_phrase(text: str) -> str:
+    """砍掉属性尾巴，只留「商品本体」那一段（保留给外部调用/测试）。"""
+    bodies = _bodies(text)
+    return bodies[0] if bodies else ""
 
 
 def _pick_phrase(body: str) -> Optional[str]:
@@ -465,20 +509,8 @@ def _pick_modifier(words: List[str], before: int, room: int) -> Optional[str]:
     return None
 
 
-def short_chinese_name(title: object, max_chars: int = MAX_CHARS) -> str:
-    """把英文标题压成 ≤max_chars 个汉字的名词短语。匹配不上返回空串。"""
-    text = str(title or "").strip()
-    if not text:
-        return ""
-    # 标题里已经带了中文（有些来源表就是中文），直接取前面的汉字。
-    if _CJK.search(text):
-        han = "".join(_CJK.findall(text))
-        return han[:max_chars] if han else ""
-
-    body = _head_phrase(text)
-    if not body:
-        return ""
-
+def _name_from_body(body: str, max_chars: int) -> str:
+    """从一段「本体候选」里抽 ≤max_chars 的名词短语，抽不出返回空串。"""
     # 1) 复合名词整体命中优先（"power bank" 不能拆成 power + bank）
     phrase = _pick_phrase(body)
     if phrase:
@@ -502,3 +534,22 @@ def short_chinese_name(title: object, max_chars: int = MAX_CHARS) -> str:
     if modifier:
         return (modifier + core)[:max_chars]
     return core
+
+
+def short_chinese_name(title: object, max_chars: int = MAX_CHARS) -> str:
+    """把英文标题压成 ≤max_chars 个汉字的名词短语。匹配不上返回空串。"""
+    text = str(title or "").strip()
+    if not text:
+        return ""
+    # 标题里已经带了中文（有些来源表就是中文），直接取前面的汉字。
+    if _CJK.search(text):
+        han = "".join(_CJK.findall(text))
+        return han[:max_chars] if han else ""
+
+    # 先试最干净的切分，抽不出来再退到整条标题——宁可用宽松版本，也不要因为
+    # 开头几个规格词就整条放弃（线上 196 条空品名里有一大半是这种）。
+    for body in _bodies(text):
+        name = _name_from_body(body, max_chars)
+        if name:
+            return name
+    return ""

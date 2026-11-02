@@ -401,6 +401,9 @@ def _ensure_columns():
                 "shipping_method": "TEXT",
                 "battery_status": "TEXT DEFAULT ''",
                 "battery_reason": "TEXT DEFAULT ''",
+                # 品名是机器起的还是人填的。老库补列时默认 0（当人填），
+                # 宁可不重算也不要把人工填的覆盖掉。
+                "chinese_name_auto": "BOOLEAN DEFAULT 0",
             }
             with engine.begin() as conn:
                 for name, sql_type in selection_additions.items():

@@ -456,6 +456,9 @@ class SelectionItem(Base):
     takealot_url = Column(String, default="")
     product_name = Column(String, default="")
     chinese_product_name = Column(String, default="")
+    # 这个中文品名是词表自动生成的还是人填的。
+    # 只有自动生成的才允许在词表升级后重算——人工填的（含导入表里带的）永远不动。
+    chinese_name_auto = Column(Boolean, default=False)
     brand = Column(String, default="")
     product_image_url = Column(String, default="")
     image_urls = Column(Text, default="")      # JSON 数组，识图时一次给 3 张

@@ -43,7 +43,8 @@ _NEGATIVE = re.compile(
 # 确定带电：命中任意一条就是「包装里一定有电池」。
 _YES: Tuple[Tuple[str, str], ...] = (
     (r"power\s*bank|powerbank", "充电宝"),
-    (r"\b(?:li-?ion|lithium|lipo|li-?polymer)\b", "锂电池"),
+    (r"\b(?:li-?ion|lithium|lipo|li-?polymer)\b"
+     r"(?!\s*(?:battery\s*)?charg)", "锂电池"),
     (r"\b(?:18650|21700|14500|cr2032|cr2016)\b", "纽扣/圆柱电芯"),
     (r"\b(?:aaa|aa)\b\s*(?:batter|cell)", "干电池"),
     (r"rechargeable", "可充电"),

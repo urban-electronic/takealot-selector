@@ -171,3 +171,31 @@ def test_respects_custom_max_chars():
 def test_hyphenated_attribute_is_not_read_as_noun():
     """"Ultra-Light" 不先捏成一个词的话，light 会命中「灯」，雨衣变灯。"""
     assert short_chinese_name("2pcs PVC Rain Suit Waterproof Jacket & Trousers Ultra-Light Safety Works") == "雨衣"
+
+
+def test_spec_prefix_does_not_swallow_the_noun():
+    """`4 Pieces/Set … Tote Bag` 在 `/` 处一切断就只剩 "4 pieces"。
+
+    线上 196 条空品名里有一大半是这种「开头是规格、本体在后面」的标题，
+    所以第一段切不出名词时要退到整条标题再试一次。
+    """
+    assert short_chinese_name(
+        "4 Pieces/Set Women's PU Messenger Tote Bag Coin Purse Card Holder - Brown"
+    ) == "手提包"
+    assert short_chinese_name(
+        "2 Packs Of 100, 215mm x 315mm Plastic Zip Lock Bags"
+    ) == "密封袋"
+
+
+def test_compatible_with_prefix_still_finds_the_product():
+    """"Compatible with Galaxy Tab A9 (8.7") … Case" 括号一断就全空了。"""
+    assert short_chinese_name(
+        'Compatible with Galaxy Tab A9 (8.7") Shockproof Rugged Case - Pink - B'
+    ) == "壳"
+
+
+def test_light_bar_is_not_a_bare_pole():
+    """"Work Light Bar" 取最后一个名词会得到「杆」，得按复合词认成灯条。"""
+    assert short_chinese_name(
+        "COB LED Headlamp USB Rechargeable Headlight Torch Work Light Bar 3 Color"
+    ) == "灯条"

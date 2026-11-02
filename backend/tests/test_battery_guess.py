@@ -90,3 +90,18 @@ def test_suggested_shipping():
     assert suggested_shipping("maybe") == SEA_GENERAL
     assert suggested_shipping("no") == SEA_GENERAL
     assert suggested_shipping("") == SEA_GENERAL
+
+
+def test_charger_itself_has_no_battery():
+    """`Lithium Battery Charger` 里出现的是「要充的那个电池」，不是它自己。
+
+    不排掉的话充电器会被标成带电，整批运费按带电算贵一截。
+    """
+    assert guess_battery("DL USB Lithium Battery Charger-DL076")[0] == ""
+    assert guess_battery("Li-ion Charger 4 Bay")[0] == ""
+
+
+def test_lithium_battery_itself_is_still_flagged():
+    """排掉的是「锂电池充电器」，真正的锂电池照旧算带电。"""
+    assert guess_battery("Lithium Battery 3000mAh Pack")[0] == "yes"
+    assert guess_battery("Rechargeable Battery Pack + USB-C Cable")[0] == "yes"

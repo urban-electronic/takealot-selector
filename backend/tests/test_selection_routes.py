@@ -1929,3 +1929,39 @@ def test_enrich_keeps_confirmed_general_cargo(db, monkeypatch):
     item = db.query(SelectionItem).first()
     assert item.battery_status == "no"
     assert item.battery_reason == "人工确认"
+
+
+def test_enrich_refreshes_auto_name_after_vocab_upgrade(db, monkeypatch):
+    """机器起的品名跟着新词表刷新，人工填的一个字都不动。
+
+    线上真出过：补 `light bar → 灯条` 之前，"Work Light Bar" 被取成「杆」，
+    老数据得能跟着改；而导入表里带的中文品名是人工填的，不能被覆盖。
+    """
+    db.add(_offline_item(product_name="COB LED Work Light Bar 3 Color",
+                         chinese_product_name="杆", chinese_name_auto=True))
+    db.add(_offline_item(product_name="COB LED Work Light Bar 3 Color",
+                         chinese_product_name="杆", chinese_name_auto=False))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    auto, manual = db.query(SelectionItem).order_by(
+        SelectionItem.chinese_name_auto.desc()).all()
+    assert result["names_filled"] == 1
+    assert manual.chinese_product_name == "杆"      # 人填的保持原样
+    assert auto.chinese_product_name == "灯条"      # 机器起的跟着词表走
+
+
+def test_patch_marks_name_as_manual(db):
+    """人在界面上改过品名之后，词表升级不许再动它。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["COB LED Work Light Bar 3 Color", "https://www.takealot.com/l/PLID809"]])
+    item = db.query(SelectionItem).first()
+    assert item.chinese_name_auto is True
+
+    patch_item(item.id, ItemPatch(chinese_product_name="灯条（自定）"), db=db, store_id=STORE)
+
+    db.refresh(item)
+    assert item.chinese_name_auto is False
+    assert item.chinese_product_name == "灯条（自定）"

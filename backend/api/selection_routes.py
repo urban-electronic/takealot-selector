@@ -251,7 +251,9 @@ def _copy_from_product_list(
         if not item.product_name and product.product_name:
             item.product_name = product.product_name
         if not item.chinese_product_name and product.chinese_product_name:
+            # 产品主档里的品名是人填的，照抄过来也算「人填」
             item.chinese_product_name = product.chinese_product_name
+            item.chinese_name_auto = False
         if not item.product_image_url and product.product_image_url:
             item.product_image_url = product.product_image_url
         if not item.takealot_url and product.takealot_url:
@@ -667,6 +669,9 @@ async def import_table(
         already = bool(group["plid"]) and group["plid"] in existing_plids
         if already:
             duplicates += 1
+        # 表里自带中文品名就用表里的（人工填的优先），没有才按标题现生成。
+        # 生成不出来留空——品名要印标签、进报关单，宁缺勿错。
+        auto_name = "" if group["chinese_product_name"] else short_chinese_name(group["product_name"])
         item = SelectionItem(
             store_id=store_id,
             batch_id=batch_id,
@@ -676,11 +681,9 @@ async def import_table(
             tsin=group["tsin"],
             takealot_url=group["takealot_url"] or build_takealot_url(group["plid"]),
             product_name=group["product_name"],
-            # 表里自带中文品名就用表里的（人工填的优先），没有就按标题现生成。
-            # 生成不出来留空——品名要印标签、进报关单，宁缺勿错。
-            chinese_product_name=(
-                group["chinese_product_name"] or short_chinese_name(group["product_name"])
-            ),
+            chinese_product_name=group["chinese_product_name"] or auto_name,
+            # `chinese_name_auto` 记来源：只有机器起的名字才允许日后按新词表重算。
+            chinese_name_auto=bool(auto_name),
             actual_sale_price_zar=group["actual_sale_price_zar"],
             rating_value=group["rating_value"],
             review_count=group["review_count"],
@@ -811,22 +814,34 @@ def _backfill_battery(db: Session, query) -> int:
 
 
 def _backfill_chinese_names(db: Session, query) -> int:
-    """给还没有中文品名的行生成五字品名，返回补了几个。
+    """补 / 刷新中文品名，返回动了几条。
 
     纯本地词表匹配、不发网络请求，所以放在 `enrich` 最前面——这一轮即使没有
     要抓的行，品名也能补齐。空标题、一个词都对不上的标题保持为空（不猜）。
+
+    两种情况会写：
+      - 名字是空的 → 生成一个，并标记为「机器起的」
+      - 名字是机器起的（`chinese_name_auto`）且新词表算出来不一样 → 更新
+
+    第二种是为了让词表升级能覆盖到历史数据：线上曾经把 "Work Light Bar" 取成
+    「杆」，补上 `light bar → 灯条` 之后老数据得跟着变。人工填的（含导入表里
+    带的）`chinese_name_auto` 是 False，一个字都不会被改。
     """
     rows = query.filter(
         or_(
             SelectionItem.chinese_product_name == "",
             SelectionItem.chinese_product_name.is_(None),
+            SelectionItem.chinese_name_auto.is_(True),
         )
     ).all()
     filled = 0
     for item in rows:
         name = short_chinese_name(item.product_name)
-        if name:
+        if not name:
+            continue
+        if name != item.chinese_product_name:
             item.chinese_product_name = name
+            item.chinese_name_auto = True
             filled += 1
     if filled:
         db.commit()
@@ -1291,6 +1306,9 @@ def _apply_patch(item: SelectionItem, patch: ItemPatch, db: Session, rate: float
     if dim_fields & set(fields):
         # 人填过重尺就锁定来源，后续 enrich 不再用公开页的值覆盖
         item.dimensions_source = "manual"
+    if "chinese_product_name" in fields:
+        # 人改过品名就不再是「机器起的」，后续词表升级不许覆盖
+        item.chinese_name_auto = False
     for key, value in fields.items():
         setattr(item, key, value)
     fee_rate = _fee_rate(db, item.fee_category)
