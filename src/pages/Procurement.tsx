@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { productLabels } from '../utils/productLabels';
 import { toAmount, toNumber } from '../utils/number';
 import { useApi, useDataSource } from '../DataSourceContext';
@@ -38,7 +39,10 @@ export default function Procurement() {
   const [deleteTarget, setDeleteTarget] = useState<ProcurementRecord | null>(null);
 
   // list filter
-  const [filterProductNo, setFilterProductNo] = useState('');
+  // 支持从补货计划直接跳过来：/procurement?product_no=123 自动按序号过滤，
+  // 登记完采购立刻能核对这笔记录有没有写进来。
+  const [searchParams] = useSearchParams();
+  const [filterProductNo, setFilterProductNo] = useState(() => searchParams.get('product_no') ?? '');
 
   // product search
   const [productSearch, setProductSearch] = useState('');

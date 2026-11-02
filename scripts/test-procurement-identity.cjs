@@ -61,7 +61,9 @@ const localModule = name => {
 };
 
 const overrides = {
-  'react-router-dom': { useNavigate: () => () => {} },
+  // 采购页现在会读 ?product_no= 做初始过滤（从补货计划跳过来的入口），
+  // jsdom 里没有 Router，所以这里给出空参数的最小实现。
+  'react-router-dom': { useNavigate: () => () => {}, useSearchParams: () => [new URLSearchParams(''), () => {}] },
   '../DataSourceContext': { useApi: () => api, useDataSource: () => ({ dataSource: 'local' }) },
   '../remoteApi': { migrateToRemote: async () => ({ imported: {} }) },
 };

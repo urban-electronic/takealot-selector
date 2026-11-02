@@ -16,6 +16,7 @@
     "test:bookmarklet": "node scripts/test-takealot-bookmarklet.cjs",
     "test:values": "node scripts/test-value-coercion.cjs",
     "test:operations": "node scripts/test-operations.cjs",
+    "test:replenishment": "node scripts/test-replenishment-procurement-link.cjs && node scripts/test-replenishment-buy-flow.cjs",
     "test:procurement": "node scripts/test-procurement-identity.cjs",
     "test:packing": "node scripts/test-packing-display.cjs",
     "test:pricing": "node scripts/test-pricing-layout.cjs",

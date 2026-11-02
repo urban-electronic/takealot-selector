@@ -405,8 +405,9 @@ button {
 @media (max-width: 700px) {
   .inventory-table-wrap .inventory-table th:first-child,
   .inventory-table-wrap .inventory-table td:first-child,
-  .operations-table-scroll .data-table:not(.pricing-table) th:first-child,
-  .operations-table-scroll .data-table:not(.pricing-table) td:first-child {
+  /* 补货表首列已改成序号，钉住的应该是第 2 列（商品列）。 */
+  .operations-table-scroll .data-table:not(.pricing-table) th:nth-child(2),
+  .operations-table-scroll .data-table:not(.pricing-table) td:nth-child(2) {
     position: sticky;
     left: 0;
     z-index: 2;
@@ -416,13 +417,20 @@ button {
     background: #fff;
     box-shadow: 6px 0 8px -6px rgba(43, 36, 30, 0.16);
   }
+  .operations-table-scroll .data-table:not(.pricing-table) .operations-no {
+    width: 44px; min-width: 44px; max-width: 44px; font-size: 11px;
+    position: sticky; left: 0; z-index: 3; background: #fff;
+  }
+  /* 商品列钉在序号列右侧，不能盖住它。 */
+  .operations-table-scroll .data-table:not(.pricing-table) th:nth-child(2),
+  .operations-table-scroll .data-table:not(.pricing-table) td:nth-child(2) { left: 44px; }
   .inventory-table-wrap .inventory-table thead th:first-child,
-  .operations-table-scroll .data-table:not(.pricing-table) thead th:first-child {
+  .operations-table-scroll .data-table:not(.pricing-table) thead th:nth-child(2) {
     z-index: 4;
     background: var(--table-head-bg);
   }
   /* 悬停底色要跟着走，否则钉住的那一格永远白着，像没选中。 */
-  .operations-table-scroll .data-table:not(.pricing-table) tbody tr:hover td:first-child { background: #f8fbff; }
+  .operations-table-scroll .data-table:not(.pricing-table) tbody tr:hover td:nth-child(2) { background: #f8fbff; }
   /* 列变窄后，里面的文字要自己截断，不能溢出到右边几列上。 */
   .inventory-table-wrap .inventory-product { min-width: 0; gap: 8px; }
   .inventory-table-wrap .inventory-product > div { min-width: 0; }
@@ -2378,6 +2386,26 @@ table tbody tr:hover { background: #f8fafc; }
 .operations-workspace .data-table td { padding:7px 10px; vertical-align:middle; border-bottom:1px solid #eef1f5; }
 .operations-workspace .data-table tbody tr:hover { background:#f8fbff; }
 .operations-product { width:240px; max-width:240px; }
+/* 序号列：与产品列表的 product_no 同源，方便两个页面按同一个编号对账。
+ * 数字用等宽字形，避免 #9 和 #10 左右跳动。 */
+.operations-workspace .data-table .operations-no { width:52px; color:var(--text-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.operations-actions { white-space:nowrap; }
+.operations-actions .btn + .btn { margin-left:6px; }
+/* 补货计划里就地登记采购的弹窗 */
+.procurement-quick-modal { max-width:560px; }
+.procurement-quick-meta { margin:-6px 0 16px; color:var(--text-muted); font-size:var(--fs-caption); line-height:1.5; overflow-wrap:anywhere; }
+.procurement-quick-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.procurement-quick-grid label, .procurement-quick-note { display:block; font-size:var(--fs-caption); color:var(--text-muted); }
+.procurement-quick-grid input, .procurement-quick-grid select, .procurement-quick-note input {
+  width:100%; box-sizing:border-box; margin-top:4px; padding:7px 10px; border:1px solid var(--color-border);
+  border-radius:8px; background:var(--color-card); color:var(--text-strong); font:inherit; }
+.procurement-quick-note { margin-top:12px; }
+.procurement-quick-unit { margin:10px 0 0; font-size:var(--fs-caption); color:var(--text-muted); font-variant-numeric:tabular-nums; }
+.procurement-quick-history { margin-top:12px; padding:10px 12px; border-radius:10px; background:var(--surface-muted); font-size:var(--fs-caption); }
+.procurement-quick-history strong { display:block; margin-bottom:6px; color:var(--text-strong); }
+.procurement-quick-history > div { display:grid; grid-template-columns:88px 64px 84px auto; gap:8px; align-items:center; padding:3px 0; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+.procurement-quick-modal .alert { margin-top:12px; }
+@media(max-width:600px) { .procurement-quick-grid { grid-template-columns:1fr; } .procurement-quick-history > div { grid-template-columns:78px 56px 76px auto; } }
 .product-link { display:flex; align-items:center; width:230px; min-height:var(--control-h-min); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left; color:var(--link-strong); background:none; border:0; padding:0; font:inherit; cursor:pointer; }
 .row-subtitle, .operations-workspace .data-table small { display:block; font-size:var(--fs-caption); color:var(--text-subtle); margin-top:2px; line-height:1.4; }
 /* 英文标题：补货表原来只有中文名，核对规格时分不清是哪个变体。
