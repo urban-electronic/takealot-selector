@@ -1846,3 +1846,86 @@ def test_patch_can_confirm_battery_status(db):
     updated = patch_item(item.id, ItemPatch(battery_status="no"), db=db, store_id=STORE)
 
     assert updated["battery_status"] == "no"
+
+
+def _offline_item(**kwargs):
+    """一条资料齐全、不会被本轮抓取选中的行，专门用来验证纯本地回填。"""
+    defaults = dict(
+        store_id=STORE, product_name="", chinese_product_name="",
+        enrich_status="ok", dimensions_source="manual",
+    )
+    defaults.update(kwargs)
+    return SelectionItem(**defaults)
+
+
+def test_enrich_backfills_battery_and_default_sea_shipping(db, monkeypatch):
+    """历史行没有普货/带电结论时，按标题补一次，运输方式默认海运普货。"""
+    db.add(_offline_item(product_name="USB Rechargeable LED Torch"))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert result["battery_judged"] == 1
+    assert item.battery_status == "yes"
+    assert item.battery_reason
+    assert item.shipping_method == "海运带电"
+
+
+def test_enrich_gives_plain_goods_sea_shipping(db, monkeypatch):
+    """没有带电线索的行也要把运输方式落成「海运普货」，不能一直空着。"""
+    db.add(_offline_item(product_name="Stainless Steel Kitchen Knife Set"))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == ""
+    assert item.shipping_method == "海运普货"
+
+
+def test_enrich_upgrades_general_cargo_when_battery_found(db, monkeypatch):
+    """旧数据里自动填的「海运普货」遇上确定带电的标题，要自动改成带电。
+
+    带电报普货会被货代退运，这个方向的错误必须自己纠正。
+    """
+    db.add(_offline_item(product_name="Cordless Drill 18V",
+                         shipping_method="海运普货"))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == "yes"
+    assert item.shipping_method == "海运带电"
+
+
+def test_enrich_never_touches_manual_air_shipping(db, monkeypatch):
+    """用户手选了空运的，判定结论照写，运输方式一个字都不动。"""
+    db.add(_offline_item(product_name="Cordless Drill 18V",
+                         shipping_method="空运普货"))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == "yes"
+    assert item.shipping_method == "空运普货"
+
+
+def test_enrich_keeps_confirmed_general_cargo(db, monkeypatch):
+    """人工确认过普货的，不能被标题里的关键词再翻案。"""
+    db.add(_offline_item(product_name="LED Desk Lamp", battery_status="no",
+                         battery_reason="人工确认"))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.battery_status == "no"
+    assert item.battery_reason == "人工确认"

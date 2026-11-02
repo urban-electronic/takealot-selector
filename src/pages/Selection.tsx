@@ -539,6 +539,8 @@ export default function Selection() {
         // 品名是本地生成的，不占配额，但用户得知道「这些名字是机器起的」，
         // 抽查几条再往下走。
         if (last.names_filled) bits.push(`${last.names_filled} 个补了中文品名（按标题自动生成，建议抽查）`);
+        // 带电判定同理：只有判出明确结论的才计入，判不准的仍是「待确认」。
+        if (last.battery_judged) bits.push(`${last.battery_judged} 个判了普货/带电（判不准的标「待确认」）`);
         if (last.public_access_blocked) {
           setNotice({kind:'warn',text:`读取已停止：${bits.join('，')}；公开接口访问受限，已停止后续批次${last.remaining ? `，还有 ${last.remaining} 个待处理` : ''}。`});
         } else if (last.remaining) {

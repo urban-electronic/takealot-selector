@@ -535,6 +535,8 @@ export interface SelectionEnrichResult {
   portal_retry_after?: number;
   /** 这一轮顺手补了几个中文品名（纯本地词表匹配，不占配额） */
   names_filled?: number;
+  /** 这一轮按标题判出明确普货/带电结论的条数（同样不占配额） */
+  battery_judged?: number;
   /** 从卖家 API 或目录接口拿到重尺的条数 */
   with_dimensions: number;
   /** 直接从产品主档抄到重尺的条数（自家商品的主路径） */

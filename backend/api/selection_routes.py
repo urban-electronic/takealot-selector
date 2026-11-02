@@ -47,7 +47,12 @@ from api.store_routes import get_store_id
 from database import get_db
 from models import FeeCategory, Product, SelectionItem
 from services import takealot_public_api as pub
-from services.battery_guess import guess_battery, suggested_shipping
+from services.battery_guess import (
+    SEA_BATTERY,
+    SEA_GENERAL,
+    guess_battery,
+    suggested_shipping,
+)
 from services.chinese_short_name import short_chinese_name
 from services.fee_category_matcher import match_fee_category
 from services.product_calculator import (
@@ -760,6 +765,51 @@ def _pending_rows():
     )
 
 
+def _backfill_battery(db: Session, query) -> int:
+    """按标题给还没有结论的行判一次普货/带电，返回判出结论的条数。
+
+    和品名一样是纯本地正则，不花门户配额，所以放在 `enrich` 最前面——这一轮
+    即使没有要抓的行，历史数据也能一次补齐。
+
+    只补「还没结论」的行：已经有 yes / no 的（包括人工在卡片上点过的）不动。
+    运输方式的处理分两种：
+      - 空着 → 按判定填（默认海运，判成带电就填「海运带电」）
+      - 已经是「海运普货」而判定是带电 → 改成「海运带电」
+    后一种是**故意**的：带电报普货会被货代退运，这个方向的错误必须自动纠正。
+    反过来用户手选了空运的，一个字都不碰。
+    """
+    rows = query.filter(
+        or_(
+            SelectionItem.battery_status == "",
+            SelectionItem.battery_status.is_(None),
+            SelectionItem.shipping_method == "",
+            SelectionItem.shipping_method.is_(None),
+        )
+    ).all()
+
+    judged = 0
+    touched = 0
+    for item in rows:
+        status = item.battery_status or ""
+        if not status:
+            verdict, reason = guess_battery(item.product_name, item.note)
+            if verdict:
+                item.battery_status = status = verdict
+                item.battery_reason = reason
+                judged += 1
+
+        if not item.shipping_method:
+            item.shipping_method = suggested_shipping(status)
+            touched += 1
+        elif status == "yes" and item.shipping_method == SEA_GENERAL:
+            item.shipping_method = SEA_BATTERY
+            touched += 1
+
+    if judged or touched:
+        db.commit()
+    return judged
+
+
 def _backfill_chinese_names(db: Session, query) -> int:
     """给还没有中文品名的行生成五字品名，返回补了几个。
 
@@ -801,9 +851,10 @@ def enrich(
     query = query.filter(SelectionItem.promoted_product_id.is_(None))
     scoped_query = query  # 后续计数复用同一店铺/ids/批次范围，不带本轮limit。
 
-    # 中文品名是纯本地计算，先补上——这一步不花配额、不会失败，所以放在最前面，
-    # 保证「即使这轮没有要抓的行」品名也能生成。
+    # 中文品名和普货/带电判定都是纯本地计算，先补上——这两步不花配额、不会失败，
+    # 所以放在最前面，保证「即使这轮没有要抓的行」历史数据也能一次补齐。
     names_filled = _backfill_chinese_names(db, scoped_query)
+    battery_judged = _backfill_battery(db, scoped_query)
 
     # 有可用的门户通道时，「已经 ok 但还没有重尺」的行也值得再跑一轮：门户一个
     # 请求就同时给图和 Takealot 实测的长宽高，补一次就到位。
@@ -833,11 +884,14 @@ def enrich(
     if not targets:
         # 字段要和正常返回一致：前端读 `pending` / `portal_*` 时不该突然是
         # undefined，否则收尾文案会漏掉「还有多少没抓」。
+        #
+        # `portal_configured` 用真实值而不是写死 False：令牌配着、只是这轮没东西
+        # 可抓的时候，前端不该提示「去配令牌」。
         return {"processed": 0, "ok": 0, "failed": 0, "pending": 0,
                 "with_dimensions": 0, "from_product_list": 0, "skipped_network": 0,
                 "remaining": 0, "seller_api": "", "failures": [],
-                "names_filled": names_filled,
-                "portal_configured": False, "portal_limited": False,
+                "names_filled": names_filled, "battery_judged": battery_judged,
+                "portal_configured": portal_ready, "portal_limited": False,
                 "portal_retry_after": 0.0}
 
     # --- 第一优先：产品主档。自家商品的图/类目/重尺库里已经有了 ---
@@ -1057,8 +1111,9 @@ def enrich(
         ),
         # 配额什么时候回来。前端按这个值等一会儿再继续，而不是立刻重试空转。
         "portal_retry_after": portal_retry_after,
-        # 这一轮顺手补了几个中文品名（纯本地计算，不占配额）
+        # 这一轮顺手补了几个中文品名 / 判了几条普货带电（纯本地计算，不占配额）
         "names_filled": names_filled,
+        "battery_judged": battery_judged,
         "failures": failures,
     }
 
