@@ -6,6 +6,7 @@ import hmac
 import os
 import re
 import sys
+import uuid
 
 # 确保 backend 目录在 path 中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -401,15 +402,35 @@ def _ensure_columns():
                 "shipping_method": "TEXT",
                 "battery_status": "TEXT DEFAULT ''",
                 "battery_reason": "TEXT DEFAULT ''",
-                # 品名是机器起的还是人填的。老库补列时默认 0（当人填），
-                # 宁可不重算也不要把人工填的覆盖掉。
-                "chinese_name_auto": "BOOLEAN DEFAULT 0",
+                # 品名是机器起的还是人填的：1 机器、0 人工、NULL 未知（本列上线
+                # 之前就存在的行）。NULL 才允许按新词表重算——用 NULL 而不是 0
+                # 是因为那批老名字是更早的翻译器拼出来的（"女士袋黑"、
+                # "XL\nL\n3XL"），当成人工填的就永远改不动了。
+                "chinese_name_auto": "BOOLEAN",
             }
             with engine.begin() as conn:
                 for name, sql_type in selection_additions.items():
                     if name not in selection_cols:
                         conn.execute(text(f"ALTER TABLE selection_items ADD COLUMN {name} {sql_type}"))
                         print(f"[startup] selection_items 表已补列 {name}", flush=True)
+
+                # 一次性迁移：`chinese_name_auto` 第一次上线时带的是 DEFAULT 0，
+                # 1804 行老数据全被写成了「人工填的」，词表升级就再也改不动它们。
+                # 那批名字其实是更早的翻译器拼的（"女士袋黑"、"XL\nL\n3XL"），
+                # 统一改成 NULL（来源未知）让它们能被重算。跑过一次就记在
+                # system_settings 里，不会每次启动都清。
+                marker = "migration.chinese_name_auto_null"
+                done = conn.execute(
+                    text("SELECT 1 FROM system_settings WHERE key = :k"), {"k": marker}
+                ).first()
+                if not done:
+                    conn.execute(text("UPDATE selection_items SET chinese_name_auto = NULL"))
+                    conn.execute(
+                        text("INSERT INTO system_settings (id, key, value) "
+                             "VALUES (:id, :k, '1')"),
+                        {"id": uuid.uuid4().hex, "k": marker},
+                    )
+                    print("[startup] chinese_name_auto 已统一标记为「来源未知」", flush=True)
         if "stores" in insp.get_table_names():
             store_cols = {c["name"] for c in insp.get_columns("stores")}
             store_additions = {

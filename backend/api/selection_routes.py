@@ -819,30 +819,23 @@ def _backfill_chinese_names(db: Session, query) -> int:
     纯本地词表匹配、不发网络请求，所以放在 `enrich` 最前面——这一轮即使没有
     要抓的行，品名也能补齐。空标题、一个词都对不上的标题保持为空（不猜）。
 
-    两种情况会写：
-      - 名字是空的 → 生成一个，并标记为「机器起的」
-      - 名字是机器起的（`chinese_name_auto`）且新词表算出来不一样 → 更新
-
-    第二种是为了让词表升级能覆盖到历史数据：线上曾经把 "Work Light Bar" 取成
-    「杆」，补上 `light bar → 灯条` 之后老数据得跟着变。人工填的（含导入表里
-    带的）`chinese_name_auto` 是 False，一个字都不会被改。
+    `chinese_name_auto` 是三态：
+      True  机器起的 → 跟着新词表重算
+      False 人填的   → 一个字都不动
+      None  来源未知（本列上线前就有的老数据）→ 也重算，那批名字是更早的
+            翻译器拼出来的（"女士袋黑"、"XL\\nL\\n3XL"），不重算就永远错着
     """
-    rows = query.filter(
-        or_(
-            SelectionItem.chinese_product_name == "",
-            SelectionItem.chinese_product_name.is_(None),
-            SelectionItem.chinese_name_auto.is_(True),
-        )
-    ).all()
     filled = 0
-    for item in rows:
-        name = short_chinese_name(item.product_name)
-        if not name:
+    for item in query.all():
+        name = item.chinese_product_name or ""
+        if name and item.chinese_name_auto is False:
+            continue  # 人填的，不碰
+        fresh = short_chinese_name(item.product_name)
+        if not fresh or fresh == name:
             continue
-        if name != item.chinese_product_name:
-            item.chinese_product_name = name
-            item.chinese_name_auto = True
-            filled += 1
+        item.chinese_product_name = fresh
+        item.chinese_name_auto = True
+        filled += 1
     if filled:
         db.commit()
     return filled

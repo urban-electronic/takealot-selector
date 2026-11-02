@@ -1965,3 +1965,31 @@ def test_patch_marks_name_as_manual(db):
     db.refresh(item)
     assert item.chinese_name_auto is False
     assert item.chinese_product_name == "灯条（自定）"
+
+
+def test_unknown_name_source_is_recomputed(db, monkeypatch):
+    """来源未知（本列上线前的老数据）也按新词表重算。
+
+    那批名字是更早的翻译器拼出来的（"女士袋黑"、"XL\nL\n3XL"），当成人工填的
+    就永远改不动了。`chinese_name_auto` 用 None 表示未知，不是 False。
+    """
+    db.add(_offline_item(product_name="COB LED Work Light Bar 3 Color",
+                         chinese_product_name="杆", chinese_name_auto=None))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert db.query(SelectionItem).first().chinese_product_name == "灯条"
+
+
+def test_hand_written_name_is_never_recomputed(db, monkeypatch):
+    """人工填的（False）不管新词表算出什么，都不覆盖。"""
+    db.add(_offline_item(product_name="Yoga Mat - Black",
+                         chinese_product_name="瑜伽垫（加厚）", chinese_name_auto=False))
+    db.commit()
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: pytest.fail("不该打网络"))
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert db.query(SelectionItem).first().chinese_product_name == "瑜伽垫（加厚）"
