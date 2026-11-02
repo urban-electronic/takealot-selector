@@ -1639,3 +1639,70 @@ def test_genuine_failures_stay_failed(db, monkeypatch):
     assert result["processed"] == 0
     assert result["remaining"] == 0
     assert db.query(SelectionItem).first().enrich_status == "failed"
+
+
+def _mark_ok_without_dimensions(db):
+    """把行标成「图和名字都有了，但没有重尺」——这正是线上 692 行的状态。"""
+    item = db.query(SelectionItem).first()
+    item.product_image_url = "https://media.takealot.com/existing.jpg"
+    item.actual_sale_price_zar = 299.0
+    item.fee_category = "Homeware"
+    item.enrich_status = "ok"
+    item.enrich_message = ""
+    item.dimensions_source = ""
+    db.commit()
+    return item
+
+
+def test_rows_missing_dimensions_are_revisited_when_the_portal_is_available(db, monkeypatch):
+    """主图有了、重尺还没有的行，配了门户就该再跑一轮把它补上。
+
+    线上 692 行是这种状态：图早就有了所以标成 ok，但重尺一个都没有。只看
+    `enrich_status` 的话它们永远不会再被选中，重尺也就永远补不上。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _mark_ok_without_dimensions(db)
+    _configure_portal(db, monkeypatch, {})
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["processed"] == 1
+    assert result["with_dimensions"] == 1
+    item = db.query(SelectionItem).first()
+    assert item.length_mm == 300.0
+    assert item.dimensions_source == "portal"
+    # 补完就收敛，不会每轮再来一次
+    assert result["remaining"] == 0
+
+
+def test_rows_missing_dimensions_are_left_alone_without_a_portal(db, monkeypatch):
+    """没有门户通道时不要动它们：公开接口本来就没有重尺，只会白打一轮网络。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _mark_ok_without_dimensions(db)
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: pytest.fail("没有门户时不该为补重尺重抓"))
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["processed"] == 0
+    assert result["remaining"] == 0
+    assert db.query(SelectionItem).first().dimensions_source == ""
+
+
+def test_expired_portal_token_does_not_trigger_dimension_backfill(db, monkeypatch):
+    """令牌过期时同样别动：那一轮只会拿到一片 401，然后永远收敛不了。"""
+    from services import takealot_portal_api as portal
+
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID700"]])
+    _mark_ok_without_dimensions(db)
+    monkeypatch.setenv("API_KEY", MASTER_KEY)
+    portal.save_token(db, "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.sig")
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [])
+
+    result = enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert result["processed"] == 0
+    assert result["remaining"] == 0

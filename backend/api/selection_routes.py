@@ -746,8 +746,30 @@ def enrich(
         query = query.filter(SelectionItem.batch_id == data.batch_id)
     query = query.filter(SelectionItem.promoted_product_id.is_(None))
     scoped_query = query  # 后续计数复用同一店铺/ids/批次范围，不带本轮limit。
+
+    # 有可用的门户通道时，「已经 ok 但还没有重尺」的行也值得再跑一轮：门户一个
+    # 请求就同时给图和 Takealot 实测的长宽高，补一次就到位。
+    #
+    # 为什么必须卡着「门户可用」这个条件：没有通道时公开接口根本没有重尺，这些行
+    # 会每一轮都白打一次网络（而且大概率还是 429），永远收敛不了。有了通道之后
+    # 它们要么拿到 `portal`，要么被标成 `portal_empty`，下一轮就不再入选。
+    from services import takealot_portal_api as portal_api
+    portal_ready = bool(portal_api.configured_token(db)) and not portal_api.token_state(db).get("expired")
+
+    pending_filter = _pending_rows()
+    if portal_ready:
+        pending_filter = or_(
+            pending_filter,
+            and_(
+                SelectionItem.enrich_status == "ok",
+                or_(SelectionItem.dimensions_source == "",
+                    SelectionItem.dimensions_source.is_(None)),
+                SelectionItem.plid.isnot(None),
+                SelectionItem.plid != "",
+            ),
+        )
     if not data.refresh:
-        query = query.filter(_pending_rows())
+        query = query.filter(pending_filter)
     targets = query.order_by(SelectionItem.created_at).limit(data.limit).all()
 
     if not targets:
@@ -845,7 +867,7 @@ def enrich(
     portal_retry_after = 0.0
     if need_portal:
         from services import takealot_portal_api as _portal
-        portal_configured = bool(_portal.configured_token(db))
+        portal_configured = portal_ready
         portal_records, dims_from_portal = _fill_portal(db, targets, need_portal)
         portal_deferred = {
             plid for plid, record in portal_records.items()
@@ -944,7 +966,9 @@ def enrich(
                 })
     db.commit()
 
-    remaining = scoped_query.filter(_pending_rows()).count()
+    # 和本轮的目标查询用同一个条件，否则会出现「remaining 说还有、下一轮却选不中」
+    # 或者反过来的空转。
+    remaining = scoped_query.filter(pending_filter).count()
 
     return {
         # 推迟到下一轮的不算「已处理」——否则前端的「已抓取 N 个」会虚高，
