@@ -199,3 +199,20 @@ def test_light_bar_is_not_a_bare_pole():
     assert short_chinese_name(
         "COB LED Headlamp USB Rechargeable Headlight Torch Work Light Bar 3 Color"
     ) == "灯条"
+
+
+def test_generic_kit_is_not_the_product():
+    """`… Scissors Kit` 的本体是剪刀，不是「套装」。
+
+    kit / set 是包装单位，说明不了是什么东西；只有前面确实没有更具体的名词时
+    才退回去用它。线上 70 条曾经全叫「套装」。
+    """
+    assert short_chinese_name("Hair Cutting Scissors Kit 15pc") == "剪刀"
+    assert short_chinese_name("DIY Scented Candle Making Kit") == "蜡烛"
+    assert short_chinese_name("Multi-Purpose Fuel Liquid Transfer Pump Kit") == "泵"
+
+
+def test_generic_kit_still_used_when_nothing_else():
+    """真的只有一个泛词时还得用它，不能直接返回空。"""
+    assert short_chinese_name("Assorted Kit") == "套装"
+    assert short_chinese_name("Gift Set") == "礼盒"

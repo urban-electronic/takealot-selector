@@ -484,13 +484,27 @@ def _pick_phrase(body: str) -> Optional[str]:
     return best[2] if best else None
 
 
+# 「套装 / 组合」这类泛词：标题里最后那个名词常常是它（"Dog Grooming Scissors
+# Kit"），但它说明不了是什么东西。只有在前面找不到更具体的本体时才用它。
+_GENERIC_HEADS = {"set", "kit", "pack", "combo", "bundle", "piece"}
+
+
 def _pick_core(words: List[str]) -> Tuple[Optional[str], int]:
-    """从后往前找本体。返回 (中文, 命中位置)。"""
+    """从后往前找本体。返回 (中文, 命中位置)。
+
+    先找具体名词；一路只碰到 set/kit 这种泛词的，才退回去用它。
+    """
+    generic: Optional[Tuple[str, int]] = None
     for index in range(len(words) - 1, -1, -1):
         word = _singular(words[index])
-        if word in HEAD_NOUNS:
-            return HEAD_NOUNS[word], index
-    return None, -1
+        if word not in HEAD_NOUNS:
+            continue
+        if word in _GENERIC_HEADS:
+            if generic is None:
+                generic = (HEAD_NOUNS[word], index)
+            continue
+        return HEAD_NOUNS[word], index
+    return generic if generic else (None, -1)
 
 
 def _pick_modifier(words: List[str], before: int, room: int) -> Optional[str]:
