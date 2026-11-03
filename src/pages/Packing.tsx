@@ -116,6 +116,7 @@ function needsChineseReview(label: string): boolean {
 
 const PACKING_DRAFT_KEY = 'packingDraftV1';
 const PRODUCT_SELECTED_SKUS_KEY = 'productListSelectedSkus';
+const PRODUCT_SELECTED_PRODUCTS_KEY = 'productListSelectedProducts';
 
 // 「读列表失败」和「动作失败」是两件事：写成功后读列表失败，两条要同时看得见
 // （PACK-BANNER-EXCLUSIVE-01）。所以这条提示不经过 notice()/fail()，而是直接写
@@ -931,6 +932,9 @@ export default function Packing() {
       setImportMissing([]);
       localStorage.removeItem(getStoreStorageKey(PACKING_DRAFT_KEY));
       localStorage.removeItem(getStoreStorageKey(PRODUCT_SELECTED_SKUS_KEY));
+      // 列表页还有一套产品级勾选（批量上架用），导出后一起清掉，
+      // 否则回去还是一片已勾选、点批量上架会重复提交同一批。
+      localStorage.removeItem(getStoreStorageKey(PRODUCT_SELECTED_PRODUCTS_KEY));
       const sp = new URLSearchParams(searchParams);
       sp.delete('import');
       setSearchParams(sp, { replace: true });

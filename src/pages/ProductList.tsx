@@ -69,6 +69,12 @@ const RRP_MULTIPLIER = 1.5;
 const LS_VISIBLE_KEY = 'productListVisibleColumns';
 const LS_ORDER_KEY = 'productListColumnOrder';
 const LS_SELECTED_SKUS_KEY = 'productListSelectedSkus';
+// 产品级勾选（按 product.id）与 SKU 级勾选是两件事：
+//   - 批量上架要的是「产品」（后端按 product_id 自己拿 PLID/TSIN 换 Barcode），
+//     未上架的产品本来就没有 SKU，用 SKU 集合做门禁会把要上架的行全挡在门外；
+//   - 出标签、进装箱单要的是「SKU / EAN-13」，那是另一套。
+// 早前只存 SKU 集合，于是「没上架的勾不上、已上架的才能勾」—— 逻辑正好反了。
+const LS_SELECTED_PRODUCTS_KEY = 'productListSelectedProducts';
 
 /** Validate saved column order against canonical allColumns keys:
  *  - Remove stale keys no longer in allColumns
@@ -242,6 +248,31 @@ export default function ProductList() {
     } catch { return new Set(); }
   });
 
+  // 产品级勾选：批量上架只看这个集合，未上架（无 SKU）的产品同样能勾。
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(() => {
+    try {
+      const saved = JSON.parse(readStoreStorage(LS_SELECTED_PRODUCTS_KEY) || '[]');
+      return new Set(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []);
+    } catch { return new Set(); }
+  });
+
+  /** 勾/取消勾一个产品：产品 id 一定要动，SKU 集合只在有 SKU 时跟着动，
+   *  这样标签/装箱单的口径不变，而没 SKU 的行也不会被排除在上架之外。 */
+  const toggleProductSelection = (product: Product, checked: boolean) => {
+    setSelectedProductIds(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(product.id); else next.delete(product.id);
+      return next;
+    });
+    const variants = skuVariants(product.sku || '');
+    if (!variants.length) return;
+    setSelectedSkus(prev => {
+      const next = new Set(prev);
+      variants.forEach(sku => { if (checked) next.add(sku); else next.delete(sku); });
+      return next;
+    });
+  };
+
   const [labelLoading, setLabelLoading] = useState(false);
   // 「生成成功、但跳过了几个」不是错误，不该占用页面顶部那条红色告警：
   // `error` 同时是加载失败的位置，红字会让人以为整页没读到。
@@ -318,6 +349,10 @@ export default function ProductList() {
     // 每次勾选都会写；配额满时若抛出会让整个列表崩掉
     safeSetItem(getStoreStorageKey(LS_SELECTED_SKUS_KEY), JSON.stringify(Array.from(selectedSkus)));
   }, [selectedSkus]);
+
+  useEffect(() => {
+    safeSetItem(getStoreStorageKey(LS_SELECTED_PRODUCTS_KEY), JSON.stringify(Array.from(selectedProductIds)));
+  }, [selectedProductIds]);
 
   useEffect(() => {
     if (!contextProduct) return;
@@ -568,8 +603,14 @@ export default function ProductList() {
   // 第二次必然撞上「本店已在该变体有报价」。勾选里包含当前筛选看不到的 SKU 时，
   // 它们无法对应到产品行，这里只处理列表里现有的行，数量直接反映在按钮上。
   const listingTargets = (() => {
-    if (!selectedSkus.size) return [] as Product[];
-    return products.filter(p => skuVariants(p.sku || '').some(sku => selectedSkus.has(sku)));
+    if (!selectedProductIds.size) return [] as Product[];
+    return products.filter(p => selectedProductIds.has(p.id));
+  })();
+  // 勾选里有多少产品还没 SKU：它们能上架，但出不了标签、进不了装箱单，
+  // 按钮上把这个差额说出来，免得「勾了 5 个只进 2 个」看起来像丢了。
+  const selectedWithoutSku = (() => {
+    if (!selectedProductIds.size) return 0;
+    return products.filter(p => selectedProductIds.has(p.id) && !skuVariants(p.sku || '').length).length;
   })();
   const listBusy = listingIds.size > 0 || listBatchProgress !== '';
 
@@ -999,40 +1040,26 @@ export default function ProductList() {
   const renderCell = (p: Product, colKey: string) => {
     const isRefreshing = refreshingIds.has(p.id);
     switch (colKey) {
-      case 'select':
-        // 无 SKU 的产品挂不了 offer、也不进批量；给一个灰掉的框而不是「无SKU」三个字，
-        // 用户才能认出这一列就是勾选列，不会以为表格没有勾选功能。
-        if (!p.sku) {
-          return (
-            <input
-              type="checkbox"
-              disabled
-              aria-label={`${p.product_no} 无 SKU，不可勾选`}
-              title="该产品没有 SKU，无法上架或加入装箱单"
-              style={{ width: 'auto', opacity: 0.35, cursor: 'not-allowed' }}
-            />
-          );
-        }
+      case 'select': {
+        // 勾选是产品级的：要上架的产品通常还没有 SKU（SKU 由平台建 offer 后回写），
+        // 早前用「有没有 SKU」当勾选门槛，恰好把待上架的行全锁死了。
         const variants = skuVariants(p.sku);
-        const allVariantsChecked = variants.length > 0 && variants.every(sku => selectedSkus.has(sku));
+        const checked = selectedProductIds.has(p.id);
         return (
           <input
             type="checkbox"
-            aria-label={`选择产品：${p.sku || p.product_no}`}
-            checked={allVariantsChecked}
-            onChange={() => {
-              setSelectedSkus(prev => {
-                const next = new Set(prev);
-                variants.forEach(sku => {
-                  if (allVariantsChecked) next.delete(sku); else next.add(sku);
-                });
-                return next;
-              });
-            }}
-            title={variants.length > 1 ? '勾选该产品的全部颜色分支（可批量上架 / 加入装箱单）' : '勾选后可批量上架 / 加入装箱单'}
+            aria-label={`选择产品：${p.product_no ?? p.id}`}
+            checked={checked}
+            onChange={() => toggleProductSelection(p, !checked)}
+            title={
+              p.sku
+                ? (variants.length > 1 ? '勾选该产品的全部颜色分支（批量上架 / 加入装箱单 / 出标签）' : '勾选后可批量上架、加入装箱单或出标签')
+                : '该产品还没有 SKU（未上架）：可勾选做批量上架；出标签和装箱单需要 SKU，会跳过它'
+            }
             style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)', cursor: 'pointer' }}
           />
         );
+      }
       case 'product_no':
         return p.product_no;
       case 'image':
@@ -1303,8 +1330,9 @@ export default function ProductList() {
     const def = colDefMap.get(colKey);
     if (!def) return null;
     if (colKey === 'select') {
-      const pageSkus = pagedProducts.flatMap(p => skuVariants(p.sku));
-      const allChecked = pageSkus.length > 0 && pageSkus.every(s => selectedSkus.has(s));
+      // 全选按「产品」判断，与行内勾选同一口径：没 SKU 的行也在其中。
+      const pageIds = pagedProducts.map(p => p.id);
+      const allChecked = pageIds.length > 0 && pageIds.every(id => selectedProductIds.has(id));
       return (
         <th
           key={colKey}
@@ -1314,13 +1342,18 @@ export default function ProductList() {
             type="checkbox"
             checked={allChecked}
             onChange={(e) => {
+              const pageProducts = pagedProducts;
+              setSelectedProductIds(prev => {
+                const next = new Set(prev);
+                pageProducts.forEach(p => { if (e.target.checked) next.add(p.id); else next.delete(p.id); });
+                return next;
+              });
+              // SKU 集合跟着走，标签/装箱单的口径不能被全选漏掉。
               setSelectedSkus(prev => {
                 const next = new Set(prev);
-                if (e.target.checked) {
-                  pageSkus.forEach(s => next.add(s));
-                } else {
-                  pageSkus.forEach(s => next.delete(s));
-                }
+                pageProducts.forEach(p => {
+                  skuVariants(p.sku || '').forEach(sku => { if (e.target.checked) next.add(sku); else next.delete(sku); });
+                });
                 return next;
               });
             }}
@@ -1674,8 +1707,8 @@ export default function ProductList() {
             title={dataSource !== 'remote'
               ? '上架要走卖家 API（令牌在服务端），只在远程数据源可用'
               : listingTargets.length === 0
-                ? '请在表格最左侧「勾选」列勾中要上架的产品（需有 SKU），可点表头复选框全选当前页'
-                : `把选中的 ${listingTargets.length} 个产品挂到 Takealot：售价取产品已有售价，RRP = 售价 ×${RRP_MULTIPLIER}，不预售，SKU 由平台生成`}
+                ? '请在表格最左侧「勾选」列勾中要上架的产品（未上架、无 SKU 的也能勾），可点表头复选框全选当前页'
+                : `把选中的 ${listingTargets.length} 个产品挂到 Takealot：售价取产品已有售价，RRP = 售价 ×${RRP_MULTIPLIER}，不预售，SKU 由平台生成；本店已有报价的会被平台拒绝并在结果里列出`}
             onClick={() => setListBatchPlan(listingTargets)}
           >
             {listBatchProgress ? `${listBatchProgress}…` : `批量上架${listingTargets.length > 0 ? ` (${listingTargets.length})` : ''}`}
@@ -1685,7 +1718,11 @@ export default function ProductList() {
         <button
           className="btn btn-primary btn-sm"
           disabled={selectedSkus.size === 0}
-          title={selectedSkus.size === 0 ? '请先勾选产品（需有 SKU）' : `将选中的 ${selectedSkus.size} 个产品加入装箱单`}
+          title={selectedProductIds.size === 0
+            ? '请先勾选产品'
+            : selectedSkus.size === 0
+              ? '勾选的产品都还没有 SKU，加入装箱单需要 SKU'
+              : `将选中的 ${selectedSkus.size} 个 SKU 加入装箱单${selectedWithoutSku ? `（另有 ${selectedWithoutSku} 个产品无 SKU，会跳过）` : ''}`}
           onClick={() => {
             const skus = Array.from(selectedSkus);
             navigate(`/packing?import=${encodeURIComponent(skus.join(','))}`);
@@ -1756,11 +1793,22 @@ export default function ProductList() {
                           <div className="product-branch-rail">
                             {branches.map((sku, index) => (
                               <div key={sku} className={`product-branch-item ${index === 0 ? 'primary' : ''}`}>
-                                <input type="checkbox" checked={selectedSkus.has(sku)} onChange={() => setSelectedSkus(prev => {
-                                  const next = new Set(prev);
-                                  if (next.has(sku)) next.delete(sku); else next.add(sku);
-                                  return next;
-                                })} />
+                                <input type="checkbox" checked={selectedSkus.has(sku)} onChange={() => {
+                                  const willCheck = !selectedSkus.has(sku);
+                                  setSelectedSkus(prev => {
+                                    const next = new Set(prev);
+                                    if (willCheck) next.add(sku); else next.delete(sku);
+                                    return next;
+                                  });
+                                  // 分支勾选联动行首的产品级勾选：只要还有一个分支在选，
+                                  // 产品就算被选中，批量上架才不会漏掉它。
+                                  setSelectedProductIds(prev => {
+                                    const ids = new Set(prev);
+                                    const anySelected = skuVariants(p.sku || '').some(s => (s === sku ? willCheck : selectedSkus.has(s)));
+                                    if (anySelected) ids.add(p.id); else ids.delete(p.id);
+                                    return ids;
+                                  });
+                                }} />
                                 <span className="branch-image" title={p.product_image_url || p.product_image_path || '无图片URL'}>
                                   {p.product_image_url || p.product_image_path ? (
                                     <ProductImage src={api.getImageUrl(p.product_image_url || p.product_image_path || '', 160)} referrerPolicy="no-referrer" />

@@ -16,6 +16,8 @@ const PRODUCTS = [
   { id: 'p1', product_no: 617, product_name: 'Fixture A', sku: '9900000000011', actual_sale_price_zar: 200, link_status: '未购买', variants: null },
   // 一个产品挂两个 SKU：勾选是 SKU 粒度，批量必须按产品去重，否则第二条必然 409。
   { id: 'p2', product_no: 618, product_name: 'Fixture B', sku: '9900000000022\n9900000000033', actual_sale_price_zar: 350, link_status: '未购买', variants: null },
+  // 未上架：还没有 SKU（SKU 由平台建 offer 后回写），正是最该能勾上架的那一类。
+  { id: 'p3', product_no: 619, product_name: 'Fixture C', sku: '', actual_sale_price_zar: 120, link_status: '未购买', variants: null },
 ];
 
 const listCalls = [], listFailures = [];
@@ -65,12 +67,25 @@ const body = () => document.body.textContent;
   assert.match(body(), /#617 已上架/, '单条要留在 banner 里给回执');
   assert.match(body(), /SKU 9902739445897/);
 
-  // 3. 勾选全部：两个产品共 3 个 SKU，批量按钮按产品去重后应是 2。
+  // 3. 勾选门槛是「产品」不是「有没有 SKU」：没 SKU（未上架）的行必须能勾，
+  //    否则最该上架的那批正好被锁在门外——这就是曾经「逻辑弄反」的地方。
+  const rowBox = no => [...document.querySelectorAll('input[type="checkbox"][aria-label^="选择产品"]')]
+    .find(c => (c.getAttribute('aria-label') || '').includes(String(no)));
+  const boxNoSku = rowBox(619);
+  assert.ok(boxNoSku, '没有 SKU 的产品也要有勾选框');
+  assert.equal(boxNoSku.disabled, false, '未上架/无 SKU 的产品必须可勾选');
+  await act(async () => click(boxNoSku));
+  assert.equal(rowBox(619).checked, true, '点一下就要勾上');
+  assert.match(buttonStarting('批量上架').textContent, /批量上架 \(1\)/, '无 SKU 的产品要计入可上架数量');
+  await act(async () => click(rowBox(619)));
+
+  // 4. 勾选全部：3 个产品（其中 2 个带共 3 个 SKU），批量按钮按产品去重后应是 3。
   const selectAll = document.querySelector('input[title="全选当前页"]');
   assert.ok(selectAll, '表头要有全选');
   await act(async () => { click(selectAll); });
   const batch = buttonStarting('批量上架');
-  assert.match(batch.textContent, /批量上架 \(2\)/, '一个产品的多个 SKU 只算一次上架');
+  assert.match(batch.textContent, /批量上架 \(3\)/, '一个产品的多个 SKU 只算一次上架');
+  assert.equal(batch.disabled, false, '有勾选就能批量上架');
 
   // 4. 批量先确认再提交：确认框要说清 RRP 倍数与不预售，取消不发请求。
   const before = listCalls.length;
@@ -89,10 +104,10 @@ const body = () => document.body.textContent;
   await act(async () => click(buttonStarting('批量上架')));
   await act(async () => click([...document.querySelector('[aria-label="批量上架确认"]').querySelectorAll('button')].find(b => b.textContent.trim() === '确认上架')));
   await act(async () => { await new Promise(r => setTimeout(r, 0)); });
-  assert.equal(listCalls.length, before + 2, '两个产品各提交一次');
-  assert.deepEqual(listCalls.slice(before).map(c => c.id), ['p1', 'p2'], '按列表顺序逐条提交');
+  assert.equal(listCalls.length, before + 3, '三个产品各提交一次');
+  assert.deepEqual(listCalls.slice(before).map(c => c.id), ['p1', 'p2', 'p3'], '按列表顺序逐条提交');
   assert.ok(listCalls.slice(before).every(c => c.options.rrp_multiplier === 1.5));
-  assert.match(body(), /批量上架完成：成功 1 个，失败 1 个/, '失败不能被吞掉');
+  assert.match(body(), /批量上架完成：成功 2 个，失败 1 个/, '失败不能被吞掉，成功数也要准');
   assert.match(body(), /有报价/, '失败要带平台给的原因');
 
   clearTimeout(watchdog);
