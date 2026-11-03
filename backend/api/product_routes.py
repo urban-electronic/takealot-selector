@@ -1036,7 +1036,11 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
 
     result = create_offer(key, picked['barcode'], price, rrp=rrp)
     if not result.get('ok'):
-        raise HTTPException(status_code=502, detail=f"平台拒绝创建 offer：{result.get('reason')}")
+        detail = f"平台拒绝创建 offer：{result.get('reason')}"
+        if result.get('status'):
+            detail += f"（HTTP {result.get('status')}"
+            detail += f" @ {result.get('host')}）" if result.get('host') else "）"
+        raise HTTPException(status_code=502, detail=detail)
     offer = ((result.get('payload') or {}).get('offer') or {}) if isinstance(result.get('payload'), dict) else {}
     sku = str(offer.get('sku') or '').strip()
     if sku and not (p.sku or '').strip():

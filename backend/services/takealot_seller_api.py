@@ -210,6 +210,10 @@ ASSIST_FIELDS = {'sku': 'SKU', 'product_name': '英文标题', 'product_image_ur
 
 
 MARKETPLACE_BASE = 'https://marketplace-api.takealot.com'
+# Offer 写入的官方 host 是 seller-api（swagger 的 host 字段）；读 v1/offers 走
+# marketplace-api。两个 host 都吃同一把 X-API-Key，但只有 seller-api 提供 v2 写入，
+# 所以按顺序试：405/404 视为「这个 host 没有该方法」，换下一个；其它状态码立即返回。
+OFFER_WRITE_BASES = ('https://seller-api.takealot.com', MARKETPLACE_BASE)
 
 
 def _positive_int(value):
@@ -251,11 +255,17 @@ def create_offer(key, identifier, selling_price, rrp=None, sku=None, leadtime_da
         body['leadtime_stock'] = leadtime_stock
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-            response = client.post(f'{MARKETPLACE_BASE}/v2/offers/offer',
-                                   params={'identifier': barcode}, json=body,
-                                   headers={'X-API-Key': key}, timeout=timeout)
+            response = None
+            for base in OFFER_WRITE_BASES:
+                response = client.post(f'{base}/v2/offers/offer',
+                                       params={'identifier': barcode}, json=body,
+                                       headers={'X-API-Key': key}, timeout=timeout)
+                if response.status_code not in (404, 405):
+                    break
     except Exception as error:
         return {'ok': False, 'status': 0, 'reason': f'创建 offer 请求失败：{type(error).__name__}'}
+    if response is None:
+        return {'ok': False, 'status': 0, 'reason': '创建 offer 请求未发出'}
     payload = None
     try:
         payload = response.json()
@@ -267,7 +277,9 @@ def create_offer(key, identifier, selling_price, rrp=None, sku=None, leadtime_da
             message = str(payload.get('message') or '')
         if not message and isinstance(payload, list) and payload:
             message = str(payload[0])[:200]
+        host = getattr(getattr(response, 'request', None), 'url', None)
         return {'ok': False, 'status': response.status_code,
+                'host': getattr(host, 'host', ''),
                 'reason': message or f'平台返回 {response.status_code}',
                 'payload': payload}
     return {'ok': True, 'status': response.status_code, 'reason': '',
