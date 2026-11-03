@@ -312,6 +312,39 @@ export const refreshPrice = (id: string, source: 'official' | 'seller' | 'detail
     method: 'POST',
   });
 
+// ---- 一键上架（等同卖家后台 Add My Offer）----
+// 变体 Barcode 由后端从卖家门户目录取；售价取产品已有售价；RRP 默认 1.5 倍；
+// 不传 SKU 交给平台生成；不传交期就是不预售，库存等入仓。
+export interface ListOfferResult {
+  ok: boolean;
+  dry_run: boolean;
+  plid: string;
+  product_no: number | string | null;
+  barcode?: string;
+  variant_label?: string | null;
+  selling_price: number;
+  rrp: number;
+  sku: string | null;
+  offer_id?: string | number | null;
+  status?: string | null;
+  offer_url?: string | null;
+  validation_errors?: string[];
+}
+
+export interface ListOfferOptions {
+  barcode?: string;
+  selling_price?: number;
+  rrp?: number;
+  rrp_multiplier?: number;
+  dry_run?: boolean;
+}
+
+export const listProductOffer = (id: string, options: ListOfferOptions = {}): Promise<ListOfferResult> =>
+  request<ListOfferResult>(`/api/products/${encodeURIComponent(id)}/list-offer`, {
+    method: 'POST',
+    body: JSON.stringify(options),
+  });
+
 // ---- 多市场参考价 ----
 // 淘宝/天猫要登录态、中国官网已停摆，两者都拿不到稳定数据源，所以录入走批量接口；
 // 官网直营市场（SG/MY）由后端每天自动重读一次（backend/services/market_price_sync.py）。

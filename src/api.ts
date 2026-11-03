@@ -52,6 +52,15 @@ export const refreshPrice = (id: string, _source?: 'official' | 'seller' | 'deta
   invoke('refresh_price', { id }) as Promise<Record<string, unknown>>;
 
 /**
+ * 一键上架。卖家门户令牌和卖家 API Key 都存在服务端，本地数据源没有对应的 Rust 命令，
+ * 所以这里和外部报价一样直接转远端实现，而不是 invoke。
+ */
+export const listProductOffer = (
+  id: string,
+  options: remoteApi.ListOfferOptions = {},
+): Promise<remoteApi.ListOfferResult> => remoteApi.listProductOffer(id, options);
+
+/**
  * 详情页推荐（同类商品 / 配套周边）。本地数据源没有服务端，就在前端按同一套口径算：
  * 拉一次全量商品 + 采购记录，交给 utils/productRecommend。
  * 拉取失败不抛——详情页主体比推荐重要，推荐挂了不该把整页弄红。

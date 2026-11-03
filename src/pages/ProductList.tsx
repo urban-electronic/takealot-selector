@@ -59,8 +59,12 @@ const allColumns: ColumnDef[] = [
   { key: 'minimum_price_at_15_margin', label: '最低@15%', defaultWidth: 80 },
   { key: 'shipping_method', label: '运输方式', defaultWidth: 90 },
   { key: 'selection_status', label: '状态', defaultWidth: 90 },
-  { key: 'actions', label: '操作', defaultWidth: 80 },
+  { key: 'actions', label: '操作', defaultWidth: 150 },
 ];
+
+// 上架建议零售价口径：RRP = 售价 × 1.5，与后端 RRP_MULTIPLIER 保持同值。
+// 前端显式带这个倍数，弹窗文案也用它，避免「界面写 1.5、后端按 1.2 提交」。
+const RRP_MULTIPLIER = 1.5;
 
 const LS_VISIBLE_KEY = 'productListVisibleColumns';
 const LS_ORDER_KEY = 'productListColumnOrder';
@@ -156,6 +160,12 @@ export default function ProductList() {
   const refreshTimers = useRef<Record<string, number>>({});
   useEffect(() => () => { Object.values(refreshTimers.current).forEach(timer => window.clearTimeout(timer)); }, []);
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
+  // 一键上架：单条点了就提交，批量走确认弹窗后逐个提交（逐个而不是并发，平台侧
+  // 建 offer 是写操作，也不想一个失败把其余带崩，就一条一条来并把失败的攒下来）。
+  const [listingIds, setListingIds] = useState<Set<string>>(new Set());
+  const [listBatchPlan, setListBatchPlan] = useState<Product[] | null>(null);
+  const [listBatchProgress, setListBatchProgress] = useState('');
+  const [listResult, setListResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [imageBatchProgress, setImageBatchProgress] = useState('');
   const [expandedVariantRows, setExpandedVariantRows] = useState<Set<string>>(new Set());
   const [variantEditor, setVariantEditor] = useState<{ productId: string; index: number; sku: string; label: string; makePrimary: boolean } | null>(null);
@@ -516,6 +526,9 @@ export default function ProductList() {
       // 链接状态下拉要放下「已购买」三个字 + 箭头，80px 时只剩 48px 文本区，
       // 浏览器会把值裁成「已」，看起来像数据坏了。
       : colKey === 'link_status' ? Math.max(104, colWidths[colKey] || defaultWidth)
+      // 操作列从「详情 + ⋯」变成「详情 + 上架 + ⋯」，老用户存的 80px 宽度要兜住，
+      // 否则「上架」被挤到第二行、行高跟着跳。
+      : colKey === 'actions' ? Math.max(150, colWidths[colKey] || defaultWidth)
       : colWidths[colKey] || defaultWidth;
 
   // --- 列可见性 ---
@@ -545,6 +558,15 @@ export default function ProductList() {
   // 参考价列只在代理店出现：自营店没有官方售价，留一列空白纯属占地方。
   const renderColumns = columnOrder.filter(key => visibleColumns.has(key) && (showMarketPrice || key !== 'market_prices'));
   const colDefMap = new Map(allColumns.map(c => [c.key, c]));
+
+  // 勾选存的是 SKU，一个产品可能挂着多个 SKU：按产品去重，否则同一产品会被上两次，
+  // 第二次必然撞上「本店已在该变体有报价」。勾选里包含当前筛选看不到的 SKU 时，
+  // 它们无法对应到产品行，这里只处理列表里现有的行，数量直接反映在按钮上。
+  const listingTargets = (() => {
+    if (!selectedSkus.size) return [] as Product[];
+    return products.filter(p => skuVariants(p.sku || '').some(sku => selectedSkus.has(sku)));
+  })();
+  const listBusy = listingIds.size > 0 || listBatchProgress !== '';
 
   // --- 数据获取 ---
   const fetchProducts = () => {
@@ -668,6 +690,67 @@ export default function ProductList() {
         return next;
       });
     }
+  };
+
+  // ---- 一键上架 ----
+  // 上架口径：售价取产品已有售价，RRP = 售价 × 1.5，不传 SKU（平台生成数字串），
+  // 不传交期（= 不预售，库存等入仓）。倍数显式传给后端而不是靠默认值，
+  // 这样弹窗上写的数字和真正提交的数字出自同一个常量。
+  const listOneOffer = async (product: Product): Promise<{ ok: boolean; message: string }> => {
+    const label = `#${product.product_no ?? ''}`;
+    try {
+      const result = await api.listProductOffer(product.id, { rrp_multiplier: RRP_MULTIPLIER });
+      const facts = [`售价 R${result.selling_price}`, `RRP R${result.rrp}`];
+      if (result.sku) facts.push(`SKU ${result.sku}`);
+      if (result.status) facts.push(result.status);
+      if (result.sku) {
+        // 平台回写的 SKU 只在本地还是空的时候补上，已有的自建 SKU 不被覆盖。
+        setProducts(prev => prev.map(row => (row.id === product.id && !(row.sku || '').trim() ? { ...row, sku: result.sku as string } : row)));
+        notifyCatalogChanged(['sku']);
+      }
+      return { ok: true, message: `${label} 已上架（${facts.join('，')}）` };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e ?? '未知错误');
+      return { ok: false, message: `${label} 上架失败：${reason}` };
+    }
+  };
+
+  const handleListOffer = async (product: Product) => {
+    if (listingIds.has(product.id)) return;
+    setListingIds(prev => new Set(prev).add(product.id));
+    setListResult(null);
+    const outcome = await listOneOffer(product);
+    setListingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(product.id);
+      return next;
+    });
+    setListResult(outcome);
+  };
+
+  const runListBatch = async (targets: Product[]) => {
+    setListBatchPlan(null);
+    if (!targets.length) return;
+    const failures: string[] = [];
+    let success = 0;
+    for (let i = 0; i < targets.length; i += 1) {
+      const product = targets[i];
+      setListBatchProgress(`上架中 ${i + 1}/${targets.length}`);
+      setListingIds(prev => new Set(prev).add(product.id));
+      const outcome = await listOneOffer(product);
+      setListingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(product.id);
+        return next;
+      });
+      if (outcome.ok) success += 1;
+      else failures.push(outcome.message);
+    }
+    setListBatchProgress('');
+    setListResult({
+      ok: failures.length === 0,
+      message: `批量上架完成：成功 ${success} 个${failures.length ? `，失败 ${failures.length} 个 —— ${failures.join('；')}` : ''}。RRP 按售价 ×${RRP_MULTIPLIER} 提交。`,
+    });
   };
 
   const openMarketPanel = async () => {
@@ -1178,6 +1261,19 @@ export default function ProductList() {
         return (
           <>
             <Link to={`/products/${p.id}${taskMode ? '?edit=1&from=task' : ''}`} className={`btn btn-sm ${taskMode ? 'btn-primary' : 'btn-outline'}`}>{taskMode ? '修改资料' : '详情'}</Link>
+            {/* 单条上架：点一下就用产品现有售价 + RRP 1.5 倍提交，不再中转详情页。 */}
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              style={{ marginLeft: 4 }}
+              disabled={listingIds.has(p.id) || listBatchProgress !== '' || dataSource !== 'remote'}
+              title={dataSource !== 'remote'
+                ? '上架要走卖家 API（令牌在服务端），只在远程数据源可用'
+                : `按售价 R${p.actual_sale_price_zar ?? '—'} 上架，RRP = 售价 ×${RRP_MULTIPLIER}；不预售，SKU 由平台生成`}
+              onClick={e => { e.stopPropagation(); void handleListOffer(p); }}
+            >
+              {listingIds.has(p.id) ? '上架中…' : '上架'}
+            </button>
             <button className="btn btn-outline btn-sm" style={{ marginLeft: 4 }} aria-label="更多产品操作" onClick={e => { e.stopPropagation(); setContextProduct({ id: p.id, x: Math.max(8, Math.min(e.clientX, window.innerWidth - 210)), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 210)) }); }}>⋯</button>
           </>
         );
@@ -1260,6 +1356,44 @@ export default function ProductList() {
       </div>}
       {assistNotice && <div role="status" className="product-task-banner">{assistNotice}</div>}
       {assistError && <div role="alert" className="product-task-banner">{assistError}</div>}
+      {/* 上架回执：成功也停在这条 banner 里，因为「平台给了什么 SKU / 什么状态」是要核对的，
+          一闪而过的 toast 会让人再去后台查一遍。 */}
+      {listResult && (
+        <div role={listResult.ok ? 'status' : 'alert'} className="product-task-banner">
+          <div style={{ flex: 1, minWidth: 0 }}>{listResult.message}</div>
+          <button className="btn btn-outline btn-sm" onClick={() => setListResult(null)}>关闭</button>
+        </div>
+      )}
+      {listBatchPlan && (
+        <div
+          className="seller-assist-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="批量上架确认"
+          onClick={e => { if (e.target === e.currentTarget) setListBatchPlan(null); }}
+        >
+          <div className="seller-assist-dialog">
+            <div className="seller-assist-header"><strong>批量上架到 Takealot</strong><button className="btn btn-outline btn-sm" onClick={() => setListBatchPlan(null)}>关闭 ×</button></div>
+            <div className="seller-assist-body">
+              <h3>将上架 {listBatchPlan.length} 个产品</h3>
+              <ul style={{ margin: '0 0 10px', paddingLeft: 20, lineHeight: 1.9 }}>
+                <li>售价：取产品已有售价（没有有效售价的会失败并记在结果里，不影响其余）</li>
+                <li>RRP：售价 ×{RRP_MULTIPLIER}</li>
+                <li>不填 SKU，由平台生成数字串；不填交期，即<strong>不预售</strong>，库存等入仓</li>
+                <li>本店已在某变体有报价的，该变体跳过并报原因，不会重复建</li>
+              </ul>
+              <p style={{ margin: 0, color: 'var(--color-text-secondary)' }}>
+                逐个提交，前 5 个：{listBatchPlan.slice(0, 5).map(p => `#${p.product_no ?? ''}`).join('、')}
+                {listBatchPlan.length > 5 ? ` 等 ${listBatchPlan.length} 个` : ''}
+              </p>
+            </div>
+            <div className="seller-assist-footer">
+              <button className="btn btn-primary" onClick={() => void runListBatch(listBatchPlan)}>确认上架</button>
+              <button className="btn btn-outline" onClick={() => setListBatchPlan(null)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
       {syncPlan && <div className="seller-assist-backdrop" role="dialog" aria-modal="true" aria-label="同步卖家后台预览" onClick={e => { if (e.target === e.currentTarget) setSyncPlan(null); }}>
         <div className="seller-assist-dialog">
           <div className="seller-assist-header"><strong>同步卖家后台（只读预览）</strong><button className="btn btn-outline btn-sm" onClick={() => setSyncPlan(null)}>关闭 ×</button></div>
@@ -1511,6 +1645,23 @@ export default function ProductList() {
         >
           {labelLoading ? '生成中…' : `下载标签${labelCount > 0 ? ` (${labelCount})` : ''}`}
         </button>
+
+        {/* 批量上架：勾选的 SKU 先归到产品，再逐个提交；一次建多条 offer 是不可逆的
+            写操作，所以先弹确认，把口径（售价/RRP 倍数/不预售）写清楚再动手。 */}
+        {!archivedMode && !maintenanceMode && (
+          <button
+            className="btn btn-outline btn-sm"
+            disabled={dataSource !== 'remote' || listBusy || listingTargets.length === 0}
+            title={dataSource !== 'remote'
+              ? '上架要走卖家 API（令牌在服务端），只在远程数据源可用'
+              : listingTargets.length === 0
+                ? '请先勾选产品（需有 SKU）'
+                : `把选中的 ${listingTargets.length} 个产品挂到 Takealot：售价取产品已有售价，RRP = 售价 ×${RRP_MULTIPLIER}，不预售，SKU 由平台生成`}
+            onClick={() => setListBatchPlan(listingTargets)}
+          >
+            {listBatchProgress ? `${listBatchProgress}…` : `批量上架${listingTargets.length > 0 ? ` (${listingTargets.length})` : ''}`}
+          </button>
+        )}
 
         <button
           className="btn btn-primary btn-sm"
@@ -1781,6 +1932,13 @@ export default function ProductList() {
       })()}
       {contextProduct && <div className="product-context-menu" style={{ left: contextProduct.x, top: contextProduct.y }} onClick={e => e.stopPropagation()}>
         <button onClick={() => navigate(`/products/${contextProduct.id}?edit=1&from=list`)}>修改资料</button>
+        <button
+          disabled={dataSource !== 'remote' || listingIds.has(contextProduct.id) || listBatchProgress !== ''}
+          title={dataSource !== 'remote' ? '上架要走卖家 API，只在远程数据源可用' : `RRP = 售价 ×${RRP_MULTIPLIER}，不预售`}
+          onClick={() => { const product = products.find(p => p.id === contextProduct.id); setContextProduct(null); if (product) void handleListOffer(product); }}
+        >
+          {listingIds.has(contextProduct.id) ? '上架中…' : '上架到 Takealot'}
+        </button>
         <button disabled={refreshingIds.has(contextProduct.id)} onClick={() => { const id = contextProduct.id; setContextProduct(null); handleRefreshPrice(id, 'official'); }}>读取官网售价</button>
         <button onClick={() => { const product = products.find(p => p.id === contextProduct.id); setContextProduct(null); if (product) handleDelete(product.id, product.product_name || ''); }}>移入废品库</button>
       </div>}

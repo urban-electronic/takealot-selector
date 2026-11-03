@@ -967,12 +967,17 @@ def _is_scraped_image(url: str) -> bool:
     return "media.takealot.com" in (url or "")
 
 
+# 上架时的建议零售价口径：RRP = 售价 × 1.5。前后端、单条与批量共用这一个值，
+# 免得以后调价时只改了一处，同一次上架里出现两种 RRP。
+RRP_MULTIPLIER = 1.5
+
+
 class ListOfferIn(BaseModel):
     """一键上架的入参。默认全自动：价格取产品已有售价，不传 SKU 交给平台生成。"""
     barcode: Optional[str] = None          # 多变体时指定要上哪个变体
     selling_price: Optional[float] = None
     rrp: Optional[float] = None
-    rrp_multiplier: float = 1.2
+    rrp_multiplier: float = RRP_MULTIPLIER   # 运营口径：RRP = 售价 × 1.5
     dry_run: bool = False                  # True 只回报将提交什么，不真的创建
 
 
@@ -982,8 +987,8 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     """把产品挂到 Takealot 变体上（等同后台 Add My Offer）。
 
     变体 Barcode 只从卖家门户目录接口取（mpv 的 `gtin`），PLID 不能用来建 offer；
-    售价取产品已有售价，RRP 默认 1.2 倍；不传 SKU 由平台分配数字串；不传 leadtime
-    就是不预售，库存等入仓后由发货带来。
+    售价取产品已有售价，RRP 默认 1.5 倍（RRP_MULTIPLIER）；不传 SKU 由平台分配数字串；
+    不传 leadtime 就是不预售，库存等入仓后由发货带来。
     """
     from services import takealot_portal_api as portal
     from services.takealot_seller_api import configured_key, create_offer
@@ -1024,7 +1029,7 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     if not price or float(price) <= 0:
         raise HTTPException(status_code=409, detail="产品没有有效售价，请先填写售价")
     price = int(round(float(price)))
-    multiplier = data.rrp_multiplier if data.rrp_multiplier and data.rrp_multiplier > 0 else 1.2
+    multiplier = data.rrp_multiplier if data.rrp_multiplier and data.rrp_multiplier > 0 else RRP_MULTIPLIER
     rrp = int(round(float(data.rrp))) if data.rrp else int(round(price * multiplier))
 
     plan = {'barcode': picked['barcode'], 'tsin': picked.get('tsin'),
