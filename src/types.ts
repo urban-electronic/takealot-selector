@@ -567,6 +567,11 @@ export interface SelectionEnrichResult {
    * `remaining` 一直不为 0，没有这个数前端只能空转到轮次上限。
    */
   price_fixed?: number;
+  /**
+   * 已建档的行抓到新价后，实际写进产品主档的条数。
+   * 产品列表里人工改过价的不覆盖，所以它会小于等于 price_fixed。
+   */
+  promoted_price_synced?: number;
   remaining: number;
   /** 上游拒绝或限流时停止后续轮次；remaining 仍是实际待处理数。 */
   public_access_blocked?: boolean;

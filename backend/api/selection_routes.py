@@ -954,6 +954,50 @@ def _backfill_chinese_names(db: Session, query) -> int:
     return filled
 
 
+def _push_price_to_product(db: Session, item: SelectionItem) -> bool:
+    """把选品池里刚抓到的新售价推给已建档的产品，并重算它的利润。
+
+    为什么要在抓取时推
+    ------------------
+    产品主档的售价是建档那一刻从池子抄过去的快照。不推的话，池子里的价跟着
+    市场变了，产品列表里还是老价，两边对不上——用户看到的就是「刷新了但没更新」。
+
+    冲突：产品列表里人工改过价就以那边为准
+    ------------------------------------
+    `promoted_snapshot` 记着上次推送时池子里的值。主档里的价和它不一样，说明
+    有人直接在**产品列表**里改过——这时不覆盖（和 `sync_to_products` 同一个规矩），
+    池子里照旧更新，只是不往主档写。
+
+    返回是否真的写进了主档。
+    """
+    if not item.promoted_product_id or item.actual_sale_price_zar is None:
+        return False
+    product = db.query(Product).filter(
+        Product.id == item.promoted_product_id,
+        Product.store_id == item.store_id,
+    ).first()
+    if not product:
+        return False
+    if _same_value(product.actual_sale_price_zar, item.actual_sale_price_zar):
+        return False  # 已经是这个价，别白写一遍（也免得刷 updated_at）
+
+    snapshot = json.loads(item.promoted_snapshot or "{}")
+    if ("actual_sale_price_zar" in snapshot
+            and not _same_value(product.actual_sale_price_zar,
+                                snapshot.get("actual_sale_price_zar"))):
+        return False  # 主档里人工改过，保留那边的价
+
+    from api.product_routes import _apply_calculated_fields
+
+    product.actual_sale_price_zar = item.actual_sale_price_zar
+    _apply_calculated_fields(db, product)
+    # 快照跟着更新：这次是我们写的，下次同步不该把它当成「主档改过」。
+    snapshot["actual_sale_price_zar"] = item.actual_sale_price_zar
+    item.promoted_snapshot = json.dumps(snapshot, ensure_ascii=False, default=str)
+    item.promoted_synced_at = datetime.utcnow()
+    return True
+
+
 @router.post("/enrich")
 def enrich(
     data: EnrichRequest,
@@ -963,13 +1007,19 @@ def enrich(
     """抓主图 / 类目 / 价格；自家商品顺带把重尺也填了。
 
     分块返回：一次最多 800 个，`remaining` 不为 0 就说明还有，前端接着调。
+
+    已建档的行也在这里抓
+    --------------------
+    以前这里把 `promoted_product_id` 非空的行整片排除，结果是「已经进了产品列表
+    的商品，售价永远停在建档那一刻」——点多少次重抓都不动。现在它们也参与，
+    抓到新价之后顺手推给产品主档（产品列表里人工改过价的不覆盖，见
+    `_push_price_to_product`）。
     """
     query = db.query(SelectionItem).filter(SelectionItem.store_id == store_id)
     if data.ids:
         query = query.filter(SelectionItem.id.in_(data.ids))
     elif data.batch_id:
         query = query.filter(SelectionItem.batch_id == data.batch_id)
-    query = query.filter(SelectionItem.promoted_product_id.is_(None))
     scoped_query = query  # 后续计数复用同一店铺/ids/批次范围，不带本轮limit。
 
     # 中文品名和普货/带电判定都是纯本地计算，先补上——这两步不花配额、不会失败，
@@ -1041,7 +1091,7 @@ def enrich(
                 "with_dimensions": 0, "from_product_list": 0, "skipped_network": 0,
                 "remaining": 0, "seller_api": "", "failures": [],
                 "names_filled": names_filled, "battery_judged": battery_judged,
-                "price_fixed": 0,
+                "price_fixed": 0, "promoted_price_synced": 0,
                 "portal_configured": portal_ready, "portal_limited": False,
                 "portal_retry_after": 0.0}
 
@@ -1211,6 +1261,7 @@ def enrich(
     exchange_rate = _exchange_rate(db)
     fee_rates: Dict[str, Optional[float]] = {}
     ok = failed = pending = handled = 0
+    promoted_price_synced = 0
     failures: List[Dict[str, str]] = []
     for item in targets:
         # 被推迟的这几条这一轮压根没打网络。如果照常走一遍，会被记成「抓取失败」，
@@ -1224,6 +1275,9 @@ def enrich(
             fee_rates[item.fee_category] = _fee_rate(db, item.fee_category)
         _calc(item, exchange_rate, fee_rates.get(item.fee_category or ""))
         _refresh_status(item)
+        # 已建档的行抓到新价之后要推给产品主档，否则产品列表里永远是建档那天的价。
+        if item.promoted_product_id and _push_price_to_product(db, item):
+            promoted_price_synced += 1
         if item.enrich_status == "ok":
             ok += 1
         elif item.enrich_status in ("", None):
@@ -1277,6 +1331,9 @@ def enrich(
         "with_dimensions": dims_from_seller + dims_from_catalogue + dims_from_portal,
         "from_product_list": from_product_list,
         "price_fixed": price_fixed,
+        # 已建档的行抓到新价后，实际写进产品主档的条数。前端据此告诉用户
+        # 「顺带更新了 N 个产品的售价」，否则改没改只有去产品列表才知道。
+        "promoted_price_synced": promoted_price_synced,
         "skipped_network": skipped_network,
         "remaining": remaining,
         "public_access_blocked": any(

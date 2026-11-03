@@ -482,7 +482,10 @@ def test_enrich_remaining_matches_scope_beyond_chunk(db, monkeypatch, scope, bud
         SelectionItem(id="other-store", store_id="other-scope-store", batch_id="selected", plid="901"),
         SelectionItem(id="completed", store_id=STORE, batch_id="selected", enrich_status="ok"),
         SelectionItem(id="failed", store_id=STORE, batch_id="selected", enrich_status="failed"),
-        SelectionItem(id="promoted", store_id=STORE, batch_id="selected", promoted_product_id="existing"),
+        # 已建档但资料已经抓全的行：它不在待抓队列里，所以不该被这一轮选中。
+        # （已建档本身不再是排除条件——见 test_enrich_refreshes_promoted_price_*）
+        SelectionItem(id="promoted", store_id=STORE, batch_id="selected",
+                      promoted_product_id="existing", enrich_status="ok"),
     ])
     db.commit()
     monkeypatch.setattr("services.takealot_seller_api.configured_key", lambda db: None)
@@ -2546,6 +2549,82 @@ def test_skip_measured_does_not_leave_rows_in_remaining(db, monkeypatch):
     measured = db.query(SelectionItem).filter(SelectionItem.plid == "733").one()
     assert measured.product_image_url == ""      # 真的没动它
     assert measured.profit_margin == 0.3
+
+
+# ------------------------------------------------------------ 已建档产品的售价
+
+def _promoted_item(db, monkeypatch):
+    """建一条「已进产品列表」的选品记录，售价 500（见 `_fake_public`）。"""
+    item = _prepare_item(db, monkeypatch)
+    patch_item(item.id, ItemPatch(
+        length_mm=200, width_mm=150, height_mm=100, actual_weight_kg=0.5,
+        purchase_cost_cny=40, purchase_shipping_cny=20, purchase_quantity=4,
+        shipping_method="空运普货",
+    ), db=db, store_id=STORE)
+    promote(IdList(ids=[item.id]), db=db, store_id=STORE)
+    return db.query(SelectionItem).first()
+
+
+def _new_price_record(price=178):
+    record = _fake_public("703")
+    record.update({
+        "actual_sale_price_zar": price, "price_source": "in_stock",
+        "listed_price_zar": 500, "lowest_in_stock_price_zar": price,
+        "lowest_offer_price_zar": price, "seller_offer_count": 2,
+    })
+    return record
+
+
+def test_enrich_refreshes_promoted_price_and_pushes_to_product(db, monkeypatch):
+    """已建档的行也要能被重抓，并且新价要落到产品主档上。
+
+    以前 enrich 把 `promoted_product_id` 非空的行整片排除，产品列表里的售价
+    永远停在建档那一天——用户点多少次重抓都看不到变化。
+    """
+    item = _promoted_item(db, monkeypatch)
+    assert db.query(Product).first().actual_sale_price_zar == 500.0
+
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_new_price_record(178)])
+
+    result = enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert result["promoted_price_synced"] == 1
+    assert db.query(SelectionItem).first().actual_sale_price_zar == 178
+    assert db.query(Product).first().actual_sale_price_zar == 178
+
+
+def test_enrich_keeps_product_price_edited_in_product_list(db, monkeypatch):
+    """产品列表里人工改过的价不能被重抓冲掉——池子更新，主档保留。
+
+    和 `sync_to_products` 同一个规矩：主档里的值和上次推送时不一样，说明是人
+    在主档里改的，以那边为准。
+    """
+    _promoted_item(db, monkeypatch)
+    product = db.query(Product).first()
+    product.actual_sale_price_zar = 640
+    db.commit()
+
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_new_price_record(178)])
+
+    result = enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert result["promoted_price_synced"] == 0
+    assert db.query(SelectionItem).first().actual_sale_price_zar == 178
+    assert db.query(Product).first().actual_sale_price_zar == 640
+
+
+def test_enrich_does_not_rewrite_unchanged_product_price(db, monkeypatch):
+    """价没变就别写主档：白写一次会刷 updated_at，看着像「刚改过」。"""
+    _promoted_item(db, monkeypatch)
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_new_price_record(500)])
+
+    result = enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert result["promoted_price_synced"] == 0
+    assert db.query(Product).first().actual_sale_price_zar == 500.0
 
 
 # ------------------------------------------------------------ 已建产品回推

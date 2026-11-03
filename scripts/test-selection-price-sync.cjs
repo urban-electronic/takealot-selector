@@ -10,6 +10,8 @@
  *     而且产品列表里被人工改过的字段由后端保护，前端只管把 id 传对。
  *  4. 「重抓全部资料」要跑多轮（一次只处理 400 个），每轮都得带 refresh，
  *     并且在某一轮没修好任何价格时收手——否则 1700 多行永远只有最早那批换价。
+ *  5. 每条未建档的卡片自己带「加入产品列表」，不用勾选再滚回顶部点批量；
+ *     已建档的卡片不能出现这个按钮（它走的是「重新推送」）。
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -65,6 +67,7 @@ const items = [
 
 const syncCalls = [];
 const enrichCalls = [];
+const promoteCalls = [];
 const remote = {
   getActiveStoreId: () => 'fixture-store',
   getSelectionBatches: async () => [],
@@ -80,12 +83,13 @@ const remote = {
   getImageUrl: x => x,
   // 三轮：前两轮各修好一批价格，第三轮一条都没修好 → 前端该收手，
   // 不能因为 remaining 还有就一路空转到 40 轮上限。
+  // promoted_price_synced 每轮各推各的，前端要累加着报，不能只看最后一轮。
   enrichSelection: async payload => {
     enrichCalls.push(payload);
     const rounds = [
-      { processed: 400, ok: 400, failed: 0, pending: 0, remaining: 1200, price_fixed: 300 },
-      { processed: 400, ok: 400, failed: 0, pending: 0, remaining: 800, price_fixed: 200 },
-      { processed: 400, ok: 400, failed: 0, pending: 0, remaining: 400, price_fixed: 0 },
+      { processed: 400, ok: 400, failed: 0, pending: 0, remaining: 1200, price_fixed: 300, promoted_price_synced: 4 },
+      { processed: 400, ok: 400, failed: 0, pending: 0, remaining: 800, price_fixed: 200, promoted_price_synced: 3 },
+      { processed: 400, ok: 400, failed: 0, pending: 0, remaining: 400, price_fixed: 0, promoted_price_synced: 1 },
     ];
     const base = { public_access_blocked: false, portal_limited: false, portal_retry_after: 0,
       from_product_list: 0, with_dimensions: 0, skipped_network: 0, names_filled: 0, battery_judged: 0 };
@@ -94,6 +98,15 @@ const remote = {
   syncSelectionToProducts: async ids => {
     syncCalls.push(ids);
     return { updated: ids.length, skipped: 0, products: [], skip_details: [] };
+  },
+  promoteSelection: async ids => {
+    promoteCalls.push(ids);
+    return {
+      created: 1,
+      skipped: 0,
+      products: [{ id: 'prod-new', product_id: 'prod-new', product_no: 'P000123', product_name: 'In Stock Cheapest' }],
+      skip_details: [],
+    };
   },
 };
 
@@ -156,7 +169,22 @@ const root = createRoot(document.getElementById('root'));
   await act(async () => syncBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
   assert.deepEqual(syncCalls, [['b']], 're-push sends exactly that item id');
 
-  // 4. 「重抓」要跑多轮：一次只处理 400 个，只在第一轮传 refresh 的话，
+  // 4. 单条建档：看到一条合适的直接加，不用先勾选、再滚回顶部点批量按钮
+  const promoteBtn = [...a.querySelectorAll('button')].find(n => /加入产品列表/.test(n.textContent));
+  assert.ok(promoteBtn, 'unpromoted card needs a one-click promote button');
+  assert.equal(
+    [...b.querySelectorAll('button')].some(n => /加入产品列表/.test(n.textContent)),
+    false,
+    'already-promoted card must not offer to promote again',
+  );
+  promoteCalls.length = 0;
+  await act(async () => promoteBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+  assert.deepEqual(promoteCalls, [['a']], 'single promote sends exactly that item id');
+  const promoteNotice = document.querySelector('.selection-notice').textContent;
+  assert.match(promoteNotice, /已把「In Stock Cheapest」加入产品列表/, 'confirm which item was promoted');
+  assert.match(promoteNotice, /P000123/, 'give the product number so it can be found in the list');
+
+  // 5. 「重抓」要跑多轮：一次只处理 400 个，只在第一轮传 refresh 的话，
   //    1700 多行里永远只有最早那 400 行被重新取价。
   enrichCalls.length = 0;
   const refreshBtn = [...document.querySelectorAll('button')].find(n => /^重抓/.test(n.textContent));
@@ -170,9 +198,11 @@ const root = createRoot(document.getElementById('root'));
   assert.equal(enrichCalls.length, 3, 'stops once a round fixes no price (no progress)');
   const notice = document.querySelector('.selection-notice').textContent;
   assert.match(notice, /500 个售价换成了现货最低价/, 'tells the user how many prices actually changed');
+  assert.match(notice, /顺带更新了 8 个已建档产品的售价/,
+    'promoted products get the new price too, summed across rounds (4+3+1)');
   assert.match(notice, /换不到现货最低价/, 'explains the leftovers instead of asking to click again');
 
-  // 5. 取消「跳过已测算」后：按钮文案回到「重抓全部资料」，请求也不再带 skip_measured
+  // 6. 取消「跳过已测算」后：按钮文案回到「重抓全部资料」，请求也不再带 skip_measured
   const skipBox = document.querySelector('.selection-skip-measured input');
   assert.ok(skipBox, 'the skip-measured switch sits next to the fetch button');
   assert.equal(skipBox.checked, true);
@@ -184,7 +214,7 @@ const root = createRoot(document.getElementById('root'));
   assert.ok(enrichCalls.every(c => c.skip_measured === false), 'unchecked switch must reach the backend');
 
   await act(async () => root.unmount());
-  console.log('PASS 选品卡片：现货最低价口径、利润率、已建产品可编辑并回推');
+  console.log('PASS 选品卡片：现货最低价口径、利润率、已建产品可编辑并回推、单条建档');
 })().catch(e => {
   console.error(e);
   process.exitCode = 1;

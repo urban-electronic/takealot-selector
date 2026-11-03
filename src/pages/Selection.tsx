@@ -337,15 +337,20 @@ function priceNote(item: SelectionItem): string {
 }
 
 function SelectionCard({
-  item, busy, onPatch, onToggle, feeCategories, onSync, syncing,
+  item, busy, saving, acting, onPatch, onToggle, feeCategories, onSync, onPromote,
 }: {
   item: SelectionItem;
+  /** 整页在忙（批量建档/抓取中）：卡片锁住，别让人改到一半被打断。 */
   busy: boolean;
+  /** 正在写**这一条**（保存字段），只有它显示「保存中…」。 */
+  saving?: boolean;
+  /** 这一条正在跑的动作，只影响它自己的按钮文案。 */
+  acting?: 'promote' | 'sync' | null;
   onPatch: (patch: SelectionItemPatch) => void;
   onToggle: () => void;
   feeCategories: FeeCategory[];
   onSync?: () => void;
-  syncing?: boolean;
+  onPromote?: () => void;
 }) {
   const tier = TIER_STYLE[item.tier];
   const battery = BATTERY_STATUS_LABEL[item.battery_status || ''];
@@ -564,11 +569,19 @@ function SelectionCard({
           {/* 回推：把选品池里改过的值写回产品主档并重算利润。产品列表里被人工
               改过的字段不覆盖，会在结果里列出来。 */}
           {promoted && onSync ? (
-            <button type="button" className="btn-link" onClick={onSync} disabled={busy || syncing}>
-              {syncing ? '更新中…' : item.pool_dirty ? '更新到产品列表' : '重新推送'}
+            <button type="button" className="btn-link" onClick={onSync} disabled={busy}>
+              {acting === 'sync' ? '更新中…' : item.pool_dirty ? '更新到产品列表' : '重新推送'}
             </button>
           ) : null}
-          {busy ? <span className="selection-busy">保存中…</span> : null}
+          {/* 单条建档：不用先勾选、再点工具栏那个批量按钮。看到一条合适的就直接
+              加，比「勾一下 → 滚回顶部 → 点批量」少两步。 */}
+          {!promoted && onPromote ? (
+            <button type="button" className="btn-link" onClick={onPromote} disabled={busy}
+              title="把这一条加入产品列表（和批量按钮是同一个动作）">
+              {acting === 'promote' ? '加入中…' : '加入产品列表'}
+            </button>
+          ) : null}
+          {saving ? <span className="selection-busy">保存中…</span> : null}
         </div>
       </footer>
     </article>
@@ -594,6 +607,9 @@ export default function Selection() {
   const [importing, setImporting] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  // 哪一条正在跑哪个动作。只用来改它自己的按钮文案——用全局 promoting 的话，
+  // 点一张卡的按钮，整页所有卡片都会显示「加入中…」。
+  const [acting, setActing] = useState<{ id: string; kind: 'promote' | 'sync' } | null>(null);
   const promoteLock = useRef(false);
   const promotionMounted = useRef(true);
   useEffect(() => {
@@ -722,6 +738,8 @@ export default function Selection() {
     let succeeded = 0;
     let failed = 0;
     let fixed = 0;
+    // 已建档产品的售价也是每轮各推各的，只看最后一轮会漏报前几轮推过去的。
+    let syncedPromoted = 0;
     let stalled = false;
     let last: SelectionEnrichResult | null = null;
     try {
@@ -740,6 +758,7 @@ export default function Selection() {
         succeeded += result.ok;
         failed += result.failed;   // 每轮的失败要累加：只看最后一轮会漏报
         fixed += result.price_fixed || 0;
+        syncedPromoted += result.promoted_price_synced || 0;
         setEnrichResult(result);
         setNotice({
           kind: 'info',
@@ -783,6 +802,11 @@ export default function Selection() {
         // 价格口径是这次重抓的主要目的，单独报一句：用户得知道有多少条真的从
         // 「前台展示价」换成了「现货最低价」，而不是只看到「成功 N 个」。
         if (refreshAll) bits.push(`${fixed} 个售价换成了现货最低价`);
+        // 已建档的行抓到新价后会推给产品主档。不报的话，用户只能去产品列表
+        // 挨个点开才知道到底更新没更新。
+        if (syncedPromoted) {
+          bits.push(`顺带更新了 ${syncedPromoted} 个已建档产品的售价`);
+        }
         // 被限流的不是「抓不到」，只是还没轮到——分开说，别让人以为这些商品废了。
         if (last.pending) bits.push(`${last.pending} 个被限流、稍后再抓`);
         if (last.portal_limited) bits.push('门户配额这一轮用完了（200 次/分钟），再点一次接着抓');
@@ -918,6 +942,47 @@ export default function Selection() {
       setNotice({ kind: 'warn', text: `本次已确认新建 ${created} 个、跳过 ${skipped} 个；后续处理停止：${(error as Error).message}。请刷新核对后再继续。` });
     } finally {
       promoteLock.current = false;
+      if (promotionMounted.current) setPromoting(false);
+    }
+  };
+
+  /**
+   * 单条建档：卡片上直接「加入产品列表」。
+   *
+   * 和工具栏那个批量按钮是同一个后端动作，只是 ids 只放这一条。好处是不用
+   * 先勾选、再滚回顶部——一条条看完顺手就加了。已建档的行不显示这个按钮，
+   * 它们走的是「重新推送」。
+   */
+  const handlePromoteOne = async (item: SelectionItem) => {
+    if (promoteLock.current || item.promoted_product_id) return;
+    promoteLock.current = true;
+    setPromoting(true);
+    setActing({ id: item.id, kind: 'promote' });
+    // 先存好名字：refresh() 之后 item 就是旧对象了。
+    const label = item.product_name || item.chinese_product_name || item.plid || '这条商品';
+    try {
+      const result = await promoteSelection([item.id]);
+      if (!promotionMounted.current) return;
+      await refresh();
+      if (!promotionMounted.current) return;
+      if (result.created) {
+        const productNo = result.products?.[0]?.product_no;
+        setNotice({
+          kind: 'ok',
+          text: `已把「${label}」加入产品列表${productNo ? `（产品编号 ${productNo}）` : ''}。`,
+        });
+      } else {
+        setNotice({
+          kind: 'info',
+          text: `「${label}」没加进去：${result.skip_details?.[0]?.reason || '已建档或身份重复'}`,
+        });
+      }
+    } catch (error) {
+      if (!promotionMounted.current) return;
+      setNotice({ kind: 'warn', text: `加入产品列表失败：${(error as Error).message}` });
+    } finally {
+      promoteLock.current = false;
+      setActing(null);
       if (promotionMounted.current) setPromoting(false);
     }
   };
@@ -1084,6 +1149,7 @@ export default function Selection() {
   const handleSync = async (ids: string[]) => {
     if (!ids.length || promoting) return;
     setPromoting(true);
+    if (ids.length === 1) setActing({ id: ids[0], kind: 'sync' });
     try {
       const result = await syncSelectionToProducts(ids);
       const kept = result.products.flatMap(row => row.kept_fields || []);
@@ -1099,6 +1165,7 @@ export default function Selection() {
     } catch (error) {
       setNotice({ kind: 'warn', text: (error as Error).message });
     } finally {
+      setActing(null);
       setPromoting(false);
     }
   };
@@ -1148,11 +1215,13 @@ export default function Selection() {
       key={item.id}
       item={item}
       busy={promoting || busyIds.has(item.id)}
+      saving={busyIds.has(item.id)}
+      acting={acting?.id === item.id ? acting.kind : null}
       onPatch={patch => void handlePatch(item.id, patch)}
       onToggle={() => handleToggle(item)}
       feeCategories={feeCategoryState.categories}
       onSync={item.promoted_product_id ? () => void handleSync([item.id]) : undefined}
-      syncing={promoting}
+      onPromote={item.promoted_product_id ? undefined : () => void handlePromoteOne(item)}
     />
   );
   // 勾选中且已建产品的行——这批是「要回推到产品列表」的，不是「要新建」的。
