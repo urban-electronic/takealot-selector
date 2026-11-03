@@ -10,7 +10,8 @@ import pytest
 from services.takealot_public_api import (
     _category_path,
     _dimensions_and_weight,
-    _first_price,
+    _offer_prices,
+    _pick_price,
     _live_tsin,
     parse_plid,
 )
@@ -107,13 +108,46 @@ class TestLiveTsin:
         assert _live_tsin({}) is None
 
 
-class TestFirstPrice:
-    def test_reads_price_from_first_buybox_item(self):
-        assert _first_price({"buybox": {"items": [{"price": 3299.0}]}}) == 3299.0
+class TestOfferPrices:
+    """售价口径。
+
+    buybox 里排第一的是「配送最快」那条报价，不是最便宜的。以前只取第一条，
+    抓到的价常比有货的最低价高出一截——对标价要用最低那条。
+    """
+
+    def test_splits_listed_and_in_stock(self):
+        prices = _offer_prices({"buybox": {"items": [
+            {"is_selected": True, "price": 309,
+             "stock_availability": {"status": "In stock", "is_leadtime": False}},
+            {"is_selected": False, "price": 178,
+             "stock_availability": {"status": "In stock", "is_leadtime": False}},
+        ]}})
+        assert prices["listed_price_zar"] == 309
+        assert prices["lowest_in_stock_price_zar"] == 178
+
+    def test_leadtime_seller_is_not_in_stock(self):
+        prices = _offer_prices({"buybox": {"items": [
+            {"is_selected": True, "price": 116,
+             "stock_availability": {"status": "In stock", "is_leadtime": False}},
+            {"price": 115,
+             "stock_availability": {"status": "Ships in 5 - 7 work days", "is_leadtime": True}},
+        ]}})
+        assert prices["lowest_in_stock_price_zar"] == 116
+        assert prices["lowest_offer_price_zar"] == 115
 
     def test_returns_none_when_no_numeric_price(self):
-        assert _first_price({"buybox": {"items": [{"price": None}]}}) is None
-        assert _first_price({}) is None
+        prices = _offer_prices({"buybox": {"items": [{"price": None}]}})
+        assert prices["lowest_in_stock_price_zar"] is None
+        assert prices["lowest_offer_price_zar"] is None
+        assert prices["listed_price_zar"] is None
+        assert _offer_prices({})["seller_offer_count"] == 0
+
+    def test_pick_price_prefers_in_stock(self):
+        assert _pick_price(_offer_prices({"buybox": {"items": [
+            {"is_selected": True, "price": 309,
+             "stock_availability": {"status": "In stock", "is_leadtime": False}},
+            {"price": 178, "stock_availability": {"status": "In stock", "is_leadtime": False}},
+        ]}})) == (178, "in_stock")
 
 
 class TestRetryPolicy:

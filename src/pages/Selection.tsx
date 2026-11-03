@@ -37,6 +37,7 @@ import {
   promoteSelection,
   selectQualifiedSelection,
   setPortalToken,
+  syncSelectionToProducts,
 } from '../remoteApi';
 import { useFeeCategories } from '../utils/useFeeCategories';
 import { BATTERY_STATUS_LABEL, SHIPPING_METHODS, formatPercent, formatPrice } from '../types';
@@ -92,7 +93,44 @@ const DIMENSION_SOURCE_LABEL: Record<string, string> = {
   import: '表格导入',
 };
 
-const STATUS_OPTIONS = ['待核算', '合格', '不合格', '已建产品'];
+// value 是库里存的字符串（不能改，改了要迁数据），label 是界面上给用户看的话。
+// 界面上统一叫「测算」而不是「核算」：这个页面的任务就是把重尺和成本填进去算利润，
+// 用户嘴里的「测算过 / 没测算过」才是他们找东西时用的词。
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: '待核算', label: '未测算' },
+  { value: '合格', label: '合格（≥15%）' },
+  { value: '不合格', label: '不合格' },
+  { value: '已建产品', label: '已建产品' },
+];
+
+/**
+ * 测算进度三态。
+ *
+ * 「已测算」的唯一判据是有利润率：`_calc` 里任一环缺失后面全是 None，
+ * 所以 profit_margin 有值就等于「重尺、成本、售价、类目都齐了、算出来了」。
+ * 不能拿「填了几个字段」当判据——填了长宽高但没填采购价，照样算不出来。
+ */
+function measureState(item: SelectionItem): 'promoted' | 'measured' | 'unmeasured' {
+  if (item.promoted_product_id) return 'promoted';
+  return item.profit_margin == null ? 'unmeasured' : 'measured';
+}
+
+/**
+ * 未测算缺哪几项，按填表顺序排。
+ *
+ * 原来只写「待补数据」，等于告诉人「不完整」但不说缺什么，还得自己把卡片上
+ * 十几个格子扫一遍。缺项直接列出来，一眼就能补。
+ */
+function missingInputs(item: SelectionItem): string[] {
+  const missing: string[] = [];
+  if (item.length_mm == null || item.width_mm == null || item.height_mm == null) missing.push('长宽高');
+  if (item.actual_weight_kg == null) missing.push('重量');
+  if (item.actual_sale_price_zar == null) missing.push('售价');
+  if (item.purchase_cost_cny == null) missing.push('采购价');
+  if (!item.shipping_method) missing.push('物流方式');
+  if (!item.fee_category) missing.push('类目');
+  return missing;
+}
 
 // useFeeCategories 的 effect 依赖 source 本身，传对象字面量会每渲染一次就重读一遍，
 // 所以放在模块作用域固定住。
@@ -163,12 +201,21 @@ function TextCell({ label, value, disabled, onCommit, placeholder }: {
 }
 
 function MarginBadge({ item }: { item: SelectionItem }) {
-  if (item.promoted_product_id) return <span className="selection-margin is-done">已建产品</span>;
-  if (item.profit_margin == null) return <span className="selection-margin is-pending">待补数据</span>;
+  // 已建产品也要看利润率：改完重尺/成本重算的数字，和产品列表里那个是对得上的，
+  // 核账时得能一眼看到。
+  if (item.profit_margin == null) {
+    return (
+      <span className={`selection-margin ${item.promoted_product_id ? 'is-done' : 'is-unmeasured'}`}>
+        {item.promoted_product_id ? '已建产品' : '未测算'}
+      </span>
+    );
+  }
+  // 徽章只说结论（合格/不合格），具体数字交给下面网格里的「利润率」一行。
+  // 两边都写「利润率 31.00%」等于同一句话在卡片上印两遍，还占一行高度。
   const ok = item.profit_margin >= 0.15;
   return (
     <span className={`selection-margin ${ok ? 'is-ok' : 'is-bad'}`}>
-      {ok ? '利润率' : '利润率'} {formatPercent(item.profit_margin)}
+      {ok ? '合格' : '不合格'}
     </span>
   );
 }
@@ -185,18 +232,69 @@ function toggleBattery(item: SelectionItem): SelectionItemPatch {
   return { battery_status: next, shipping_method: `${prefix}${next === 'yes' ? '带电' : '普货'}` };
 }
 
+/**
+ * 售价口径的中文说法。
+ *
+ * 同一个商品有三个价：前台展示价（配送最快的那家）、有现货卖家的最低价、
+ * 全部报价的最低价。界面上必须写清用的是哪个，否则「售价 R 178」和前台
+ * 显示的 R 309 对不上时，人只会以为系统抓错了。
+ */
+const PRICE_SOURCE_LABEL: Record<string, string> = {
+  in_stock: '现货最低价',
+  offer: '最低报价（含备货期）',
+  listed: '前台展示价',
+  import: '导入表售价',
+  manual: '人工填写',
+  portal: '目录价',
+};
+
+/**
+ * 售价口径说明，用在 title 里。
+ *
+ * 「前台展示价」是 buybox 里选中的那条（配送最快），往往比有货的最低价贵；
+ * 这就是用户看到的「抓到的价比前台低」的原因。
+ */
+function priceNote(item: SelectionItem): string {
+  const parts: string[] = [];
+  const source = PRICE_SOURCE_LABEL[item.price_source] || '售价';
+  parts.push(`当前售价：${source}`);
+  if (item.listed_price_zar != null) parts.push(`前台展示价 R ${item.listed_price_zar}`);
+  if (item.lowest_in_stock_price_zar != null) parts.push(`现货最低 R ${item.lowest_in_stock_price_zar}`);
+  if (item.lowest_offer_price_zar != null) parts.push(`最低报价 R ${item.lowest_offer_price_zar}`);
+  if (item.seller_offer_count != null) parts.push(`${item.seller_offer_count} 个卖家报价`);
+  return parts.join(' · ');
+}
+
 function SelectionCard({
-  item, busy, onPatch, onToggle, feeCategories,
+  item, busy, onPatch, onToggle, feeCategories, onSync, syncing,
 }: {
   item: SelectionItem;
   busy: boolean;
   onPatch: (patch: SelectionItemPatch) => void;
   onToggle: () => void;
   feeCategories: FeeCategory[];
+  onSync?: () => void;
+  syncing?: boolean;
 }) {
   const tier = TIER_STYLE[item.tier];
   const battery = BATTERY_STATUS_LABEL[item.battery_status || ''];
-  const locked = Boolean(item.promoted_product_id) || busy;
+  // 已建产品不再锁死：选品池是核算台，产品主档是结果，中间往往要改好几次
+  // （换了货源、重量改过、售价定了）。锁死的后果是这些改动只能去产品详情页改，
+  // 而那边看不到选品池的缺项提示，核算和建档就对不上了。
+  const locked = busy;
+  const promoted = Boolean(item.promoted_product_id);
+  const state = measureState(item);
+  const missing = state === 'unmeasured' ? missingInputs(item) : [];
+  // 低于 15% 的已测算卡片左轨标红：一屏扫下来绿的是能做的，红的是已经算过但不够的，
+  // 两种都不用再点开看。颜色只是加强，真正区分用的是虚线框和「未测算」标签。
+  const below = state === 'measured' && (item.profit_margin ?? 0) < 0.15;
+  const cardClass = [
+    'selection-card',
+    `is-${state}`,
+    below ? 'is-below' : '',
+    item.selected ? 'is-selected' : '',
+    locked ? 'is-locked' : '',
+  ].filter(Boolean).join(' ');
   const dimsMissing = item.length_mm == null || item.width_mm == null
     || item.height_mm == null || item.actual_weight_kg == null;
   // 供货单价填了就以它为准：采购价 = 单价 × 数量。后端 _calc 里是同一个口径，
@@ -206,7 +304,7 @@ function SelectionCard({
     : Math.round(item.unit_price_cny * (item.purchase_quantity || 4) * 100) / 100;
 
   return (
-    <article className={`selection-card ${item.selected ? 'is-selected' : ''} ${locked ? 'is-locked' : ''}`}>
+    <article className={cardClass}>
       <header>
         <label className="selection-pick">
           {/* 无障碍名直接挂在 input 上。原来是一个 .visually-hidden 的 span 装
@@ -221,7 +319,14 @@ function SelectionCard({
           />
         </label>
         {tier ? <span className={`selection-tier ${tier.className}`}>{tier.label}</span> : null}
+        {state === 'unmeasured'
+          ? <span className="selection-flag is-unmeasured" title={missing.length ? `还缺：${missing.join('、')}` : '可以测算了'}>未测算</span>
+          : null}
         {item.already_in_products ? <span className="selection-flag is-dup">已在产品列表</span> : null}
+        {promoted ? <span className="selection-flag is-done">已建产品</span> : null}
+        {promoted && item.pool_dirty
+          ? <span className="selection-flag is-sync" title="选品池里改过了，产品列表还是旧的">待更新</span>
+          : null}
         {item.status === '不合格' ? <span className="selection-flag is-bad">不建议</span> : null}
       </header>
 
@@ -240,8 +345,9 @@ function SelectionCard({
         {item.rating_value != null ? <span>★ {item.rating_value.toFixed(1)}</span> : null}
       </div>
 
-      <div className="selection-price">
+      <div className="selection-price" title={priceNote(item)}>
         <strong>{formatPrice(item.actual_sale_price_zar, 'ZAR')}</strong>
+        <span className="selection-price-source">{PRICE_SOURCE_LABEL[item.price_source] || '售价'}</span>
         {item.sales_qty ? <span>{item.sales_qty} 件 · 净销售 {formatPrice(item.net_sales_zar, 'ZAR')}</span> : null}
       </div>
 
@@ -340,11 +446,30 @@ function SelectionCard({
 
       <div className="selection-result">
         <MarginBadge item={item} />
+        {/* 未测算时把「缺什么」直接列出来。只说「待补数据」等于让人把十几个格子
+            自己扫一遍；列出缺项，补哪个一目了然。超过 3 项就收成「等 N 项」，
+            免得一行字挤成两行把卡片撑高。 */}
+        {missing.length > 0 ? (
+          <p className="selection-missing">
+            还缺 {missing.slice(0, 3).join('、')}
+            {missing.length > 3 ? ` 等 ${missing.length} 项` : ''}
+          </p>
+        ) : null}
         <dl>
           <div><dt>计费重</dt><dd>{item.chargeable_weight_kg != null ? `${item.chargeable_weight_kg} kg` : '-'}</dd></div>
           <div><dt>到仓成本</dt><dd>{formatPrice(item.cost_to_sa_warehouse_zar, 'ZAR')}</dd></div>
           <div><dt>总成本</dt><dd>{formatPrice(item.total_cost_zar, 'ZAR')}</dd></div>
           <div><dt>单件利润</dt><dd>{formatPrice(item.profit_zar, 'ZAR')}</dd></div>
+          {/* 利润率是「能不能做」的判据（≥15%），单件利润只是绝对值。
+              以前这里只给单件利润，同一批里全是 R 20 / R 180 时没法横向比。 */}
+          <div>
+            <dt>利润率</dt>
+            <dd className={item.profit_margin == null
+              ? undefined
+              : item.profit_margin >= 0.15 ? 'is-good' : 'is-bad'}>
+              {formatPercent(item.profit_margin)}
+            </dd>
+          </div>
         </dl>
       </div>
 
@@ -365,6 +490,13 @@ function SelectionCard({
           {item.promoted_product_id
             ? <Link to={`/products/${item.promoted_product_id}`}>查看产品</Link>
             : null}
+          {/* 回推：把选品池里改过的值写回产品主档并重算利润。产品列表里被人工
+              改过的字段不覆盖，会在结果里列出来。 */}
+          {promoted && onSync ? (
+            <button type="button" className="btn-link" onClick={onSync} disabled={busy || syncing}>
+              {syncing ? '更新中…' : item.pool_dirty ? '更新到产品列表' : '重新推送'}
+            </button>
+          ) : null}
           {busy ? <span className="selection-busy">保存中…</span> : null}
         </div>
       </footer>
@@ -498,17 +630,22 @@ export default function Selection() {
     let done = 0;
     let succeeded = 0;
     let failed = 0;
+    let fixed = 0;
+    let stalled = false;
     let last: SelectionEnrichResult | null = null;
     try {
       for (let round = 0; round < 40; round += 1) {
         const result = await enrichSelection({
           batch_id: batchId || undefined,
-          refresh: refreshAll && round === 0,
+          // 重抓要跑多轮才能覆盖全部行（一次 400 个），所以不能只在第一轮传 true，
+          // 否则 1700 多行里永远只有最早那 400 行被重新取价。
+          refresh: refreshAll,
         });
         last = result;
         done += result.processed;
         succeeded += result.ok;
         failed += result.failed;   // 每轮的失败要累加：只看最后一轮会漏报
+        fixed += result.price_fixed || 0;
         setEnrichResult(result);
         setNotice({
           kind: 'info',
@@ -519,6 +656,13 @@ export default function Selection() {
         if (result.public_access_blocked) break;
         if (!result.remaining) break;
         if (!result.processed && !result.pending) break;
+        // 重抓时 `remaining` 里还包含「价格没换成现货最低价」的行。这类行可能怎么抓
+        // 都换不掉（PLID 没有卖家报价、公开接口限流），再跑也是原样——只要这一轮
+        // 一条价格都没修好、也没有待重试的，就收手，别空转到 40 轮上限。
+        if (refreshAll && round > 0 && !result.price_fixed && !result.pending) {
+          stalled = true;
+          break;
+        }
         // 门户是 200 次/分钟的硬配额。配额见底时后端会把「还要等多久」告诉我们，
         // 这里照着实等——不这样的话会连续空转几十次，每次都被整批推迟。
         if (result.portal_limited && result.portal_retry_after) {
@@ -533,6 +677,9 @@ export default function Selection() {
       await refresh();
       if (last) {
         const bits = [`成功 ${succeeded} 个，失败 ${failed} 个`];
+        // 价格口径是这次重抓的主要目的，单独报一句：用户得知道有多少条真的从
+        // 「前台展示价」换成了「现货最低价」，而不是只看到「成功 N 个」。
+        if (refreshAll) bits.push(`${fixed} 个售价换成了现货最低价`);
         // 被限流的不是「抓不到」，只是还没轮到——分开说，别让人以为这些商品废了。
         if (last.pending) bits.push(`${last.pending} 个被限流、稍后再抓`);
         if (last.portal_limited) bits.push('门户配额这一轮用完了（200 次/分钟），再点一次接着抓');
@@ -549,7 +696,12 @@ export default function Selection() {
         } else if (last.remaining) {
           setNotice({
             kind: 'warn',
-            text: `本轮${bits.join('，')}；还有 ${last.remaining} 个没抓完（本次达到处理上限），再点一次「重抓全部资料」接着抓，已抓到的不会重复抓。`,
+            text: stalled
+              // 剩下的这些是「怎么抓都换不到现货最低价」的行：别家没有现货报价、
+              // PLID 已下架、或者公开接口在限流。让用户再点一次只会原样跑一遍，
+              // 所以直说保留原价，而不是催他再点。
+              ? `本轮${bits.join('，')}；还有 ${last.remaining} 个换不到现货最低价（这些商品没有别家的现货报价，或公开接口在限流），已保留原来的售价。`
+              : `本轮${bits.join('，')}；还有 ${last.remaining} 个没抓完（本次达到处理上限），再点一次「重抓全部资料」接着抓，已抓到的不会重复抓。`,
           });
         } else {
           setNotice({ kind: failed ? 'warn' : 'ok', text: `抓取完成：${bits.join('，')}。` });
@@ -817,6 +969,37 @@ export default function Selection() {
     }
   };
 
+  /**
+   * 把选品池里的修改回推到已建的产品主档。
+   *
+   * 「已建产品」以前是把这条记录锁死的，改只能去产品详情页改——但那边看不到
+   * 选品池的缺项提示，重尺改完也没法在这里重算。现在这里能改，改完点这个
+   * 把值写回主档并重算利润。
+   *
+   * 产品列表里被人工改过的字段不会被覆盖，结果里会列出来。
+   */
+  const handleSync = async (ids: string[]) => {
+    if (!ids.length || promoting) return;
+    setPromoting(true);
+    try {
+      const result = await syncSelectionToProducts(ids);
+      const kept = result.products.flatMap(row => row.kept_fields || []);
+      const keptNote = kept.length
+        ? `（产品列表里人工改过的 ${kept.length} 个字段没覆盖：${[...new Set(kept)].join('、')}）`
+        : '';
+      setNotice({
+        kind: 'ok',
+        text: `已把 ${result.updated} 条更新到产品列表${keptNote}`
+          + (result.skipped ? `；${result.skipped} 条没推：${result.skip_details.map(d => d.reason).join('；')}` : ''),
+      });
+      await refresh();
+    } catch (error) {
+      setNotice({ kind: 'warn', text: (error as Error).message });
+    } finally {
+      setPromoting(false);
+    }
+  };
+
   const handleDeleteBatch = async () => {
     if (promoteLock.current) return;
     if (!batchId) return;
@@ -833,8 +1016,19 @@ export default function Selection() {
     }
   };
 
+  // 已测算数：total - pending。summary 缺字段时别算出 NaN 显示在进度条上。
+  const measuredCount = summary ? Math.max(0, (summary.total || 0) - (summary.pending || 0)) : 0;
+  const measuredPercent = summary && summary.total
+    ? Math.round((measuredCount / summary.total) * 100)
+    : 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const selectedOnPage = useMemo(() => items.filter(item => item.selected).length, [items]);
+  // 勾选中且已建产品的行——这批是「要回推到产品列表」的，不是「要新建」的。
+  const promotedSelectedIds = useMemo(
+    () => items.filter(item => item.selected && item.promoted_product_id).map(item => item.id),
+    [items],
+  );
+  const promotedSelected = promotedSelectedIds.length;
 
   return (
     <div className="selection-page">
@@ -859,6 +1053,12 @@ export default function Selection() {
           <button type="button" className="btn-primary" onClick={() => void handlePromote()} disabled={promoting || enriching || importing || busyIds.size > 0 || !summary?.selected}>
             {promoting ? '新建中…' : `批量加入产品列表${summary?.selected ? `（${summary.selected}）` : ''}`}
           </button>
+          {/* 已建产品的行也能勾选了：勾上之后这个按钮把修改回推到产品列表。 */}
+          {promotedSelected > 0 ? (
+            <button type="button" className="btn" onClick={() => void handleSync(promotedSelectedIds)} disabled={promoting || enriching || importing}>
+              {promoting ? '更新中…' : `更新到产品列表（${promotedSelected}）`}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1037,7 +1237,9 @@ export default function Selection() {
             </ul>
           </details>
         )}
-        {enrichResult && enrichResult.failures.length > 0 && (
+        {/* failures 做兜底：接口少给这一个数组时，整页不该跟着白屏——那是最难
+            解释的一种「抓取失败」。 */}
+        {enrichResult && (enrichResult.failures?.length ?? 0) > 0 && (
           <details className="selection-import-result">
             <summary>{enrichResult.failed} 个没抓到，看原因</summary>
             <ul>
@@ -1051,12 +1253,34 @@ export default function Selection() {
 
       {summary && summary.total > 0 && (
         <section className="selection-summary">
+          {/* 进度条本身就是筛选器：看到「还有 800 个没测算」的下一个动作一定是
+              「把它们调出来」，所以点它直接切到未测算。省掉一个下拉框里的来回。 */}
+          <button
+            type="button"
+            className={`selection-progress ${status === '待核算' ? 'is-active' : ''}`}
+            onClick={() => { setStatus(status === '待核算' ? '' : '待核算'); setPage(0); }}
+            title={status === '待核算' ? '当前只看未测算，点击看全部' : '点击只看未测算'}
+          >
+            <span className="selection-progress-head">
+              <strong>{measuredCount}</strong>
+              <span>/ {summary.total} 已测算</span>
+              <em>{measuredPercent}%</em>
+            </span>
+            <span className="selection-progress-bar" aria-hidden="true">
+              <i style={{ width: `${measuredPercent}%` }} />
+            </span>
+            <span className="selection-progress-hint">
+              {status === '待核算' ? '点击看全部' : `未测算 ${summary.pending} 个 · 点击只看这些`}
+            </span>
+          </button>
           <div><strong>{summary.total}</strong><span>候选商品</span></div>
           <div><strong>{summary.with_image}</strong><span>有主图</span></div>
           <div><strong>{summary.with_dimensions}</strong><span>重尺齐全</span></div>
           <div><strong>{summary.qualified}</strong><span>合格（≥15%）</span></div>
           <div><strong>{summary.selected}</strong><span>已勾选</span></div>
           <div><strong>{summary.promoted}</strong><span>已建产品</span></div>
+          {summary.pending_sync > 0 && <div className="is-warn"><strong>{summary.pending_sync}</strong><span>待更新到产品列表</span></div>}
+          {summary.price_in_stock > 0 && <div><strong>{summary.price_in_stock}</strong><span>现货最低价</span></div>}
           {summary.duplicates > 0 && <div className="is-warn"><strong>{summary.duplicates}</strong><span>与产品列表重复</span></div>}
           {summary.no_plid > 0 && <div className="is-warn"><strong>{summary.no_plid}</strong><span>没解析出 PLID</span></div>}
         </section>
@@ -1078,7 +1302,7 @@ export default function Selection() {
           <span>状态</span>
           <select value={status} onChange={event => { setStatus(event.target.value); setPage(0); }}>
             <option value="">全部</option>
-            {STATUS_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+            {STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
         <label className="selection-field">
@@ -1154,6 +1378,8 @@ export default function Selection() {
               onPatch={patch => void handlePatch(item.id, patch)}
               onToggle={() => handleToggle(item)}
               feeCategories={feeCategoryState.categories}
+              onSync={item.promoted_product_id ? () => void handleSync([item.id]) : undefined}
+              syncing={promoting}
             />
           ))}
         </div>

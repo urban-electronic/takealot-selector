@@ -407,6 +407,20 @@ def _ensure_columns():
                 # 是因为那批老名字是更早的翻译器拼出来的（"女士袋黑"、
                 # "XL\nL\n3XL"），当成人工填的就永远改不动了。
                 "chinese_name_auto": "BOOLEAN",
+                # 价格口径：前台展示价 / 现货最低价 / 最低报价 / 取值来源 / 卖家数。
+                # 以前只存一个 actual_sale_price_zar，抓的是「配送最快」那条报价，
+                # 对标价要的是「有现货的最低价」，两个数必须分开存。
+                "listed_price_zar": "REAL",
+                "lowest_in_stock_price_zar": "REAL",
+                "lowest_offer_price_zar": "REAL",
+                "price_source": "TEXT DEFAULT ''",
+                "seller_offer_count": "INTEGER",
+                # 已建产品后仍可在选品池改，改完能同步回主档：
+                # pool_dirty 标记「有修改还没推」，promoted_snapshot 存上次推送的
+                # 字段值，用来判断产品列表里是不是被人工改过。
+                "pool_dirty": "BOOLEAN DEFAULT 0",
+                "promoted_snapshot": "TEXT DEFAULT ''",
+                "promoted_synced_at": "DATETIME",
             }
             with engine.begin() as conn:
                 for name, sql_type in selection_additions.items():

@@ -3409,6 +3409,64 @@ table tbody tr:hover { background: #f8fafc; }
   color: var(--warning-strong);
 }
 
+/* 测算进度。它同时是筛选器：看到「还有 800 个没测算」，下一步一定是把它们调出来，
+   所以整块做成按钮，点一下切到未测算。 */
+.selection-summary > .selection-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 220px;
+  /* min-width 写成 min() 而不是 220px：320px 屏上内容区可能只剩 240px，
+     硬下限会把汇总条撑出横向滚动。 */
+  min-width: min(220px, 100%);
+  padding: 10px var(--sp-3);
+  background: #fff;
+  border: 1px solid var(--line, #e3e8ef);
+  border-radius: var(--r-sm, 8px);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.selection-summary > .selection-progress:hover { border-color: #5182ce; }
+.selection-summary > .selection-progress.is-active {
+  border-color: #5182ce;
+  box-shadow: 0 0 0 2px rgba(81, 130, 206, .18);
+}
+.selection-summary > .selection-progress:focus-visible {
+  outline: 2px solid var(--focus-ring, #2563eb);
+  outline-offset: 1px;
+}
+
+.selection-progress-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.selection-progress-head em {
+  margin-left: auto;
+  font-style: normal;
+  font-weight: 700;
+  color: var(--success-strong);
+}
+
+.selection-progress-bar {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: #eef1f5;
+  overflow: hidden;
+}
+
+.selection-progress-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--success-strong);
+  transition: width .2s ease;
+}
+
 /* ---- 工具栏 ---- */
 
 .selection-toolbar,
@@ -3510,12 +3568,42 @@ table tbody tr:hover { background: #f8fafc; }
      跟着撑宽，320/390 屏整页横向溢出。置 0 之后按 1fr 收缩，标题走省略号
      （.selection-category small 已经是 overflow:hidden + text-overflow:ellipsis）。 */
   min-width: 0;
+  /* 左侧状态轨用 ::before 绝对定位，卡片要成为它的定位父级并裁掉圆角外的部分。 */
+  position: relative;
+  overflow: hidden;
   padding: var(--sp-3);
   background: #fff;
   border: 1px solid var(--line, #e3e8ef);
   border-radius: var(--r-md, 10px);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
+
+/* 测算状态轨：3px 竖条贴在左边缘。
+   为什么是竖条而不是徽章——卡片底部的「利润率」在一屏 12 张时要滚动才看得到，
+   竖条在余光里就能分辨「哪几张没动过」。颜色只是加强，真正的区分靠虚线框和
+   「未测算」标签，色盲和黑白打印下一样分得开。 */
+.selection-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: transparent;
+}
+
+.selection-card.is-unmeasured {
+  border-style: dashed;
+  border-color: #d9a441;
+  background: #fffdf6;
+}
+
+.selection-card.is-unmeasured::before { background: #d9a441; }
+
+/* 选中环是蓝色 box-shadow，边框让给状态色；两者同时出现时不抢。 */
+.selection-card.is-unmeasured.is-selected { border-color: #5182ce; }
+
+.selection-card.is-measured::before { background: var(--success-strong); }
+.selection-card.is-measured.is-below::before { background: var(--danger-strong); }
+.selection-card.is-promoted::before { background: #b9c2ce; }
 
 .selection-card.is-selected {
   border-color: #5182ce;
@@ -3564,6 +3652,18 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-flag.is-dup { background: var(--surface-warning); color: var(--warning-strong); }
 .selection-flag.is-bad { background: #fdecee; color: var(--danger-strong); }
+/* 已建产品：中性色，只是状态，不带褒贬。 */
+.selection-flag.is-done { background: #eef1f5; color: var(--text-neutral-strong); }
+/* 待更新：橙色，提醒选品池和产品列表已经不一致了。 */
+.selection-flag.is-sync { background: var(--surface-warning); color: var(--warning-strong); }
+/* 未测算：虚线描边跟卡片的虚线框呼应，比纯底色更「未完成」。
+   padding 比基础值少 1px，抵掉多出来的 1px 描边，高度不变。 */
+.selection-flag.is-unmeasured {
+  background: #fdf4e3;
+  color: var(--warning-strong);
+  border: 1px dashed #d9a441;
+  padding: 0 6px;
+}
 
 .selection-thumb {
   position: relative;
@@ -3617,6 +3717,16 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-price span {
   align-self: center;
+}
+
+/* 售价口径：写清楚这个价是「现货最低价」还是「前台展示价」，否则和前台
+   显示的数对不上时，人只会以为抓错了。 */
+.selection-price .selection-price-source {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-muted, #f2f5f9);
+  color: var(--text-subtle);
+  font-size: var(--fs-caption);
 }
 
 .selection-category {
@@ -3686,7 +3796,9 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-result dl {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* 五项（计费重 / 到仓成本 / 总成本 / 单件利润 / 利润率）用 auto-fit 自适应：
+     宽卡片一行排下，窄卡片自动折成两行，不会多出一个空格子。 */
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
   gap: 6px;
   margin: 0;
 }
@@ -3705,6 +3817,10 @@ table tbody tr:hover { background: #f8fafc; }
   font-variant-numeric: tabular-nums;
 }
 
+/* 利润率：达标绿、不达标红，和卡片上的「合格 / 不建议」一个口径。 */
+.selection-result dd.is-good { color: var(--success-strong); font-weight: 600; }
+.selection-result dd.is-bad { color: var(--danger-strong); }
+
 .selection-margin {
   align-self: flex-start;
   padding: 2px 9px;
@@ -3715,8 +3831,16 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-margin.is-ok { background: #eaf8f0; color: var(--success-strong); }
 .selection-margin.is-bad { background: #fdecee; color: var(--danger-strong); }
-.selection-margin.is-pending { background: #fff; color: var(--text-neutral-strong); }
+.selection-margin.is-unmeasured { background: #fdf4e3; color: var(--warning-strong); }
 .selection-margin.is-done { background: #eef1f5; color: var(--text-body); }
+
+/* 未测算缺哪几项。原来这里是「待补数据」四个字，等于让人自己把十几个格子扫一遍。 */
+.selection-missing {
+  margin: 0;
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  color: var(--warning-strong);
+}
 
 .selection-card > footer {
   display: flex;
@@ -3746,6 +3870,20 @@ table tbody tr:hover { background: #f8fafc; }
 }
 
 .selection-foot-actions a { color: var(--link-strong); }
+
+/* 回推按钮：和旁边的链接一样轻，但可点，所以给它一个明确的按钮外观。 */
+.selection-foot-actions .btn-link {
+  min-height: var(--control-h-min);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line, #e3e8ef);
+  border-radius: var(--r-sm, 8px);
+  background: #fff;
+  color: var(--link-strong);
+  font: inherit;
+  cursor: pointer;
+}
+
+.selection-foot-actions .btn-link:disabled { opacity: .55; cursor: default; }
 
 .selection-busy { color: var(--text-muted); }
 

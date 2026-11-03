@@ -458,6 +458,15 @@ export interface SelectionItem {
   fee_category_confidence: string;
   fee_category_reason: string;
   actual_sale_price_zar: number | null;
+  /** 前台展示价（buybox 里选中的那条，通常是「配送最快」的那家） */
+  listed_price_zar: number | null;
+  /** 有现货卖家的最低价——对标价该看这个 */
+  lowest_in_stock_price_zar: number | null;
+  /** 全部可下单报价的最低价（含备货期卖家） */
+  lowest_offer_price_zar: number | null;
+  /** 售价口径：in_stock / offer / listed / import / manual / portal */
+  price_source: string;
+  seller_offer_count: number | null;
   rating_value: number | null;
   review_count: number | null;
   /** 只有销售报表带来的行才有；竞品表这三项都是 null */
@@ -469,6 +478,10 @@ export interface SelectionItem {
   tier: string;
   already_in_products: boolean;
   promoted_product_id: string | null;
+  /** 已建产品后在选品池又改过 —— true 时需要回推一次到产品列表 */
+  pool_dirty: boolean;
+  /** 上次回推到产品列表的时间 */
+  promoted_synced_at: string | null;
   length_mm: number | null;
   width_mm: number | null;
   height_mm: number | null;
@@ -548,6 +561,12 @@ export interface SelectionEnrichResult {
   from_product_list: number;
   /** 图/类目/价格主档里已经齐全、没再打网络的条数 */
   skipped_network: number;
+  /**
+   * 这一轮真把多少条从旧口径（前台展示价 / 目录价 / 表格导入价）换成了
+   * 「现货卖家最低价」。重抓时用它判断还有没有进展——抓不到价格的行会让
+   * `remaining` 一直不为 0，没有这个数前端只能空转到轮次上限。
+   */
+  price_fixed?: number;
   remaining: number;
   /** 上游拒绝或限流时停止后续轮次；remaining 仍是实际待处理数。 */
   public_access_blocked?: boolean;
@@ -566,6 +585,12 @@ export interface SelectionSummary {
   with_image: number;
   with_dimensions: number;
   no_plid: number;
+  /** 已建产品但选品池又改过、需要回推的条数 */
+  pending_sync: number;
+  /** 售价取的是「现货最低价」的条数 */
+  price_in_stock: number;
+  /** 售价是人工填的条数（重抓不会覆盖） */
+  price_manual: number;
 }
 
 export interface SelectionBatch {
@@ -601,5 +626,19 @@ export interface SelectionPromoteResult {
   created: number;
   skipped: number;
   products: { id: string; product_id: string; product_no: string; product_name: string }[];
+  skip_details: { id: string; reason: string }[];
+}
+
+/** 选品池回推产品主档的结果。kept_fields 是产品列表里被人工改过、没被覆盖的字段。 */
+export interface SelectionSyncResult {
+  updated: number;
+  skipped: number;
+  products: {
+    id: string;
+    product_id: string;
+    product_no: string;
+    product_name: string;
+    kept_fields: string[];
+  }[];
   skip_details: { id: string; reason: string }[];
 }

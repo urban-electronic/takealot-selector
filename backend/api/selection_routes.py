@@ -85,6 +85,11 @@ ENRICH_CHUNK = 400          # 单次请求最多抓这么多个，剩下的由�
 # 就等于整块白抓。宁可多调几轮，也不要一次跑不完。
 ENRICH_NETWORK_BUDGET_SECONDS = 45.0
 
+# 这几种来源的价格才是「按现货卖家最低价」算出来的新口径，重抓时不用再打一遍
+# 公开接口。其余来源（空字符串＝历史行、portal＝门户目录 bestPrice、import＝
+# 从表格导入）都还是「前台展示价」或来路不明的数，得重新取一次。
+PRECISE_PRICE_SOURCES = ("in_stock", "offer", "listed")
+
 
 # ---------------------------------------------------------------------------
 # 小工具
@@ -170,7 +175,7 @@ def _calc(item: SelectionItem, exchange_rate: float, fee_rate: Optional[float]) 
 def _refresh_status(item: SelectionItem) -> None:
     if item.promoted_product_id:
         item.status = "已建产品"
-        item.selected = False
+        # 不再强制取消勾选：已建产品的行也能勾选，用来批量回推修改。
         return
     if item.profit_margin is None:
         item.status = "待核算"
@@ -323,6 +328,28 @@ def _fill_catalogue_dims(db: Session, items: List[SelectionItem]) -> int:
     return filled
 
 
+def _portal_may_overwrite_price(item: SelectionItem) -> bool:
+    """门户目录价能不能写进这一行。
+
+    以前只在「售价为空」时写，结果历史行永远停在旧值：1700 多条存量数据的售价
+    是门户 bestPrice（很多还是更早那次抓的前台展示价），用户点「重抓全部资料」
+    也换不掉，看到的还是贵的那条。现在放开成「只要不是人定的、也不是更准的口径」
+    就覆盖：
+
+    - `manual`：用户核对过，绝不动。
+    - `import`：表格导入时自带的价，是用户自己的测算口径，门户这种粗口径不许盖它
+      （公开接口拿到的是「现货最低价」，那一轮仍然会换掉，见 `_apply_public`）。
+    - `in_stock` / `offer` / `listed`：公开接口拆出来的新口径，比门户的目录价准，
+      不能被盖回前台展示价（否则重抓一次反而变贵）。
+    - 空 / `portal`：历史行或上一轮门户写的，可以刷。
+    """
+    if item.price_source in ("manual", "import"):
+        return False
+    if item.price_source in PRECISE_PRICE_SOURCES:
+        return False
+    return True
+
+
 def _fill_portal(db: Session, items: List[SelectionItem],
                  plids: List[str]) -> Tuple[Dict[str, Dict[str, Any]], int]:
     """卖家门户目录接口：主图 + 图库 + 类目 + 价格 + 重尺，一次拿全。
@@ -357,8 +384,11 @@ def _fill_portal(db: Session, items: List[SelectionItem],
                 item.product_image_url = record.get("product_image_url") or ""
             if not item.image_urls and record.get("image_urls"):
                 item.image_urls = json.dumps(record["image_urls"], ensure_ascii=False)
-            if item.actual_sale_price_zar is None and record.get("actual_sale_price_zar") is not None:
+            if record.get("actual_sale_price_zar") is not None and _portal_may_overwrite_price(item):
                 item.actual_sale_price_zar = record["actual_sale_price_zar"]
+                # 门户给的是目录里的 bestPrice，公开接口会给更细的三个口径，
+                # 所以这里标成 portal，公开接口那轮会把它换掉。
+                item.price_source = "portal"
             if not item.takealot_category_path and record.get("takealot_category_path"):
                 item.takealot_category_path = record["takealot_category_path"]
             if not item.tsin and record.get("tsin"):
@@ -450,7 +480,22 @@ def _apply_public(item: SelectionItem, record: Optional[Dict[str, Any]], db: Ses
     if images:
         item.image_urls = json.dumps(images, ensure_ascii=False)
     if record.get("actual_sale_price_zar") is not None:
-        item.actual_sale_price_zar = record["actual_sale_price_zar"]
+        # 人工改过售价就不再被覆盖：那是用户核对过的数，重抓不该把它冲掉
+        # （重尺和中文品名都是这么处理的）。
+        if item.price_source != "manual":
+            item.actual_sale_price_zar = record["actual_sale_price_zar"]
+            # 没给口径就按「前台展示价」算：只有一个价可拿的时候，那个价就是前台
+            # 展示的那条。留空会让这一行永远被当成「还没换到新口径」，重抓时反复
+            # 被选中、remaining 永远清不掉。
+            item.price_source = record.get("price_source") or "listed"
+    if record.get("listed_price_zar") is not None:
+        item.listed_price_zar = record["listed_price_zar"]
+    if record.get("lowest_in_stock_price_zar") is not None:
+        item.lowest_in_stock_price_zar = record["lowest_in_stock_price_zar"]
+    if record.get("lowest_offer_price_zar") is not None:
+        item.lowest_offer_price_zar = record["lowest_offer_price_zar"]
+    if record.get("seller_offer_count") is not None:
+        item.seller_offer_count = record["seller_offer_count"]
     if record.get("rating_value") is not None:
         item.rating_value = record["rating_value"]
     if record.get("review_count") is not None:
@@ -531,6 +576,11 @@ def _to_dict(item: SelectionItem) -> Dict[str, Any]:
         "fee_category_confidence": item.fee_category_confidence,
         "fee_category_reason": item.fee_category_reason,
         "actual_sale_price_zar": item.actual_sale_price_zar,
+        "listed_price_zar": item.listed_price_zar,
+        "lowest_in_stock_price_zar": item.lowest_in_stock_price_zar,
+        "lowest_offer_price_zar": item.lowest_offer_price_zar,
+        "price_source": item.price_source or "",
+        "seller_offer_count": item.seller_offer_count,
         "rating_value": item.rating_value,
         "review_count": item.review_count,
         "sales_qty": item.sales_qty,
@@ -540,6 +590,8 @@ def _to_dict(item: SelectionItem) -> Dict[str, Any]:
         "tier": item.tier,
         "already_in_products": bool(item.already_in_products),
         "promoted_product_id": item.promoted_product_id,
+        "pool_dirty": bool(item.pool_dirty),
+        "promoted_synced_at": item.promoted_synced_at.isoformat() if item.promoted_synced_at else None,
         "length_mm": item.length_mm,
         "width_mm": item.width_mm,
         "height_mm": item.height_mm,
@@ -734,6 +786,9 @@ async def import_table(
             # `chinese_name_auto` 记来源：只有机器起的名字才允许日后按新词表重算。
             chinese_name_auto=bool(auto_name),
             actual_sale_price_zar=group["actual_sale_price_zar"],
+            # 表里带来的售价标成 import：抓资料时会用「现货最低价」换掉它，
+            # 但如果用户在卡片上自己改过（manual），就不再动。
+            price_source="import" if group["actual_sale_price_zar"] is not None else "",
             rating_value=group["rating_value"],
             review_count=group["review_count"],
             sales_qty=group["sales_qty"],
@@ -941,7 +996,23 @@ def enrich(
         )
     if not data.refresh:
         query = query.filter(pending_filter)
-    targets = query.order_by(SelectionItem.created_at).limit(data.limit).all()
+        targets = query.order_by(SelectionItem.created_at).limit(data.limit).all()
+    else:
+        # 重抓：**价格还没落到新口径的行排前面**。
+        #
+        # 不排的话，一次只处理 400 个、且固定按 created_at 取前 400 个，历史
+        # 1700 多行里永远只有最早那 400 行被重算，剩下的一直停在旧的前台展示价
+        # ——用户点多少次「重抓全部资料」，售价都不变。按「缺什么先补什么」排序后，
+        # 每一块都在推进，前端按 `remaining` 接着调就能收敛。
+        needs_price = case(
+            (SelectionItem.price_source.in_(PRECISE_PRICE_SOURCES), 1), else_=0,
+        )
+        targets = (query.order_by(needs_price, SelectionItem.created_at)
+                   .limit(data.limit).all())
+
+    # 本轮开始前记下价格来源：收尾时用它算「这一轮真把几条换成了新口径」。
+    # 前端靠这个数判断「还有没有进展」，否则抓不到价格的行会让它空转到轮次上限。
+    price_source_before = {item.id: (item.price_source or "") for item in targets}
 
     if not targets:
         # 字段要和正常返回一致：前端读 `pending` / `portal_*` 时不该突然是
@@ -953,6 +1024,7 @@ def enrich(
                 "with_dimensions": 0, "from_product_list": 0, "skipped_network": 0,
                 "remaining": 0, "seller_api": "", "failures": [],
                 "names_filled": names_filled, "battery_judged": battery_judged,
+                "price_fixed": 0,
                 "portal_configured": portal_ready, "portal_limited": False,
                 "portal_retry_after": 0.0}
 
@@ -1072,13 +1144,24 @@ def enrich(
             )
         ]
     # 门户已经把这些行补齐了，不必再打一次公开接口。
+    #
+    # 但价格口径要单独看：门户只给一个目录 bestPrice（往往就是前台展示的那条，
+    # 也就是最贵的），「现货卖家最低价」只有公开接口的 buybox 拆得出来。所以
+    # 重抓（refresh）时，价格还没落到新口径的行不能因为「图、价、类目都齐了」
+    # 就被剔掉——不然点一百次重抓，售价还是那条贵的。
     if portal_records:
         still_missing = {
             item.plid for item in targets
-            if item.plid and not (
-                item.product_image_url
-                and item.actual_sale_price_zar is not None
-                and item.fee_category
+            if item.plid and (
+                not (
+                    item.product_image_url
+                    and item.actual_sale_price_zar is not None
+                    and item.fee_category
+                )
+                or (
+                    data.refresh
+                    and item.price_source not in PRECISE_PRICE_SOURCES
+                )
             )
         }
         need_fetch = [plid for plid in need_fetch if plid in still_missing]
@@ -1144,6 +1227,25 @@ def enrich(
     # 和本轮的目标查询用同一个条件，否则会出现「remaining 说还有、下一轮却选不中」
     # 或者反过来的空转。
     remaining = scoped_query.filter(pending_filter).count()
+    if data.refresh:
+        # 重抓时还要算上「价格没换到新口径」的行：它们资料是齐的（不在 pending 里），
+        # 但售价还是旧的前台展示价。不把它们算进去，前端第一块跑完就以为收工了，
+        # 剩下 1300 多行的售价永远不会更新。
+        stale_price = scoped_query.filter(
+            or_(
+                SelectionItem.price_source.is_(None),
+                SelectionItem.price_source.notin_(PRECISE_PRICE_SOURCES),
+            )
+        ).count()
+        remaining = max(remaining, stale_price)
+
+    # 这一轮真把多少条从「旧口径」换成了「现货最低价」。前端用它判断有没有进展：
+    # 抓不到价格的行会让 remaining 一直不为 0，没有这个数就只能空转到轮次上限。
+    price_fixed = sum(
+        1 for item in targets
+        if (item.price_source or "") in PRECISE_PRICE_SOURCES
+        and price_source_before.get(item.id, "") not in PRECISE_PRICE_SOURCES
+    )
 
     return {
         # 推迟到下一轮的不算「已处理」——否则前端的「已抓取 N 个」会虚高，
@@ -1157,6 +1259,7 @@ def enrich(
         "pending": pending + sum(1 for item in targets if item.plid in deferred_plids),
         "with_dimensions": dims_from_seller + dims_from_catalogue + dims_from_portal,
         "from_product_list": from_product_list,
+        "price_fixed": price_fixed,
         "skipped_network": skipped_network,
         "remaining": remaining,
         "public_access_blocked": any(
@@ -1312,6 +1415,11 @@ def summarize(db: Session, store_id: str, batch_id: Optional[str] = None) -> Dic
         "with_image": sum(1 for i in items if i.product_image_url),
         "with_dimensions": sum(1 for i in items if i.length_mm and i.actual_weight_kg),
         "no_plid": sum(1 for i in items if not i.plid),
+        # 已建产品但选品池又改过的条数——这些需要回推一次。
+        "pending_sync": sum(1 for i in items if i.promoted_product_id and i.pool_dirty),
+        # 售价口径分布：现货最低 / 最低报价 / 前台价 / 导入表 / 人工
+        "price_in_stock": sum(1 for i in items if i.price_source == "in_stock"),
+        "price_manual": sum(1 for i in items if i.price_source == "manual"),
     }
 
 
@@ -1356,6 +1464,13 @@ def _apply_patch(item: SelectionItem, patch: ItemPatch, db: Session, rate: float
     if "chinese_product_name" in fields:
         # 人改过品名就不再是「机器起的」，后续词表升级不许覆盖
         item.chinese_name_auto = False
+    if "actual_sale_price_zar" in fields:
+        # 人手改过的售价标成 manual，之后「重抓全部资料」不再覆盖它
+        item.price_source = "manual"
+    # 已建产品的行改了东西 → 标记「待更新到产品列表」，卡片上会出现回推按钮。
+    # 勾选本身不算改动（那是挑要推哪几条）。
+    if item.promoted_product_id and set(fields) - {"selected"}:
+        item.pool_dirty = True
     for key, value in fields.items():
         setattr(item, key, value)
     fee_rate = _fee_rate(db, item.fee_category)
@@ -1705,6 +1820,14 @@ def promote(
         item.promoted_product_id = product.id
         item.status = "已建产品"
         item.selected = False
+        # 记下这次推送出去的字段值：以后再同步时，产品列表里被人工改过的字段
+        # 不会被选品池覆盖。
+        item.promoted_snapshot = json.dumps(
+            {field: getattr(item, field, None) for field in PUSH_FIELDS},
+            ensure_ascii=False, default=str,
+        )
+        item.pool_dirty = False
+        item.promoted_synced_at = datetime.utcnow()
         created.append({"id": item.id, "product_id": product.id,
                         "product_no": str(product.product_no),
                         "product_name": product.product_name})
@@ -1712,6 +1835,125 @@ def promote(
     db.commit()
     return {"created": len(created), "skipped": len(skipped),
             "products": created, "skip_details": skipped}
+
+
+# ---------------------------------------------------------------------------
+# 4b. 已建产品的回改推送
+# ---------------------------------------------------------------------------
+
+# 选品池 → 产品主档 的字段映射（左边池子、右边主档）。
+# 只放「池子是来源」的字段；库存、打包、采购这些主档自己的账不归池子管。
+PUSH_FIELDS = (
+    "product_name",
+    "chinese_product_name",
+    "product_image_url",
+    "takealot_url",
+    "plid",
+    "tsin",
+    "actual_sale_price_zar",
+    "fee_category",
+    "purchase_url",
+    "purchase_cost_cny",
+    "purchase_shipping_cny",
+    "purchase_quantity",
+    "unit_price_cny",
+    "packaging_cost_per_unit_cny",
+    "length_mm",
+    "width_mm",
+    "height_mm",
+    "actual_weight_kg",
+    "shipping_method",
+    "rating_value",
+    "review_count",
+    "note",
+)
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    """两个字段值是否「还是同一个」。浮点按四舍五入比，避免 0.1+0.2 那种差异。"""
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return abs(float(left) - float(right)) < 0.005
+    if left is None and right is None:
+        return True
+    return str(left or "") == str(right or "")
+
+
+@router.post("/items/sync")
+def sync_to_products(
+    data: IdList,
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """把选品池里的修改同步回已建的产品主档。
+
+    已建产品不该被锁死——选品池是核算台，产品主档是结果，中间改了很多次
+    （换了货源、重量改过、售价定了）都是常事。所以这里做的是**回推**：
+    把池子里的当前值写回主档并重算利润。
+
+    冲突怎么办
+    ----------
+    两边都改过同一个字段时听产品列表的：`promoted_snapshot` 记着上次推送时
+    的值，主档里的值和它不一样，说明用户在主档里人工改过——这时不覆盖，
+    也不报错，在返回结果里列出来让人自己决定。
+    """
+    from api.product_routes import _apply_calculated_fields
+
+    items = db.query(SelectionItem).filter(
+        SelectionItem.id.in_(data.ids), SelectionItem.store_id == store_id
+    ).all()
+    if not items:
+        raise HTTPException(status_code=404, detail="没有找到选品记录")
+
+    updated: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, str]] = []
+    for item in items:
+        if not item.promoted_product_id:
+            skipped.append({"id": item.id, "reason": "还没建产品，用「新建产品」推一次"})
+            continue
+        product = db.query(Product).filter(
+            Product.id == item.promoted_product_id, Product.store_id == store_id
+        ).first()
+        if not product:
+            # 主档里的产品被删了：解除关联，让它能重新建一次。
+            item.promoted_product_id = None
+            item.status = "待核算"
+            item.pool_dirty = False
+            skipped.append({"id": item.id, "reason": "产品列表里没有对应产品，已解除关联"})
+            continue
+
+        snapshot = {}
+        try:
+            snapshot = json.loads(item.promoted_snapshot or "{}")
+        except (TypeError, ValueError):
+            snapshot = {}
+
+        kept: List[str] = []
+        for field in PUSH_FIELDS:
+            new_value = getattr(item, field, None)
+            current = getattr(product, field, None)
+            if field in snapshot and not _same_value(current, snapshot.get(field)):
+                # 主档里人工改过，选品池不覆盖它。
+                kept.append(field)
+                continue
+            setattr(product, field, new_value)
+
+        product.success_fee_rate = _fee_rate(db, product.fee_category)
+        _apply_calculated_fields(db, product)
+
+        item.promoted_snapshot = json.dumps(
+            {field: getattr(item, field, None) for field in PUSH_FIELDS},
+            ensure_ascii=False, default=str,
+        )
+        item.pool_dirty = False
+        item.promoted_synced_at = datetime.utcnow()
+        updated.append({"id": item.id, "product_id": product.id,
+                        "product_no": str(product.product_no),
+                        "product_name": product.product_name,
+                        "kept_fields": kept})
+
+    db.commit()
+    return {"updated": len(updated), "skipped": len(skipped),
+            "products": updated, "skip_details": skipped}
 
 
 @router.delete("/items")

@@ -472,6 +472,21 @@ class SelectionItem(Base):
 
     # ---- 市场信号（公开接口或原表带来）----
     actual_sale_price_zar = Column(Float, nullable=True)
+    # ---- 价格口径 ----
+    #
+    # 同一个商品有三个不同的价，混用一个就会算错利润：
+    #   listed_price_zar            前台展示价（buybox 里选中的那条，通常是「配送最快」）
+    #   lowest_in_stock_price_zar   有现货卖家的最低价——对标价该看这个
+    #   lowest_offer_price_zar      全部可下单报价的最低价（含备货期卖家）
+    #
+    # `actual_sale_price_zar` 是参与利润计算的那个，取值来源记在 `price_source`：
+    #   in_stock 现货最低 / offer 最低报价 / listed 前台价 / import 导入表 / manual 人工
+    # 人工改过的写 manual，之后「重抓全部资料」不再覆盖它。
+    listed_price_zar = Column(Float, nullable=True)
+    lowest_in_stock_price_zar = Column(Float, nullable=True)
+    lowest_offer_price_zar = Column(Float, nullable=True)
+    price_source = Column(String, default="")
+    seller_offer_count = Column(Integer, nullable=True)
     rating_value = Column(Float, nullable=True)
     review_count = Column(Integer, nullable=True)
 
@@ -485,6 +500,13 @@ class SelectionItem(Base):
     # ---- 与产品列表的关系 ----
     already_in_products = Column(Boolean, default=False, index=True)
     promoted_product_id = Column(String, nullable=True)
+    # 已建产品后，选品池仍然可以改。改了就标记 pool_dirty，卡片上出现
+    # 「待更新到产品列表」，点一下把修改同步回主档。
+    # `promoted_snapshot` 存上次推送时各字段的值：同步时拿它比对，产品列表里
+    # 被人工改过的字段不会被选品池覆盖（两边都改过才冲突，那种听产品列表的）。
+    pool_dirty = Column(Boolean, default=False)
+    promoted_snapshot = Column(Text, default="")
+    promoted_synced_at = Column(DateTime, nullable=True)
 
     # ---- 重尺（手填为主，公开接口拿到就预填）----
     length_mm = Column(Float, nullable=True)

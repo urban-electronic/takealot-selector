@@ -30,6 +30,7 @@ from api.selection_routes import (
     ItemPatch,
     PurgeRequest,
     SelectQualifiedRequest,
+    _fill_portal,
     bulk_patch,
     delete_batch,
     diag_public,
@@ -38,6 +39,7 @@ from api.selection_routes import (
     patch_item,
     promote,
     purge_items,
+    sync_to_products,
     query_items,
     select_qualified,
     summarize,
@@ -2144,3 +2146,392 @@ def test_real_brand_rejects_suspected_and_placeholders():
     assert real_brand("无") == ""
     assert real_brand("-") == ""
     assert real_brand(None) == ""
+
+
+# ------------------------------------------------------------ 价格口径：现货最低价
+#
+# 前台 buybox 里排第一的那条是「配送最快」的报价，不是最便宜的。以前只取第一条，
+# 于是抓到的价往往比有货的最低价高出一截，利润算出来虚高。
+
+def test_offer_prices_splits_in_stock_from_listed():
+    payload = {
+        "buybox": {
+            "items": [
+                {"is_selected": True, "price": 309,
+                 "stock_availability": {"status": "In stock", "is_leadtime": False}},
+                {"is_selected": False, "price": 178,
+                 "stock_availability": {"status": "In stock", "is_leadtime": False}},
+            ]
+        }
+    }
+    prices = pub._offer_prices(payload)
+    assert prices["listed_price_zar"] == 309      # 前台展示的是选中的那条
+    assert prices["lowest_in_stock_price_zar"] == 178
+    assert prices["lowest_offer_price_zar"] == 178
+    assert prices["seller_offer_count"] == 2
+
+
+def test_offer_prices_excludes_leadtime_sellers_from_in_stock():
+    """备货期卖家（要等几天）不算现货，但仍然算「可下单报价」。"""
+    payload = {
+        "buybox": {
+            "items": [
+                {"is_selected": True, "price": 116,
+                 "stock_availability": {"status": "In stock", "is_leadtime": False}},
+                {"is_selected": False, "price": 115,
+                 "stock_availability": {"status": "Ships in 5 - 7 work days", "is_leadtime": True}},
+            ]
+        }
+    }
+    prices = pub._offer_prices(payload)
+    assert prices["lowest_in_stock_price_zar"] == 116
+    assert prices["lowest_offer_price_zar"] == 115
+
+
+def test_pick_price_prefers_in_stock():
+    prices = {
+        "listed_price_zar": 309,
+        "lowest_in_stock_price_zar": 178,
+        "lowest_offer_price_zar": 178,
+        "seller_offer_count": 2,
+    }
+    assert pub._pick_price(prices) == (178, "in_stock")
+
+
+def test_pick_price_falls_back_to_offer_then_listed():
+    assert pub._pick_price({
+        "listed_price_zar": 309, "lowest_in_stock_price_zar": None,
+        "lowest_offer_price_zar": 250, "seller_offer_count": 2,
+    }) == (250, "offer")
+    assert pub._pick_price({
+        "listed_price_zar": 309, "lowest_in_stock_price_zar": None,
+        "lowest_offer_price_zar": None, "seller_offer_count": 1,
+    }) == (309, "listed")
+
+
+def test_enrich_writes_in_stock_price_not_listed(db, monkeypatch):
+    """抓到的是「现货最低价」，前台展示价单独记一个字段。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID701"]])
+    record = _fake_public("701")
+    record.update({
+        "actual_sale_price_zar": 178,
+        "price_source": "in_stock",
+        "listed_price_zar": 309,
+        "lowest_in_stock_price_zar": 178,
+        "lowest_offer_price_zar": 178,
+        "seller_offer_count": 2,
+    })
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [record])
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.actual_sale_price_zar == 178
+    assert item.listed_price_zar == 309
+    assert item.lowest_in_stock_price_zar == 178
+    assert item.price_source == "in_stock"
+
+
+def test_manual_price_is_not_overwritten_by_enrich(db, monkeypatch):
+    """人工核对过的售价不能被重抓冲掉——和重尺、品名一个规矩。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID702"]])
+    item = db.query(SelectionItem).first()
+    patch_item(item.id, ItemPatch(actual_sale_price_zar=999), db=db, store_id=STORE)
+
+    record = _fake_public("702")
+    record["actual_sale_price_zar"] = 178
+    record["price_source"] = "in_stock"
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [record])
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    item = db.query(SelectionItem).first()
+    assert item.actual_sale_price_zar == 999
+    assert item.price_source == "manual"
+
+
+# ------------------------------------------------------------ 存量旧价格的刷新
+#
+# 历史 1700 多行的售价是门户目录 bestPrice（很多时候就是前台展示的那条贵价）。
+# 以前 `_fill_portal` 只在「售价为空」时写，点多少次「重抓全部资料」都换不掉。
+
+def _portal_record(plid, price):
+    return {
+        "plid": plid,
+        "success": True,
+        "product_name": "Portal Title",
+        "product_image_url": f"https://media.takealot.com/p/{plid}.jpg",
+        "actual_sale_price_zar": price,
+        "takealot_category_path": "Home & Kitchen > Kitchen Storage",
+        "dimensions": {},
+    }
+
+
+def _use_fake_portal(monkeypatch, records):
+    from services import takealot_portal_api as portal
+
+    monkeypatch.setattr(portal, "configured_token", lambda db: "token")
+    monkeypatch.setattr(portal, "token_state", lambda db: {"expired": False})
+    monkeypatch.setattr(
+        portal, "fetch_many",
+        lambda plids, token, workers=8: [records[p] for p in plids if p in records],
+    )
+
+
+def _legacy_item(db, price, source):
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID710"]])
+    item = db.query(SelectionItem).first()
+    item.actual_sale_price_zar = price
+    item.price_source = source
+    db.commit()
+    return item
+
+
+def test_portal_price_refreshes_legacy_row(db, monkeypatch):
+    """price_source 为空＝历史行，门户价要能盖掉旧值，并标成 portal。"""
+    item = _legacy_item(db, 309, "")
+    _use_fake_portal(monkeypatch, {"710": _portal_record("710", 178)})
+
+    _fill_portal(db, [item], ["710"])
+
+    assert item.actual_sale_price_zar == 178
+    assert item.price_source == "portal"
+
+
+def test_portal_price_overwrites_previous_portal_price(db, monkeypatch):
+    """上一轮写的 portal 价也要能再刷——否则第一次抓错了就永远错着。"""
+    item = _legacy_item(db, 309, "portal")
+    _use_fake_portal(monkeypatch, {"710": _portal_record("710", 178)})
+
+    _fill_portal(db, [item], ["710"])
+
+    assert item.actual_sale_price_zar == 178
+
+
+@pytest.mark.parametrize("source", ["manual", "import"])
+def test_portal_price_leaves_human_prices_alone(db, monkeypatch, source):
+    """人工核对过的、和表格里带进来的价，都不是「抓错了」，不许覆盖。"""
+    item = _legacy_item(db, 999, source)
+    _use_fake_portal(monkeypatch, {"710": _portal_record("710", 178)})
+
+    _fill_portal(db, [item], ["710"])
+
+    assert item.actual_sale_price_zar == 999
+    assert item.price_source == source
+
+
+def test_refresh_still_calls_public_api_for_legacy_price(db, monkeypatch):
+    """门户把图/价/类目都补齐了，也不能就此跳过公开接口。
+
+    门户只给一个目录 bestPrice，「现货卖家最低价」只有公开接口的 buybox 拆得
+    出来。以前这里会因为「图、价、类目都齐了」把它从公开接口名单里剔掉，于是
+    点一百次重抓，售价还是那条贵的。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID711"]])
+    item = db.query(SelectionItem).first()
+    item.product_image_url = "https://media.takealot.com/x/old.jpg"
+    item.fee_category = "Homeware"
+    item.actual_sale_price_zar = 309
+    item.price_source = ""
+    db.commit()
+
+    _use_fake_portal(monkeypatch, {"711": _portal_record("711", 309)})
+    record = _fake_public("711")
+    record.update({
+        "actual_sale_price_zar": 178,
+        "price_source": "in_stock",
+        "listed_price_zar": 309,
+        "lowest_in_stock_price_zar": 178,
+        "lowest_offer_price_zar": 178,
+        "seller_offer_count": 2,
+    })
+    asked = []
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: asked.extend(plids) or [record])
+
+    enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert asked == ["711"]          # 没被门户短路掉
+    item = db.query(SelectionItem).first()
+    assert item.actual_sale_price_zar == 178
+    assert item.price_source == "in_stock"
+
+
+def test_refresh_skips_public_api_when_price_already_precise(db, monkeypatch):
+    """已经是新口径、图/类目也齐的行，重抓时不必再打一次公开接口。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID712"]])
+    item = db.query(SelectionItem).first()
+    item.product_image_url = "https://media.takealot.com/x/old.jpg"
+    item.fee_category = "Homeware"
+    item.actual_sale_price_zar = 178
+    item.price_source = "in_stock"
+    db.commit()
+
+    _use_fake_portal(monkeypatch, {"712": _portal_record("712", 178)})
+    asked = []
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: asked.extend(plids) or [])
+
+    enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert asked == []
+
+
+def test_refresh_targets_rows_with_stale_price_first(db, monkeypatch):
+    """重抓时先补「价格没换到新口径」的行。
+
+    不这么排的话，一次只处理 limit 个、且固定按 created_at 取最早那批：历史
+    1700 多行里永远只有最早那 400 行被重算，剩下的售价一辈子不变。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Old", "https://www.takealot.com/t/PLID720"]], name="第一批")
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Legacy", "https://www.takealot.com/t/PLID721"]], name="第二批")
+    fresh = db.query(SelectionItem).filter(SelectionItem.plid == "720").one()
+    legacy = db.query(SelectionItem).filter(SelectionItem.plid == "721").one()
+    # 早的那条已经是新口径，晚的那条还是历史行
+    fresh.actual_sale_price_zar = 178
+    fresh.price_source = "in_stock"
+    fresh.created_at = datetime(2026, 1, 1)
+    legacy.created_at = datetime(2026, 2, 1)
+    db.commit()
+
+    _use_fake_portal(monkeypatch, {
+        "720": _portal_record("720", 178),
+        "721": _portal_record("721", 309),
+    })
+    asked = []
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: asked.extend(plids) or [])
+
+    enrich(EnrichRequest(refresh=True, limit=1), db=db, store_id=STORE)
+
+    # limit=1 时选中的必须是「价格没换口径」的那条，而不是 created_at 最早的那条
+    assert asked == ["721"]
+
+
+def test_refresh_remaining_counts_rows_still_on_old_price(db, monkeypatch):
+    """重抓时 remaining 要把「价格还没换口径」的行算进去。
+
+    否则前端第一块跑完就以为收工了（这些行 enrich_status 都是 ok，不在待抓队列里）。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID722"]])
+    item = db.query(SelectionItem).first()
+    item.product_image_url = "https://media.takealot.com/x/old.jpg"
+    item.fee_category = "Homeware"
+    item.actual_sale_price_zar = 309
+    item.price_source = ""
+    item.enrich_status = "ok"
+    db.commit()
+
+    _use_fake_portal(monkeypatch, {"722": _portal_record("722", 309)})
+    # 公开接口这条只给图/类目、没有价格 → 价格换不掉
+    record = _fake_public("722")
+    record["actual_sale_price_zar"] = None
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [record])
+
+    result = enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert result["price_fixed"] == 0
+    assert result["remaining"] == 1          # 还有一条的价格没换口径
+    item = db.query(SelectionItem).first()
+    assert item.actual_sale_price_zar == 309  # 换不到就保留原价，不会变成空
+
+
+def test_refresh_reports_price_fixed(db, monkeypatch):
+    """换到现货最低价的条数要单独回给前端，用来判断「还有没有进展」。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Tool", "https://www.takealot.com/t/PLID723"]])
+    item = db.query(SelectionItem).first()
+    item.product_image_url = "https://media.takealot.com/x/old.jpg"
+    item.fee_category = "Homeware"
+    item.actual_sale_price_zar = 309
+    item.price_source = ""
+    item.enrich_status = "ok"
+    db.commit()
+
+    _use_fake_portal(monkeypatch, {"723": _portal_record("723", 309)})
+    record = _fake_public("723")
+    record.update({
+        "actual_sale_price_zar": 178, "price_source": "in_stock",
+        "listed_price_zar": 309, "lowest_in_stock_price_zar": 178,
+        "lowest_offer_price_zar": 178, "seller_offer_count": 2,
+    })
+    monkeypatch.setattr(pub, "fetch_many", lambda plids, workers=8: [record])
+
+    result = enrich(EnrichRequest(refresh=True), db=db, store_id=STORE)
+
+    assert result["price_fixed"] == 1
+    assert result["remaining"] == 0
+    item = db.query(SelectionItem).first()
+    assert item.actual_sale_price_zar == 178
+    assert item.price_source == "in_stock"
+
+
+# ------------------------------------------------------------ 已建产品回推
+
+def test_sync_updates_product_from_selection_pool(db, monkeypatch):
+    """已建产品后，选品池里改的重量/成本要能回推到产品主档并重算利润。"""
+    item = _prepare_item(db, monkeypatch)
+    promote(IdList(ids=[item.id]), db=db, store_id=STORE)
+    product = db.query(Product).filter(Product.id == item.promoted_product_id).first()
+    assert product is not None
+    before = product.profit_zar
+
+    patch_item(item.id, ItemPatch(
+        length_mm=200, width_mm=150, height_mm=100, actual_weight_kg=0.5,
+        purchase_cost_cny=40, purchase_shipping_cny=20, purchase_quantity=4,
+        shipping_method="空运普货",
+    ), db=db, store_id=STORE)
+
+    result = sync_to_products(IdList(ids=[item.id]), db=db, store_id=STORE)
+
+    assert result["updated"] == 1
+    db.refresh(product)
+    assert product.actual_weight_kg == 0.5
+    assert product.length_mm == 200
+    assert product.profit_zar != before
+
+
+def test_sync_marks_pool_dirty_and_clears_it(db, monkeypatch):
+    item = _prepare_item(db, monkeypatch)
+    promote(IdList(ids=[item.id]), db=db, store_id=STORE)
+
+    patch_item(item.id, ItemPatch(actual_weight_kg=0.9), db=db, store_id=STORE)
+    db.refresh(item)
+    assert item.pool_dirty is True
+
+    sync_to_products(IdList(ids=[item.id]), db=db, store_id=STORE)
+    db.refresh(item)
+    assert item.pool_dirty is False
+    assert item.promoted_synced_at is not None
+
+
+def test_sync_keeps_fields_changed_in_product_list(db, monkeypatch):
+    """产品列表里人工改过的字段，回推时不能被选品池覆盖。"""
+    item = _prepare_item(db, monkeypatch)
+    promote(IdList(ids=[item.id]), db=db, store_id=STORE)
+    product = db.query(Product).filter(Product.id == item.promoted_product_id).first()
+    product.actual_sale_price_zar = 777
+    db.commit()
+
+    patch_item(item.id, ItemPatch(actual_sale_price_zar=178), db=db, store_id=STORE)
+    result = sync_to_products(IdList(ids=[item.id]), db=db, store_id=STORE)
+
+    db.refresh(product)
+    assert product.actual_sale_price_zar == 777
+    assert "actual_sale_price_zar" in result["products"][0]["kept_fields"]
+
+
+def test_sync_skips_items_without_product(db, monkeypatch):
+    item = _prepare_item(db, monkeypatch)
+    result = sync_to_products(IdList(ids=[item.id]), db=db, store_id=STORE)
+    assert result["updated"] == 0
+    assert result["skipped"] == 1
+    assert "新建产品" in result["skip_details"][0]["reason"]

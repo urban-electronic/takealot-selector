@@ -1,4 +1,4 @@
-import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult, ExternalOffer, ExternalOfferInput, ExternalOfferResult, ExternalPlatform , SelectionItem, SelectionImportResult, SelectionEnrichResult, SelectionSummary, SelectionBatch, SelectionItemPatch, SelectionPromoteResult } from './types';
+import type { Product, FeeCategory, FeeMappingRule, DashboardStats, ScrapeResult, ProcurementRecord, PackingProduct, PackingExportPayload, PackingCartonRecord, InventoryRow, InventoryAdjustment, ShipmentRecord, Store, StoreInventoryOverview, OperationLog, RecommendationResult, ExternalOffer, ExternalOfferInput, ExternalOfferResult, ExternalPlatform , SelectionItem, SelectionImportResult, SelectionEnrichResult, SelectionSummary, SelectionBatch, SelectionItemPatch, SelectionPromoteResult, SelectionSyncResult } from './types';
 
 // 远程模式下写操作同步到本地 DB
 let _tauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
@@ -875,6 +875,14 @@ export const selectQualifiedSelection = (body: { batch_id?: string; min_margin?:
 
 export const promoteSelection = (ids: string[]): Promise<SelectionPromoteResult> =>
   request<SelectionPromoteResult>('/api/selection/items/promote', { method: 'POST', body: JSON.stringify({ ids }) });
+
+/**
+ * 把选品池里的修改回推到已建的产品主档。
+ *
+ * 产品列表里被人工改过的字段不会被覆盖（返回的 kept_fields 会列出来）。
+ */
+export const syncSelectionToProducts = (ids: string[]): Promise<SelectionSyncResult> =>
+  request<SelectionSyncResult>('/api/selection/items/sync', { method: 'POST', body: JSON.stringify({ ids }) });
 
 export const deleteSelectionItems = (ids: string[]): Promise<{ deleted: number }> =>
   request<{ deleted: number }>('/api/selection/items', { method: 'DELETE', body: JSON.stringify({ ids }) });

@@ -163,15 +163,24 @@ DATA = {
 
 def _selection_item(**over):
     """选品池卡片把每个字段都摊开渲染，缺一个就是 undefined。这里给一份完整默认值，
-    用例只覆盖需要变化的几项，免得后端加字段就要回来补夹具。"""
+    用例只覆盖需要变化的几项，免得后端加字段就要回来补夹具。
+
+    2026-11 补的是「售价口径」那批：卡片上多了一个口径胶囊（现货最低价 / 目录价 /
+    人工填写…）、结果区从 4 项变 5 项（多一行利润率）、页脚多一个「更新到产品列表」
+    按钮、卡片头多「已建产品 / 待更新」两个标记。夹具不给这些字段时它们全都不渲染，
+    审计照样报「0 处问题」——等于这一版新增的版式从没被量过。
+    """
     base = dict(
         id='', batch_id='fixture-batch', batch_name='竞品样本 2026-10', plid='', tsin='',
         takealot_url='', product_name='', chinese_product_name='', brand='',
         product_image_url='', image_urls=[], takealot_category_path='',
         fee_category='', fee_category_confidence='', fee_category_reason='',
         actual_sale_price_zar=None, rating_value=None, review_count=None,
+        listed_price_zar=None, lowest_in_stock_price_zar=None, lowest_offer_price_zar=None,
+        price_source='', seller_offer_count=None,
         sales_qty=None, net_sales_zar=None, gross_sales_zar=None, net_sales_cny=None, tier='',
         already_in_products=False, promoted_product_id=None,
+        pool_dirty=False, promoted_synced_at=None,
         length_mm=None, width_mm=None, height_mm=None, actual_weight_kg=None, dimensions_source='',
         purchase_url='', purchase_cost_cny=None, purchase_shipping_cny=None, purchase_quantity=1,
         unit_price_cny=None, packaging_cost_per_unit_cny=None, shipping_method=None,
@@ -190,10 +199,10 @@ def _selection_item(**over):
 DATA.update({
     '/api/selection/batches': [dict(batch_id='fixture-batch', batch_name='竞品样本 2026-10',
                                     count=2, created_at='2026-10-29T10:00:00')],
-    '/api/selection/summary': dict(total=2, pending=1, qualified=1, rejected=0, promoted=0,
-                                   selected=1, duplicates=0, with_image=2, with_dimensions=1,
-                                   no_plid=1),
-    '/api/selection/items': dict(total=2, items=[
+    '/api/selection/summary': dict(total=3, pending=1, qualified=2, rejected=0, promoted=1,
+                                   selected=2, duplicates=0, with_image=2, with_dimensions=1,
+                                   no_plid=1, pending_sync=1, price_in_stock=1, price_manual=0),
+    '/api/selection/items': dict(total=3, items=[
         _selection_item(id='fixture-sel-1', plid='104410843', tsin='104410843',
             takealot_url='https://www.takealot.com/x/PLID104410843',
             product_name='Travel storage bag with a deliberately long English product title for truncation check',
@@ -202,15 +211,39 @@ DATA.update({
             takealot_category_path='Luggage & Travel / Travel Accessories',
             fee_category='Bags', fee_category_confidence='high',
             fee_category_reason='类目关键词命中 Bags',
-            actual_sale_price_zar=299.0, rating_value=4.6, review_count=128,
+            # 现货最低价那一档：卡片上要同时出现口径胶囊、前台展示价与现货最低价的
+            # 对比 tooltip、以及 5 列结果区里多出来的「利润率」。
+            actual_sale_price_zar=299.0, price_source='in_stock',
+            listed_price_zar=389.0, lowest_in_stock_price_zar=299.0,
+            lowest_offer_price_zar=289.0, seller_offer_count=3,
+            rating_value=4.6, review_count=128,
             length_mm=310, width_mm=210, height_mm=110, actual_weight_kg=1.35,
             dimensions_source='product_list', profit_margin=0.31, status='合格', selected=True,
             shipping_method='海运带电', battery_status='yes', battery_reason='可充电',
             enrich_status='ok', enrich_message='资料取自产品列表'),
         _selection_item(id='fixture-sel-2', chinese_product_name='待补 PLID 的竞品',
-            actual_sale_price_zar=189.0, status='待核算', enrich_status='partial',
+            actual_sale_price_zar=189.0, price_source='portal', seller_offer_count=1,
+            status='待核算', enrich_status='partial',
             shipping_method='海运普货', battery_status='maybe', battery_reason='LED',
             enrich_message='缺少 PLID，无法查重尺'),
+        # 已建产品 + 有改动没推：这条撑开卡片头的「已建产品 / 待更新」两个标记和页脚
+        # 的「更新到产品列表」按钮。夹具里没有这种行时，那一整条分支从没被渲染过。
+        _selection_item(id='fixture-sel-3', plid='104410844', tsin='104410844',
+            takealot_url='https://www.takealot.com/x/PLID104410844',
+            product_name='Already promoted item with a long title for the sync footer',
+            chinese_product_name='已建产品的竞品（待更新）',
+            product_image_url='',
+            takealot_category_path='Home & Kitchen / Kitchen Storage',
+            fee_category='Homeware', fee_category_confidence='high',
+            actual_sale_price_zar=245.0, price_source='manual',
+            listed_price_zar=245.0, seller_offer_count=2,
+            rating_value=4.1, review_count=12,
+            length_mm=260, width_mm=180, height_mm=95, actual_weight_kg=0.72,
+            dimensions_source='manual', profit_margin=0.08, status='已建产品', selected=True,
+            already_in_products=True, promoted_product_id='fixture-product',
+            pool_dirty=True, promoted_synced_at='2026-10-28T09:12:00',
+            shipping_method='海运普货', battery_status='no', battery_reason='无电池',
+            enrich_status='ok', enrich_message='资料取自产品列表'),
     ]),
     # 卖家门户令牌状态。选品池进页面就读它，缺了这一条会被 404 掉、面板静默降级成
     # 「未配置」——那样「令牌面板版式没问题」这句结论就是空的。
@@ -624,7 +657,9 @@ def main():
         page.get_by_role('button',name='重抓全部资料',exact=True).click()
         page.locator('.selection-notice').filter(has_text='本轮未提交资料未保存').wait_for()
         if len(selection_calls)!=1: failures.append('catalogue denial continued frontend enrichment')
-        if page.locator('.selection-card').count()!=2: failures.append('catalogue denial discarded loaded cards')
+        # 比夹具条数而不是写死 2：写死的话每加一条夹具都要回来改这里，
+        # 而真正要守的是「抓取失败不能把已经渲染出来的卡片清空」。
+        if page.locator('.selection-card').count()!=len(DATA['/api/selection/items']['items']): failures.append('catalogue denial discarded loaded cards')
         page.get_by_role('button',name='检查目录接入',exact=True).click()
         page.locator('.selection-notice').filter(has_text='目录连接未就绪').wait_for()
         if '已停用端点及鉴权组合探测' not in page.locator('.selection-import-result').inner_text():

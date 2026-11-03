@@ -29,7 +29,7 @@ from threading import Event
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 API_BASE = "https://api.takealot.com/rest/v-1-9-0"
 
@@ -227,14 +227,74 @@ def _http_json(url: str, timeout: float = 25.0, stop_event: Optional[Event] = No
     raise RuntimeError("公开接口读取失败")
 
 
-def _first_price(payload: Dict[str, Any]) -> Optional[float]:
-    """buybox 里的价格字段在不同商品上叫法不一，按常见顺序取第一个数值。"""
-    for item in (payload.get("buybox") or {}).get("items") or []:
-        for key in ("price", "selling_price", "current_price"):
-            value = item.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-    return None
+def _offer_prices(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """把 buybox 的报价拆成三个口径。
+
+    为什么不能只看第一条
+    ------------------
+    `buybox.items` 是**同一规格下的多个卖家报价**，排第一的那条是「配送最快」
+    的那条（`offer_detail.preference` = fastest，且 `is_selected` 为真），
+    不是最便宜的。同款里更便宜的卖家通常排在后面：
+
+        R 309  配送最快（is_selected）   ← 以前抓的就是这个
+        R 178  Best Price、有现货         ← 对标价该看这个
+
+    只取第一条 = 拿「配送最快的价」当市场价，利润算出来虚高。
+
+    三个口径
+    --------
+    - `listed_price_zar`           前台展示价（选中的那条）
+    - `lowest_in_stock_price_zar`  有现货卖家的最低价（status = In stock 且非备货期）
+    - `lowest_offer_price_zar`     全部可下单报价的最低价（含备货期卖家）
+
+    「现货」指 `stock_availability.status` 是 `In stock` 且 `is_leadtime` 为假。
+    备货期卖家（Ships in 5 - 7 work days）也是竞争者，但他们的货要等，
+    所以单独记在最低报价里，不混进现货价。
+    """
+    items = (payload.get("buybox") or {}).get("items") or []
+    listed: Optional[float] = None
+    in_stock: List[float] = []
+    offerable: List[float] = []
+    every: List[float] = []
+
+    for item in items:
+        price = item.get("price")
+        if not isinstance(price, (int, float)) or price <= 0:
+            continue
+        value = float(price)
+        every.append(value)
+        if item.get("is_selected") and listed is None:
+            listed = value
+        stock = item.get("stock_availability") or {}
+        status = str(stock.get("status") or "").strip().lower()
+        can_buy = item.get("is_add_to_cart_available") is not False
+        if can_buy:
+            offerable.append(value)
+        if status == "in stock" and not stock.get("is_leadtime") and can_buy:
+            in_stock.append(value)
+
+    return {
+        "listed_price_zar": listed if listed is not None else (min(every) if every else None),
+        "lowest_in_stock_price_zar": min(in_stock) if in_stock else None,
+        "lowest_offer_price_zar": min(offerable) if offerable else (min(every) if every else None),
+        "seller_offer_count": len(every),
+    }
+
+
+def _pick_price(prices: Dict[str, Any]) -> Tuple[Optional[float], str]:
+    """选一个当「售价」，并说明是哪个口径来的。
+
+    优先现货最低价：这是买家今天真能买到的最低价，也是对标价该用的数。
+    没有现货卖家时退到全部报价的最低价（至少是竞争者的下限）。
+    """
+    in_stock = prices.get("lowest_in_stock_price_zar")
+    if in_stock is not None:
+        return in_stock, "in_stock"
+    offer = prices.get("lowest_offer_price_zar")
+    if offer is not None:
+        return offer, "offer"
+    listed = prices.get("listed_price_zar")
+    return listed, "listed" if listed is not None else ""
 
 
 def _live_tsin(payload: Dict[str, Any]) -> Optional[str]:
@@ -334,6 +394,11 @@ def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] 
         "product_name": None,
         "product_image_url": None,
         "actual_sale_price_zar": None,
+        "price_source": "",
+        "listed_price_zar": None,
+        "lowest_in_stock_price_zar": None,
+        "lowest_offer_price_zar": None,
+        "seller_offer_count": None,
         "tsin": None,
         "takealot_category_path": None,
         "brand": None,
@@ -374,7 +439,14 @@ def fetch_product(plid: Any, timeout: float = 25.0, stop_event: Optional[Event] 
     result["brand"] = core.get("brand")
     result["rating_value"] = core.get("star_rating")
     result["review_count"] = core.get("reviews")
-    result["actual_sale_price_zar"] = _first_price(payload)
+    prices = _offer_prices(payload)
+    sale_price, price_source = _pick_price(prices)
+    result["actual_sale_price_zar"] = sale_price
+    result["price_source"] = price_source
+    result["listed_price_zar"] = prices["listed_price_zar"]
+    result["lowest_in_stock_price_zar"] = prices["lowest_in_stock_price_zar"]
+    result["lowest_offer_price_zar"] = prices["lowest_offer_price_zar"]
+    result["seller_offer_count"] = prices["seller_offer_count"]
     result["tsin"] = _live_tsin(payload)
     result["takealot_category_path"] = _category_path(payload)
 
