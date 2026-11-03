@@ -15,6 +15,7 @@
  * - 链接 + 销售数据（自己整理的表）：档位按帕累托算，和原来那份分析表一致
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ProductImage } from '../utils/imageFallback';
 import {
@@ -135,6 +136,76 @@ function missingInputs(item: SelectionItem): string[] {
 // useFeeCategories 的 effect 依赖 source 本身，传对象字面量会每渲染一次就重读一遍，
 // 所以放在模块作用域固定住。
 const FEE_CATEGORY_SOURCE = { getFeeCategories };
+
+/**
+ * 折叠状态和「跳过已测算」都存在本地。
+ *
+ * 这两个都是「这个人干活的习惯」，不是数据：把它当成每次进页面都要重设的东西，
+ * 用户就得每回点一遍折叠。隐私模式下 localStorage 会抛，所以全部包在 try 里。
+ */
+const SECTIONS_KEY = 'selection.sections.collapsed.v1';
+const SKIP_MEASURED_KEY = 'selection.skipMeasured.v1';
+
+type SectionKey = 'unmeasured' | 'measured';
+
+function readSections(): Record<SectionKey, boolean> {
+  // 默认：未测算展开（要干活的是这些），已测算折叠（它们只是备查）。
+  const fallback: Record<SectionKey, boolean> = { unmeasured: false, measured: true };
+  try {
+    const raw = localStorage.getItem(SECTIONS_KEY);
+    if (!raw) return fallback;
+    const saved = JSON.parse(raw) as Partial<Record<SectionKey, boolean>>;
+    return {
+      unmeasured: typeof saved.unmeasured === 'boolean' ? saved.unmeasured : fallback.unmeasured,
+      measured: typeof saved.measured === 'boolean' ? saved.measured : fallback.measured,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function readSkipMeasured(): boolean {
+  try {
+    const raw = localStorage.getItem(SKIP_MEASURED_KEY);
+    return raw == null ? true : raw === '1';
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 一个可折叠的卡片分区。
+ *
+ * 用真按钮而不是 <details>：标题里还有计数和一句说明，`<details>` 的 summary
+ * 里塞这么多东西在部分读屏器上会被当成纯文本，点不动也读不出状态。
+ */
+function CardSection({
+  tone, title, count, hint, collapsed, onToggle, children,
+}: {
+  tone: SectionKey;
+  title: string;
+  count: number;
+  hint: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`selection-section is-${tone}${collapsed ? ' is-collapsed' : ''}`}>
+      <button type="button" className="selection-section-head" onClick={onToggle}
+        aria-expanded={!collapsed}
+        // 按钮的可访问名单独给：不然读屏器会把「未测算 1 重尺、采购价、售价填完
+        // 就出利润率；抓取只会抓这些」整句念成按钮名，又长又抓不到重点。
+        aria-label={`${title}，${count} 个，${collapsed ? '已折叠，点击展开' : '已展开，点击折叠'}`}>
+        <span className="selection-section-caret" aria-hidden="true">▾</span>
+        <span className="selection-section-title">{title}</span>
+        <span className="selection-section-count">{count}</span>
+        <span className="selection-section-hint">{hint}</span>
+      </button>
+      {collapsed ? null : <div className="selection-grid-cards">{children}</div>}
+    </section>
+  );
+}
 
 /** 数值输入：本地保留字符串，失焦或回车才提交，避免每敲一个字符发一次请求。 */
 function NumberCell({
@@ -549,6 +620,26 @@ export default function Selection() {
   // 类目下拉的候选：全量 Fee 类目，卡片里选一个就带出成功率。
   const feeCategoryState = useFeeCategories(FEE_CATEGORY_SOURCE);
 
+  // 卡片分区的折叠状态，以及「抓取时跳过已测算」。两个都从本地读上次的选择。
+  const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>(readSections);
+  const [skipMeasured, setSkipMeasured] = useState(readSkipMeasured);
+
+  const toggleSection = useCallback((key: SectionKey) => {
+    setCollapsed(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(next)); } catch { /* 隐私模式存不住 */ }
+      return next;
+    });
+  }, []);
+
+  const toggleSkipMeasured = useCallback(() => {
+    setSkipMeasured(prev => {
+      const next = !prev;
+      try { localStorage.setItem(SKIP_MEASURED_KEY, next ? '1' : '0'); } catch { /* 同上 */ }
+      return next;
+    });
+  }, []);
+
   const loadList = useCallback(async () => {
     const result = await getSelectionItems({
       batch_id: batchId || undefined,
@@ -607,7 +698,7 @@ export default function Selection() {
           + (result.branded ? `，跳过 ${result.branded} 个有品牌` : '')
           + (result.already_in_products ? `，跳过 ${result.already_in_products} 个已在产品列表` : '')
           + (result.pool_duplicates ? `，跳过 ${result.pool_duplicates} 个池子里已有` : '')
-          + '。下一步点「抓取主图与类目」。',
+          + '。下一步点「抓取本批次没抓过的」。',
       });
       await refresh();
     } catch (error) {
@@ -640,6 +731,9 @@ export default function Selection() {
           // 重抓要跑多轮才能覆盖全部行（一次 400 个），所以不能只在第一轮传 true，
           // 否则 1700 多行里永远只有最早那 400 行被重新取价。
           refresh: refreshAll,
+          // 测算过的行默认跳过：价格、重尺、成本都是核对过的，再抓一遍既费配额，
+          // 也可能把刚调好的售价换回去。
+          skip_measured: skipMeasured,
         });
         last = result;
         done += result.processed;
@@ -675,7 +769,16 @@ export default function Selection() {
         }
       }
       await refresh();
-      if (last) {
+      if (last && done === 0) {
+        // 一条都没处理。最常见的原因是「跳过已测算」把整个范围都筛掉了——这时候
+        // 报「抓取完成：成功 0 个」等于让人以为系统坏了，得直接说清楚为什么。
+        setNotice({
+          kind: 'info',
+          text: skipMeasured
+            ? '没有要抓的：当前范围内都测算过了。要连已测算的一起重抓，取消勾选「跳过已测算」。'
+            : '没有要抓的：当前范围内没有待抓的商品（资料都齐了）。',
+        });
+      } else if (last) {
         const bits = [`成功 ${succeeded} 个，失败 ${failed} 个`];
         // 价格口径是这次重抓的主要目的，单独报一句：用户得知道有多少条真的从
         // 「前台展示价」换成了「现货最低价」，而不是只看到「成功 N 个」。
@@ -701,7 +804,7 @@ export default function Selection() {
               // PLID 已下架、或者公开接口在限流。让用户再点一次只会原样跑一遍，
               // 所以直说保留原价，而不是催他再点。
               ? `本轮${bits.join('，')}；还有 ${last.remaining} 个换不到现货最低价（这些商品没有别家的现货报价，或公开接口在限流），已保留原来的售价。`
-              : `本轮${bits.join('，')}；还有 ${last.remaining} 个没抓完（本次达到处理上限），再点一次「重抓全部资料」接着抓，已抓到的不会重复抓。`,
+              : `本轮${bits.join('，')}；还有 ${last.remaining} 个没抓完（本次达到处理上限），再点一次抓取按钮接着抓，已抓到的不会重复抓。`,
           });
         } else {
           setNotice({ kind: failed ? 'warn' : 'ok', text: `抓取完成：${bits.join('，')}。` });
@@ -1016,13 +1119,42 @@ export default function Selection() {
     }
   };
 
-  // 已测算数：total - pending。summary 缺字段时别算出 NaN 显示在进度条上。
-  const measuredCount = summary ? Math.max(0, (summary.total || 0) - (summary.pending || 0)) : 0;
+  // 已测算数：优先用后端直接给的 measured（它和卡片分区、跳过已测算是同一个判据），
+  // 老接口没有这个字段时才退回 total - pending。都缺时别算出 NaN 显示在进度条上。
+  const measuredCount = summary
+    ? (summary.measured ?? Math.max(0, (summary.total || 0) - (summary.pending || 0)))
+    : 0;
   const measuredPercent = summary && summary.total
     ? Math.round((measuredCount / summary.total) * 100)
     : 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const selectedOnPage = useMemo(() => items.filter(item => item.selected).length, [items]);
+  // 卡片按「有没有算出利润率」分成两块：没算出来的要干活，算出来的折叠起来备查。
+  // 已建产品归到「已测算」——它们不是待测算对象，混在未测算里只会干扰。
+  const unmeasuredItems = useMemo(
+    () => items.filter(item => measureState(item) === 'unmeasured'),
+    [items],
+  );
+  const measuredItems = useMemo(
+    () => items.filter(item => measureState(item) !== 'unmeasured'),
+    [items],
+  );
+  // 抓取按钮的文案要跟着范围走：选了批次就只抓这个批次（导入新表后正好是这一批）。
+  const fetchNewLabel = batchId ? '抓取本批次没抓过的' : '抓取没抓过的';
+
+  // 两个分区共用同一套卡片属性，抽出来免得改一处漏一处。
+  const renderCard = (item: SelectionItem) => (
+    <SelectionCard
+      key={item.id}
+      item={item}
+      busy={promoting || busyIds.has(item.id)}
+      onPatch={patch => void handlePatch(item.id, patch)}
+      onToggle={() => handleToggle(item)}
+      feeCategories={feeCategoryState.categories}
+      onSync={item.promoted_product_id ? () => void handleSync([item.id]) : undefined}
+      syncing={promoting}
+    />
+  );
   // 勾选中且已建产品的行——这批是「要回推到产品列表」的，不是「要新建」的。
   const promotedSelectedIds = useMemo(
     () => items.filter(item => item.selected && item.promoted_product_id).map(item => item.id),
@@ -1048,7 +1180,7 @@ export default function Selection() {
             {probing ? '检查中…' : '检查目录接入'}
           </button>
           <button type="button" className="btn" onClick={() => void handleEnrich(true)} disabled={promoting || enriching || importing}>
-            {enriching ? '抓取中…' : '重抓全部资料'}
+            {enriching ? '抓取中…' : skipMeasured ? '重抓未测算的资料' : '重抓全部资料'}
           </button>
           <button type="button" className="btn-primary" onClick={() => void handlePromote()} disabled={promoting || enriching || importing || busyIds.size > 0 || !summary?.selected}>
             {promoting ? '新建中…' : `批量加入产品列表${summary?.selected ? `（${summary.selected}）` : ''}`}
@@ -1091,8 +1223,19 @@ export default function Selection() {
           </label>
           <button type="button" className="btn" onClick={() => void handleEnrich(false)}
             disabled={promoting || enriching || !summary?.total}>
-            {enriching ? '抓取中…' : '抓取主图与类目'}
+            {enriching ? '抓取中…' : fetchNewLabel}
           </button>
+          {/*
+            「跳过已测算」是这里最常按的一个开关：测算过的商品价格、重尺、成本
+            都是核对过的，重抓既费门户配额（200 次/分钟），也可能把刚调好的售价
+            换回去。默认勾着，想刷已测算的再取消。
+          */}
+          <label className="selection-skip-measured"
+            title="勾上后，两个抓取按钮都会跳过已经算出利润率的商品（它们在你说的「已测算」分区里）">
+            <input type="checkbox" checked={skipMeasured} onChange={toggleSkipMeasured}
+              disabled={promoting || enriching} />
+            <span>跳过已测算</span>
+          </label>
         </div>
         <p className="selection-import-hint">
           表头认这些列（中英文都行）：产品链接 / 产品名称 / TSIN / PLID / 产品价格(R) / 产品评分 / 评分数量 /
@@ -1369,20 +1512,39 @@ export default function Selection() {
           </p>
         </div>
       ) : (
-        <div className="selection-grid-cards">
-          {items.map(item => (
-            <SelectionCard
-              key={item.id}
-              item={item}
-              busy={promoting || busyIds.has(item.id)}
-              onPatch={patch => void handlePatch(item.id, patch)}
-              onToggle={() => handleToggle(item)}
-              feeCategories={feeCategoryState.categories}
-              onSync={item.promoted_product_id ? () => void handleSync([item.id]) : undefined}
-              syncing={promoting}
-            />
-          ))}
-        </div>
+        <>
+          {/*
+            两块分开：没测算的是要干活的，测算过的是备查的。已测算那块默认折叠，
+            于是「这一页要处理哪些」一眼就能看完，不用在几十张算好的卡片里翻。
+            分区的计数是**本页**的（列表是分页的），全局进度看上面的进度条。
+          */}
+          {unmeasuredItems.length > 0 && (
+            <CardSection
+              tone="unmeasured"
+              title="未测算"
+              count={unmeasuredItems.length}
+              hint="重尺、采购价、售价填完就出利润率；抓取只会抓这些"
+              collapsed={collapsed.unmeasured}
+              onToggle={() => toggleSection('unmeasured')}
+            >
+              {unmeasuredItems.map(renderCard)}
+            </CardSection>
+          )}
+          {measuredItems.length > 0 && (
+            <CardSection
+              tone="measured"
+              title="已测算"
+              count={measuredItems.length}
+              // 未测算一条都没有时（整页都算完了），已测算这块必须展开，否则整页
+              // 只剩一个折叠标题，看着像加载失败。
+              collapsed={collapsed.measured && unmeasuredItems.length > 0}
+              hint={skipMeasured ? '已折叠备查；抓取时跳过（可在上面取消勾选）' : '已折叠备查；抓取时会被重抓'}
+              onToggle={() => toggleSection('measured')}
+            >
+              {measuredItems.map(renderCard)}
+            </CardSection>
+          )}
+        </>
       )}
 
       {pageCount > 1 && (

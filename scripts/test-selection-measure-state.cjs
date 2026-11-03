@@ -3,10 +3,11 @@
  *
  * 背景：1700 条候选里，已经填完重尺和成本、算出利润率的只有一部分。原来这两种
  * 卡片长得几乎一样——差别只在卡片最底部一个「待补数据 / 利润率 32%」的徽章，
- * 一屏 12 张时基本看不到。现在靠三样东西区分：
+ * 一屏 12 张时基本看不到。现在靠四样东西区分：
  *   1. 卡片类名 is-unmeasured / is-measured / is-promoted（左侧状态轨靠它上色）
  *   2. 未测算的卡片顶部有「未测算」标签
  *   3. 未测算时结果区列出「还缺 长宽高、采购价」，而不是一句「待补数据」
+ *   4. 列表按这两类分成两个可折叠分区，已测算的默认折叠（折叠时卡片不进 DOM）
  * 外加汇总条上的进度块，点一下切到未测算。
  */
 const assert = require('node:assert/strict');
@@ -133,6 +134,27 @@ const root = createRoot(document.getElementById('root'));
   assert.match(missing, /等 4 项/);
   assert.doesNotMatch(missing, /重量|售价/);
   assert.ok(a.querySelector('.selection-margin.is-unmeasured'), 'bottom badge should say 未测算');
+
+  // 两个分区：未测算展开、已测算折叠。折叠时那些卡片根本不该进 DOM——不是藏起来，
+  // 是没渲染，否则「一页 60 张算好的卡片」照样要排版、照样拖慢滚动。
+  const sections = [...document.querySelectorAll('.selection-section')];
+  assert.equal(sections.length, 2, 'two sections: 未测算 / 已测算');
+  const [unmeasuredSection, measuredSection] = sections;
+  assert.match(unmeasuredSection.textContent, /未测算/);
+  assert.match(unmeasuredSection.textContent, /1/, '未测算 count');
+  assert.equal(unmeasuredSection.querySelectorAll('.selection-card').length, 1);
+  assert.match(measuredSection.textContent, /已测算/);
+  assert.match(measuredSection.textContent, /3/, '已测算 count');
+  assert.equal(measuredSection.querySelector('.selection-section-head').getAttribute('aria-expanded'), 'false');
+  assert.equal(measuredSection.querySelectorAll('.selection-card').length, 0,
+    'collapsed section must not render cards');
+
+  // 点标题展开已测算（整条标题都是按钮，不用瞄准三角）
+  await act(async () => measuredSection.querySelector('.selection-section-head')
+    .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+  const expanded = document.querySelectorAll('.selection-section')[1];
+  assert.equal(expanded.querySelector('.selection-section-head').getAttribute('aria-expanded'), 'true');
+  assert.equal(expanded.querySelectorAll('.selection-card').length, 3);
 
   // 已测算（达标）：不挂未测算标签，徽章给结论「合格」
   const b = card('b');

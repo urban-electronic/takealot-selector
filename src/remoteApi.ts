@@ -841,7 +841,7 @@ export const importSelectionTable = (file: File, batchName = ''): Promise<Select
   return requestForm<SelectionImportResult>('/api/selection/import', form);
 };
 
-export const enrichSelection = (body: { batch_id?: string; ids?: string[]; limit?: number; refresh?: boolean }): Promise<SelectionEnrichResult> =>
+export const enrichSelection = (body: { batch_id?: string; ids?: string[]; limit?: number; refresh?: boolean; skip_measured?: boolean }): Promise<SelectionEnrichResult> =>
   request<SelectionEnrichResult>('/api/selection/enrich', { method: 'POST', body: JSON.stringify(body) });
 
 export const getSelectionItems = (params: {

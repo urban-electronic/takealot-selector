@@ -2,7 +2,7 @@
 All browser external requests and undeclared API paths are blocked; public data
 is a local fixture, never a production fetch. No application main/production DB.
 """
-import sys,io,json,runpy
+import sys,io,json,runpy,re
 from pathlib import Path
 from urllib.parse import urlsplit
 ROOT=Path(__file__).resolve().parents[1]
@@ -56,7 +56,9 @@ with vite_server(ROOT) as base,sync_playwright() as pw:
  ctx.route('**/*',route);page=ctx.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
  page.goto(base+'/selection');page.locator('input[type=file]').set_input_files({'name':'isolated-selection.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':xlsx})
  expect(page.locator('.selection-card')).to_have_count(1)
- page.get_by_role('button',name='抓取主图与类目',exact=True).click()
+ # 按容器定位而不是按文案：这个按钮的字会跟着范围变（导入后是「抓取本批次没抓
+ # 过的」，没选批次时是「抓取没抓过的」），写死整句的话改一次名就超时一次。
+ page.get_by_role('button',name=re.compile(r'^抓取')).click()
  
  try: expect(page.locator('.selection-card img')).to_have_count(1)
  except Exception:

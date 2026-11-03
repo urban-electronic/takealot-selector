@@ -2474,6 +2474,80 @@ def test_refresh_reports_price_fixed(db, monkeypatch):
     assert item.price_source == "in_stock"
 
 
+def test_enrich_skips_measured_rows(db, monkeypatch):
+    """「跳过已测算」：算出利润率的行不再打网络。
+
+    测算过的商品价格、重尺、成本都核对过，重抓既费门户配额（200 次/分钟），
+    也可能把刚调好的售价换回去。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Measured", "https://www.takealot.com/t/PLID730"]], name="第一批")
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Fresh", "https://www.takealot.com/t/PLID731"]], name="第二批")
+    measured = db.query(SelectionItem).filter(SelectionItem.plid == "730").one()
+    measured.profit_margin = 0.3
+    db.commit()
+
+    asked = []
+    monkeypatch.setattr(
+        pub, "fetch_many",
+        lambda plids, workers=8: asked.extend(plids) or [_fake_public(p) for p in plids],
+    )
+
+    enrich(EnrichRequest(skip_measured=True), db=db, store_id=STORE)
+
+    assert asked == ["731"]
+
+
+def test_enrich_processes_measured_rows_when_not_skipping(db, monkeypatch):
+    """默认不跳过——老调用方和「重抓全部资料」还得能刷到已测算的行。"""
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Measured", "https://www.takealot.com/t/PLID732"]])
+    item = db.query(SelectionItem).first()
+    item.profit_margin = 0.3
+    item.enrich_status = ""
+    db.commit()
+
+    asked = []
+    monkeypatch.setattr(
+        pub, "fetch_many",
+        lambda plids, workers=8: asked.extend(plids) or [_fake_public(p) for p in plids],
+    )
+
+    enrich(EnrichRequest(), db=db, store_id=STORE)
+
+    assert asked == ["732"]
+
+
+def test_skip_measured_does_not_leave_rows_in_remaining(db, monkeypatch):
+    """被跳过的行不能算进 remaining。
+
+    否则前端每一轮都以为「还有活没干」，一直空转到轮次上限；而目标查询又永远
+    选不中它们——就是那种「点了抓取什么都不发生、提示还剩 N 个」的死循环。
+    """
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Measured", "https://www.takealot.com/t/PLID733"]], name="第一批")
+    do_import(db, [["产品名称", "产品链接"],
+                   ["Fresh", "https://www.takealot.com/t/PLID734"]], name="第二批")
+    measured = db.query(SelectionItem).filter(SelectionItem.plid == "733").one()
+    # 故意让它「资料不全」：不过滤的话它一定在 pending 里。
+    measured.profit_margin = 0.3
+    measured.product_image_url = ""
+    measured.enrich_status = ""
+    db.commit()
+
+    monkeypatch.setattr(pub, "fetch_many",
+                        lambda plids, workers=8: [_fake_public(p) for p in plids])
+
+    result = enrich(EnrichRequest(skip_measured=True), db=db, store_id=STORE)
+
+    assert result["processed"] == 1
+    assert result["remaining"] == 0
+    measured = db.query(SelectionItem).filter(SelectionItem.plid == "733").one()
+    assert measured.product_image_url == ""      # 真的没动它
+    assert measured.profit_margin == 0.3
+
+
 # ------------------------------------------------------------ 已建产品回推
 
 def test_sync_updates_product_from_selection_pool(db, monkeypatch):

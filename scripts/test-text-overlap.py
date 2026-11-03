@@ -211,6 +211,11 @@ def main():
             browser = p.chromium.launch(headless=True)
             context = browser.new_context()
             context.add_init_script(f"localStorage.setItem('api_base_url', '{BASE}')")
+            # 选品池的「已测算」分区默认折叠，折叠的卡片不进 DOM。展开它，否则
+            # 那几张卡上的文字从没被逐对检查过。
+            context.add_init_script(
+                "localStorage.setItem('selection.sections.collapsed.v1',"
+                " JSON.stringify({unmeasured: false, measured: false}))")
 
             def intercept(route):
                 from urllib.parse import urlsplit

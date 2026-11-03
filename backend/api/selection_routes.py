@@ -855,6 +855,10 @@ class EnrichRequest(BaseModel):
     ids: Optional[List[str]] = None
     limit: int = Field(default=ENRICH_CHUNK, ge=1, le=800)
     refresh: bool = False   # True 时连已抓过的也重抓
+    # 跳过已经算出利润率的行。测算过的商品，价格/重尺/成本都是核对过的，
+    # 再抓一遍既浪费配额，也可能把刚调好的售价换回去。默认不跳过（老调用方
+    # 的行为不变），由界面上的开关决定。
+    skip_measured: bool = False
 
 
 # 「还没结论」的行，`enrich` 的目标查询和 `remaining` 都必须用同一套判定。
@@ -970,8 +974,21 @@ def enrich(
 
     # 中文品名和普货/带电判定都是纯本地计算，先补上——这两步不花配额、不会失败，
     # 所以放在最前面，保证「即使这轮没有要抓的行」历史数据也能一次补齐。
+    #
+    # 注意这两步用的是**没被 skip_measured 收窄**的 scoped_query：已测算的行也
+    # 可能缺中文品名，本地补一下不花配额，没有理由跳过。
     names_filled = _backfill_chinese_names(db, scoped_query)
     battery_judged = _backfill_battery(db, scoped_query)
+
+    if data.skip_measured:
+        # 测算过的行不再抓网络。利润率的唯一判据就是 profit_margin 有值（见
+        # `_calc`：重尺/成本/售价任一缺失它都是 None），所以按它一刀切。
+        #
+        # scoped_query 必须跟着收窄：`remaining` 和「价格还没换口径」的计数都用它，
+        # 不收窄的话这些被跳过的行会一直被算成「还没处理完」，前端每一轮都以为
+        # 还有活干。
+        query = query.filter(SelectionItem.profit_margin.is_(None))
+        scoped_query = query
 
     # 有可用的门户通道时，「已经 ok 但还没有重尺」的行也值得再跑一轮：门户一个
     # 请求就同时给图和 Takealot 实测的长宽高，补一次就到位。
@@ -1420,6 +1437,10 @@ def summarize(db: Session, store_id: str, batch_id: Optional[str] = None) -> Dic
         # 售价口径分布：现货最低 / 最低报价 / 前台价 / 导入表 / 人工
         "price_in_stock": sum(1 for i in items if i.price_source == "in_stock"),
         "price_manual": sum(1 for i in items if i.price_source == "manual"),
+        # 测算进度。界面上按这两块把卡片分成「未测算 / 已测算」两个可折叠分区，
+        # 抓取时的「跳过已测算」也认这一刀，所以两边必须是同一个判据。
+        "measured": sum(1 for i in items if i.profit_margin is not None),
+        "unmeasured": sum(1 for i in items if i.profit_margin is None),
     }
 
 

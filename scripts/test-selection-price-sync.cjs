@@ -156,18 +156,32 @@ const root = createRoot(document.getElementById('root'));
   await act(async () => syncBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
   assert.deepEqual(syncCalls, [['b']], 're-push sends exactly that item id');
 
-  // 4. 「重抓全部资料」要跑多轮：一次只处理 400 个，只在第一轮传 refresh 的话，
+  // 4. 「重抓」要跑多轮：一次只处理 400 个，只在第一轮传 refresh 的话，
   //    1700 多行里永远只有最早那 400 行被重新取价。
   enrichCalls.length = 0;
-  const refreshBtn = [...document.querySelectorAll('button')].find(n => /重抓全部资料/.test(n.textContent));
+  const refreshBtn = [...document.querySelectorAll('button')].find(n => /^重抓/.test(n.textContent));
   assert.ok(refreshBtn, 'toolbar needs the refresh button');
+  // 「跳过已测算」默认勾着，按钮文案得跟着变——不然用户以为自己在重抓全部。
+  assert.match(refreshBtn.textContent, /重抓未测算的资料/);
   await act(async () => refreshBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
   assert.ok(enrichCalls.length >= 2, 'refresh must run more than one round to cover every row');
   assert.ok(enrichCalls.every(c => c.refresh === true), 'every refresh round must ask for refresh');
+  assert.ok(enrichCalls.every(c => c.skip_measured === true), 'measured rows are skipped by default');
   assert.equal(enrichCalls.length, 3, 'stops once a round fixes no price (no progress)');
   const notice = document.querySelector('.selection-notice').textContent;
   assert.match(notice, /500 个售价换成了现货最低价/, 'tells the user how many prices actually changed');
   assert.match(notice, /换不到现货最低价/, 'explains the leftovers instead of asking to click again');
+
+  // 5. 取消「跳过已测算」后：按钮文案回到「重抓全部资料」，请求也不再带 skip_measured
+  const skipBox = document.querySelector('.selection-skip-measured input');
+  assert.ok(skipBox, 'the skip-measured switch sits next to the fetch button');
+  assert.equal(skipBox.checked, true);
+  await act(async () => skipBox.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+  const fullBtn = [...document.querySelectorAll('button')].find(n => /^重抓/.test(n.textContent));
+  assert.match(fullBtn.textContent, /重抓全部资料/);
+  enrichCalls.length = 0;
+  await act(async () => fullBtn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+  assert.ok(enrichCalls.every(c => c.skip_measured === false), 'unchecked switch must reach the backend');
 
   await act(async () => root.unmount());
   console.log('PASS 选品卡片：现货最低价口径、利润率、已建产品可编辑并回推');

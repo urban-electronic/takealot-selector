@@ -591,6 +591,14 @@ export interface SelectionSummary {
   price_in_stock: number;
   /** 售价是人工填的条数（重抓不会覆盖） */
   price_manual: number;
+  /**
+   * 已算出利润率的条数 / 还没算出来的条数。
+   *
+   * 卡片按这一刀分成「未测算」「已测算」两个可折叠分区，「抓取时跳过已测算」
+   * 用的也是同一个判据——有利润率就算测算过。
+   */
+  measured?: number;
+  unmeasured?: number;
 }
 
 export interface SelectionBatch {

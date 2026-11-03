@@ -201,7 +201,8 @@ DATA.update({
                                     count=2, created_at='2026-10-29T10:00:00')],
     '/api/selection/summary': dict(total=3, pending=1, qualified=2, rejected=0, promoted=1,
                                    selected=2, duplicates=0, with_image=2, with_dimensions=1,
-                                   no_plid=1, pending_sync=1, price_in_stock=1, price_manual=0),
+                                   no_plid=1, pending_sync=1, price_in_stock=1, price_manual=0,
+                                   measured=2, unmeasured=1),
     '/api/selection/items': dict(total=3, items=[
         _selection_item(id='fixture-sel-1', plid='104410843', tsin='104410843',
             takealot_url='https://www.takealot.com/x/PLID104410843',
@@ -270,6 +271,12 @@ def main():
         browser=p.chromium.launch(headless=True)
         context=browser.new_context()
         context.add_init_script(f"localStorage.setItem('api_base_url', '{BASE}')")
+        # 选品池的「已测算」分区默认折叠，折叠的卡片根本不进 DOM——不在这儿展开，
+        # 已测算那张（带「更新到产品列表」页脚、5 列结果区）就永远量不到，
+        # 审计照样报「0 处问题」。
+        context.add_init_script(
+            "localStorage.setItem('selection.sections.collapsed.v1',"
+            " JSON.stringify({unmeasured: false, measured: false}))")
         # 需要模拟「这个接口读失败」时把路径放进来（见文件末尾的降级界面检查）。
         failing=set()
         selection_responses=[]
@@ -640,7 +647,7 @@ def main():
             selection_responses[:]=[response] if blocked else [response,dict(response,remaining=0)]
             page.goto(BASE+'/selection')
             page.locator('.selection-card').first.wait_for(state='visible')
-            page.get_by_role('button',name='重抓全部资料',exact=True).click()
+            page.get_by_role('button',name='重抓').first.click()
             page.locator('.selection-notice').filter(has_text='读取已停止' if blocked else '抓取完成').wait_for()
             if len(selection_calls)!=expected_calls:
                 failures.append(f'selection access stop={blocked}: expected {expected_calls} requests, got {len(selection_calls)}')
@@ -654,7 +661,7 @@ def main():
         selection_responses[:]=[dict(detail='目录接口认证未通过（HTTP 401），已停止本轮读取，本轮未提交资料未保存')]
         page.goto(BASE+'/selection')
         page.locator('.selection-card').first.wait_for(state='visible')
-        page.get_by_role('button',name='重抓全部资料',exact=True).click()
+        page.get_by_role('button',name='重抓').first.click()
         page.locator('.selection-notice').filter(has_text='本轮未提交资料未保存').wait_for()
         if len(selection_calls)!=1: failures.append('catalogue denial continued frontend enrichment')
         # 比夹具条数而不是写死 2：写死的话每加一条夹具都要回来改这里，

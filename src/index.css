@@ -3549,6 +3549,98 @@ table tbody tr:hover { background: #f8fafc; }
 
 /* ---- 卡片 ---- */
 
+/* 分区：未测算 / 已测算。整条标题都是按钮——点标题、点计数、点箭头都能折叠，
+   不用瞄准那个小三角。 */
+.selection-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.selection-section + .selection-section {
+  margin-top: var(--sp-3);
+}
+
+.selection-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px var(--sp-3);
+  background: var(--color-card, #fff);
+  border: 1px solid var(--surface-border, #e3e8ef);
+  border-radius: var(--radius, 8px);
+  font: inherit;
+  text-align: left;
+  color: var(--text-body, #334155);
+  cursor: pointer;
+}
+
+.selection-section-head:hover { border-color: var(--color-primary, #5182ce); }
+.selection-section-head:focus-visible {
+  outline: 2px solid var(--focus-ring, #2563eb);
+  outline-offset: 1px;
+}
+
+.selection-section-caret {
+  display: inline-block;
+  transition: transform .15s ease;
+  color: var(--text-muted, #64748b);
+}
+
+.selection-section.is-collapsed .selection-section-caret { transform: rotate(-90deg); }
+
+.selection-section-title {
+  font-weight: 600;
+  color: var(--text-strong, #0f172a);
+}
+
+.selection-section-count {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface-muted, #f1f5f9);
+  font-size: var(--fs-caption, 12px);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-body, #334155);
+}
+
+/* 已测算那块用绿色数字，未测算用中性色：一眼能分出「这块是收尾的」还是
+   「这块还要干活」。 */
+.selection-section.is-measured .selection-section-count {
+  background: #e9f7ef;
+  color: var(--success-strong, #15803d);
+}
+
+.selection-section-hint {
+  margin-left: auto;
+  font-size: var(--fs-caption, 12px);
+  color: var(--text-muted, #64748b);
+  /* 窄屏上这句话会把标题挤成两行，直接让位给计数。 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .selection-section-hint { display: none; }
+}
+
+/* 抓取时跳过已测算。放在抓取按钮旁边，因为它改变的就是那个按钮的行为。 */
+.selection-skip-measured {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--control-h-min, 32px);
+  padding: 0 4px;
+  font-size: var(--fs-label, 13px);
+  color: var(--text-body, #334155);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.selection-skip-measured input { margin: 0; }
+
 .selection-grid-cards {
   display: grid;
   /* 320px 下限配下面 @media (max-width:720px) 的 1fr 回退就够：720px 处内容区
