@@ -256,6 +256,14 @@ export default function ProductList() {
     } catch { return new Set(); }
   });
 
+  // 旧版本只存 SKU 勾选、没有产品勾选。升级后 localStorage 里可能留着「有 SKU 勾选、
+  // 却没有产品勾选」的错位状态，表现出来就是没勾任何行、但「加入装箱单」是亮的。
+  // 挂载时对齐一次：产品集合为空而 SKU 集合非空，就当遗留清掉。
+  useEffect(() => {
+    if (selectedProductIds.size === 0 && selectedSkus.size > 0) setSelectedSkus(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** 勾/取消勾一个产品：产品 id 一定要动，SKU 集合只在有 SKU 时跟着动，
    *  这样标签/装箱单的口径不变，而没 SKU 的行也不会被排除在上架之外。 */
   const toggleProductSelection = (product: Product, checked: boolean) => {
