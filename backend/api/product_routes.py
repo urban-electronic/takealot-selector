@@ -967,6 +967,89 @@ def _is_scraped_image(url: str) -> bool:
     return "media.takealot.com" in (url or "")
 
 
+class ListOfferIn(BaseModel):
+    """一键上架的入参。默认全自动：价格取产品已有售价，不传 SKU 交给平台生成。"""
+    barcode: Optional[str] = None          # 多变体时指定要上哪个变体
+    selling_price: Optional[float] = None
+    rrp: Optional[float] = None
+    rrp_multiplier: float = 1.2
+    dry_run: bool = False                  # True 只回报将提交什么，不真的创建
+
+
+@router.post("/{product_id}/list-offer")
+def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db),
+               store_id: str = Depends(get_store_id)):
+    """把产品挂到 Takealot 变体上（等同后台 Add My Offer）。
+
+    变体 Barcode 只从卖家门户目录接口取（mpv 的 `gtin`），PLID 不能用来建 offer；
+    售价取产品已有售价，RRP 默认 1.2 倍；不传 SKU 由平台分配数字串；不传 leadtime
+    就是不预售，库存等入仓后由发货带来。
+    """
+    from services import takealot_portal_api as portal
+    from services.takealot_seller_api import configured_key, create_offer
+
+    p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="产品不存在")
+    match = re.search(r'PLID(\d+)', p.takealot_url or '', re.I)
+    if not match:
+        raise HTTPException(status_code=400, detail="产品没有可用的 Takealot 链接")
+    plid = match.group(1)
+    key = configured_key(db)
+    if not key:
+        raise HTTPException(status_code=400, detail="当前店铺尚未接入卖家 API")
+    token = portal.configured_token(db)
+    if not token:
+        raise HTTPException(status_code=400, detail="没有配置卖家门户令牌，取不到变体 Barcode")
+    if (portal.token_state(db) or {}).get('expired'):
+        raise HTTPException(status_code=400, detail="卖家门户令牌已过期，请重新取一次")
+
+    record = portal.fetch(plid, token)
+    if not record.get('success'):
+        reason = (record.get('warnings') or ['目录资料读取失败'])[0]
+        raise HTTPException(status_code=503, detail=f"目录资料读取失败：{reason}")
+    variants = [v for v in (record.get('catalogue_variants') or []) if v.get('barcode')]
+    if not variants:
+        raise HTTPException(status_code=409, detail="该商品在目录里没有可用 Barcode，无法创建 offer")
+    if data.barcode:
+        picked = next((v for v in variants if v['barcode'] == data.barcode), None)
+        if not picked:
+            raise HTTPException(status_code=409, detail="指定的 Barcode 不属于该商品")
+    else:
+        picked = next((v for v in variants if not v.get('has_offer')), variants[0])
+    if picked.get('has_offer'):
+        raise HTTPException(status_code=409, detail="本店已在该变体有报价，无需重复创建")
+
+    price = data.selling_price if data.selling_price else p.actual_sale_price_zar
+    if not price or float(price) <= 0:
+        raise HTTPException(status_code=409, detail="产品没有有效售价，请先填写售价")
+    price = int(round(float(price)))
+    multiplier = data.rrp_multiplier if data.rrp_multiplier and data.rrp_multiplier > 0 else 1.2
+    rrp = int(round(float(data.rrp))) if data.rrp else int(round(price * multiplier))
+
+    plan = {'barcode': picked['barcode'], 'tsin': picked.get('tsin'),
+            'variant_label': picked.get('label'), 'selling_price': price, 'rrp': rrp,
+            'sku': None, 'leadtime_days': None}
+    if data.dry_run:
+        return {'ok': True, 'dry_run': True, 'plan': plan, 'plid': plid,
+                'product_no': p.product_no, 'variants': variants}
+
+    result = create_offer(key, picked['barcode'], price, rrp=rrp)
+    if not result.get('ok'):
+        raise HTTPException(status_code=502, detail=f"平台拒绝创建 offer：{result.get('reason')}")
+    offer = ((result.get('payload') or {}).get('offer') or {}) if isinstance(result.get('payload'), dict) else {}
+    sku = str(offer.get('sku') or '').strip()
+    if sku and not (p.sku or '').strip():
+        p.sku = sku
+        db.commit()
+    return {'ok': True, 'dry_run': False, 'plid': plid, 'product_no': p.product_no,
+            'barcode': picked['barcode'], 'variant_label': picked.get('label'),
+            'selling_price': price, 'rrp': rrp, 'sku': sku or None,
+            'offer_id': offer.get('offer_id'), 'status': offer.get('status'),
+            'offer_url': offer.get('offer_url'),
+            'validation_errors': (result.get('payload') or {}).get('validation_errors') or []}
+
+
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)
 async def refresh_price(product_id: str, db: Session = Depends(get_db), store_id: str = Depends(get_store_id), source: Literal['official', 'seller', 'details'] = 'official'):
     p = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()

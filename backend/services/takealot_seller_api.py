@@ -209,6 +209,72 @@ ASSIST_FIELDS = {'sku': 'SKU', 'product_name': '英文标题', 'product_image_ur
                  'length_mm': '长度(mm)', 'width_mm': '宽度(mm)', 'height_mm': '高度(mm)', 'actual_weight_kg': '重量(kg)'}
 
 
+MARKETPLACE_BASE = 'https://marketplace-api.takealot.com'
+
+
+def _positive_int(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return int(round(number))
+
+
+def create_offer(key, identifier, selling_price, rrp=None, sku=None, leadtime_days=None,
+                 leadtime_stock=None, timeout=30.0):
+    """对一个变体 Barcode 创建本店 offer，等同后台 Add My Offer。
+
+    POST /v2/offers/offer?identifier={Barcode}。`identifier` 必须是变体 Barcode
+    （mpv 里的 `gtin`），PLID 不认。`sku` 不传时由平台自动分配一串数字 SKU；
+    leadtime 不传就是不预售，库存等入仓后由发货带来。
+    """
+    if not key:
+        return {'ok': False, 'status': 0, 'reason': '卖家资料尚未接入'}
+    barcode = str(identifier or '').strip()
+    if not barcode:
+        return {'ok': False, 'status': 0, 'reason': '没有变体 Barcode，无法创建 offer'}
+    price = _positive_int(selling_price)
+    if price is None:
+        return {'ok': False, 'status': 0, 'reason': '售价必须是正整数'}
+    body = {'selling_price': price}
+    original = _positive_int(rrp)
+    if original is not None:
+        body['rrp'] = original
+    if sku:
+        body['sku'] = str(sku)
+    days = None if leadtime_days is None else int(leadtime_days)
+    if days is not None:
+        body['leadtime_days'] = days
+    if leadtime_stock and days is not None:
+        body['leadtime_stock'] = leadtime_stock
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            response = client.post(f'{MARKETPLACE_BASE}/v2/offers/offer',
+                                   params={'identifier': barcode}, json=body,
+                                   headers={'X-API-Key': key}, timeout=timeout)
+    except Exception as error:
+        return {'ok': False, 'status': 0, 'reason': f'创建 offer 请求失败：{type(error).__name__}'}
+    payload = None
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if response.status_code not in (200, 201):
+        message = ''
+        if isinstance(payload, dict):
+            message = str(payload.get('message') or '')
+        if not message and isinstance(payload, list) and payload:
+            message = str(payload[0])[:200]
+        return {'ok': False, 'status': response.status_code,
+                'reason': message or f'平台返回 {response.status_code}',
+                'payload': payload}
+    return {'ok': True, 'status': response.status_code, 'reason': '',
+            'payload': payload, 'barcode': barcode, 'selling_price': price,
+            'rrp': body.get('rrp')}
+
+
 def plid_from_url(url):
     match = re.search(r'PLID(\d+)', url or '', re.I)
     return match.group(1) if match else ''

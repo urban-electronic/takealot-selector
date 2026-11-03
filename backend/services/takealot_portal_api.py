@@ -355,6 +355,45 @@ def extract_category(payload: Dict[str, Any]) -> Optional[str]:
     return best
 
 
+def extract_variants(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """列出 mpv 里的变体及其 Barcode（mpv 的 `gtin` 就是创建 offer 用的 identifier）。
+
+    创建 offer 只认变体 Barcode，不认 PLID；没有这一步，新品就只能停在
+    「已选品未上架」。`hasOffer` 用来区分本店已在这个变体上有报价。
+    """
+    variants = payload.get("variants") or []
+    if not isinstance(variants, list):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in variants:
+        if not isinstance(item, dict):
+            continue
+        gtin = item.get("gtin")
+        best_price = item.get("bestPrice")
+        price = None
+        if isinstance(best_price, dict):
+            for key in ("price", "sellingPrice", "amount"):
+                value = best_price.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    price = float(value)
+                    break
+        elif isinstance(best_price, (int, float)) and not isinstance(best_price, bool):
+            price = float(best_price)
+        color = item.get("colorName")
+        size = item.get("size")
+        label = " / ".join(str(part) for part in (color, size) if part)
+        rows.append({
+            "barcode": str(gtin).strip() if gtin else None,
+            "tsin": str(item.get("tsinId")) if item.get("tsinId") else None,
+            "title": item.get("title"),
+            "label": label or None,
+            "has_offer": bool(item.get("hasOffer")),
+            "competing_offers": item.get("competingOffers"),
+            "best_price_zar": price,
+        })
+    return rows
+
+
 def extract(plid: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     """把 mpv 详情转成和 `takealot_public_api.fetch_product` 同名的结构。"""
     variants = payload.get("variants") or []
@@ -389,6 +428,7 @@ def extract(plid: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
         "tsin": str(first.get("tsinId")) if first.get("tsinId") else None,
         "brand": extract_brand(payload),
         "dimensions": extract_dimensions(payload),
+        "catalogue_variants": extract_variants(payload),
         "warnings": [],
         "source": "seller_portal",
     }
