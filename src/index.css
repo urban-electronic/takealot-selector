@@ -3626,6 +3626,39 @@ table tbody tr:hover { background: #f8fafc; }
   .selection-section-hint { display: none; }
 }
 
+/* 「这几个已经算完了，还留在原位」。
+   卡片算完不自动搬家（搬家的后果是输入框被卸载、人还没看完就找不到了），
+   所以这里给一个显式出口，让用户看完再点。 */
+.selection-section-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 2px var(--sp-3);
+  font-size: var(--fs-caption, 12px);
+  color: var(--text-muted, #64748b);
+}
+
+.selection-section-note .btn-link {
+  /* .btn-link 只在 .selection-foot-actions 里有样式，这里得自己写成链接样子，
+     否则会渲染成一个原生带边框的按钮，和旁边那行说明格格不入。 */
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-caption, 12px);
+  color: var(--link-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.selection-section-note .btn-link:hover { color: var(--color-primary); }
+
 /* 抓取时跳过已测算。放在抓取按钮旁边，因为它改变的就是那个按钮的行为。 */
 .selection-skip-measured {
   display: inline-flex;

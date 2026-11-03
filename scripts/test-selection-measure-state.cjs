@@ -9,6 +9,10 @@
  *   3. 未测算时结果区列出「还缺 长宽高、采购价」，而不是一句「待补数据」
  *   4. 列表按这两类分成两个可折叠分区，已测算的默认折叠（折叠时卡片不进 DOM）
  * 外加汇总条上的进度块，点一下切到未测算。
+ *
+ * 还有一条是「不能动的」：填完最后一个字段之后，卡片**不许当场搬进已测算**。
+ * 搬家的代价是 React 换父节点 = 卸载重挂，输入框和没提交完的草稿一起消失，
+ * 人还没看到算出多少就被挪走了。分区归属在列表加载时定，编辑只改卡片内容。
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -71,12 +75,25 @@ const items = [
 ];
 
 const reads = [];
+const patches = [];
 const remote = {
   getActiveStoreId: () => 'fixture-store',
   getSelectionBatches: async () => [],
   getSelectionItems: async params => {
     reads.push(params);
     return { total: items.length, items };
+  },
+  // 保存字段：后端会把整行重算一遍再返回。这里模拟「最后一个缺项填上了」——
+  // 返回的对象带着 profit_margin，前端如果按实时值分区，卡片当场就会搬走。
+  patchSelectionItem: async (id, patch) => {
+    patches.push([id, patch]);
+    const base = items.find(i => i.id === id);
+    return {
+      ...base, ...patch,
+      length_mm: 300, width_mm: 200, height_mm: 100,
+      purchase_cost_cny: 40, fee_category: 'Home',
+      profit_margin: 0.32, profit_zar: 95.6, status: '合格',
+    };
   },
   getSelectionSummary: async () => ({
     total: 4, pending: 1, qualified: 1, rejected: 1, promoted: 1,
@@ -206,8 +223,42 @@ const root = createRoot(document.getElementById('root'));
   );
   assert.doesNotMatch(document.querySelector('.selection-progress').className, /is-active/);
 
+  // 填完最后一个字段：卡片留在原位出结果，不许搬进折叠着的已测算
+  const beforeNode = card('a');
+  const shipSelect = [...beforeNode.querySelectorAll('select')]
+    .find(node => [...node.options].some(option => option.value === '海运普货'));
+  assert.ok(shipSelect, 'card needs the shipping select');
+  await act(async () => {
+    shipSelect.value = '海运普货';
+    shipSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+  assert.ok(patches.length > 0, 'changing the last field must save');
+
+  const afterEdit = [...document.querySelectorAll('.selection-section')];
+  const unmeasuredAfter = afterEdit[0];
+  assert.match(unmeasuredAfter.textContent, /未测算/);
+  assert.equal(unmeasuredAfter.querySelectorAll('.selection-card').length, 1,
+    'the card must stay in 未测算 after it gets a margin');
+  // 同一个 DOM 节点 = 没有卸载重挂。输入框和没提交完的草稿都还在。
+  assert.equal(card('a'), beforeNode, 'card must not be remounted when it becomes measured');
+  assert.match(card('a').className, /\bis-measured\b/, 'it should still look measured');
+  assert.match(card('a').querySelector('.selection-margin').textContent, /合格/,
+    'result shows right on the card, no need to filter by 合格/不合格');
+  assert.match(unmeasuredAfter.querySelector('.selection-section-note').textContent,
+    /1 个已经算出结果/, 'tell the user it is done and still parked here');
+
+  // 看完之后可以一键归位
+  await act(async () => unmeasuredAfter.querySelector('.selection-section-note .btn-link')
+    .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+  const settled = [...document.querySelectorAll('.selection-section')];
+  assert.equal(settled.length, 1, '未测算 is empty now, only 已测算 remains');
+  assert.match(settled[0].textContent, /已测算/);
+  assert.equal(settled[0].querySelectorAll('.selection-card').length, 4,
+    'the settled card joined 已测算 (section auto-expands when 未测算 is empty)');
+  assert.equal(document.querySelector('.selection-section-note'), null, 'note goes away once settled');
+
   await act(async () => root.unmount());
-  console.log('PASS 选品卡片区分未测算/已测算：类名、标签、缺项清单、进度块筛选');
+  console.log('PASS 选品卡片区分未测算/已测算：类名、标签、缺项清单、进度块筛选、算完不换区');
 })().catch(e => {
   console.error(e);
   process.exitCode = 1;

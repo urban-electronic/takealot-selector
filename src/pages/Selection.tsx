@@ -180,12 +180,14 @@ function readSkipMeasured(): boolean {
  * 里塞这么多东西在部分读屏器上会被当成纯文本，点不动也读不出状态。
  */
 function CardSection({
-  tone, title, count, hint, collapsed, onToggle, children,
+  tone, title, count, hint, note, collapsed, onToggle, children,
 }: {
   tone: SectionKey;
   title: string;
   count: number;
   hint: string;
+  /** 分区里的一次性提示（比如「N 个已经算完，还留在原位」）。不能塞进标题按钮里。 */
+  note?: ReactNode;
   collapsed: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -202,6 +204,7 @@ function CardSection({
         <span className="selection-section-count">{count}</span>
         <span className="selection-section-hint">{hint}</span>
       </button>
+      {collapsed ? null : note}
       {collapsed ? null : <div className="selection-grid-cards">{children}</div>}
     </section>
   );
@@ -595,6 +598,8 @@ export default function Selection() {
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<SelectionSummary | null>(null);
   const [page, setPage] = useState(0);
+  // 每条卡片这一屏归属哪个分区。列表每次重新加载都会重算；编辑不会。
+  const [sectionOf, setSectionOf] = useState<Record<string, SectionKey>>({});
 
   const [status, setStatus] = useState('');
   const [keyword, setKeyword] = useState('');
@@ -669,6 +674,11 @@ export default function Selection() {
     });
     setItems(result.items);
     setTotal(result.total);
+    // 分区归属在这一刻定下来。之后用户改字段、利润率从无到有，卡片也不会换区——
+    // 想让它归位，翻页/切筛选/抓取/建档都会重新加载，或者点分区里的「归到已测算」。
+    setSectionOf(Object.fromEntries(result.items.map(
+      item => [item.id, measureState(item) === 'unmeasured' ? 'unmeasured' : 'measured'],
+    )));
   }, [batchId, status, keyword, sort, onlySelected, hideDuplicates, page]);
 
   const loadSummary = useCallback(async () => {
@@ -1198,14 +1208,39 @@ export default function Selection() {
   const selectedOnPage = useMemo(() => items.filter(item => item.selected).length, [items]);
   // 卡片按「有没有算出利润率」分成两块：没算出来的要干活，算出来的折叠起来备查。
   // 已建产品归到「已测算」——它们不是待测算对象，混在未测算里只会干扰。
+  //
+  // 分区归属用**列表加载时**定下来的 `sectionOf`，不用实时的 profit_margin：
+  // 否则填完最后一个字段 → 利润率一出现 → 卡片当场搬进默认折叠着的「已测算」，
+  // 输入框跟着卸载（React 换了父节点就是重挂），光标和没提交完的草稿一起没了。
+  // 用户的原话是「我还没填完它就跑了，还得切合格/不合格再找回来」。
+  // 现在算完就留在原位出结果，要不要建档在这一张卡上决定；下次加载列表才归位。
+  const sectionOfItem = useCallback(
+    (item: SelectionItem): SectionKey => sectionOf[item.id]
+      ?? (measureState(item) === 'unmeasured' ? 'unmeasured' : 'measured'),
+    [sectionOf],
+  );
   const unmeasuredItems = useMemo(
-    () => items.filter(item => measureState(item) === 'unmeasured'),
-    [items],
+    () => items.filter(item => sectionOfItem(item) === 'unmeasured'),
+    [items, sectionOfItem],
   );
   const measuredItems = useMemo(
-    () => items.filter(item => measureState(item) !== 'unmeasured'),
-    [items],
+    () => items.filter(item => sectionOfItem(item) !== 'unmeasured'),
+    [items, sectionOfItem],
   );
+  // 留在「未测算」里但已经算出结果的——它们是这次编辑的产物，等用户看完再归位。
+  const settledInPlace = useMemo(
+    () => unmeasuredItems.filter(item => measureState(item) !== 'unmeasured'),
+    [unmeasuredItems],
+  );
+  /** 把上面这批归到「已测算」。只在用户主动点的时候发生——自动搬正是要修的问题。 */
+  const settleMeasured = () => {
+    if (!settledInPlace.length) return;
+    setSectionOf(prev => {
+      const next = { ...prev };
+      settledInPlace.forEach(item => { delete next[item.id]; });
+      return next;
+    });
+  };
   // 抓取按钮的文案要跟着范围走：选了批次就只抓这个批次（导入新表后正好是这一批）。
   const fetchNewLabel = batchId ? '抓取本批次没抓过的' : '抓取没抓过的';
 
@@ -1592,7 +1627,15 @@ export default function Selection() {
               tone="unmeasured"
               title="未测算"
               count={unmeasuredItems.length}
-              hint="重尺、采购价、售价填完就出利润率；抓取只会抓这些"
+              hint="填完就出利润率，卡片留在原位；抓取只会抓这些"
+              note={settledInPlace.length > 0 ? (
+                <div className="selection-section-note">
+                  <span>{settledInPlace.length} 个已经算出结果，留在原位方便你看完再决定</span>
+                  <button type="button" className="btn-link" onClick={settleMeasured}>
+                    归到「已测算」
+                  </button>
+                </div>
+              ) : undefined}
               collapsed={collapsed.unmeasured}
               onToggle={() => toggleSection('unmeasured')}
             >
