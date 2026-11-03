@@ -556,7 +556,12 @@ export default function ProductList() {
   // 实际渲染列（按 columnOrder，过滤 visibleColumns）
   // 实际渲染列（按 columnOrder，过滤 visibleColumns）。
   // 参考价列只在代理店出现：自营店没有官方售价，留一列空白纯属占地方。
-  const renderColumns = columnOrder.filter(key => visibleColumns.has(key) && (showMarketPrice || key !== 'market_prices'));
+  // 勾选列钉死在最左：列顺序存了 localStorage，早前拖过列的用户会把它留在右侧，
+  // 窄屏横向一滚就找不到批量上架的入口；它也不能被列设置关掉。
+  const renderColumns = (() => {
+    const base = columnOrder.filter(key => visibleColumns.has(key) && (showMarketPrice || key !== 'market_prices'));
+    return base.includes('select') ? ['select', ...base.filter(k => k !== 'select')] : ['select', ...base];
+  })();
   const colDefMap = new Map(allColumns.map(c => [c.key, c]));
 
   // 勾选存的是 SKU，一个产品可能挂着多个 SKU：按产品去重，否则同一产品会被上两次，
@@ -995,7 +1000,19 @@ export default function ProductList() {
     const isRefreshing = refreshingIds.has(p.id);
     switch (colKey) {
       case 'select':
-        if (!p.sku) return <span style={{ color: 'var(--text-subtle)', fontSize: 11 }}>无SKU</span>;
+        // 无 SKU 的产品挂不了 offer、也不进批量；给一个灰掉的框而不是「无SKU」三个字，
+        // 用户才能认出这一列就是勾选列，不会以为表格没有勾选功能。
+        if (!p.sku) {
+          return (
+            <input
+              type="checkbox"
+              disabled
+              aria-label={`${p.product_no} 无 SKU，不可勾选`}
+              title="该产品没有 SKU，无法上架或加入装箱单"
+              style={{ width: 'auto', opacity: 0.35, cursor: 'not-allowed' }}
+            />
+          );
+        }
         const variants = skuVariants(p.sku);
         const allVariantsChecked = variants.length > 0 && variants.every(sku => selectedSkus.has(sku));
         return (
@@ -1012,7 +1029,7 @@ export default function ProductList() {
                 return next;
               });
             }}
-            title={variants.length > 1 ? '选择或取消该产品的全部颜色分支' : '勾选后可加入装箱单'}
+            title={variants.length > 1 ? '勾选该产品的全部颜色分支（可批量上架 / 加入装箱单）' : '勾选后可批量上架 / 加入装箱单'}
             style={{ width: 'auto', accentColor: 'var(--color-primary, #1677ff)', cursor: 'pointer' }}
           />
         );
@@ -1621,10 +1638,12 @@ export default function ProductList() {
                 <label key={c.key} className="col-settings-item">
                   <input
                     type="checkbox"
-                    checked={visibleColumns.has(c.key)}
+                    checked={visibleColumns.has(c.key) || c.key === 'select'}
+                    disabled={c.key === 'select'}
+                    title={c.key === 'select' ? '勾选列固定在最左侧，不参与显隐与排序' : undefined}
                     onChange={() => toggleColumn(c.key)}
                   />
-                  <span>{c.label}</span>
+                  <span>{c.label}{c.key === 'select' ? '（固定）' : ''}</span>
                 </label>
               ))}
             </div>
@@ -1655,7 +1674,7 @@ export default function ProductList() {
             title={dataSource !== 'remote'
               ? '上架要走卖家 API（令牌在服务端），只在远程数据源可用'
               : listingTargets.length === 0
-                ? '请先勾选产品（需有 SKU）'
+                ? '请在表格最左侧「勾选」列勾中要上架的产品（需有 SKU），可点表头复选框全选当前页'
                 : `把选中的 ${listingTargets.length} 个产品挂到 Takealot：售价取产品已有售价，RRP = 售价 ×${RRP_MULTIPLIER}，不预售，SKU 由平台生成`}
             onClick={() => setListBatchPlan(listingTargets)}
           >
