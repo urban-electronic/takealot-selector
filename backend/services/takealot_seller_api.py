@@ -253,13 +253,17 @@ def create_offer(key, identifier, selling_price, rrp=None, sku=None, leadtime_da
         body['leadtime_days'] = days
     if leadtime_stock and days is not None:
         body['leadtime_stock'] = leadtime_stock
+    # 读 v1/offers 用 X-API-Key；官方 v2 文档的写法是 Authorization: Key <API_KEY>。
+    # 两个头一起发，同一把 key，省得为鉴权差异再猜一轮。
+    write_headers = {'X-API-Key': key, 'Authorization': f'Key {key}',
+                     'Accept': 'application/json'}
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             response = None
             for base in OFFER_WRITE_BASES:
                 response = client.post(f'{base}/v2/offers/offer',
                                        params={'identifier': barcode}, json=body,
-                                       headers={'X-API-Key': key}, timeout=timeout)
+                                       headers=write_headers, timeout=timeout)
                 if response.status_code not in (404, 405):
                     break
     except Exception as error:
