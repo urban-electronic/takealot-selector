@@ -1430,7 +1430,10 @@ export default function Selection() {
   // 导入面板说清「这次批次叫什么」，不然收起了还得挨个点开确认。
   const crawlTargetCount = crawlTargets.split('\n').filter(line => line.trim()).length;
   const crawlOpen = panels.crawl || crawlRunning;
-  const importOpen = panels.import || importing || enriching || promoting;
+  // 令牌失效时强制展开导入面板：一键上架会整批失败（每个产品都卡在取 Barcode），
+  // 而重取令牌的入口就在这块里，收起来等于让人去别处找一个不存在的按钮。
+  const portalBroken = portalState !== null && (!portalState.configured || portalState.expired);
+  const importOpen = panels.import || importing || enriching || promoting || portalBroken;
   const crawlHint = crawlRunning
     ? '抓取中，点开看进度'
     : crawlTask
@@ -1611,10 +1614,14 @@ export default function Selection() {
           aria-label={`Excel 与 CSV 导入，${importOpen ? '已展开，点击收起' : '已收起，点击展开'}`}>
           <span className="selection-section-caret" aria-hidden="true">▾</span>
           <strong className="selection-section-title">Excel / CSV 导入</strong>
-          <span className={`selection-crawl-state ${skipMeasured ? 'is-ok' : ''}`}>
-            {skipMeasured ? '跳过已测算' : '含已测算'}
+          <span className={`selection-crawl-state ${portalBroken ? 'is-down' : skipMeasured ? 'is-ok' : ''}`}>
+            {portalBroken
+              ? (portalState?.configured ? '令牌已过期' : '未配令牌')
+              : skipMeasured ? '跳过已测算' : '含已测算'}
           </span>
-          <span className="selection-import-head-hint">{importHint}</span>
+          <span className="selection-import-head-hint">
+            {portalBroken ? '令牌失效时一键上架会整批失败，点开重取' : importHint}
+          </span>
         </button>
 
         <div className="selection-import-body">
