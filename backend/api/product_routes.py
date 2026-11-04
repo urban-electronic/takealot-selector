@@ -990,9 +990,8 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     售价取产品已有售价，RRP 默认 1.5 倍（RRP_MULTIPLIER）；不传 SKU 由平台分配数字串；
     不传 leadtime 就是不预售，库存等入仓后由发货带来。
 
-    多变体商品（假发尺码、饰品颜色这种）默认把目录里每个变体都上一个 offer，返回
-    `variants` 逐变体明细；本店已有报价的变体进 `skipped` 不重复提交。显式传 barcode
-    时仍只上那一个变体。全部变体都上不成功才 502，部分成功按 200 + ok=false 报。
+    多变体商品可以只读预览；实际创建时必须显式传入唯一匹配的 Barcode。
+    已有报价的变体返回在 `skipped`，不重复提交。
     """
     from services import takealot_portal_api as portal
     from services.takealot_seller_api import configured_key, create_offer
@@ -1024,10 +1023,8 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     if not variants:
         raise HTTPException(status_code=409, detail="该商品在目录里没有可用 Barcode，无法创建 offer")
 
-    # 变体选择：传了 barcode 就只上那一个（老调用方语义不变）；不传就把目录里每个
-    # 变体都上一个 offer。这块以前是「多变体直接 409，让人回门户手动点 Add My Offer」，
-    # 结果假发、饰品这种天生多尺码/多颜色的品在列表里根本点不动。
-    # 同一 Barcode 只提交一次：平台按 Barcode 认变体，重复提交等于自己顶自己。
+    # 显式 Barcode 必须唯一匹配。未指定时先整理预览与已有报价明细；
+    # 写入前仍按目录原始变体数量判断，不能靠过滤缺失或重复 Barcode 变成单变体。
     if data.barcode:
         matches = [v for v in variants if v['barcode'] == data.barcode]
         if not matches:
@@ -1059,6 +1056,9 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
                 'listed_count': 0, 'failed_count': 0,
                 'barcode': skipped[0]['barcode'] if len(skipped) == 1 else None,
                 'variant_label': skipped[0]['variant_label'] if len(skipped) == 1 else None}
+
+    if not data.dry_run and not data.barcode and len(catalogue_variants) != 1:
+        raise HTTPException(status_code=409, detail="商品有多个变体，请在卖家门户确认目标变体后上架")
 
     price = data.selling_price if data.selling_price else p.actual_sale_price_zar
     if not price or float(price) <= 0:
