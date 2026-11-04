@@ -20,9 +20,6 @@ import { Link } from 'react-router-dom';
 import { ProductImage } from '../utils/imageFallback';
 import {
   bulkPatchSelection,
-  cancelSelectionCrawl,
-  DEFAULT_AGENT_BASE,
-  createSelectionCrawl,
   deleteSelectionBatch,
   purgeSelection,
   enrichSelection,
@@ -30,9 +27,6 @@ import {
   getActiveStoreId,
   getImageUrl,
   getPortalTokenState,
-  getSelectionAgentHealth,
-  getSelectionAgentBase,
-  getSelectionCrawlTask,
   getSelectionBatches,
   getSelectionItems,
   getSelectionSummary,
@@ -44,13 +38,11 @@ import {
   promoteSelection,
   selectQualifiedSelection,
   setPortalToken,
-  setSelectionAgentBase,
   syncSelectionToProducts,
 } from '../remoteApi';
 import { useFeeCategories } from '../utils/useFeeCategories';
 import { BATTERY_STATUS_LABEL, SHIPPING_METHODS, formatPercent, formatPrice } from '../types';
 import type { CatalogueProbeReport, PortalProbeReport, PortalTokenState, PublicApiProbeReport } from '../remoteApi';
-import type { SelectionAgentHealth, SelectionCrawlTask } from '../remoteApi';
 import type {
   FeeCategory,
   SelectionBatch,
@@ -649,27 +641,6 @@ export default function Selection() {
   // 类目下拉的候选：全量 Fee 类目，卡片里选一个就带出成功率。
   const feeCategoryState = useFeeCategories(FEE_CATEGORY_SOURCE);
 
-  /* ---- 从 Takealot 抓取：任务交给本机采集服务跑，抓完直投进这个池子 ----
-   *
-   * 抓取确实在用户自己的浏览器里发生（Takealot 有 Cloudflare 风控，云端跑必拦），
-   * 网页这边只负责下指令、看进度。服务地址按店铺存，换店铺不必重填。
-   */
-  const [agentBase, setAgentBase] = useState(() => getSelectionAgentBase());
-  const [agentBaseDraft, setAgentBaseDraft] = useState(() => getSelectionAgentBase());
-  const [agentHealth, setAgentHealth] = useState<SelectionAgentHealth | null>(null);
-  const [agentReach, setAgentReach] = useState<'checking' | 'ok' | 'down'>('checking');
-  const [crawlMode, setCrawlMode] = useState<'keyword' | 'link'>('keyword');
-  const [crawlTargets, setCrawlTargets] = useState('');
-  const [crawlPages, setCrawlPages] = useState('');
-  const [crawlMinReviews, setCrawlMinReviews] = useState('');
-  const [crawlSort, setCrawlSort] = useState('价格从高到低');
-  // 评论体检是抓取器独有的增量信号（本年度评论数 / 畅销变体），后端拿不到，
-  // 但每个商品都要多开一次详情页，所以默认关，按需勾。
-  const [crawlAudit, setCrawlAudit] = useState(false);
-  const [crawlBatchName, setCrawlBatchName] = useState('');
-  const [crawlTask, setCrawlTask] = useState<SelectionCrawlTask | null>(null);
-  const [crawlSubmitting, setCrawlSubmitting] = useState(false);
-
   // 卡片分区的折叠状态，以及「抓取时跳过已测算」。两个都从本地读上次的选择。
   const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>(readSections);
   const [skipMeasured, setSkipMeasured] = useState(readSkipMeasured);
@@ -737,103 +708,6 @@ export default function Selection() {
   const refresh = async () => {
     await Promise.all([loadList(), loadSummary(), loadBatches()]);
   };
-
-  const checkAgent = useCallback(async (base: string) => {
-    setAgentReach('checking');
-    try {
-      const health = await getSelectionAgentHealth(base);
-      setAgentHealth(health);
-      setAgentReach('ok');
-      return health;
-    } catch {
-      setAgentHealth(null);
-      setAgentReach('down');
-      return null;
-    }
-  }, []);
-
-  // 进页面就探一次：连着就顺手取服务端的排序项和体检默认条数，避免前后端两套候选。
-  useEffect(() => { void checkAgent(agentBase); }, [agentBase, checkAgent]);
-
-  const saveAgentBase = () => {
-    setSelectionAgentBase(agentBaseDraft);
-    const next = getSelectionAgentBase();
-    setAgentBaseDraft(next);
-    setAgentBase(next);
-  };
-
-  const crawlRunning = crawlTask?.status === 'pending' || crawlTask?.status === 'running';
-
-  const handleStartCrawl = async () => {
-    const targets = crawlTargets.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    if (!targets.length) {
-      setNotice({ kind: 'warn', text: crawlMode === 'keyword' ? '先填关键词，一行一个' : '先填 Takealot 链接，一行一个' });
-      return;
-    }
-    if (agentReach !== 'ok') {
-      setNotice({ kind: 'warn', text: `本机采集服务没连上（${agentBase}），先在 Mac 上双击 启动采集服务.command` });
-      return;
-    }
-    setCrawlSubmitting(true);
-    try {
-      const task = await createSelectionCrawl(agentBase, {
-        mode: crawlMode,
-        targets,
-        pages: crawlPages.trim() ? Number(crawlPages) : undefined,
-        min_reviews: crawlMinReviews.trim() ? Number(crawlMinReviews) : undefined,
-        sort: crawlSort,
-        audit: crawlAudit,
-        batch_name: crawlBatchName.trim(),
-      });
-      setCrawlTask(task);
-      setNotice({ kind: 'info', text: `已交给本机采集服务（${task.id}）。抓取时会弹出一个浏览器窗口，别关它。` });
-    } catch (error) {
-      setNotice({ kind: 'warn', text: (error as Error).message });
-    } finally {
-      setCrawlSubmitting(false);
-    }
-  };
-
-  const handleCancelCrawl = async () => {
-    if (!crawlTask) return;
-    try {
-      setCrawlTask(await cancelSelectionCrawl(agentBase, crawlTask.id));
-    } catch (error) {
-      setNotice({ kind: 'warn', text: (error as Error).message });
-    }
-  };
-
-  // 轮询要看最新列表，但 refresh 每次渲染都是新函数；存 ref 才不会把轮询打断重来。
-  const refreshRef = useRef(refresh);
-  useEffect(() => { refreshRef.current = refresh; });
-
-  useEffect(() => {
-    if (!crawlTask || (crawlTask.status !== 'pending' && crawlTask.status !== 'running')) return;
-    let stopped = false;
-    let timer = 0;
-
-    const poll = async () => {
-      try {
-        const detail = await getSelectionCrawlTask(agentBase, crawlTask.id);
-        if (stopped) return;
-        setCrawlTask(detail);
-        if (detail.status === 'done' || detail.status === 'cancelled' || detail.status === 'failed') {
-          setNotice({
-            kind: detail.status === 'done' ? 'ok' : 'warn',
-            text: `${detail.stage}：抓到 ${detail.products_total} 个，新建 ${detail.created} 个`
-              + (detail.duplicates ? `，池内重复 ${detail.duplicates} 个` : '')
-              + (detail.errors.length ? `，${detail.errors.length} 处出错（见抓取日志）` : ''),
-          });
-          await refreshRef.current();
-          return;
-        }
-      } catch { /* 单次轮询失败不算失败，下一轮继续 */ }
-      if (!stopped) timer = window.setTimeout(poll, 2500);
-    };
-
-    timer = window.setTimeout(poll, 1500);
-    return () => { stopped = true; window.clearTimeout(timer); };
-  }, [agentBase, crawlTask?.id, crawlTask?.status]);
 
   const handleUpload = async (file: File) => {
     if (promoteLock.current) return;
@@ -1430,121 +1304,6 @@ export default function Selection() {
           <button type="button" className="note-dismiss" aria-label="关闭这条提示" onClick={() => setNotice(null)}>×</button>
         </div>
       )}
-
-      {/*
-        从 Takealot 抓取。抓取本身必须在本机浏览器里发生，所以这里是「下指令 +
-        看进度」的入口：抓到的身份和发现信号由本机采集服务直投进这个池子，
-        主图/类目/重尺/三档价格仍由上面那个抓取按钮走后端补，不重复造。
-      */}
-      <section className="selection-import selection-crawl">
-        <div className="selection-import-main">
-          <strong className="selection-crawl-title">从 Takealot 抓取</strong>
-          <span className={`selection-crawl-state is-${agentReach}`}>
-            {agentReach === 'checking'
-              ? '检测本机采集服务…'
-              : agentReach === 'ok'
-                ? `本机采集服务在线${agentHealth?.busy ? '（有任务在跑）' : ''}`
-                : '本机采集服务未启动'}
-          </span>
-          <label className="selection-field is-wide">
-            <span>采集服务地址</span>
-            <input
-              value={agentBaseDraft}
-              onChange={event => setAgentBaseDraft(event.target.value)}
-              onBlur={saveAgentBase}
-              spellCheck={false}
-              placeholder={DEFAULT_AGENT_BASE}
-            />
-          </label>
-          <button type="button" className="btn" onClick={() => { saveAgentBase(); void checkAgent(agentBaseDraft.trim() || agentBase); }}>
-            重新检测
-          </button>
-        </div>
-
-        <p className="selection-import-hint">
-          抓取在你自己已登录的浏览器里跑（Takealot 有 Cloudflare 风控，放云端必被拦）。先在 Mac 上运行
-          <code> TakealotTool/启动采集服务.command </code>，再从这里下指令。抓回来的是身份 + 发现信号
-          （链接 / PLID / 名称 / 前台价 / 评分 / 评论数），主图、类目、重尺和三档价格仍由上面的抓取按钮走后端补。
-        </p>
-
-        <div className="selection-import-main">
-          <label className="selection-field">
-            <span>抓取方式</span>
-            <select value={crawlMode} onChange={event => setCrawlMode(event.target.value as 'keyword' | 'link')} disabled={crawlRunning}>
-              <option value="keyword">按关键词搜索</option>
-              <option value="link">按链接抓</option>
-            </select>
-          </label>
-          <label className="selection-field">
-            <span>每词批次<i>可空</i></span>
-            <input value={crawlPages} onChange={event => setCrawlPages(event.target.value)}
-              inputMode="numeric" placeholder="跑完为止" disabled={crawlRunning} />
-          </label>
-          <label className="selection-field">
-            <span>最少评论<i>可空</i></span>
-            <input value={crawlMinReviews} onChange={event => setCrawlMinReviews(event.target.value)}
-              inputMode="numeric" placeholder="不限" disabled={crawlRunning} />
-          </label>
-          <label className="selection-field">
-            <span>排序</span>
-            <select value={crawlSort} onChange={event => setCrawlSort(event.target.value)} disabled={crawlRunning}>
-              {(agentHealth?.sorts?.length
-                ? agentHealth.sorts
-                : ['价格从高到低', '价格从低到高', '新品优先', '最受欢迎', '评分最高']
-              ).map((option: string) => <option key={option} value={option}>{option}</option>)}
-            </select>
-          </label>
-          <label className="selection-field is-wide">
-            <span>批次名<i>可空</i></span>
-            <input value={crawlBatchName} onChange={event => setCrawlBatchName(event.target.value)}
-              placeholder="例如：吸尘器袋 11-04" disabled={crawlRunning} />
-          </label>
-          <label className="selection-skip-measured"
-            title="勾上后每个商品多开一次详情页，换「本年度评论数」和「畅销变体」——这两列后端拿不到">
-            <input type="checkbox" checked={crawlAudit} onChange={() => setCrawlAudit(prev => !prev)} disabled={crawlRunning} />
-            <span>评论体检</span>
-          </label>
-        </div>
-
-        <label className="selection-field is-wide selection-crawl-input">
-          <span>{crawlMode === 'keyword' ? '关键词（一行一个）' : 'Takealot 链接（一行一个）'}</span>
-          <textarea
-            rows={4}
-            value={crawlTargets}
-            onChange={event => setCrawlTargets(event.target.value)}
-            spellCheck={false}
-            placeholder={crawlMode === 'keyword'
-              ? 'vacuum cleaner bags\ncat litter box'
-              : 'https://www.takealot.com/xxx/PLID12345678'}
-          />
-        </label>
-
-        <div className="selection-import-main">
-          <button type="button" className="btn-primary" onClick={() => void handleStartCrawl()} disabled={crawlSubmitting || crawlRunning}>
-            {crawlSubmitting ? '下指令中…' : crawlRunning ? '抓取中…' : '开始抓取'}
-          </button>
-          {crawlRunning && (
-            <button type="button" className="btn" onClick={() => void handleCancelCrawl()}>取消</button>
-          )}
-          {crawlTask && (
-            <span className="selection-crawl-progress">
-              {crawlTask.stage}｜商品 {crawlTask.products_total}｜新建 {crawlTask.created}
-              {crawlTask.duplicates ? `｜池内重复 ${crawlTask.duplicates}` : ''}
-              {crawlTask.targets_total ? `｜进度 ${crawlTask.targets_done}/${crawlTask.targets_total}` : ''}
-            </span>
-          )}
-        </div>
-
-        {crawlTask?.logs?.length ? (
-          <pre className="selection-crawl-log">{crawlTask.logs.slice(-40).join('\n')}</pre>
-        ) : null}
-        {crawlTask?.errors?.length ? (
-          <p className="selection-import-hint">
-            出错 {crawlTask.errors.length} 处：{crawlTask.errors.slice(0, 3).join('；')}
-            {crawlTask.errors.length > 3 ? ' …' : ''}
-          </p>
-        ) : null}
-      </section>
 
       <section className="selection-import">
         <div className="selection-import-main">
