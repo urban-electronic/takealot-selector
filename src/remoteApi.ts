@@ -1123,11 +1123,26 @@ export interface SelectionCrawlTask {
 }
 
 const agentRequest = async <T>(base: string, path: string, options: RequestInit = {}): Promise<T> => {
-  const root = (base || DEFAULT_AGENT_BASE).trim().replace(/\/+$/, '') || DEFAULT_AGENT_BASE;
+  // 配置请求也走这条路径，里面可能有凭据；目标必须是本机回环。
+  const invalidBase = '采集服务地址必须使用本机回环（127.0.0.1 或 [::1]）';
+  let endpoint: URL;
+  try {
+    endpoint = new URL(base.trim() || DEFAULT_AGENT_BASE);
+  } catch {
+    throw new Error(invalidBase);
+  }
+  if (!['http:', 'https:'].includes(endpoint.protocol)
+    || !['127.0.0.1', '[::1]'].includes(endpoint.hostname)
+    || endpoint.username || endpoint.password || endpoint.pathname !== '/'
+    || endpoint.search || endpoint.hash) {
+    throw new Error(invalidBase);
+  }
+  const root = endpoint.origin;
   let res: Response;
   try {
     res = await fetch(`${root}${path}`, {
       ...options,
+      redirect: 'error',
       signal: options.signal ?? AbortSignal.timeout(8000),
       headers: { 'Content-Type': 'application/json', ...options.headers },
     });
