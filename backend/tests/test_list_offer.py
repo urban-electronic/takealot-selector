@@ -154,24 +154,21 @@ def test_platform_rejection_carries_host_and_status(db, env):
     assert "Invalid RRP" in exc.value.detail and "422" in exc.value.detail
 
 
-def test_multiple_variants_all_get_an_offer(db, env):
-    """多变体不再要求人工指定：目录里每个变体各建一个 offer，已上架的那条跳过。"""
-    product(db)
+@pytest.mark.parametrize("other_barcode", ["6009512345679", None, "6009512345678"])
+def test_multiple_variants_without_confirmed_barcode_never_write(db, env, other_barcode):
+    row = product(db)
     env["state"]["variants"] = [
         variant(barcode="6009512345677", label="Gold", has_offer=True),
         variant(barcode="6009512345678", label="Silver"),
-        variant(barcode="6009512345679", label="Black"),
+        variant(barcode=other_barcode, label="Black"),
     ]
-    result = list_offer("p1", ListOfferIn(), db, "default-store")
-
-    submitted = [c["barcode"] for c in env["calls"]["create"]]
-    assert submitted == ["6009512345678", "6009512345679"], "逐个变体建 offer，跳过已有报价的"
-    assert result["ok"] is True
-    assert result["listed_count"] == 2 and result["failed_count"] == 0
-    assert [v["variant_label"] for v in result["variants"]] == ["Silver", "Black"]
-    assert len(result["skipped"]) == 1 and result["skipped"][0]["variant_label"] == "Gold"
-    for call in env["calls"]["create"]:
-        assert call["selling_price"] == 200 and call["rrp"] == 300
+    with pytest.raises(HTTPException) as exc:
+        list_offer("p1", ListOfferIn(), db, "default-store")
+    assert exc.value.status_code == 409
+    assert "变体" in exc.value.detail
+    assert env["calls"]["create"] == []
+    db.refresh(row)
+    assert not row.sku
 
 
 def test_multi_variant_dry_run_lists_every_plan(db, env):
@@ -190,49 +187,6 @@ def test_all_variants_already_listed_is_not_an_error(db, env):
     assert result["ok"] is True and result["listed_count"] == 0 and result["failed_count"] == 0
     assert len(result["skipped"]) == 2
     assert env["calls"]["create"] == []
-
-
-def test_same_barcode_in_catalogue_is_submitted_once(db, env):
-    """门户返回里同 Barcode 重复时只能提交一次，否则第二发会被平台当重复顶掉。"""
-    product(db)
-    env["state"]["variants"] = [variant(label="Silver"), variant(label="Silver copy")]
-    list_offer("p1", ListOfferIn(), db, "default-store")
-    assert [c["barcode"] for c in env["calls"]["create"]] == ["6009512345678"]
-
-
-def test_partial_failure_is_reported_per_variant(db, env):
-    """一条变体被平台拒，其余变体照样要上，并且逐个报原因。"""
-    row = product(db)
-    env["state"]["variants"] = [variant(), variant(barcode="6009512345679", label="Silver")]
-
-    def create(identifier):
-        if identifier == "6009512345679":
-            return {"ok": False, "status": 422, "reason": "Invalid Barcode"}
-        return {"ok": True, "payload": {"offer": {"sku": "9902739445801", "offer_id": "offer-ok"}}}
-
-    env["state"]["create"] = create
-    result = list_offer("p1", ListOfferIn(), db, "default-store")
-
-    assert result["ok"] is False
-    assert result["listed_count"] == 1 and result["failed_count"] == 1
-    failed = [v for v in result["variants"] if not v["ok"]][0]
-    assert failed["barcode"] == "6009512345679" and "Invalid Barcode" in failed["reason"]
-    assert failed["status_code"] == 422
-    db.refresh(row)
-    assert row.sku == "9902739445801", "只有成功那串 SKU 回写"
-
-
-def test_multi_variant_skus_are_joined_and_split_back(db, env):
-    """平台按变体各发一串 SKU，主档用空格拼；标签侧的 split_skus 必须还能拆回来。"""
-    from services.label_pdf import split_skus
-
-    row = product(db)
-    env["state"]["variants"] = [variant(), variant(barcode="6009512345679", label="Silver")]
-    list_offer("p1", ListOfferIn(), db, "default-store")
-
-    db.refresh(row)
-    skus = split_skus(row.sku)
-    assert len(skus) == 2 and len(set(skus)) == 2, f"多规格 SKU 要能拆成两条标签：{row.sku!r}"
 
 
 def test_explicit_barcode_selects_only_the_confirmed_variant(db, env):
