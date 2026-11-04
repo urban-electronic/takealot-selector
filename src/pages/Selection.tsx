@@ -1677,12 +1677,18 @@ export default function Selection() {
               : !portalState.configured
                 ? '未配置 —— 重尺抓不到、主图容易限流'
                 : portalState.expired
-                  ? '已过期，需要重新取一次'
+                  ? '已过期 —— 打开一次卖家门户就会自动续上'
                   : `有效${portalState.days_left != null ? `（还剩 ${portalState.days_left} 天）` : ''}`}
           </summary>
           <p className="selection-import-hint">
-            取法：浏览器打开 <code>sellers.takealot.com</code> 并<strong>先登录</strong>，然后按 F12
-            打开控制台，粘这一行——令牌会直接进剪贴板，回来按 Ctrl/⌘+V 就行：
+            默认<strong>自动同步</strong>：本机每 30 分钟从 Chrome 的 <code>sellers.takealot.com</code>{' '}
+            登录态里读一次最新令牌推上来，不用再手动取。前提是这台 Mac 上装过{' '}
+            <code>scripts/install-portal-token-sync.sh</code>；令牌本身只有 24 小时寿命，续期由浏览器在
+            你打开卖家门户时完成，脚本只负责把新令牌搬过来。
+          </p>
+          <p className="selection-import-hint">
+            自动同步没跑起来时才需要手动兜底。浏览器打开 <code>sellers.takealot.com</code> 并<strong>先登录</strong>，
+            按 F12 打开控制台，粘这一行——令牌会直接进剪贴板，回来按 Ctrl/⌘+V 就行：
           </p>
           <pre className="selection-portal-snippet">
             <code>{PORTAL_TOKEN_SNIPPET}</code>
