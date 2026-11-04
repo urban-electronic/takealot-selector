@@ -304,7 +304,8 @@ def refresh_via_browser(dirs: List[Path], stale_before: int, timeout: float = 60
         return None
     url = f"https://{PORTAL_ORIGIN}/"
     try:
-        subprocess.run(["open", "-a", "Google Chrome", url], check=False, timeout=20)
+        # -g：在后台打开，不把 Chrome 抢到前台，免得定时任务在你干活时切走焦点。
+        subprocess.run(["open", "-g", "-a", "Google Chrome", url], check=False, timeout=20)
     except Exception as error:
         log(f"打开浏览器失败：{error}")
         return None
