@@ -1013,15 +1013,23 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     if not record.get('success'):
         reason = (record.get('warnings') or ['目录资料读取失败'])[0]
         raise HTTPException(status_code=503, detail=f"目录资料读取失败：{reason}")
-    variants = [v for v in (record.get('catalogue_variants') or []) if v.get('barcode')]
+    catalogue_variants = record.get('catalogue_variants') or []
+    if record.get('catalogue_variant_count', len(catalogue_variants)) != len(catalogue_variants):
+        raise HTTPException(status_code=409, detail="目录变体资料不完整，请在卖家门户确认后上架")
+    variants = [v for v in catalogue_variants if v.get('barcode')]
     if not variants:
         raise HTTPException(status_code=409, detail="该商品在目录里没有可用 Barcode，无法创建 offer")
     if data.barcode:
-        picked = next((v for v in variants if v['barcode'] == data.barcode), None)
-        if not picked:
+        matches = [v for v in variants if v['barcode'] == data.barcode]
+        if not matches:
             raise HTTPException(status_code=409, detail="指定的 Barcode 不属于该商品")
+        if len(matches) != 1:
+            raise HTTPException(status_code=409, detail="指定的 Barcode 对应多个变体，无法安全上架")
+        picked = matches[0]
     else:
-        picked = next((v for v in variants if not v.get('has_offer')), variants[0])
+        if len(catalogue_variants) != 1:
+            raise HTTPException(status_code=409, detail="商品有多个变体，请在卖家门户确认变体后上架")
+        picked = variants[0]
     if picked.get('has_offer'):
         raise HTTPException(status_code=409, detail="本店已在该变体有报价，无需重复创建")
 
