@@ -30,7 +30,13 @@ for arg in "$@"; do
   esac
 done
 
-PYTHON="$(command -v python3 || true)"
+# 显式挑一个稳定的解释器：launchd 里的 PATH 很干净，不能指望和交互式终端一致，
+# 更不能捡到某个宿主/IDE 自带的 runtime（宿主一升级路径就失效）。
+PYTHON=""
+for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  [[ -x "$candidate" ]] && { PYTHON="$candidate"; break; }
+done
+[[ -z "$PYTHON" ]] && PYTHON="$(command -v python3 || true)"
 if [[ -z "$PYTHON" ]]; then
   echo "找不到 python3，先装一个再回来（brew install python）" >&2
   exit 1
@@ -38,16 +44,19 @@ fi
 [[ -f "$SYNC_SCRIPT" ]] || { echo "找不到 $SYNC_SCRIPT" >&2; exit 1; }
 
 EXTRA=()
+EXTRA_XML=""
 if [[ "$OPEN_BROWSER" == "1" ]]; then
   EXTRA+=("--open-browser")
+  EXTRA_XML="    <string>--open-browser</string>"
 fi
 
 # API Key 只需存一次，之后脚本自己读 ~/.zenty/portal-token-sync.json。
 # 目标后端默认是 Railway；桌面版用的本机后端可以在配置里加进 api_bases。
-mkdir -p "$HOME/.zenty"
+mkdir -p "$HOME/.zenty" "$HOME/Library/LaunchAgents"
 if [[ ! -s "$HOME/.zenty/portal-token-sync.json" ]]; then
   echo "填一次后端 API Key（Railway 上的 API_KEY 环境变量）。留空则跳过，之后再补也行。"
-  read -r -p "API Key: " -s API_KEY
+  API_KEY=""
+  read -r -s -p "API Key: " API_KEY || true
   echo
   if [[ -n "${API_KEY:-}" ]]; then
     "$PYTHON" "$SYNC_SCRIPT" --save-key "$API_KEY"
@@ -65,7 +74,7 @@ cat > "$PLIST" <<PLIST_EOF
     <string>$PYTHON</string>
     <string>$SYNC_SCRIPT</string>
     <string>--notify</string>
-${EXTRA[@]/#/    <string>}
+$EXTRA_XML
   </array>
   <!-- 每 30 分钟一次：令牌 24 小时有效，余量足够；脚本自身判重，多数时候空转。 -->
   <key>StartInterval</key><integer>1800</integer>
@@ -88,8 +97,8 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl enable "gui/$(id -u)/$LABEL"
 
-echo "已安装 $LABEL（每 30 分钟运行一次）"
-echo "日志：$LOG_FILE"
+echo "已安装 ${LABEL}（每 30 分钟运行一次）"
+echo "日志：${LOG_FILE}"
 if [[ "$OPEN_BROWSER" == "1" ]]; then
   echo "已开启浏览器自动续期：令牌剩余不足 1 小时时会自动打开 Chrome 刷一次门户页。"
 fi

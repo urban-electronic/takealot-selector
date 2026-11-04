@@ -82,4 +82,23 @@ takealot-selector/
 4. 实时计算: 国内成本 → 国际运费 → 南非仓成本 → Takealot 费用 → 利润
 5. 净利润率 >= 25% 自动标记"合格选品"
 6. 仪表盘统计、多维度筛选、批量管理
+
+## 卖家门户令牌同步（自动）
+
+一键上架取变体 Barcode 要 `sellers.takealot.com` 的 `usr_st_auth` 令牌，寿命 24 小时。
+不手动复制令牌的做法：
+
+```bash
+bash scripts/install-portal-token-sync.sh --open-browser
+```
+
+- 装一个 launchd 任务（`com.zenty.portal-token-sync`），每 30 分钟从本机 Chrome / Edge 的
+  Local Storage 里读出最新令牌，判过 exp 后 `PUT /api/selection/portal/token` 推到后端；
+- 令牌剩余不足 1 小时时自动打开一次卖家门户页，让浏览器自己续期，脚本再把新令牌搬回来。
+  这一步不模拟登录、不碰账号密码，只用机器上已有的登录会话；
+- 后端 API Key 只需在安装时填一次，存在 `~/.zenty/portal-token-sync.json`（权限 600）；
+- 手动排查：`python3 scripts/portal-token-sync.py --dry-run`；卸载：`bash scripts/install-portal-token-sync.sh --uninstall`。
+
+前提：这台 Mac 上登录过卖家门户。浏览器从没登录过，任何自动化都拿不到令牌。
+
 *（内容由AI生成，仅供参考）*
