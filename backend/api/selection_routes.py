@@ -583,6 +583,11 @@ def _to_dict(item: SelectionItem) -> Dict[str, Any]:
         "seller_offer_count": item.seller_offer_count,
         "rating_value": item.rating_value,
         "review_count": item.review_count,
+        # 评论体检：本年度评论数 / 评论里最多的变体 / 体检结论（ok / unknown / failed）
+        "year_review_count": item.year_review_count,
+        "best_variant": item.best_variant or "",
+        "review_audit_status": item.review_audit_status or "",
+        "review_audit_at": item.review_audit_at.isoformat() if item.review_audit_at else None,
         "sales_qty": item.sales_qty,
         "net_sales_zar": item.net_sales_zar,
         "gross_sales_zar": item.gross_sales_zar,
@@ -626,6 +631,43 @@ def _to_dict(item: SelectionItem) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 1. 导入
 # ---------------------------------------------------------------------------
+
+def _filter_known(
+    db: Session, store_id: str, plids: List[str], tsins: List[str]
+) -> Tuple[set, set, set]:
+    """三道过滤要用的三组集合：已在产品主档（PLID / TSIN）、池子里已有（PLID）。
+
+    `import`（上传表）和 `ingest`（本地采集端直投）共用这一份，避免两条入口
+    对「什么算重复」各有一套说法。按 500 一批查：SQLite 的变量上限是 999，
+    1800 条候选一次 `in_` 会直接炸。
+    """
+    existing_plids: set = set()
+    existing_tsins: set = set()
+    pooled_plids: set = set()
+
+    for start in range(0, len(plids), 500):
+        chunk = plids[start:start + 500]
+        existing_plids |= {
+            row[0] for row in db.query(Product.plid).filter(
+                Product.store_id == store_id, Product.plid.in_(chunk)
+            ).all()
+        }
+        pooled_plids |= {
+            row[0] for row in db.query(SelectionItem.plid).filter(
+                SelectionItem.store_id == store_id,
+                SelectionItem.plid.in_(chunk),
+                SelectionItem.plid != "",
+            ).all()
+        }
+    for start in range(0, len(tsins), 500):
+        chunk = tsins[start:start + 500]
+        existing_tsins |= {
+            row[0] for row in db.query(Product.tsin).filter(
+                Product.store_id == store_id, Product.tsin.in_(chunk)
+            ).all()
+        }
+    return existing_plids, existing_tsins, pooled_plids
+
 
 @router.post("/import")
 async def import_table(
@@ -723,33 +765,9 @@ async def import_table(
     candidate_plids = [g["plid"] for g in groups.values() if g["plid"]]
     candidate_tsins = [g["tsin"] for g in groups.values() if g["tsin"]]
 
-    existing_plids: set = set()
-    existing_tsins: set = set()
-    for start in range(0, len(candidate_plids), 500):
-        chunk = candidate_plids[start:start + 500]
-        existing_plids |= {
-            row[0] for row in db.query(Product.plid).filter(
-                Product.store_id == store_id, Product.plid.in_(chunk)
-            ).all()
-        }
-    for start in range(0, len(candidate_tsins), 500):
-        chunk = candidate_tsins[start:start + 500]
-        existing_tsins |= {
-            row[0] for row in db.query(Product.tsin).filter(
-                Product.store_id == store_id, Product.tsin.in_(chunk)
-            ).all()
-        }
-
-    pooled_plids: set = set()
-    for start in range(0, len(candidate_plids), 500):
-        chunk = candidate_plids[start:start + 500]
-        pooled_plids |= {
-            row[0] for row in db.query(SelectionItem.plid).filter(
-                SelectionItem.store_id == store_id,
-                SelectionItem.plid.in_(chunk),
-                SelectionItem.plid != "",
-            ).all()
-        }
+    existing_plids, existing_tsins, pooled_plids = _filter_known(
+        db, store_id, candidate_plids, candidate_tsins
+    )
 
     items: List[SelectionItem] = []
     duplicates = 0
@@ -843,6 +861,217 @@ async def import_table(
         "with_sales_data": sum(1 for i in items if i.net_sales_zar),
         "columns": {k: v for k, v in parsed["mapping"].items()},
         "unknown_headers": parsed["unknown_headers"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 1b. 本地采集端直投（选品抓取器 → 池子，砍掉 Excel 人肉中转）
+# ---------------------------------------------------------------------------
+
+class IngestItem(BaseModel):
+    """抓取器产出的单个候选商品。
+
+    只带「身份 + 发现信号」：链接 / PLID / 标题 / 前台价 / 评分 / 总评论数，
+    外加抓取器独有的评论体检结果。主图、类目、重尺、现货最低价都不在这里——
+    那些交给 `enrich`（portal 的 Cubiscan 实测尺寸比前台页面准）。
+    """
+
+    url: str = ""
+    plid: str = ""
+    name: str = ""
+    product_name: str = ""          # 兼容抓取器的原字段名
+
+    listed_price_zar: Optional[float] = None
+    price: Optional[float] = None
+    rating_value: Optional[float] = None
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+
+    # ---- 评论体检（抓取器在详情页「Reviews → Most Recent」里数出来的）----
+    year_review_count: Optional[int] = None
+    best_variant: str = ""
+    # ok / unknown / failed；留空则按「有没有数字」推断
+    review_audit_status: str = ""
+
+    brand: str = ""
+
+
+class IngestRequest(BaseModel):
+    batch_name: str = ""
+    source: str = "local_scraper"
+    items: List[IngestItem] = Field(default_factory=list)
+
+
+def _pick_number(*values: Any) -> Optional[float]:
+    """取第一个非 None 的数，抓取器新旧字段名都能接。"""
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _audit_status(raw: IngestItem) -> str:
+    """评论体检结论以抓取器上报为准，没上报的按「有没有数字」推。
+
+    宁可记 unknown 也不记 ok——`unknown` 在界面上显示「未确认」，
+    `ok` + 0 会被当成「确实没人买」，那是把好货筛掉的最短路径。
+    """
+    status = (raw.review_audit_status or "").strip().lower()
+    if status in ("ok", "unknown", "failed"):
+        return status
+    return "ok" if raw.year_review_count is not None else ""
+
+
+@router.post("/ingest")
+def ingest_items(
+    data: IngestRequest,
+    db: Session = Depends(get_db),
+    store_id: str = Depends(get_store_id),
+):
+    """本地采集端把一批候选直接推进池子。
+
+    与 `import` 共用同一套聚合口径和三道过滤（有品牌 / 已在产品主档 / 池里已有），
+    区别只在输入是 JSON，抓完即推，不必先落 Excel 再人工上传。
+
+    跟卖场景是「只选无品牌链接」，抓取器那边已经按无品牌过滤过；这里再挡一次
+    `real_brand`，因为直投是外部进程送进来的，不能只信它一侧的判断。
+    """
+    if not data.items:
+        raise HTTPException(status_code=400, detail="items 是空的，没有可导入的候选商品")
+    if len(data.items) > 5000:
+        raise HTTPException(status_code=413, detail="单次最多 5000 条，请分批推送")
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    skipped = 0
+
+    for index, raw in enumerate(data.items):
+        url = (raw.url or "").strip()
+        plid_raw = (raw.plid or "").strip() or pub.parse_plid(url)
+        plid = str(plid_raw) if plid_raw else ""
+        name = (raw.name or raw.product_name or "").strip()
+        if not plid and not name:
+            skipped += 1
+            continue
+
+        candidate = {
+            "plid": plid,
+            "takealot_url": url or build_takealot_url(plid),
+            "product_name": name,
+            "brand": (raw.brand or "").strip(),
+            "actual_sale_price_zar": _pick_number(raw.listed_price_zar, raw.price),
+            "rating_value": _pick_number(raw.rating_value, raw.rating),
+            "review_count": raw.review_count,
+            "year_review_count": raw.year_review_count,
+            "best_variant": (raw.best_variant or "").strip(),
+            "review_audit_status": _audit_status(raw),
+        }
+
+        key = f"plid:{plid}" if plid else f"title:{name.lower()}"
+        current = groups.get(key)
+        if current is None:
+            candidate["_row_no"] = index + 1
+            groups[key] = candidate
+            order.append(key)
+            continue
+
+        # 同一批里撞车（不同排序位 / 推荐位抓到同一个商品）：只补空字段。
+        for field, value in candidate.items():
+            if field == "brand":
+                if value:
+                    current["brand"] = value
+            elif current.get(field) in (None, ""):
+                current[field] = value
+
+    if not groups:
+        raise HTTPException(
+            status_code=400,
+            detail="所有 item 都没能识别出商品身份（url / plid / name 全空）",
+        )
+
+    exchange_rate = _exchange_rate(db)
+    batch_id = datetime.utcnow().strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    label = (data.batch_name or "").strip() or datetime.utcnow().strftime("抓取 %m-%d %H:%M")
+
+    existing_plids, _, pooled_plids = _filter_known(
+        db, store_id, [g["plid"] for g in groups.values() if g["plid"]], []
+    )
+
+    items: List[SelectionItem] = []
+    duplicates = 0
+    pool_duplicates = 0
+    branded = 0
+
+    for key in order:
+        group = groups[key]
+        if real_brand(group.get("brand")):
+            branded += 1
+            continue
+        if group["plid"] and group["plid"] in existing_plids:
+            duplicates += 1
+            continue
+        if group["plid"] and group["plid"] in pooled_plids:
+            pool_duplicates += 1
+            continue
+
+        auto_name = short_chinese_name(group["product_name"])
+        price = group["actual_sale_price_zar"]
+        status = group["review_audit_status"]
+
+        item = SelectionItem(
+            store_id=store_id,
+            batch_id=batch_id,
+            batch_name=label,
+            source_row=group["_row_no"],
+            plid=group["plid"],
+            tsin="",
+            takealot_url=group["takealot_url"],
+            product_name=group["product_name"],
+            chinese_product_name=auto_name,
+            chinese_name_auto=bool(auto_name),
+            # 前台卡片价就是前台展示价，口径标 listed；enrich 会换成「现货最低价」
+            actual_sale_price_zar=price,
+            listed_price_zar=price,
+            price_source="listed" if price is not None else "",
+            rating_value=group["rating_value"],
+            review_count=group["review_count"],
+            year_review_count=group["year_review_count"],
+            best_variant=group["best_variant"],
+            review_audit_status=status,
+            review_audit_at=datetime.utcnow() if status else None,
+            already_in_products=False,
+            dimensions_source="",
+            status="待核算",
+        )
+        verdict, reason = guess_battery(group["product_name"], "")
+        item.battery_status = verdict
+        item.battery_reason = reason
+        item.shipping_method = suggested_shipping(verdict)
+        _derive_purchase_cost(item)
+        items.append(item)
+
+    _assign_tiers(items)
+    db.add_all(items)
+    db.commit()
+
+    return {
+        "batch_id": batch_id,
+        "batch_name": label,
+        "source": data.source,
+        "source_rows": len(data.items),
+        "merged_rows": len(groups),
+        "created": len(items),
+        "already_in_products": duplicates,
+        "branded": branded,
+        "pool_duplicates": pool_duplicates,
+        "skipped": skipped,
+        # 评论体检覆盖了多少条：前端据此判断这批数据值不值得信
+        "with_review_audit": sum(1 for i in items if i.review_audit_status == "ok"),
+        "review_audit_unknown": sum(1 for i in items if i.review_audit_status == "unknown"),
     }
 
 

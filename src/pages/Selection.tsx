@@ -1499,7 +1499,7 @@ export default function Selection() {
             <input value={crawlBatchName} onChange={event => setCrawlBatchName(event.target.value)}
               placeholder="例如：吸尘器袋 11-04" disabled={crawlRunning} />
           </label>
-          <label className="selection-skip-measured"
+          <label className="selection-crawl-audit"
             title="勾上后每个商品多开一次详情页，换「本年度评论数」和「畅销变体」——这两列后端拿不到">
             <input type="checkbox" checked={crawlAudit} onChange={() => setCrawlAudit(prev => !prev)} disabled={crawlRunning} />
             <span>评论体检</span>

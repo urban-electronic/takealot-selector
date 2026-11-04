@@ -490,6 +490,23 @@ class SelectionItem(Base):
     rating_value = Column(Float, nullable=True)
     review_count = Column(Integer, nullable=True)
 
+    # ---- 评论体检（本地采集端在详情页「Reviews → Most Recent」里数出来的）----
+    #
+    # `review_count` 是商品卡片上的总评论数（历史累计），看不出「现在有没有人买」。
+    # 本年度评论数才是活的销量信号，跟卖选品主要看这个。
+    #
+    # `review_audit_status` 必须区分「数出 0」和「没数清」：
+    #   ok      排序切换成功且解析到评论 → 0 就是真的 0
+    #   unknown 解析为空或排序没切成 → 数字不可信，别当 0 用
+    #   failed  抓取异常
+    # 把 unknown 记成 0 是这类工具最容易犯的错：错得无声无息，还会把好货筛掉。
+    year_review_count = Column(Integer, nullable=True)
+    # 评论里出现最多的变体（载体是评论卡上的 "Color: X"），只作决策线索，
+    # 不是销量统计——样本只有几十条。
+    best_variant = Column(String, default="")
+    review_audit_status = Column(String, default="")
+    review_audit_at = Column(DateTime, nullable=True)
+
     # ---- 原表里的销售数据（可能为空：竞品表就没有）----
     sales_qty = Column(Integer, nullable=True)
     net_sales_zar = Column(Float, nullable=True)

@@ -3659,8 +3659,10 @@ table tbody tr:hover { background: #f8fafc; }
 
 .selection-section-note .btn-link:hover { color: var(--color-primary); }
 
-/* 抓取时跳过已测算。放在抓取按钮旁边，因为它改变的就是那个按钮的行为。 */
-.selection-skip-measured {
+/* 抓取时跳过已测算 / 抓取时做评论体检。放在抓取按钮旁边，因为它们改变的就是那个按钮的行为。
+   两个开关样式共用一份，但类名分开：同页还有别的 .selection-skip-measured 断言，混用会把测试选错元素。 */
+.selection-skip-measured,
+.selection-crawl-audit {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3672,7 +3674,8 @@ table tbody tr:hover { background: #f8fafc; }
   white-space: nowrap;
 }
 
-.selection-skip-measured input { margin: 0; }
+.selection-skip-measured input,
+.selection-crawl-audit input { margin: 0; }
 
 .selection-grid-cards {
   display: grid;

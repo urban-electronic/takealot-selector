@@ -91,6 +91,7 @@
 | 方法 | 路径 | 入参 | 说明 |
 |---|---|---|---|
 | POST | `/import` | multipart: `file`, `batch_name` | 读表 → 聚合 → 落库。返回合并前后行数、重复数、识别到的列、未识别的列 |
+| POST | `/ingest` | `{batch_name, source, items≤5000}` | 本地采集端直投（见 5.1.1）。复用 `import` 的聚合与三道过滤，只收身份 + 发现信号 |
 | POST | `/enrich` | `{batch_id?, ids?, limit≤800, refresh}` | 抓资料。**分块**：一次最多 `ENRICH_CHUNK=400`，无访问拒绝/限流时，`remaining≠0` 由前端接着调 |
 | GET | `/items` | `batch_id, status, keyword, tier, only_selected, hide_duplicates, sort, limit≤300, offset` | 列表。`sort` 支持 `tier`(默认) / `sales` / `profit` / `price` |
 | GET | `/batches` | — | 批次列表（含 count、最早 created_at） |
@@ -120,6 +121,16 @@
 6. `_assign_tiers()` 按累计净销售额占比分档：≤50% S、≤80% A、≤95% B、其余 C。**没有销售数据就不分档**（竞品表硬套会让所有商品都变 S）
 
 数字解析（`to_number`）是这块最容易错的地方：`"R 1,234.56"`、`"1 234,56"`、`"1.234,56"`、`"R325 (含税)"` 都要能吃。逗号既可能是千分位也可能是小数点，**不能一律删掉**——`"1 234,56"` 删逗号会变成 123456，价格错 100 倍。
+
+### 5.1.1 本地采集端直投（`ingest`）
+
+抓取器（`~/TakealotTool/takealot_scraper.py`）抓完直接 POST `/api/selection/ingest`，不再走「导 Excel → 人工上传」。
+
+- **只送身份 + 发现信号**：`url / name / listed_price_zar / rating_value / review_count / year_review_count / best_variant / review_audit_status`。主图、类目、重尺、现货最低价**不送**——那些由 `enrich` 从 portal 拿，实测尺寸比前台页面准。
+- **与 `import` 共用口径**：同一套聚合键（`plid → 标题`）和同一份 `_filter_known()` 三道过滤（有品牌 / 已在产品主档 / 池内已有 PLID）。两条入口对「什么算重复」不会有第二种说法。
+- **评论体检三态**：`ok` / `unknown` / `failed`。`unknown` 表示这次没抓清（排序没切到 Most Recent、解析不到评论卡），**必须留空而不是写 0**；写成 0 会让界面把它当「确实没人买」，是误杀好货的最短路径。
+- 客户端：`~/TakealotTool/ingest_client.py` 的 `push_to_pool(items, api_base, batch_name=...)`。抓取器界面上勾「抓完直投选品池」+ 填地址（默认 `http://127.0.0.1:8000`）即可，配置写在 `takealot_config.json` 的 `ingest_enabled` / `ingest_api_base`。
+- 直投失败不影响 Excel 导出：抓取器只记日志，不阻塞、不回滚已经落盘的文件。
 
 ### 5.2 抓资料（`enrich`）——四层回退
 

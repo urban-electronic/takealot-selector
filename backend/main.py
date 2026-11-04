@@ -421,6 +421,12 @@ def _ensure_columns():
                 "pool_dirty": "BOOLEAN DEFAULT 0",
                 "promoted_snapshot": "TEXT DEFAULT ''",
                 "promoted_synced_at": "DATETIME",
+                # 评论体检：本年度评论数 / 评论里最多的变体 / 体检结论 / 体检时间。
+                # 由本地采集端（选品抓取器）抓完直投带上来，enrich 不碰这几列。
+                "year_review_count": "INTEGER",
+                "best_variant": "TEXT DEFAULT ''",
+                "review_audit_status": "TEXT DEFAULT ''",
+                "review_audit_at": "DATETIME",
             }
             with engine.begin() as conn:
                 for name, sql_type in selection_additions.items():
