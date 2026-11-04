@@ -429,6 +429,7 @@ def extract(plid: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
         "brand": extract_brand(payload),
         "dimensions": extract_dimensions(payload),
         "catalogue_variants": extract_variants(payload),
+        "catalogue_variant_count": len(variants) if isinstance(variants, list) else 0,
         "warnings": [],
         "source": "seller_portal",
     }

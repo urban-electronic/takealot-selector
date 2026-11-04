@@ -143,3 +143,48 @@ def test_platform_rejection_carries_host_and_status(db, env):
         list_offer("p1", ListOfferIn(), db, "default-store")
     assert exc.value.status_code == 502
     assert "Invalid RRP" in exc.value.detail and "422" in exc.value.detail
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("other_barcode", ["6009512345679", None])
+def test_multiple_variants_require_explicit_barcode(db, env, dry_run, other_barcode):
+    row = product(db)
+    env["state"]["variants"] = [
+        variant(barcode=other_barcode, label="Gold", has_offer=True),
+        variant(label="Silver"),
+    ]
+    with pytest.raises(HTTPException) as exc:
+        list_offer("p1", ListOfferIn(dry_run=dry_run), db, "default-store")
+    assert exc.value.status_code == 409
+    assert "变体" in exc.value.detail
+    assert env["calls"]["create"] == []
+    db.refresh(row)
+    assert not row.sku
+
+
+def test_explicit_barcode_selects_only_the_confirmed_variant(db, env):
+    product(db)
+    env["state"]["variants"] = [variant(), variant(barcode="6009512345679", label="Silver")]
+    result = list_offer("p1", ListOfferIn(barcode="6009512345679"), db, "default-store")
+    assert result["barcode"] == env["calls"]["create"][0]["barcode"] == "6009512345679"
+
+
+def test_malformed_catalogue_does_not_become_a_single_variant(db, env, monkeypatch):
+    from services import takealot_portal_api as portal
+
+    product(db)
+    record = portal.extract("96357594", {"variants": [{"gtin": "6009512345678"}, None]})
+    monkeypatch.setattr(portal, "fetch", lambda *args: record)
+    with pytest.raises(HTTPException) as exc:
+        list_offer("p1", ListOfferIn(), db, "default-store")
+    assert exc.value.status_code == 409
+    assert env["calls"]["create"] == []
+
+
+def test_duplicate_barcode_cannot_identify_variant(db, env):
+    product(db)
+    env["state"]["variants"] = [variant(), variant(label="Silver")]
+    with pytest.raises(HTTPException) as exc:
+        list_offer("p1", ListOfferIn(barcode="6009512345678"), db, "default-store")
+    assert exc.value.status_code == 409
+    assert env["calls"]["create"] == []
