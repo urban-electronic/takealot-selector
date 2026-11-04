@@ -143,7 +143,10 @@ def tokens_from_file(path: Path) -> List[str]:
         data = path.read_bytes()
     except OSError:
         return []
-    if b"usr_st_auth" not in data and b"api_key" not in data:
+    # 注意：不能因为文件里没有明文的 usr_st_auth / api_key 就跳过——LevelDB 的
+    # .ldb 是 snappy 按块压缩的，压缩块里那几个键名根本看不见，但 JWT 本身可能
+    # 落在同一块的未压缩字面量里。之前这道门槛会把最新的那份令牌整个漏掉。
+    if b"eyJ" not in data and b"usr_st_auth" not in data and b"api_key" not in data:
         return []
 
     found: List[str] = []
