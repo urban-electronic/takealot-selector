@@ -1061,3 +1061,135 @@ export interface PortalProbeReport {
 }
 export const probeSelectionPortal = (plid: string): Promise<PortalProbeReport> =>
   request<PortalProbeReport>(`/api/selection/diag/portal?plid=${encodeURIComponent(plid)}`);
+
+/* ---------------------------------------------------------------------------
+ * 本地采集服务（Takealot 前台抓取）
+ *
+ * Takealot 列表页有 Cloudflare 风控，只有跑在用户本机已登录的浏览器里才稳，
+ * 云端跑会直接被拦。所以网页不自己抓：它把抓取任务交给 ~/TakealotTool/
+ * selection_agent.py 起的本地服务，由那个服务抓完直投 /api/selection/ingest。
+ * 这里只负责下指令和看进度，抓取参数一律透传。
+ *
+ * 安全：后端的 X-API-Key 不再从网页经公网页面转发给本地服务（PR #222 正是因为这个
+ * 凭据透传被砍掉）。改为把密钥存进本机采集服务的本地配置，由服务自己带上；网页这层
+ * 只透传「选品池后端地址」这种非机密项。首次使用在抓取面板里点一次「保存到本机采集服务」。
+ * ------------------------------------------------------------------------- */
+
+const AGENT_BASE_KEY = 'selection:agent-base';
+export const DEFAULT_AGENT_BASE = 'http://127.0.0.1:8770';
+
+export const getSelectionAgentBase = (): string =>
+  readStoreStorage(AGENT_BASE_KEY) || DEFAULT_AGENT_BASE;
+
+export const setSelectionAgentBase = (value: string): void => {
+  try {
+    localStorage.setItem(getStoreStorageKey(AGENT_BASE_KEY), value.trim() || DEFAULT_AGENT_BASE);
+  } catch { /* 隐私模式存不住，本次会话内生效即可 */ }
+};
+
+export interface SelectionAgentHealth {
+  ok: boolean;
+  busy: boolean;
+  queued: number;
+  backend: string;
+  sorts: string[];
+  default_sort: string;
+  audit_default_count: number;
+  requires_token: boolean;
+  has_api_key?: boolean;
+}
+
+export type SelectionCrawlStatus = 'pending' | 'running' | 'done' | 'cancelled' | 'failed';
+
+export interface SelectionCrawlTask {
+  id: string;
+  status: SelectionCrawlStatus;
+  stage: string;
+  mode: 'keyword' | 'link';
+  targets: string[];
+  targets_total: number;
+  targets_done: number;
+  products_total: number;
+  created: number;
+  duplicates: number;
+  audit: boolean;
+  batch_name: string;
+  backend: string;
+  errors: string[];
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  logs?: string[];
+}
+
+const agentRequest = async <T>(base: string, path: string, options: RequestInit = {}): Promise<T> => {
+  const root = (base || DEFAULT_AGENT_BASE).trim().replace(/\/+$/, '') || DEFAULT_AGENT_BASE;
+  let res: Response;
+  try {
+    res = await fetch(`${root}${path}`, {
+      ...options,
+      signal: options.signal ?? AbortSignal.timeout(8000),
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+    });
+  } catch (error) {
+    throw new Error(`连不上本机采集服务 ${root}（先在 Mac 上运行 启动采集服务.command）：${(error as Error).message}`);
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}: ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch { /* 保留默认错误 */ }
+    throw new Error(detail);
+  }
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+};
+
+export const getSelectionAgentHealth = (base: string): Promise<SelectionAgentHealth> =>
+  agentRequest<SelectionAgentHealth>(base, '/health');
+
+export interface SelectionCrawlInput {
+  mode: 'keyword' | 'link';
+  targets: string[];
+  pages?: number;
+  min_reviews?: number;
+  sort?: string;
+  audit?: boolean;
+  audit_count?: number;
+  batch_name?: string;
+  dry_run?: boolean;
+}
+
+/**
+ * 建抓取任务。只把「选品池后端地址」透传给本机服务（那是公开 URL，不是秘密），
+ * 后端 X-API-Key 不再从这里走——它存到本机采集服务的本地配置，由服务自己带上，
+ * 网页这层再也碰不到密钥。首次使用先在抓取面板里「保存到本机采集服务」一次。
+ */
+export const createSelectionCrawl = (base: string, input: SelectionCrawlInput): Promise<SelectionCrawlTask> =>
+  agentRequest<SelectionCrawlTask>(base, '/api/crawl', {
+    method: 'POST',
+    body: JSON.stringify({ ...input, backend: getBaseUrl() }),
+  });
+
+export const getSelectionCrawlTask = (base: string, id: string): Promise<SelectionCrawlTask> =>
+  agentRequest<SelectionCrawlTask>(base, `/api/tasks/${encodeURIComponent(id)}`);
+
+export const cancelSelectionCrawl = (base: string, id: string): Promise<SelectionCrawlTask> =>
+  agentRequest<SelectionCrawlTask>(base, `/api/tasks/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: '{}',
+  });
+
+export interface SelectionAgentConfig {
+  backend?: string;
+  api_key?: string;
+  agent_token?: string;
+}
+
+/** 把密钥等配置写进本机采集服务的本地配置。只走 127.0.0.1 回环，不暴露到公网。 */
+export const setSelectionAgentConfig = (base: string, payload: SelectionAgentConfig): Promise<{ ok: boolean }> =>
+  agentRequest<{ ok: boolean }>(base, '/api/agent-config', {
+    method: 'POST',
+    body: JSON.stringify({ backend: getBaseUrl(), ...payload }),
+  });

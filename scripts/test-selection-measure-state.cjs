@@ -77,6 +77,16 @@ const items = [
 const reads = [];
 const patches = [];
 const remote = {
+  // 本机采集服务（抓 Takealot 前台）：进页面就会探活，桩必须给，否则 mount 即抛。
+  getSelectionAgentBase: () => 'http://127.0.0.1:8770',
+  setSelectionAgentBase: () => undefined,
+  getSelectionAgentHealth: async () => ({
+    ok: true, busy: false, queued: 0, backend: 'http://127.0.0.1:8123',
+    sorts: ['BestSellers'], default_sort: 'BestSellers', audit_default_count: 20, requires_token: false,
+  }),
+  createSelectionCrawl: async () => ({ id: 'crawl-1', status: 'pending' }),
+  getSelectionCrawlTask: async () => ({ id: 'crawl-1', status: 'pending' }),
+  cancelSelectionCrawl: async () => ({ id: 'crawl-1', status: 'cancelled' }),
   getActiveStoreId: () => 'fixture-store',
   getSelectionBatches: async () => [],
   getSelectionItems: async params => {
