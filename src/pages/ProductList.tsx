@@ -87,6 +87,28 @@ function validateColumnOrder(saved: string[], canonical: string[]): string[] {
   return [...cleaned, ...missing];
 }
 
+/** 列「可见性」不能复用列「顺序」的校验：顺序要把新增列补进来，可见性里缺失的
+ *  key 恰恰是用户主动隐藏的列，补回来就等于刷新后设置全部复原（列设置形同虚设）。
+ *  这里只过滤僵尸 key、去重，其余一律尊重用户的选择。 */
+function validateVisibleColumns(saved: string[], canonical: string[]): string[] {
+  const canonicalSet = new Set(canonical);
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const key of saved) {
+    if (!canonicalSet.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(key);
+  }
+  return cleaned;
+}
+
+// 「精简视图」只留判断和下单真正要扫的列；它必须用户主动点，不能偷偷改老用户的
+// 默认视图——老用户 localStorage 里已经存着全套列，硬改默认值他们根本看不到效果。
+const LEAN_COLUMNS = [
+  'select', 'image', 'product_name', 'chinese_product_name',
+  'actual_sale_price_zar', 'profit_margin', 'selection_status', 'actions',
+];
+
 function variantKind(label: string): string {
   if (/(黑|白|红|蓝|绿|黄|紫|粉|灰|棕|咖|卡其|军绿|藏蓝|颜色|色$)/.test(label)) return '颜色';
   if (/(^|\s)(XS|S|M|L|XL|XXL)(\s|$)|码|尺寸|厘米|cm|mm|英寸|inch/i.test(label)) return '尺寸';
@@ -381,15 +403,16 @@ export default function ProductList() {
   const [colPanelOpen, setColPanelOpen] = useState(false);
   const colPanelRef = useRef<HTMLDivElement>(null);
 
-  // 列可见性 (localStorage) — 校验迁移：过滤僵尸key、补全缺失key
+  // 列可见性 (localStorage) — 只过滤僵尸 key，**不补全**：补全会把用户隐藏的列
+  // 重新加回来，刷新一次设置就没了。列顺序那组才需要补全新增列。
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(() => {
     const canonical = allColumns.map(c => c.key);
     try {
       const saved = localStorage.getItem(LS_VISIBLE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        const validated = validateColumnOrder(parsed, canonical);
-        localStorage.setItem(LS_VISIBLE_KEY, JSON.stringify(validated));
+        const validated = validateVisibleColumns(parsed, canonical);
+        safeSetItem(LS_VISIBLE_KEY, JSON.stringify(validated));
         return new Set(validated);
       }
     } catch { /* ignore */ }
@@ -582,6 +605,13 @@ export default function ProductList() {
       safeSetItem(LS_VISIBLE_KEY, JSON.stringify([...next]));
       return next;
     });
+  };
+
+  // 一键预设：只改可见性，不动用户拖过的列顺序（renderColumns 仍按 columnOrder 排）。
+  const applyColumnPreset = (keys: string[]) => {
+    const next = new Set(validateVisibleColumns(keys, allColumns.map(c => c.key)));
+    safeSetItem(LS_VISIBLE_KEY, JSON.stringify([...next]));
+    setVisibleColumns(next);
   };
 
   // 点击外部关闭列设置面板
@@ -1427,7 +1457,9 @@ export default function ProductList() {
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading} onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading} title="仅更新2026年10月1日起在程序登记的已有产品，不新增卖家商品" onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
-        {archivedMode ? <Link to="/products" className="btn btn-outline">返回产品列表</Link> : <Link to="/create" className="btn btn-primary">+ 新建产品</Link>}
+        {/* 新建产品的全局入口在顶栏（App.tsx header-create-button），页头这里不再重复放一个。
+            废品库要「返回产品列表」是独立动作，保留。 */}
+        {archivedMode && <Link to="/products" className="btn btn-outline">返回产品列表</Link>}
       </div>
 
       {refreshDetail && <div className="refresh-detail-panel" role="status">
@@ -1697,6 +1729,10 @@ export default function ProductList() {
           </button>
           {colPanelOpen && (
             <div className="col-settings-panel">
+              <div className="col-settings-presets">
+                <button type="button" onClick={() => applyColumnPreset(LEAN_COLUMNS)}>精简视图</button>
+                <button type="button" onClick={() => applyColumnPreset(allColumns.map(c => c.key))}>显示全部</button>
+              </div>
               {allColumns.filter(c => showMarketPrice || c.key !== 'market_prices').map(c => (
                 <label key={c.key} className="col-settings-item">
                   <input
@@ -1871,13 +1907,8 @@ export default function ProductList() {
                 <option value={50}>50条/页</option>
                 <option value={100}>100条/页</option>
               </select>
-              <button
-                className="btn btn-outline btn-sm"
-                disabled={safeCurrentPage <= 1}
-                onClick={() => goToPage(1)}
-              >
-                首页
-              </button>
+              {/* 首页/尾页已去掉：上一页/下一页能覆盖，且 630 条 32 页时真正有用的是
+                  直接跳到第 N 页（下面这一组保留），不是多两个首尾按钮。 */}
               <button
                 className="btn btn-outline btn-sm"
                 disabled={safeCurrentPage <= 1}
@@ -1920,13 +1951,6 @@ export default function ProductList() {
                 onClick={() => goToPage(safeCurrentPage + 1)}
               >
                 下一页
-              </button>
-              <button
-                className="btn btn-outline btn-sm"
-                disabled={safeCurrentPage >= totalPages}
-                onClick={() => goToPage(totalPages)}
-              >
-                尾页
               </button>
             </div>
           </div>
@@ -2028,14 +2052,11 @@ export default function ProductList() {
         );
       })()}
       {contextProduct && <div className="product-context-menu" style={{ left: contextProduct.x, top: contextProduct.y }} onClick={e => e.stopPropagation()}>
+        {/* 「上架到 Takealot」已删：它和行内「上架」调的是同一个 handleListOffer，
+            纯重复。行内按钮保留，单条上架仍是 1 次点击，步数不增加。
+            「修改资料」要留：它带 ?edit=1&from=list，是唯一一步进编辑态、保存后
+            自动返回列表的入口；行内「详情」进去是查看态，删了反而要多点一次编辑。 */}
         <button onClick={() => navigate(`/products/${contextProduct.id}?edit=1&from=list`)}>修改资料</button>
-        <button
-          disabled={dataSource !== 'remote' || listingIds.has(contextProduct.id) || listBatchProgress !== ''}
-          title={dataSource !== 'remote' ? '上架要走卖家 API，只在远程数据源可用' : `RRP = 售价 ×${RRP_MULTIPLIER}，不预售`}
-          onClick={() => { const product = products.find(p => p.id === contextProduct.id); setContextProduct(null); if (product) void handleListOffer(product); }}
-        >
-          {listingIds.has(contextProduct.id) ? '上架中…' : '上架到 Takealot'}
-        </button>
         <button disabled={refreshingIds.has(contextProduct.id)} onClick={() => { const id = contextProduct.id; setContextProduct(null); handleRefreshPrice(id, 'official'); }}>读取官网售价</button>
         <button onClick={() => { const product = products.find(p => p.id === contextProduct.id); setContextProduct(null); if (product) handleDelete(product.id, product.product_name || ''); }}>移入废品库</button>
       </div>}

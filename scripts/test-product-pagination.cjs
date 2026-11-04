@@ -39,9 +39,14 @@ const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT
  const table=document.querySelector('.product-table-scroll');
  const checkTop=()=>{assert.equal(table.scrollTop,0);assert.equal(table.scrollLeft,120);assert.deepEqual(scrolls.at(-1),{top:1060,behavior:'auto'});};
  act(()=>click(document.querySelector('tbody input[type=checkbox]')));
- for(const [label,expected] of [['下一页','Product 21'],['下一页','Product 41'],['上一页','Product 21'],['尾页','Product 61'],['首页','Product 1']]){
+ for(const [label,expected] of [['下一页','Product 21'],['下一页','Product 41'],['上一页','Product 21']]){
    table.scrollTop=800;table.scrollLeft=120;act(()=>click(button(label)));checkTop();assert.ok(document.querySelector('tbody').textContent.includes(expected),label+' renders the expected page');
  }
+ // 首页/尾页按钮去掉后，末页改用跳页到达；滚动复位行为仍要成立。
+ assert.equal(button('首页'),undefined,'duplicate first-page button is gone');
+ assert.equal(button('尾页'),undefined,'duplicate last-page button is gone');
+ table.scrollTop=800;table.scrollLeft=120;act(()=>setValue(document.querySelector('.pagination-bar input'),'4'));act(()=>click(button('跳转')));checkTop();
+ assert.ok(document.querySelector('tbody').textContent.includes('Product 61'),'jump still reaches the last page');
  assert.deepEqual(JSON.parse(localStorage.getItem('productListSelectedSkus')),['SKU1'],'selection survives pagination');
  const jump=document.querySelector('.pagination-bar input');act(()=>setValue(jump,'3'));table.scrollTop=800;act(()=>click(button('跳转')));checkTop();assert.ok(document.querySelector('tbody').textContent.includes('Product 41'));
  act(()=>setValue(jump,'2'));table.scrollTop=800;act(()=>jump.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true})));checkTop();
@@ -49,7 +54,8 @@ const setValue=(el,value)=>{Object.getOwnPropertyDescriptor(el.tagName==='SELECT
  const before=scrolls.length;table.scrollTop=300;act(()=>setValue(jump,'1'));act(()=>click(button('跳转')));assert.equal(scrolls.length,before,'same-page jump must not disturb scrolling');assert.equal(table.scrollTop,300);
  assert.equal(document.querySelector('.product-search-input').value,'test','search filter survives pagination');
  // Same real page; all reads/writes below use in-memory fixtures, never a backend.
- act(()=>click(button('首页')));
+ // 原来这里靠「首页」按钮回到第 1 页；按钮去掉后，上一组跳页已完成回位，显式确认一下。
+ assert.ok(document.querySelector('tbody').textContent.includes('Product 1'),'page 1 is active before editor checks');
 const cellEdit=(field)=>document.querySelector(`[aria-label="编辑${field}：SKU1"]`);
 for(const [field,label] of [['中文品名','中文品名：SKU1'],['售价','售价：SKU1']]){
   const edit=cellEdit(field);assert.ok(edit,field+' has a named edit control');
@@ -133,5 +139,22 @@ assert.equal(writes.length,0,'copying a SKU never writes to the backend');
  // 多规格行的 SKU 也只读：展开/收起是看，不是改；复制拿得到整串。
  assert.equal(document.querySelector('[aria-label^="编辑SKU："]'),null,'no SKU in the list is editable');
  assert.ok(document.querySelector('[aria-label="复制SKU：SKU2 SKU2B"]'),'multi-variant row copies the whole SKU string');
- act(()=>root.unmount());console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, read-only SKU with copy, real product links, modal focus/Tab/Escape/restore and duplicate-save protection (isolated fixtures).');
+ // 列显隐必须能跨刷新保存。以前 visibleColumns 复用了列顺序的「补全缺失 key」校验，
+ // 用户勾掉的列一刷新就被补回来，列设置形同虚设。这里卸载重挂模拟刷新，把这条钉死。
+ act(()=>click(button('列设置')));
+ const feeItem=[...document.querySelectorAll('.col-settings-item')].find(l=>l.textContent.includes('Fee品类'));
+ assert.ok(feeItem,'column settings exposes Fee品类');
+ act(()=>click(feeItem.querySelector('input')));
+ assert.ok(!JSON.parse(localStorage.getItem('productListVisibleColumns')).includes('fee_category'),'hiding a column persists to localStorage');
+ act(()=>root.unmount());
+ const root2=createRoot(document.getElementById('root'));
+ await act(async()=>root2.render(React.createElement(MemoryRouter,{initialEntries:['/products']},React.createElement(page))));
+ assert.ok(![...document.querySelectorAll('thead th')].some(th=>th.textContent.includes('Fee品类')),'hidden column stays hidden after remount');
+ // 一键预设：精简视图收成 8 列，且写入 localStorage，同样能跨刷新保存。
+ act(()=>click(button('列设置')));
+ act(()=>click(button('精简视图')));
+ assert.equal(JSON.parse(localStorage.getItem('productListVisibleColumns')).length,8,'lean preset stores exactly 8 columns');
+ assert.ok(![...document.querySelectorAll('thead th')].some(th=>th.textContent.trim()==='SKU'),'lean preset hides the SKU column');
+ act(()=>root2.unmount());
+ console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, read-only SKU with copy, real product links, modal focus/Tab/Escape/restore, duplicate-save protection and column visibility surviving remount (isolated fixtures).');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{clearTimeout(watchdog);dom.window.close();});
