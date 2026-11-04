@@ -1323,7 +1323,7 @@ export default function Selection() {
       )}
 
       <section className={`selection-import${importOpen ? '' : ' is-collapsed'}`}>
-        <button type="button" className="selection-import-head" onClick={() => toggleImportPanel}
+        <button type="button" className="selection-import-head" onClick={toggleImportPanel}
           aria-expanded={importOpen}
           aria-label={`Excel 与 CSV 导入，${importOpen ? '已展开，点击收起' : '已收起，点击展开'}`}>
           <span className="selection-section-caret" aria-hidden="true">▾</span>
