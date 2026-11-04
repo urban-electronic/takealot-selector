@@ -3317,6 +3317,57 @@ table tbody tr:hover { background: #f8fafc; }
   gap: var(--sp-3);
 }
 
+/* 抓取 / 导入面板的标题行：收起时它就是整块的全部内容，所以状态和摘要都留在这一行。
+   一行比一整块表单矮得多，测算进度和商品卡片就能提到首屏。 */
+.selection-import-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--text-body, #334155);
+  cursor: pointer;
+}
+
+.selection-import-head:hover .selection-section-title { color: var(--color-primary, #5182ce); }
+.selection-import-head:focus-visible {
+  outline: 2px solid var(--focus-ring, #2563eb);
+  outline-offset: 2px;
+  border-radius: var(--r-sm, 8px);
+}
+
+.selection-import-head .selection-section-caret { transform: rotate(0); }
+.selection-import.is-collapsed .selection-section-caret { transform: rotate(-90deg); }
+
+/* 摘要靠右、单行省略：窄屏也不许把标题挤出可视区。 */
+.selection-import-head-hint {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-label);
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 收起只做视觉隐藏，元素仍在 DOM 里——脚本和抓取轮询都还要按名字找按钮。 */
+.selection-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.selection-import.is-collapsed .selection-import-body { display: none; }
+
+@media (max-width: 720px) {
+  .selection-import-head-hint { display: none; }
+}
+
 .selection-import-hint,
 .selection-import-result,
 .selection-portal-token {

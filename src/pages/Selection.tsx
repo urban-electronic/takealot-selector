@@ -153,6 +153,29 @@ const FEE_CATEGORY_SOURCE = { getFeeCategories };
  */
 const SECTIONS_KEY = 'selection.sections.collapsed.v1';
 const SKIP_MEASURED_KEY = 'selection.skipMeasured.v1';
+/**
+ * 「从 Takealot 抓取」和「Excel / CSV 导入」这两块是每周用一两次的入口，
+ * 常开着会把测算进度条和商品卡片全顶到折叠线以下，看着满、干活还得往下滚。
+ * 默认收起，只留一行标题 + 关键状态；展开过一次就记住，不用每回点。
+ */
+const PANELS_KEY = 'selection.panels.open.v1';
+
+type PanelKey = 'crawl' | 'import';
+
+function readPanels(): Record<PanelKey, boolean> {
+  const fallback: Record<PanelKey, boolean> = { crawl: false, import: false };
+  try {
+    const raw = localStorage.getItem(PANELS_KEY);
+    if (!raw) return fallback;
+    const saved = JSON.parse(raw) as Partial<Record<PanelKey, boolean>>;
+    return {
+      crawl: typeof saved.crawl === 'boolean' ? saved.crawl : fallback.crawl,
+      import: typeof saved.import === 'boolean' ? saved.import : fallback.import,
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 type SectionKey = 'unmeasured' | 'measured';
 
@@ -673,6 +696,17 @@ export default function Selection() {
   // 卡片分区的折叠状态，以及「抓取时跳过已测算」。两个都从本地读上次的选择。
   const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>(readSections);
   const [skipMeasured, setSkipMeasured] = useState(readSkipMeasured);
+  // 抓取面板 / 导入面板的展开状态，同样记在本地。抓取或导入在跑时必须展开，
+  // 否则用户收起后再看不到进度和取消按钮。
+  const [panels, setPanels] = useState<Record<PanelKey, boolean>>(readPanels);
+
+  const togglePanel = useCallback((key: PanelKey) => {
+    setPanels(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      try { localStorage.setItem(PANELS_KEY, JSON.stringify(next)); } catch { /* 隐私模式存不住 */ }
+      return next;
+    });
+  }, []);
 
   const toggleSection = useCallback((key: SectionKey) => {
     setCollapsed(prev => {
@@ -1392,6 +1426,22 @@ export default function Selection() {
   );
   const promotedSelected = promotedSelectedIds.length;
 
+  // 收起后只剩一行标题，摘要要能替代里面的内容：抓取面板说清「抓什么、怎么抓」，
+  // 导入面板说清「这次批次叫什么」，不然收起了还得挨个点开确认。
+  const crawlTargetCount = crawlTargets.split('\n').filter(line => line.trim()).length;
+  const crawlOpen = panels.crawl || crawlRunning;
+  const importOpen = panels.import || importing || enriching || promoting;
+  const crawlHint = crawlRunning
+    ? '抓取中，点开看进度'
+    : crawlTask
+      ? `上次：${crawlTask.stage}${crawlTask.targets_total ? ` ${crawlTask.targets_done}/${crawlTask.targets_total}` : ''}`
+      : crawlTargetCount
+        ? `${crawlMode === 'keyword' ? '关键词' : '链接'} ${crawlTargetCount} 个 · ${crawlSort}${crawlAudit ? ' · 评论体检' : ''}`
+        : crawlMode === 'keyword' ? '按关键词搜索 · 还没填关键词' : '按链接抓 · 还没填链接';
+  const importHint = batchName.trim()
+    ? `当前批次：${batchName.trim()}`
+    : '选一份 Excel / CSV 起新批次';
+
   return (
     <div className="selection-page">
       <div className="page-heading">
@@ -1436,16 +1486,24 @@ export default function Selection() {
         看进度」的入口：抓到的身份和发现信号由本机采集服务直投进这个池子，
         主图/类目/重尺/三档价格仍由上面那个抓取按钮走后端补，不重复造。
       */}
-      <section className="selection-import selection-crawl">
-        <div className="selection-import-main">
-          <strong className="selection-crawl-title">从 Takealot 抓取</strong>
+      <section className={`selection-import selection-crawl${crawlOpen ? '' : ' is-collapsed'}`}>
+        <button type="button" className="selection-import-head" onClick={() => togglePanel('crawl')}
+          aria-expanded={crawlOpen}
+          aria-label={`从 Takealot 抓取，${crawlOpen ? '已展开，点击收起' : '已收起，点击展开'}`}>
+          <span className="selection-section-caret" aria-hidden="true">▾</span>
+          <strong className="selection-section-title">从 Takealot 抓取</strong>
           <span className={`selection-crawl-state is-${agentReach}`}>
             {agentReach === 'checking'
               ? '检测本机采集服务…'
               : agentReach === 'ok'
-                ? `本机采集服务在线${agentHealth?.busy ? '（有任务在跑）' : ''}`
-                : '本机采集服务未启动'}
+                ? `在线${agentHealth?.busy ? '（有任务在跑）' : ''}`
+                : '未启动'}
           </span>
+          <span className="selection-import-head-hint">{crawlHint}</span>
+        </button>
+
+        <div className="selection-import-body">
+          <div className="selection-import-main">
           <label className="selection-field is-wide">
             <span>采集服务地址</span>
             <input
@@ -1544,9 +1602,22 @@ export default function Selection() {
             {crawlTask.errors.length > 3 ? ' …' : ''}
           </p>
         ) : null}
+        </div>
       </section>
 
-      <section className="selection-import">
+      <section className={`selection-import${importOpen ? '' : ' is-collapsed'}`}>
+        <button type="button" className="selection-import-head" onClick={() => togglePanel('import')}
+          aria-expanded={importOpen}
+          aria-label={`Excel 与 CSV 导入，${importOpen ? '已展开，点击收起' : '已收起，点击展开'}`}>
+          <span className="selection-section-caret" aria-hidden="true">▾</span>
+          <strong className="selection-section-title">Excel / CSV 导入</strong>
+          <span className={`selection-crawl-state ${skipMeasured ? 'is-ok' : ''}`}>
+            {skipMeasured ? '跳过已测算' : '含已测算'}
+          </span>
+          <span className="selection-import-head-hint">{importHint}</span>
+        </button>
+
+        <div className="selection-import-body">
         <div className="selection-import-main">
           <label className="selection-file">
             <input
@@ -1737,6 +1808,7 @@ export default function Selection() {
             </ul>
           </details>
         )}
+        </div>
       </section>
 
       {summary && summary.total > 0 && (

@@ -54,7 +54,15 @@ with vite_server(ROOT) as base,sync_playwright() as pw:
   elif url.netloc=='fixture.invalid':r.fulfill(content_type='image/svg+xml',body='<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="blue"/></svg>')
   else:r.abort()
  ctx.route('**/*',route);page=ctx.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
- page.goto(base+'/selection');page.locator('input[type=file]').set_input_files({'name':'isolated-selection.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':xlsx})
+ page.goto(base+'/selection')
+ # 抓取和导入两块默认是收起的（首屏留给测算进度和商品卡片），用例自己按标题展开。
+ # 幂等：将来若有默认展开的改动，这里也不会把已经展开的面板又点回去。
+ def open_panel(name):
+  head=page.get_by_role('button',name=re.compile('^'+re.escape(name)))
+  if head.get_attribute('aria-expanded')=='false':head.click()
+  expect(head).to_have_attribute('aria-expanded','true')
+ open_panel('Excel 与 CSV 导入');open_panel('从 Takealot 抓取')
+ page.locator('input[type=file]').set_input_files({'name':'isolated-selection.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':xlsx})
  expect(page.locator('.selection-card')).to_have_count(1)
  # 按容器定位而不是按文案：这个按钮的字会跟着范围变（导入后是「抓取本批次没抓
  # 过的」，没选批次时是「抓取没抓过的」），写死整句的话改一次名就超时一次。
