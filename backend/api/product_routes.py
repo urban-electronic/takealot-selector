@@ -989,6 +989,10 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     变体 Barcode 只从卖家门户目录接口取（mpv 的 `gtin`），PLID 不能用来建 offer；
     售价取产品已有售价，RRP 默认 1.5 倍（RRP_MULTIPLIER）；不传 SKU 由平台分配数字串；
     不传 leadtime 就是不预售，库存等入仓后由发货带来。
+
+    多变体商品（假发尺码、饰品颜色这种）默认把目录里每个变体都上一个 offer，返回
+    `variants` 逐变体明细；本店已有报价的变体进 `skipped` 不重复提交。显式传 barcode
+    时仍只上那一个变体。全部变体都上不成功才 502，部分成功按 200 + ok=false 报。
     """
     from services import takealot_portal_api as portal
     from services.takealot_seller_api import configured_key, create_offer
@@ -1019,52 +1023,107 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     variants = [v for v in catalogue_variants if v.get('barcode')]
     if not variants:
         raise HTTPException(status_code=409, detail="该商品在目录里没有可用 Barcode，无法创建 offer")
+
+    # 变体选择：传了 barcode 就只上那一个（老调用方语义不变）；不传就把目录里每个
+    # 变体都上一个 offer。这块以前是「多变体直接 409，让人回门户手动点 Add My Offer」，
+    # 结果假发、饰品这种天生多尺码/多颜色的品在列表里根本点不动。
+    # 同一 Barcode 只提交一次：平台按 Barcode 认变体，重复提交等于自己顶自己。
     if data.barcode:
         matches = [v for v in variants if v['barcode'] == data.barcode]
         if not matches:
             raise HTTPException(status_code=409, detail="指定的 Barcode 不属于该商品")
         if len(matches) != 1:
             raise HTTPException(status_code=409, detail="指定的 Barcode 对应多个变体，无法安全上架")
-        picked = matches[0]
+        requested = matches
     else:
-        if len(catalogue_variants) != 1:
-            raise HTTPException(status_code=409, detail="商品有多个变体，请在卖家门户确认变体后上架")
-        picked = variants[0]
-    if picked.get('has_offer'):
-        raise HTTPException(status_code=409, detail="本店已在该变体有报价，无需重复创建")
+        requested = []
+        seen_barcodes = set()
+        for item in variants:
+            if item['barcode'] in seen_barcodes:
+                continue
+            seen_barcodes.add(item['barcode'])
+            requested.append(item)
+
+    # 已有报价的变体跳过，而不是整批失败：批量上架里一条早就上过的变体，不该把同一
+    # PLID 下其它还没上架的变体一起拖死。
+    skipped = [{'barcode': v['barcode'], 'variant_label': v.get('label'), 'tsin': v.get('tsin'),
+                'reason': '本店已在该变体有报价'} for v in requested if v.get('has_offer')]
+    targets = [v for v in requested if not v.get('has_offer')]
+
+    multiplier = data.rrp_multiplier if data.rrp_multiplier and data.rrp_multiplier > 0 else RRP_MULTIPLIER
+
+    if not targets:
+        # 全都有报价：不是错误，把跳过明细回给前端提示即可。
+        return {'ok': True, 'dry_run': bool(data.dry_run), 'plid': plid, 'product_no': p.product_no,
+                'selling_price': 0, 'rrp': 0, 'sku': None, 'variants': [], 'skipped': skipped,
+                'listed_count': 0, 'failed_count': 0,
+                'barcode': skipped[0]['barcode'] if len(skipped) == 1 else None,
+                'variant_label': skipped[0]['variant_label'] if len(skipped) == 1 else None}
 
     price = data.selling_price if data.selling_price else p.actual_sale_price_zar
     if not price or float(price) <= 0:
         raise HTTPException(status_code=409, detail="产品没有有效售价，请先填写售价")
     price = int(round(float(price)))
-    multiplier = data.rrp_multiplier if data.rrp_multiplier and data.rrp_multiplier > 0 else RRP_MULTIPLIER
     rrp = int(round(float(data.rrp))) if data.rrp else int(round(price * multiplier))
 
-    plan = {'barcode': picked['barcode'], 'tsin': picked.get('tsin'),
-            'variant_label': picked.get('label'), 'selling_price': price, 'rrp': rrp,
-            'sku': None, 'leadtime_days': None}
     if data.dry_run:
-        return {'ok': True, 'dry_run': True, 'plan': plan, 'plid': plid,
-                'product_no': p.product_no, 'variants': variants}
+        plans = [{'barcode': v['barcode'], 'tsin': v.get('tsin'), 'variant_label': v.get('label'),
+                  'selling_price': price, 'rrp': rrp, 'sku': None, 'leadtime_days': None} for v in targets]
+        return {'ok': True, 'dry_run': True, 'plan': plans[0], 'plans': plans, 'plid': plid,
+                'product_no': p.product_no, 'variants': variants, 'skipped': skipped,
+                'listed_count': len(plans), 'failed_count': 0}
 
-    result = create_offer(key, picked['barcode'], price, rrp=rrp)
-    if not result.get('ok'):
-        detail = f"平台拒绝创建 offer：{result.get('reason')}"
-        if result.get('status'):
-            detail += f"（HTTP {result.get('status')}"
-            detail += f" @ {result.get('host')}）" if result.get('host') else "）"
-        raise HTTPException(status_code=502, detail=detail)
-    offer = ((result.get('payload') or {}).get('offer') or {}) if isinstance(result.get('payload'), dict) else {}
-    sku = str(offer.get('sku') or '').strip()
-    if sku and not (p.sku or '').strip():
-        p.sku = sku
-        db.commit()
-    return {'ok': True, 'dry_run': False, 'plid': plid, 'product_no': p.product_no,
-            'barcode': picked['barcode'], 'variant_label': picked.get('label'),
-            'selling_price': price, 'rrp': rrp, 'sku': sku or None,
+    # 逐个变体建 offer。串行而不是并发：Seller API 对同一 PLID 的连续写入偶发打回，
+    # 串行还能让「第几个成功、第几个失败」在返回里和变体标签对得上。
+    results: List[Dict[str, Any]] = []
+    for target in targets:
+        # 单个变体抛异常不能中断整批：已经建好的那几个还要回写 SKU、还要报给前端。
+        try:
+            outcome = create_offer(key, target['barcode'], price, rrp=rrp)
+        except Exception as exc:  # noqa: BLE001 —— 卖家 API 层已兜底，这里只防止整批 500
+            outcome = {'ok': False, 'reason': f'调用卖家 API 异常：{exc}'}
+        payload = outcome.get('payload') if isinstance(outcome.get('payload'), dict) else {}
+        offer = (payload.get('offer') or {}) if isinstance(payload, dict) else {}
+        ok = bool(outcome.get('ok'))
+        results.append({
+            'barcode': target['barcode'], 'tsin': target.get('tsin'), 'variant_label': target.get('label'),
+            'ok': ok, 'reason': '' if ok else str(outcome.get('reason') or '平台拒绝创建 offer'),
+            'status_code': outcome.get('status'),
+            'sku': str(offer.get('sku') or '').strip() or None,
             'offer_id': offer.get('offer_id'), 'status': offer.get('status'),
             'offer_url': offer.get('offer_url'),
-            'validation_errors': (result.get('payload') or {}).get('validation_errors') or []}
+            'validation_errors': payload.get('validation_errors') or [],
+        })
+
+    listed = [r for r in results if r['ok']]
+    failed = [r for r in results if not r['ok']]
+
+    # SKU 回写：平台按变体各发一串 SKU，多变体就用空格拼起来——标签/装箱单那边的
+    # split_skus 本来就把空格/逗号当多规格分隔符，口径不用另造一套。
+    new_skus = [r['sku'] for r in listed if r['sku']]
+    if new_skus and not (p.sku or '').strip():
+        p.sku = ' '.join(new_skus)
+        db.commit()
+    joined_sku = ' '.join(new_skus) if new_skus else None
+
+    if not listed:
+        detail = f"平台拒绝创建 offer：{failed[0]['reason']}"
+        if failed[0].get('status_code'):
+            detail += f"（HTTP {failed[0]['status_code']}）"
+        raise HTTPException(status_code=502, detail=detail)
+
+    single = results[0] if len(results) == 1 else None
+    return {'ok': not failed, 'dry_run': False, 'plid': plid, 'product_no': p.product_no,
+            'selling_price': price, 'rrp': rrp,
+            'barcode': single['barcode'] if single else None,
+            'variant_label': single['variant_label'] if single else None,
+            'sku': joined_sku,
+            'offer_id': single['offer_id'] if single else None,
+            'status': single['status'] if single else None,
+            'offer_url': single['offer_url'] if single else None,
+            'validation_errors': listed[0]['validation_errors'],
+            'variants': results, 'skipped': skipped,
+            'listed_count': len(listed), 'failed_count': len(failed)}
 
 
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)

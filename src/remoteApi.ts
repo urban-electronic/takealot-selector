@@ -315,6 +315,29 @@ export const refreshPrice = (id: string, source: 'official' | 'seller' | 'detail
 // ---- 一键上架（等同卖家后台 Add My Offer）----
 // 变体 Barcode 由后端从卖家门户目录取；售价取产品已有售价；RRP 默认 1.5 倍；
 // 不传 SKU 交给平台生成；不传交期就是不预售，库存等入仓。
+/** 单个变体的建 offer 结果：一个 PLID 下每个变体各一条。 */
+export interface ListOfferVariantResult {
+  barcode: string;
+  tsin?: string | null;
+  variant_label?: string | null;
+  ok: boolean;
+  reason?: string;
+  status_code?: number | null;
+  sku?: string | null;
+  offer_id?: string | number | null;
+  status?: string | null;
+  offer_url?: string | null;
+  validation_errors?: string[];
+}
+
+/** 被跳过的变体（本店已有报价，不重复创建）。 */
+export interface ListOfferSkippedVariant {
+  barcode: string;
+  variant_label?: string | null;
+  tsin?: string | null;
+  reason: string;
+}
+
 export interface ListOfferResult {
   ok: boolean;
   dry_run: boolean;
@@ -324,11 +347,19 @@ export interface ListOfferResult {
   variant_label?: string | null;
   selling_price: number;
   rrp: number;
+  /** 多变体时是各变体 SKU 用空格拼起来的一串（标签侧 split_skus 会拆开）。 */
   sku: string | null;
   offer_id?: string | number | null;
   status?: string | null;
   offer_url?: string | null;
   validation_errors?: string[];
+  /** 多变体商品：逐变体明细，前端据此报「哪几个没上成」。 */
+  variants?: ListOfferVariantResult[];
+  skipped?: ListOfferSkippedVariant[];
+  listed_count?: number;
+  failed_count?: number;
+  /** dry_run 时每个变体的提交计划。 */
+  plans?: Array<Record<string, unknown>>;
 }
 
 export interface ListOfferOptions {

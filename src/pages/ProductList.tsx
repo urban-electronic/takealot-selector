@@ -754,13 +754,35 @@ export default function ProductList() {
     const label = `#${product.product_no ?? ''}`;
     try {
       const result = await api.listProductOffer(product.id, { rrp_multiplier: RRP_MULTIPLIER });
-      const facts = [`售价 R${result.selling_price}`, `RRP R${result.rrp}`];
-      if (result.sku) facts.push(`SKU ${result.sku}`);
-      if (result.status) facts.push(result.status);
+      const variants = result.variants ?? [];
+      const skipped = result.skipped ?? [];
+      const listed = variants.filter(v => v.ok);
+      const failedVariants = variants.filter(v => !v.ok);
+      const listedCount = result.listed_count ?? listed.length;
       if (result.sku) {
         // 平台回写的 SKU 只在本地还是空的时候补上，已有的自建 SKU 不被覆盖。
+        // 多变体时是一串用空格拼起来的 SKU，标签侧 split_skus 会按规格拆开。
         setProducts(prev => prev.map(row => (row.id === product.id && !(row.sku || '').trim() ? { ...row, sku: result.sku as string } : row)));
         notifyCatalogChanged(['sku']);
+      }
+      // 变体全部早就有报价：不是失败，只是没有可提交的东西。
+      if (!listedCount && skipped.length) {
+        return { ok: true, message: `${label} 无需上架：${skipped.length} 个变体本店都已有报价` };
+      }
+      const facts = [`售价 R${result.selling_price}`, `RRP R${result.rrp}`];
+      if (result.sku) facts.push(`SKU ${result.sku}`);
+      if (listedCount > 1) facts.push(`${listedCount} 个变体`);
+      else if (result.variant_label) facts.push(`变体 ${result.variant_label}`);
+      if (skipped.length) facts.push(`跳过 ${skipped.length} 个已有报价变体`);
+      // 部分变体被平台拒：成功的已经写进去了，失败的逐个点名，别让运营回门户猜。
+      if (failedVariants.length) {
+        const detail = failedVariants
+          .map(v => `${v.variant_label || v.barcode}（${v.reason || '平台拒绝'}）`)
+          .join('；');
+        return {
+          ok: false,
+          message: `${label} 部分变体上架失败：已上 ${listedCount} 个，失败 ${failedVariants.length} 个 —— ${detail}`,
+        };
       }
       return { ok: true, message: `${label} 已上架（${facts.join('，')}）` };
     } catch (e) {

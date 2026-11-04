@@ -28,6 +28,26 @@ const api = {
   listProductOffer: (id, options) => {
     listCalls.push({ id, options });
     if (listFailures.includes(id)) return Promise.reject(Error('本店已在变体 990... 有报价'));
+    // p3 = 多变体全成功（另有一个早就上过的变体被跳过）：一个 PLID 下每个变体各建一个 offer。
+    if (id === 'p3') return Promise.resolve({
+      ok: true, product_id: 'p3', plid: '96357594', product_no: 619,
+      selling_price: 120, rrp: 180, sku: '9902739445901 9902739445902', listed_count: 2, failed_count: 0,
+      variants: [
+        { barcode: '6009512345601', variant_label: 'Gold', ok: true, sku: '9902739445901' },
+        { barcode: '6009512345602', variant_label: 'Silver', ok: true, sku: '9902739445902' },
+      ],
+      skipped: [{ barcode: '6009512345603', variant_label: 'Rose', reason: '本店已在该变体有报价' }],
+    });
+    // p2 = 多变体部分失败：成功的照样算上架，失败的逐个点名。
+    if (id === 'p2') return Promise.resolve({
+      ok: false, product_id: 'p2', plid: '96357594', product_no: 618,
+      selling_price: 350, rrp: 525, sku: '9902739445903', listed_count: 1, failed_count: 1,
+      variants: [
+        { barcode: '6009512345611', variant_label: 'Black', ok: true, sku: '9902739445903' },
+        { barcode: '6009512345612', variant_label: 'Silver', ok: false, reason: 'Invalid Barcode', status_code: 422 },
+      ],
+      skipped: [],
+    });
     return Promise.resolve({ ok: true, product_id: id, sku: '9902739445897', offer_id: 'offer-1', status: 'Not Buyable', selling_price: 200, rrp: 300, variant: { barcode: '6009512345678' } });
   },
 };
@@ -109,6 +129,23 @@ const body = () => document.body.textContent;
   assert.ok(listCalls.slice(before).every(c => c.options.rrp_multiplier === 1.5));
   assert.match(body(), /批量上架完成：成功 2 个，失败 1 个/, '失败不能被吞掉，成功数也要准');
   assert.match(body(), /有报价/, '失败要带平台给的原因');
+
+  // 6. 多变体：回执要写清「几个变体上架、几个因已有报价被跳过」，不是只报一条。
+  listFailures.length = 0;
+  const rowButton = no => {
+    const row = [...document.querySelectorAll('tr')].find(r => r.textContent.includes(String(no)));
+    return row ? [...row.querySelectorAll('button')].find(b => b.textContent.trim() === '上架') : null;
+  };
+  await act(async () => { click(rowButton(619)); await new Promise(r => setTimeout(r, 0)); });
+  assert.match(body(), /#619 已上架/, '多变体上架也要给回执');
+  assert.match(body(), /2 个变体/, '多变体要报实际上了几个');
+  assert.match(body(), /跳过 1 个已有报价变体/, '早就上过的变体要说明被跳过，而不是让运营以为漏了');
+
+  // 7. 多变体部分失败：成功数照报，失败变体点名到标签，不能让整条上架结果变成一句「失败」。
+  await act(async () => { click(rowButton(618)); await new Promise(r => setTimeout(r, 0)); });
+  assert.match(body(), /#618 部分变体上架失败/);
+  assert.match(body(), /已上 1 个，失败 1 个/);
+  assert.match(body(), /Silver（Invalid Barcode）/, '失败的变体要按标签+原因点名');
 
   clearTimeout(watchdog);
   console.log('PASS list offer ui');
