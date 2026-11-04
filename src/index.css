@@ -4050,3 +4050,76 @@ table tbody tr:hover { background: #f8fafc; }
   .selection-grid { grid-template-columns: 1fr; }
   .selection-field.is-wide { min-width: 0; }
 }
+
+
+/* ---- 抓取面板（从 Takealot 抓取） ---- */
+
+.selection-crawl {
+  border-left: 3px solid #5182ce;
+}
+
+.selection-crawl-title {
+  font-size: var(--fs-body);
+  color: var(--text-body);
+}
+
+/* 在线/离线状态：绿点=在线，红点=未启动。只有一个字号的圆点，不喧哗。 */
+.selection-crawl-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
+.selection-crawl-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-subtle, #9aa7b8);
+}
+
+.selection-crawl-state.is-ok::before { background: #2e9e5b; }
+.selection-crawl-state.is-down { color: #c2410c; }
+.selection-crawl-state.is-down::before { background: #d9534f; }
+
+.selection-crawl-input textarea {
+  min-height: 84px;
+  padding: var(--sp-2);
+  border: 1px solid var(--line, #d7dee8);
+  border-radius: var(--r-xs, 6px);
+  background: #fff;
+  color: var(--text-body);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-label);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.selection-crawl-input textarea:focus {
+  outline: 2px solid #5182ce;
+  outline-offset: 1px;
+}
+
+.selection-crawl-progress {
+  font-size: var(--fs-label);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 抓取日志：等宽、可滚动，只看最后几行，不撑高页面 */
+.selection-crawl-log {
+  max-height: 168px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--line, #e3e8ef);
+  border-radius: var(--r-xs, 6px);
+  background: #f7f9fc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-caption);
+  line-height: 1.7;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
