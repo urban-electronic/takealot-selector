@@ -582,6 +582,7 @@ def catalog(db, store):
     profiles={r.key:json.loads(r.value)for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('operations_profile:'+store+':')).all()}
     monitors={r.key:json.loads(r.value)for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(PREFIX+store+':')).all()}
     from services.product_names import chinese_name
+    removed={r.key for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:'+store+':')).all() if json.loads(r.value).get('removed') is True}
     rows=[]
     for p in db.query(Product).filter(Product.store_id==store,Product.is_archived==False).all():
         profile=profiles.get('operations_profile:'+store+':'+p.id,{})
@@ -590,6 +591,7 @@ def catalog(db, store):
             skus=re.split(r'[\s,，;；]+',(p.sku or '').strip())
             if len(skus)==1 and skus[0]:offers=[dict(id=profile['offer_ids'][0],sku=skus[0],title=p.product_name,price=profile.get('current_price'),stock=profile.get('stock'))]
         for offer in offers:
+            if '_pricing_group:'+store+':'+p.id+':'+str(offer['id']) in removed: continue
             from services.collection_diagnostics import displayed_monitor
             monitor=displayed_monitor(monitors.get(PREFIX+store+':'+p.id+':'+str(offer['id']),{}))
             cn, name_status = chinese_name(p, offer['sku'])

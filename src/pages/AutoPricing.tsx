@@ -22,6 +22,8 @@ export default function AutoPricing() {
   const [rows, setRows] = useState<any[]>([]); const [drafts, setDrafts] = useState<Record<string, any>>({});
   const [error, setError] = useState(''); const [busy, setBusy] = useState(''); const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [pageDraft, setPageDraft] = useState('');
   const [maintenance, setMaintenance] = useState(false);
   // 原名 interval 会遮蔽 window.setInterval，排查定时器时极易误读，改名与后端字段一致。
   const [intervalMinutes, setIntervalMinutes] = useState(5);
@@ -120,6 +122,7 @@ export default function AutoPricing() {
   const emergencyStop = async () => { setBusy('all'); try { await pauseAllAutomaticPricing(); await refresh(true); } catch (e) { setError((e as Error).message); } finally { setBusy(''); } };
   const bulk = async (action: string) => {
     if (!selected.length) { setError('请先勾选需要操作的SKU。'); return; }
+    if (action === 'remove' && !window.confirm(`从 Buybox 列表移除选中的 ${selected.length} 个 SKU，并停止其采集与调价？产品、库存和平台 offer 保留。`)) return;
     setBusy('bulk'); setError('');
     try {
       const chosen = rows.filter(r => selected.includes(key(r)));
@@ -205,8 +208,8 @@ export default function AutoPricing() {
     else setError('复制失败：环境不允许写剪贴板。请手动展开任一行的「为什么」查看诊断。');
   };
   const visible = rows.filter(r => typeof r.stock === 'number' && r.stock > 0 && (group === 'all' || r.group === group) && (segment==='all' || (r.monitor?.segment||'未分段')===segment) && `${r.chinese_name || ''} ${r.name} ${r.sku}`.toLowerCase().includes(search.toLowerCase()));
-  const pages = Math.max(1, Math.ceil(visible.length / 10)); const activePage = Math.min(page, pages);
-  const pageRows = visible.slice((activePage-1)*10, activePage*10);
+  const pages = Math.max(1, Math.ceil(visible.length / pageSize)); const activePage = Math.min(page, pages);
+  const pageRows = visible.slice((activePage-1)*pageSize, activePage*pageSize);
   const input = (r: any, field: string, label: string) => <input type="number" min="1" step="1" aria-label={`${r.sku}${label}`} title={field === 'min_price' ? '最低价：留空=自动使用系统利润底价，填了就按手动底价' : '最高价：可留空，走智能上限'} placeholder={field === 'min_price' ? `自动 ${r.suggested_min ?? '待补'}` : '智能上限'} style={{ width: 86 }} value={drafts[key(r)]?.[field] ?? (field === 'min_price' && r.rule.use_system_min !== false ? r.suggested_min ?? '' : r.rule[field] ?? '')} onChange={e => setDrafts({ ...drafts, [key(r)]: { ...drafts[key(r)], [field]: e.target.value, ...(field === 'min_price' ? { use_system_min: e.target.value === '' } : {}) } })} />;
   const relative = (v: string) => v ? new Date(v).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '—';
   // 调价决策由后端 plan() 落库，界面只负责翻译。
@@ -412,6 +415,7 @@ export default function AutoPricing() {
           一样显眼，等于没有主次；现在次要动作收进「更多」，要用再展开。 */}
       <div className="pricing-actions">
         <button className="btn btn-info" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(true)}>开启采集</button>
+        <button className="btn btn-outline" disabled={!!busy||!selected.length} onClick={()=>bulk('remove')}>移除选中SKU</button>
         <button className="btn btn-success" disabled={!!busy||!selected.length||!configured} onClick={()=>bulk('start')}>启动调价</button>
         <button className="btn btn-outline btn-sm actions-more-toggle" aria-expanded={moreOpen} onClick={()=>setMoreOpen(v=>!v)}>{moreOpen?'收起':'更多'}</button>
         {moreOpen&&<div className="actions-more-panel">
@@ -486,7 +490,7 @@ export default function AutoPricing() {
               </details>
             </div></td></tr>;
       })}</tbody></table></div>
-      <div className="operations-pagination"><span>{visible.length} 个SKU · 每页10条</span><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
+      <div className="operations-pagination"><span>{visible.length} 个SKU</span><select aria-label="每页条数" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value));setPage(1);setPageDraft('');}}>{[10,20,50,100].map(n=><option key={n} value={n}>{n}条/页</option>)}</select><button className="btn btn-outline btn-sm" disabled={activePage<=1} onClick={()=>setPage(activePage-1)}>上一页</button><span>{activePage} / {pages}</span><form onSubmit={e=>{e.preventDefault(); const n=Number(pageDraft); if (/^\d+$/.test(pageDraft)&&Number.isSafeInteger(n)&&n>=1&&n<=pages) {setPage(n);setPageDraft('');} }}><label>到第 <input aria-label="跳转页码" inputMode="numeric" type="number" min={1} max={pages} step={1} value={pageDraft} onChange={e=>setPageDraft(e.target.value)} style={{width:72}} required /> 页</label> <button className="btn btn-outline btn-sm" type="submit">跳转</button></form><button className="btn btn-outline btn-sm" disabled={activePage>=pages} onClick={()=>setPage(activePage+1)}>下一页</button></div>
       {loaded&&!rows.length&&!error&&<p className="operations-empty">暂无本店有库存的SKU，请先同步库存。</p>}
     </div>
     <details className="operations-explanation" ref={maintenanceRef} onToggle={e=>setMaintenance(e.currentTarget.open)}><summary>采集维护（高级）</summary><p>日常采集由当前在线的采集器执行。这里只用于人工排查网站验证或配送设置；关闭会释放操作会话。</p><p className="maintenance-note">被网站验证挡住时：在这个浏览器里正常打开商品页、把验证过掉，然后回到这里点「立即采集」。采集器用的是同一个持久化配置目录，验证过掉之后后台这一轮就能读到页面。<b>系统不会去解验证码、不会伪装浏览器指纹、不会换 IP</b>——这三件事会让店铺账号本身被平台盯上，代价远大于一次采集失败。</p>{maintenance&&<Suspense fallback={<p>正在加载维护工具…</p>}><CloudBrowser rows={rows} onCollected={()=>{void refresh(true);}} /></Suspense>}</details>
