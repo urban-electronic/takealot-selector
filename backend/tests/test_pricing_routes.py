@@ -301,3 +301,19 @@ def test_remove_hides_only_selected_offer_and_stops_schedulers(monkeypatch):
             row = db.query(SystemSettings).filter_by(key=prefix+DEFAULT_STORE_ID+':one:one').one()
             assert json.loads(row.value)['enabled'] is False
         assert json.loads(db.query(SystemSettings).filter_by(key=routes.MONITOR_PREFIX+DEFAULT_STORE_ID+':one:one').one().value)['request_once'] is False
+
+
+def test_removed_sku_is_not_queued_when_app_opens(monkeypatch):
+    from api import buybox_routes
+    monkeypatch.setattr(routes, 'configured_key', lambda db: '')
+    monkeypatch.setattr(buybox_routes, 'configured_key', lambda db: 'fixture-only')
+    with database() as db:
+        routes.bulk(routes.Bulk(action='remove', items=[{'product_id':'one', 'offer_id':'one'}]), db, DEFAULT_STORE_ID)
+        monitor = json.loads(db.query(SystemSettings).filter_by(key=routes.MONITOR_PREFIX+DEFAULT_STORE_ID+':one:one').one().value)
+        assert monitor['status'] == 'paused'
+        assert buybox_routes.page_open(db, DEFAULT_STORE_ID)['queued'] == 1
+        db.expire_all()
+        value = json.loads(db.query(SystemSettings).filter_by(key=routes.MONITOR_PREFIX+DEFAULT_STORE_ID+':one:one').one().value)
+        assert value['request_once'] is False and value['status'] == 'paused'
+        from services.buybox_monitor import catalog
+        assert [r['sku'] for r in catalog(db, DEFAULT_STORE_ID)] == ['two']

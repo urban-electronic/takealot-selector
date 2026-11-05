@@ -163,7 +163,7 @@ def bulk(data: Bulk, db: Session = Depends(get_db), store: str = Depends(get_sto
             monitor_key = MONITOR_PREFIX + store + ':' + product_id + ':' + offer_id
             monitor_row = db.query(SystemSettings).filter(SystemSettings.key == monitor_key).first()
             monitor = json.loads(monitor_row.value) if monitor_row else {}
-            staged.append((monitor_key, {**monitor, 'enabled': False, 'request_once': False, 'revision': monitor.get('revision', 0)+1}))
+            staged.append((monitor_key, {**monitor, 'enabled': False, 'request_once': False, 'status': 'paused', 'revision': monitor.get('revision', 0)+1}))
             old = r['rule']
             staged.append((PREFIX + store + ':' + product_id + ':' + offer_id, {**old, 'enabled': False, 'revision': old.get('revision', 0)+1, 'last_result': '已从列表移除'}))
             continue
