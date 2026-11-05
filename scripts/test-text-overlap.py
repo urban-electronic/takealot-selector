@@ -243,6 +243,8 @@ def main():
                         page.locator('.loading').wait_for(state='hidden', timeout=5000)
                     except Exception:
                         pass
+                    # Measure the expanded editors, not Chromium's retained boxes inside closed details.
+                    page.locator('details').evaluate_all("nodes => nodes.forEach(node => { node.open = true; })")
                     res = page.evaluate(SCAN, None)
                     surfaces += 1
                     report.append(dict(res, width=width, path=path, scope='page'))
