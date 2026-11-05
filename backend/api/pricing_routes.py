@@ -135,9 +135,12 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
                 monitor=monitors.get(MONITOR_PREFIX+store+':'+p.id+':'+offer['id'], {}),
                 variant=variants,
                 group=groups.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], profile.get('group') or '未分类'), rule=rule))
-    from api.collector_routes import collector_source
+    from api.collector_routes import collector_source, local_active
     from services.buybox_monitor import loop_status
-    source=collector_source(db)
+    # 本机/扩展采集器只在其确实在回报数据时才是「当前执行者」；否则它只是留下了一条
+    # 没清的心跳，云端一直在默默采。把 source 如实标成 cloud_browser，banner 才不会
+    # 误导用户说「本机接管中，属正常」。
+    source=collector_source(db) if local_active(db) else 'cloud_browser'
     # loop 是采集循环自己的心跳。没有它，界面无法区分「循环停了」和
     # 「这一条刚好还没到期」，用户只能反复点立即采集。
     return {'collector_source': source, 'rows': rows, 'loop': loop_status(db, store),

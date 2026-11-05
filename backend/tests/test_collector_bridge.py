@@ -222,6 +222,29 @@ def test_expired_job_cannot_restore_a_concurrent_pause(monkeypatch):
         assert value['status']=='paused' and not value['enabled'] and not value['request_once']
 
 
+def test_local_active_requires_recent_report_not_just_heartbeat(monkeypatch):
+    import time
+    with database() as db:
+        item=setup(db,monkeypatch)  # 写 HEARTBEAT 心跳并 claim item
+        # 只有心跳、没有成功回报：本地采集器视为已死，云端应接管。
+        assert bridge.connected(db) and not bridge.local_active(db)
+        # 本地采集器成功回传一条报价，刷新 last_report_at：视为在干活。
+        bridge.offers(bridge.Report(items=[{**item,'buyboxPrice':99,'offers':[{'price':99,'status':'in_stock'}]}]),db,DEFAULT_STORE_ID)
+        assert bridge.local_active(db)
+        # 心跳过期后，连 connected 都不成立。
+        row=db.query(SystemSettings).filter_by(key=bridge.HEARTBEAT).first()
+        v=json.loads(row.value);v['expires_at']=time.time()-1;row.value=json.dumps(v);db.commit()
+        assert not bridge.connected(db) and not bridge.local_active(db)
+
+
+def test_listing_reports_cloud_when_local_collector_dead(monkeypatch):
+    with database() as db:
+        setup(db,monkeypatch)  # 写 HEARTBEAT 心跳，但无回报
+        payload=pricing_routes.listing(db,DEFAULT_STORE_ID)
+        # 心跳活着却没在回报：界面不应再说「本机接管中，属正常」，应如实标云端。
+        assert payload['collector_source']=='cloud_browser'
+
+
 
 def test_diagnostics_drop_unknown_secret_fields_but_keep_new_counters(monkeypatch):
     with database() as db:

@@ -17,6 +17,11 @@ router = APIRouter(prefix='/api/collector', tags=['collector'])
 HEARTBEAT = '_buybox_local_collector'
 BROWSER_HEARTBEAT = '_buybox_browser_collector'
 CLAIM_PREFIX = '_buybox_collector_claim:'
+# 云端采集循环只在「本机/扩展采集器真的在干活」时才让位。光有心跳不够——
+# 本机采集器崩了、没清心跳、或只轮询不回报，都会让心跳一直活着却什么都不采，
+# 于是云端被白白压制、所有 SKU 既不采也不报错，界面还显示「本机采集器接管中，属正常」。
+# 用「心跳存活 且 最近 2 分钟内有成功回报」判定本机确实在跑；否则云端接管。
+LOCAL_GRACE_SECONDS = 120
 
 def connected(db):
     now=time.time()
@@ -24,12 +29,39 @@ def connected(db):
         db.query(SystemSettings).filter_by(key=HEARTBEAT).first(),
         db.query(SystemSettings).filter_by(key=BROWSER_HEARTBEAT).first()))
 
+def local_active(db):
+    """本机/扩展采集器是否真的在干活：心跳存活 且 近期有成功回报。
+
+    `connected()` 只看心跳，会被「崩了没清心跳」骗过。采集循环据此让位时必须用这一层，
+    否则本机死了云端也起不来，SKU 集体停采却看着像正常交接。前端据此把 source 标成
+    cloud_browser，banner 也不会再写「本机接管中，属正常」。"""
+    now=time.time()
+    for key in (HEARTBEAT, BROWSER_HEARTBEAT):
+        row=db.query(SystemSettings).filter_by(key=key).first()
+        if not row: continue
+        value=json.loads(row.value)
+        if value.get('expires_at',0)>now and now-(value.get('last_report_at') or 0) < LOCAL_GRACE_SECONDS:
+            return True
+    return False
+
 def collector_source(db):
     now=time.time()
     for key,kind in ((HEARTBEAT,'local_collector'),(BROWSER_HEARTBEAT,'browser_extension')):
         row=db.query(SystemSettings).filter_by(key=key).first()
         if row and json.loads(row.value).get('expires_at',0)>now: return kind
     return 'cloud_browser'
+
+def _mark_local_report(db, report_source, now):
+    """本机/扩展采集器成功回传一条报价，刷新它的「最近回报时间」。
+
+    这是 `local_active()` 判定本机是否真在干活的唯一证据。浏览器扩展与本地程序都走这里；
+    pricepilot_relay 也归到本地采集器一侧。row 已在当前 session（touch 写入过），直接改值即可。"""
+    key = BROWSER_HEARTBEAT if report_source=='browser_extension' else HEARTBEAT
+    row=db.query(SystemSettings).filter_by(key=key).first()
+    if not row: return
+    value=json.loads(row.value)
+    value['last_report_at']=now
+    row.value=json.dumps(value,ensure_ascii=False)
 
 def touch(db, kind=None):
     mode=kind if kind in ('local_collector','browser_extension') else 'local_collector'
@@ -196,6 +228,9 @@ def offers(data:Report,db:Session=Depends(get_db),store:str=Depends(get_store_id
                 if not same_price: price_checks.append((row.key,json.dumps(config,ensure_ascii=False)))
         else: skipped+=1
         db.delete(lease)
+    if successful>0:
+        # 本机/扩展采集器确实采到了报价：刷新「最近回报时间」，云端据此判断它仍活着。
+        _mark_local_report(db, report_source, time.time())
     db.commit()
     if background_tasks is not None and price_checks:
         from services.price_ownership import verify_batch
