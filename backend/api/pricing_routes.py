@@ -62,7 +62,7 @@ class Item(BaseModel):
     offer_id: str
 
 class Bulk(BaseModel):
-    action: Literal['group', 'start', 'pause']
+    action: Literal['group', 'start', 'pause', 'remove']
     items: list[Item] = Field(min_length=1, max_length=2000)
     group: str = Field(default='', max_length=60)
 
@@ -95,7 +95,8 @@ def preview(product_id: str, offer_id: str, db: Session = Depends(get_db), store
 def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     prefix = PREFIX + store + ':'
     rules = {r.key: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
-    groups = {r.key: json.loads(r.value).get('group', '') for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
+    group_records = {r.key: json.loads(r.value) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith('_pricing_group:' + store + ':')).all()}
+    groups = {key: value.get('group', '') for key, value in group_records.items()}
     from services.collection_diagnostics import displayed_monitor
     monitors = {r.key: displayed_monitor(json.loads(r.value)) for r in db.query(SystemSettings).filter(SystemSettings.key.startswith(MONITOR_PREFIX+store+':')).all()}
     # 补货档案一次取全店（PRICE-LISTING-N1）。原来在商品循环里逐条查，
@@ -120,6 +121,7 @@ def listing(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
         names = {str(o.get('sku') or ''): chinese_name(p, o.get('sku')) for o in offers}
         variants = variant_view(p, offers, {sku: value[0] for sku, value in names.items()})
         for offer in offers:
+            if group_records.get('_pricing_group:' + store + ':' + p.id + ':' + offer['id'], {}).get('removed') is True: continue
             rule = rules.get(prefix + p.id + ':' + offer['id'], {})
             price, stock = _own_metrics(profile, offer, rule)
             if rule.get('holding_buybox') is True and not rule.get('holding_verified'):
@@ -156,6 +158,15 @@ def bulk(data: Bulk, db: Session = Depends(get_db), store: str = Depends(get_sto
         if not r: raise HTTPException(400, '选中的SKU不属于当前店铺或未唯一匹配')
         if data.action == 'group':
             staged.append(('_pricing_group:' + store + ':' + product_id + ':' + offer_id, {'group': group})); continue
+        if data.action == 'remove':
+            staged.append(('_pricing_group:' + store + ':' + product_id + ':' + offer_id, {'group': r['group'], 'removed': True}))
+            monitor_key = MONITOR_PREFIX + store + ':' + product_id + ':' + offer_id
+            monitor_row = db.query(SystemSettings).filter(SystemSettings.key == monitor_key).first()
+            monitor = json.loads(monitor_row.value) if monitor_row else {}
+            staged.append((monitor_key, {**monitor, 'enabled': False, 'request_once': False, 'revision': monitor.get('revision', 0)+1}))
+            old = r['rule']
+            staged.append((PREFIX + store + ':' + product_id + ':' + offer_id, {**old, 'enabled': False, 'revision': old.get('revision', 0)+1, 'last_result': '已从列表移除'}))
+            continue
         old = r['rule']
         if data.action == 'pause':
             if old: staged.append((PREFIX + store + ':' + product_id + ':' + offer_id,
