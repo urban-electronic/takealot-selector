@@ -332,12 +332,12 @@ def start_worker():
         while not _stop.is_set():
             try:
                 with SessionLocal() as db:
-                    from api.collector_routes import connected
+                    from api.collector_routes import local_active
                     # 自愈要先于排期，而且**与本机采集器是否在线无关**：本机采集器
-                    # 也会写出 error 记录，同样需要修。放在 connected 判断之前，
+                    # 也会写出 error 记录，同样需要修。放在 local_active 判断之前，
                     # 否则「有本机采集器」就等于「记录永远不自愈」。
                     _maybe_repair(db)
-                    if connected(db):
+                    if local_active(db):
                         _record_cycle(db, 0, 'local_collector')
                         _stop.wait(10)
                         continue
