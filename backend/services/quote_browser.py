@@ -90,7 +90,7 @@ def _pids_by_profile(profile):
         try:
             with open(f'/proc/{entry}/cmdline', 'rb') as fh:
                 cmdline = fh.read()
-            if any(needle in cmdline for needle in needles):
+            if any(needle in cmdline.split(b'\0') for needle in needles):
                 pids.append(int(entry))
         except (OSError, ValueError):
             continue
