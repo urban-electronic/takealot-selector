@@ -300,8 +300,17 @@ export default function AutoPricing() {
   const cycleStuck = !!loop && loop.worker_alive && loop.paused_by !== 'local_collector'
     && typeof loop.cycle_age_seconds === 'number' && typeof loopInterval === 'number'
     && loop.cycle_age_seconds > expectedCycleSeconds * 2 + 180;
+  // 行情过期：循环本身在转、但个别启用中的 SKU 很久没有成功行情。纯云端单通道
+  // 下这是唯一能暴露「某一路悄悄没采到」的信号，必须出现在页头而不是藏在行里。
+  const staleCount = loop?.stale_count ?? 0;
+  const staleSkus = (loop?.stale_skus || []).filter(Boolean);
+  // 「未采集」也在计数里（从没有 last_success_at），不能一律说成「已过期」。
+  const staleNote = staleCount
+    ? ` · ${staleCount} 个 SKU 行情过期或未采集${staleSkus.length ? `（${staleSkus.slice(0, 3).join('、')}${staleCount > 3 ? ' 等' : ''}）` : ''}`
+    : '';
+  // 循环在转但有 SKU 行情过期：不能标成功（会掩盖漏采），也不必标危险（循环没坏）。
   const loopTone = !loop ? 'neutral' : !loop.worker_alive ? 'danger' : cycleStuck ? 'danger'
-    : loop.paused_by === 'local_collector' ? 'warning' : 'success';
+    : (loop.paused_by === 'local_collector' || staleCount) ? 'warning' : 'success';
   const loopTitle = !loop ? '采集循环状态未知'
     : !loop.worker_alive ? '采集循环已停止'
     : cycleStuck ? '采集循环卡住了'
@@ -312,8 +321,8 @@ export default function AutoPricing() {
   const loopNote = !loop ? '还没拿到后台心跳'
     : !loop.worker_alive ? '后台线程没在跑，SKU 不会自动重采，请检查服务状态'
     : cycleStuck ? `${Math.round(loop.cycle_age_seconds / 60)} 分钟没开新一轮（间隔 ${loopInterval} 分钟${roundEstimate ? `，一轮约 ${roundEstimate} 分钟` : ''}）；${loop.stuck_jobs ? '卡住的采集任务已被放弃，' : ''}持续出现请重启服务`
-    : loop.paused_by === 'local_collector' ? '云端循环让位给本机采集器，属正常'
-    : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}`;
+    : loop.paused_by === 'local_collector' ? `云端循环让位给本机采集器，属正常${staleNote}`
+    : `每 ${loopInterval} 分钟一轮${loop.cycles ? ` · 已跑 ${loop.cycles} 轮` : ''}${staleNote}${loop?.pool_resets ? ' · 采集池曾重建，请留意卡死任务' : ''}`;
   const nextIn = loop?.next_due_in;
   const overCapacity = roundEstimate != null && loop?.interval_minutes != null && roundEstimate > loop.interval_minutes;
   const tight = !overCapacity && roundEstimate != null && loop?.interval_minutes != null

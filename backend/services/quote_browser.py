@@ -1,6 +1,7 @@
 """Durable quote browser profile. Login/location state stays on the collector host."""
 import asyncio
 import os
+import signal
 import threading
 import shutil
 import subprocess
@@ -20,6 +21,109 @@ LOCK_WAIT_SECONDS = 90
 # 线程、node 驱动、Chromium 全留在那儿——2026-10-21 线程耗尽就是这么来的。
 # 关不掉也要认，宁可留一个僵尸进程让下次重启清掉，也不能把线程池和 _lock 锁死。
 CLEANUP_TIMEOUT = 10
+
+# 正在飞行的采集所用的浏览器 profile。看门狗在 JOB_TIMEOUT 后放弃卡死任务时，
+# 需要直接杀掉这个浏览器进程树——被卡住的线程卡在 Playwright 的同步调用里，
+# asyncio 取消/ future.cancel() 都无法中断真实线程，只有浏览器进程死了，
+# 调用才会报错返回、quote_context 才会放 _lock、线程才会归还池。
+#
+# 为什么记录 profile 而不是 PID：launch_persistent_context 返回的 BrowserContext
+# 的 .browser 恒为 None（persistent context 没有独立 Browser 对象），拿不到
+# .process.pid。改为按 Chromium 稳定的启动参数 --user-data-dir=<profile> 反查
+# 进程，既精确（只杀我们自己的浏览器）又不依赖 Playwright 内部 API。
+_current_browser_profile = None
+_current_browser_lock = threading.Lock()
+
+
+def _set_current_browser_profile(profile):
+    global _current_browser_profile
+    with _current_browser_lock:
+        _current_browser_profile = profile
+
+
+def current_browser_profile():
+    with _current_browser_lock:
+        return _current_browser_profile
+
+
+def _proc_entries():
+    try:
+        return [e for e in os.listdir('/proc') if e.isdigit()]
+    except OSError:
+        return []
+
+
+def _child_pids(pid, entries=None):
+    """只返回 pid 的直接子进程（通过 /proc），绝不触碰应用自身进程树。
+
+    非 Linux（本地 macOS 开发）没有 /proc，返回空列表——本机采集器走的是
+    tools/native-collector，不经过这里；云端是 Linux，/proc 可用。
+    """
+    kids = []
+    for entry in entries if entries is not None else _proc_entries():
+        try:
+            with open(f'/proc/{entry}/stat') as fh:
+                stat = fh.read()
+            # comm 字段形如 "(chrome)"，可能带空格/括号，所以从最后一个 ')' 之后切。
+            tail = stat[stat.rfind(')') + 2:].split()
+            # tail: state ppid ...；ppid 是第 2 个字段。
+            if len(tail) >= 2 and int(tail[1]) == pid:
+                kids.append(int(entry))
+        except (OSError, ValueError, IndexError):
+            continue
+    return kids
+
+
+def _pids_by_profile(profile):
+    """按 Chromium 的 --user-data-dir 参数找出属于该 profile 的进程。
+
+    Playwright 可能把 user_data_dir 转成绝对路径再传给 Chromium，配置里也可能写
+    相对路径或走 symlink，所以原值 / abspath / realpath 三种写法都认。三者都指向
+    同一个采集 profile，不会因此误杀别的浏览器。
+    """
+    if not profile or not os.path.isdir('/proc'):
+        return []
+    variants = {profile, os.path.abspath(profile), os.path.realpath(profile)}
+    needles = [('--user-data-dir=' + v).encode() for v in variants if v]
+    pids = []
+    for entry in _proc_entries():
+        try:
+            with open(f'/proc/{entry}/cmdline', 'rb') as fh:
+                cmdline = fh.read()
+            if any(needle in cmdline for needle in needles):
+                pids.append(int(entry))
+        except (OSError, ValueError):
+            continue
+    return pids
+
+
+# Windows 没有 SIGKILL；生产在 Railway(Linux)、开发在 macOS，都可用。
+_KILL_SIGNAL = getattr(signal, 'SIGKILL', signal.SIGTERM)
+
+
+def kill_current_browser():
+    """强制终止当前在飞的采集浏览器进程树。
+
+    由采集看门狗在任务被判定卡死（超过 JOB_TIMEOUT）时调用。只杀 --user-data-dir
+    指向当前采集 profile 的 Chromium 进程及其子进程，不触碰应用自身或同机其他浏览器。
+    无在飞浏览器、进程已退出、或非 Linux 环境时为 no-op（返回 False）。
+    """
+    profile = current_browser_profile()
+    if not profile:
+        return False
+    entries = _proc_entries()
+    roots = _pids_by_profile(profile)
+    if not roots:
+        return False
+    targets = set(roots)
+    for pid in roots:
+        targets.update(_child_pids(pid, entries))
+    for pid in targets:
+        try:
+            os.kill(pid, _KILL_SIGNAL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    return True
 
 
 class CollectorBusy(RuntimeError):
@@ -91,6 +195,8 @@ async def quote_context(wait=True, wait_seconds=None):
     try:
         profile = os.environ.get('BUYBOX_BROWSER_PROFILE', os.path.join(DB_DIR, 'buybox_browser_profile'))
         os.makedirs(profile, exist_ok=True)
+        # 从这一刻起，这个 profile 对应的浏览器可被看门狗按 --user-data-dir 定位并终止。
+        _set_current_browser_profile(profile)
         display = await asyncio.to_thread(browser_display)
         # 容器里 launch_persistent_context 偶发 TargetClosedError：上一次进程被
         # 重启杀掉后，profile 目录里会留下 SingletonLock/Socket，下一次启动直接
@@ -123,6 +229,9 @@ async def quote_context(wait=True, wait_seconds=None):
                 # 进程真的退出、把 profile 交出来，再让下一轮进来。
                 await asyncio.sleep(1.2)
     finally:
+        # 上下文已退出：这个 profile 不再属于「正在飞行的采集」。清掉它，否则看门狗
+        # 下一次放弃卡死任务时，可能杀到后续正常采集刚启动的同一个 profile 浏览器。
+        _set_current_browser_profile(None)
         if held:
             _lock.release()
 

@@ -55,6 +55,55 @@ JOB_TIMEOUT = 240
 # 必须比 JOB_TIMEOUT 小，否则看门狗先动手，又回到取消不了线程的老路。
 COLLECT_TIMEOUT = JOB_TIMEOUT - 60
 
+# 采集线程池常驻化。原来每轮 new 一个 ThreadPoolExecutor：卡死的线程不会退出
+# （future.cancel() 对已跑起来的线程无效），下一轮又建 2 个，线程数随轮次线性
+# 增长，最终 can't start new thread（2026-10-21 线上：图片代理全线 500，而内存
+# 只用了 0.9G/8G）。常驻池把线程数硬封顶在 max_workers=2；配合看门狗在卡死时
+# 杀掉浏览器进程树，让卡住的线程真正退出、归还 quote_browser 的全局 _lock。
+# 被放弃任务残留的、取消不掉的工作项，则通过 dirty 标记在下一轮重建队列。
+_pool = None
+_pool_lock = threading.Lock()
+_pool_dirty = False
+_pool_resets = 0
+
+
+def _get_pool():
+    """取常驻采集池；上一轮放弃过卡死任务时先重建（旧池 wait=False，绝不阻塞循环）。"""
+    global _pool, _pool_dirty, _pool_resets
+    with _pool_lock:
+        if _pool is None or _pool_dirty:
+            if _pool is not None:
+                try:
+                    _pool.shutdown(wait=False)
+                except Exception:
+                    pass
+                _pool_resets += 1
+            _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='buybox-read')
+            _pool_dirty = False
+        return _pool
+
+
+def _mark_pool_dirty():
+    """看门狗放弃了卡死任务：下一轮重建池，隔离取消不掉的残留工作项。"""
+    global _pool_dirty
+    with _pool_lock:
+        _pool_dirty = True
+
+
+def _reset_pool():
+    """worker 启动时丢掉旧池。线程可能带着卡死任务一起挂掉，重启后若沿用旧池，
+    两个名额仍是占死的，新 worker 会立刻再次停采。这里只做 wait=False 的释放，
+    不计入 pool_resets（那是看门狗卡死重建的计数，语义不同）。"""
+    global _pool, _pool_dirty
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.shutdown(wait=False)
+            except Exception:
+                pass
+        _pool = None
+        _pool_dirty = False
+
 
 def normalize_interval_minutes(value, default_minutes=5):
     """把记录里的 interval_minutes 归一成合法的正整数（分钟）。
@@ -325,6 +374,9 @@ def _maybe_repair(db):
 def start_worker():
     global _thread, _supervisor, _stopped
     if _thread and _thread.is_alive(): return
+    # 每次 worker 重新起来都从干净池开始，绝不继承上一次的卡死线程。
+    # 放在启动路径上而不是 run() 里：同步生效，且只有真正启动新 worker 时才复位。
+    _reset_pool()
     _stopped = False
     _stop.clear()
     def run():
@@ -351,26 +403,24 @@ def start_worker():
                 # 不是故障，是排期本身排不下。不测这个数就只能猜。
                 round_started=time.time()
                 # Two bounded jobs; never open an unbounded browser fleet.
-                # 不能用 with：卡死的任务会让 pool.__exit__ 的 shutdown(wait=True)
+                # 常驻池：整条循环只有一个池，线程数硬封顶在 2，不再每轮 new/shutdown。
+                # 也不能用 with：卡死任务会让 pool.__exit__ 的 shutdown(wait=True)
                 # 无限等下去，循环照样冻住——只是把卡点从 wait 挪到了退出。
-                pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='buybox-read')
+                pool=_get_pool()
                 started={}; owners={}
-                try:
-                    pending=set()
-                    for _,key in sorted(jobs):
-                        if _stop.is_set(): break
-                        while len(pending)>=2 and not _stop.is_set():
-                            done,pending=_wait_with_heartbeat(pending, SessionLocal, started, owners)
-                            for finished in done: finished.result()
-                        if _stop.is_set(): break
-                        future=pool.submit(process,key)
-                        pending.add(future); started[future]=time.time(); owners[future]=key
-                        if _stop.wait(2): break
-                    while pending:
+                pending=set()
+                for _,key in sorted(jobs):
+                    if _stop.is_set(): break
+                    while len(pending)>=2 and not _stop.is_set():
                         done,pending=_wait_with_heartbeat(pending, SessionLocal, started, owners)
-                        for future in done: future.result()
-                finally:
-                    pool.shutdown(wait=False)
+                        for finished in done: finished.result()
+                    if _stop.is_set(): break
+                    future=pool.submit(process,key)
+                    pending.add(future); started[future]=time.time(); owners[future]=key
+                    if _stop.wait(2): break
+                while pending:
+                    done,pending=_wait_with_heartbeat(pending, SessionLocal, started, owners)
+                    for future in done: future.result()
                 if jobs:
                     with SessionLocal() as db:
                         _record_round_seconds(db, time.time()-round_started, len(jobs))
@@ -425,6 +475,17 @@ def _wait_with_heartbeat(pending, session_factory, started=None, owners=None):
             for future in stuck:
                 future.cancel()
             _record_stuck(session_factory, stuck, owners or {})
+            # future.cancel() 停不掉已经跑起来的线程。这些线程卡在 Playwright 的同步
+            # 调用里，只有把背后的浏览器进程树杀掉，调用才会报错返回、quote_context
+            # 才会放 _lock、线程才会归还池。否则常驻池的两个名额被永久占死，后面所有
+            # SKU 只会排在队列里采不到——这正是 2026-10-21 线上停采的成因。
+            # 先记账再杀：_record_stuck 依赖 status 仍为 running 的 claim 才能写入。
+            try:
+                from services import quote_browser
+                quote_browser.kill_current_browser()
+            except Exception:
+                pass
+            _mark_pool_dirty()
             return set(), remaining - stuck
 
 
@@ -539,6 +600,16 @@ def loop_status(db, store=DEFAULT_STORE_ID):
     # 界面上就是「已延迟 2987107 分钟」，比不显示更糟。
     dues=[m.get('next_due') for m in enabled if isinstance(m.get('next_due'),(int,float)) and m['next_due'] > 0]
     intervals=[m.get('interval_minutes') for m in enabled if isinstance(m.get('interval_minutes'),int)]
+    # 行情新鲜度：纯云端单通道下没有第二路采集做交叉校验，「某个启用中的 SKU 很久
+    # 没有成功行情」是用户唯一能看到的异常信号。阈值与前端 quoteFreshness 保持一致：
+    # 超过 6 个自身采集间隔 = 过期；从没成功过（无 last_success_at）也要点名。
+    # 只统计启用中的行，暂停的不算；未来时间戳（脏数据）不计入，界面另有「记录时间
+    # 在未来」的提示，这里不重复制造红字。
+    stale_skus=[]
+    for m in enabled:
+        age=_age_seconds(m.get('last_success_at'), now)
+        if age is None or age > interval_seconds(m.get('interval_minutes'))*6:
+            stale_skus.append(str(m.get('sku') or ''))
     return {
         'worker_alive': bool(alive_at and now-alive_at < 60),
         'worker_last_seen_at': datetime.fromtimestamp(alive_at,timezone.utc).isoformat() if alive_at else None,
@@ -567,6 +638,12 @@ def loop_status(db, store=DEFAULT_STORE_ID):
         'seconds_per_sku': round(state['round_seconds']/state['round_jobs'],1)
             if state.get('round_seconds') and state.get('round_jobs') else None,
         'last_attempt_at': max([m.get('last_attempt_at') or '' for m in enabled],default='') or None,
+        # 启用中的 SKU 里，行情已过期（或从没采到过）的数量与前几个 SKU。
+        # 循环本身健康、但个别 SKU 长期没行情时，这是唯一能把它暴露出来的指标。
+        'stale_count': len(stale_skus),
+        'stale_skus': [s for s in stale_skus if s][:6],
+        # 池重建次数：>0 说明出过卡死任务；持续增长说明采集环境有反复性问题。
+        'pool_resets': _pool_resets,
     }
 
 
@@ -574,6 +651,8 @@ def stop_worker():
     global _stopped
     _stopped=True
     _stop.set()
+    # 停循环时把池也放掉，下一次 start_worker() 会从干净状态重建。
+    _reset_pool()
 
 
 def catalog(db, store):
