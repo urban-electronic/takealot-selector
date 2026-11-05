@@ -173,7 +173,7 @@ class CollectTimeout(RuntimeError):
     """
 
 
-async def _collect_once(product, own, seller_name):
+async def _collect_once(product, own, seller_name, variant_labels=None):
     """跑一次采集，并给它一个能被真正取消的上限。
 
     `asyncio.wait_for` 超时会 cancel 内层协程，`collect()` 的 `async with
@@ -181,15 +181,18 @@ async def _collect_once(product, own, seller_name):
     放 _lock。这正是「放弃任务」原来缺的那一步——线程池的 future.cancel()
     对已经在跑的线程无效，只能把协程取消掉才收得回资源。
     """
+    # 只有真的配了显式变体维度才多传一个参数。没有配置时保持原来的三参数调用，
+    # 老采集器、老测试桩和任何按位置取参的实现都不会被这个可选能力打破。
+    job = (collect(product, own, seller_name, variant_labels) if variant_labels
+           else collect(product, own, seller_name))
     try:
-        return await asyncio.wait_for(
-            collect(product, own, seller_name), timeout=COLLECT_TIMEOUT)
+        return await asyncio.wait_for(job, timeout=COLLECT_TIMEOUT)
     except asyncio.TimeoutError as exc:
         raise CollectTimeout(
             f'采集超过 {COLLECT_TIMEOUT} 秒未返回，已取消并释放浏览器') from exc
 
 
-def _collect_with_retry(product, own, result, seller_name=None):
+def _collect_with_retry(product, own, result, seller_name=None, variant_labels=None):
     """采一次；遇到可自愈的失败就在同一轮里再试，最多 COLLECT_ATTEMPTS 次。
 
     只对「页面没渲染完 / 浏览器抖了一下」重试。配置错误、商品下架、变体确认
@@ -200,7 +203,7 @@ def _collect_with_retry(product, own, result, seller_name=None):
     last = None
     for attempt in range(1, COLLECT_ATTEMPTS + 1):
         try:
-            snapshot = asyncio.run(_collect_once(product, own, seller_name))
+            snapshot = asyncio.run(_collect_once(product, own, seller_name, variant_labels))
         except CollectTimeout:
             raise
         except Exception:
@@ -264,7 +267,10 @@ def process(row_id):
             # 还不知道时传空串，采集器退回价格推断并标"未核实"。
             from services import seller_identity
             our_seller = seller_identity.name_of(db, DEFAULT_STORE_ID)
-            snapshot = _collect_with_retry(product, own, result, our_seller)
+            # 显式变体维度存在 monitor 配置里，随任务一起带进采集器。没配的 SKU
+            # 走原来的三参数路径，行为完全不变。
+            snapshot = _collect_with_retry(product, own, result, our_seller,
+                                           config.get('variant_labels'))
             from services.collection_diagnostics import classify
             result['diagnostics']=snapshot.get('diagnostics', {})
             code,message=classify(snapshot)

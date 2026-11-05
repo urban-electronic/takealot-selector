@@ -155,6 +155,25 @@ for (const [code, copy] of Object.entries(ERROR_COPY)) {
 check(errorCopy('').title === '本轮没拿到报价', 'empty code falls back');
 check(errorCopy('rate_limited').title === '被网站限流', 'rate limit is translated');
 
+// ---- variant_unmatched 必须点名是哪一段，不能只剩「确认不了是哪个变体」 ----------
+// 事故：商品名 "... - FDJH4 - Blue" 里的型号码被当成变体维度，页面永远点不中。
+// 后端早就把 FDJH4 写进 error 了，前端却只显示静态标题，用户只能反复点采集。
+const variantRaw = '未能切到变体 FDJH4，不使用默认变体报价';
+const variantCopy = errorCopy('variant_unmatched', variantRaw);
+check(variantCopy.title.includes('FDJH4'), 'variant failure names the unmatched segment in the title');
+check(variantCopy.why === variantRaw, 'variant failure keeps the full backend reason');
+check(variantCopy.action.includes('变体标签'), 'variant failure points at the per-SKU override');
+check(
+  errorCopy('variant_unmatched').title === '确认不了是哪个变体',
+  'without a backend reason the static title is still used',
+);
+const variantFailed = describeCollection(
+  { status: 'error', error_code: 'variant_unmatched', error: variantRaw, interval_minutes: 5 },
+  ctx(),
+);
+check(variantFailed.headline.includes('FDJH4'), 'row headline exposes which variant failed');
+check(variantFailed.action.includes('变体标签'), 'row action offers the concrete fix');
+
 // ---- 持有推定：是价格推断，不是身份核实 ----------------------------------------
 check(describeOwnership({}).label === '未采集', 'no quote means 未采集, never a holding claim');
 const matched = describeOwnership({ buybox_price: 269, price_ownership: { state: 'matched' } });

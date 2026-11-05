@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
-import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, getImageUrl } from '../remoteApi';
+import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, setBuyboxVariantLabels, getImageUrl } from '../remoteApi';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote, retryGroups } from '../utils/buyboxStatus';
 
@@ -43,6 +43,11 @@ export default function AutoPricing() {
   // 展开哪一个商品页的变体列表。按 product_id 记，不按行记：
   // 同一商品页下的多条分支共用一个展开区，否则展开 24 个变体就是 24 个面板。
   const [openVariantOf, setOpenVariantOf] = useState('');
+  // per-SKU 显式变体维度。草稿按行存，未编辑的行直接显示 monitor 里已保存的值；
+  // 刷新后草稿被清掉，界面回到服务端状态，不会出现「看着保存了其实没落库」。
+  const [variantDrafts, setVariantDrafts] = useState<Record<string, string>>({});
+  const [variantBusy, setVariantBusy] = useState('');
+  const [variantSaved, setVariantSaved] = useState('');
   // 被网站验证挡住时，唯一真正有效的动作是让真人在同一个持久化浏览器里过掉那次验证。
   // 按钮直接落到维护面板，而不是再点一次「立即采集」——那只会多一次失败记录。
   const maintenanceRef = useRef<HTMLDetailsElement>(null);
@@ -137,6 +142,20 @@ export default function AutoPricing() {
       else await configureBuyboxMonitor(r.product_id,r.offer_id,{enabled:action==='start',interval_minutes:intervalMinutes});
       await refresh(true);
     } catch(e) { setError((e as Error).message); } finally { setBusy(''); }
+  };
+  // 只覆盖这一条 SKU 的商品页变体维度。留空 = 清除覆盖、退回按商品名自动解析；
+  // 绝不代表「跳过变体确认」——严格闸门在解析器里，前端没有放行开关。
+  const saveVariantLabels = async (r: any) => {
+    const k = key(r);
+    const raw = variantDrafts[k] ?? (r.monitor?.variant_labels || []).join('、');
+    const labels = raw.split(/[,，、;；\n]+/).map(s => s.trim()).filter(Boolean).slice(0, 6);
+    setVariantBusy(k); setVariantSaved(''); setError('');
+    try {
+      await setBuyboxVariantLabels(r.product_id, r.offer_id, labels);
+      setVariantDrafts(prev => { const next = { ...prev }; delete next[k]; return next; });
+      await refresh(true);
+      setVariantSaved(k);
+    } catch (e) { setError((e as Error).message); } finally { setVariantBusy(''); }
   };
   const monitorBulk = async (enabled: boolean, currentPage = false) => {
     setBusy('monitor'); setError('');
@@ -489,7 +508,18 @@ export default function AutoPricing() {
               {m.price_ownership?.own_price!=null&&<small>对照本店价：R {m.price_ownership.own_price} · {m.price_ownership.own_price_source==='official_live'?'实时API':m.price_ownership.own_price_source==='official_snapshot'?'官方同步快照':'任务售价快照'}</small>}
               <small role="status">{view.detail}</small>
               {view.action&&<small className="collection-advice">建议：{view.action}</small>}
-              {diag&&<small className="diag-line" title={JSON.stringify(diag)}>页面 HTTP {diag.http_status??'—'} · Buybox 区块 {diag.buybox_cards??'未统计'} 个 · 价格节点 {diag.price_nodes??'未统计'} 个{diag.page_title?` · 标题「${diag.page_title}」`:''}</small>}
+              {diag&&<small className="diag-line" title={JSON.stringify(diag)}>页面 HTTP {diag.http_status??'—'} · Buybox 区块 {diag.buybox_cards??'未统计'} 个 · 价格节点 {diag.price_nodes??'未统计'} 个{diag.page_title?` · 标题「${diag.page_title}」`:''}{diag.variant_labels_source==='override'?' · 变体按显式配置':''}</small>}
+              <div className="variant-label-editor">
+                <label>此 SKU 页面上的变体（多个用逗号分隔）
+                  <input type="text" aria-label={`${r.sku} 变体标签`} placeholder="例：Blue，或 Nude、L"
+                    value={variantDrafts[key(r)] ?? (r.monitor?.variant_labels || []).join('、')}
+                    onChange={e => { setVariantDrafts({ ...variantDrafts, [key(r)]: e.target.value }); setVariantSaved(''); }} />
+                </label>
+                <button type="button" className="btn btn-outline btn-sm" disabled={variantBusy === key(r) || !configured} title={configured ? '' : '卖家接口未配置，无法保存'}
+                  onClick={() => saveVariantLabels(r)}>{variantBusy === key(r) ? '保存中…' : '保存变体'}</button>
+                {variantSaved === key(r) && <small className="text-success">已保存，下一轮采集生效</small>}
+                <small>商品名里混了型号码（如 FDJH4）时，按标题猜变体会把它当成页面上不存在的规格，每轮都报「确认不了变体」。填页面上的真实规格即可。留空恢复自动解析；不会放宽变体确认，也不会拿默认变体的报价调价。</small>
+              </div>
               <small>页面卖家：{m.snapshot?.buyboxSeller||'未读取'}</small>
               {hasQuote&&<small>报价来源：{m.source?collectorName(m.source):'未记录'}</small>}
               {hasQuote&&['queued','running','error','paused'].includes(r.monitor?.status)&&<small>上一次成功采到的报价，不是本轮结果</small>}

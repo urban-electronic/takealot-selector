@@ -828,6 +828,8 @@ export const pauseAllAutomaticPricing = (): Promise<any> => request('/api/automa
 export const configureBuyboxMonitor = (product:string, offer:string, settings:unknown):Promise<any> => request(`/api/buybox/${product}/${offer}`,{method:'PUT',body:JSON.stringify(settings)});
 export const collectBuyboxNow = (product:string, offer:string):Promise<any> => request(`/api/buybox/${product}/${offer}/collect-now`,{method:'POST'});
 export const bulkBuyboxMonitor = (payload:unknown):Promise<any> => request('/api/buybox/bulk',{method:'POST',body:JSON.stringify(payload)});
+/** 只覆盖这一条 SKU 的商品页变体维度；传空数组清除覆盖、退回按商品名自动解析。 */
+export const setBuyboxVariantLabels = (product:string, offer:string, labels:string[]):Promise<any> => request(`/api/buybox/${product}/${offer}/variant-labels`,{method:'PUT',body:JSON.stringify({labels})});
 
 export const collectOnAppOpen = () => request<{queued:number;skipped:number;price_changed:boolean}>('/api/buybox/page-open',{method:'POST'});
 

@@ -2664,6 +2664,12 @@ table tbody tr:hover { background: #f8fafc; }
 .pricing-table .row-details[open] { padding-bottom: 4px; }
 /* 诊断行：只在展开「为什么」时出现，用来区分改版/拦截/下架。 */
 .pricing-table .row-details .diag-line { color: var(--text-muted); font-variant-numeric: tabular-nums; overflow:hidden; text-overflow:ellipsis; }
+/* per-SKU 变体覆盖：折叠在「详情」里，输入与按钮同一行，说明文字另起一行。 */
+.pricing-table .variant-label-editor { display:flex; flex-wrap:wrap; align-items:flex-end; gap:6px; margin-top:6px; padding-top:6px; border-top:1px dashed var(--border, #d8dde6); }
+.pricing-table .variant-label-editor label { display:flex; flex-direction:column; gap:3px; font-size:11px; color:var(--text-muted); }
+.pricing-table .variant-label-editor input { width:170px; max-width:100%; font-size:12px; }
+.pricing-table .variant-label-editor > small { flex:1 0 100%; }
+.pricing-table .variant-label-editor .text-success { color:var(--success-strong, #18794e); }
 .collection-bar-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
 .collection-bar-actions .btn { margin-left:0; }
 
