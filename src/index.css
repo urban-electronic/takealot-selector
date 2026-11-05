@@ -4228,3 +4228,7 @@ table tbody tr:hover { background: #f8fafc; }
 .selection-agent-credential .selection-import-main {
   margin-top: 8px;
 }
+
+/* Open editors need a full flex row rather than the summary's intrinsic width. */
+.pricing-table .row-buttons .row-details[open] { flex: 1 0 100%; min-width: 0; width: 100%; box-sizing: border-box; }
+.pricing-table .variant-label-editor label { min-width: 0; max-width: 100%; }
