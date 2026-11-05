@@ -154,21 +154,49 @@ def test_platform_rejection_carries_host_and_status(db, env):
     assert "Invalid RRP" in exc.value.detail and "422" in exc.value.detail
 
 
-@pytest.mark.parametrize("other_barcode", ["6009512345679", None, "6009512345678"])
-def test_multiple_variants_without_confirmed_barcode_never_write(db, env, other_barcode):
+def test_all_variants_are_listed_in_one_batch_without_barcode(db, env):
+    """不传 Barcode 就是「所有变体都自动上」：已有报价的跳过，其余逐个建 offer。"""
     row = product(db)
     env["state"]["variants"] = [
         variant(barcode="6009512345677", label="Gold", has_offer=True),
         variant(barcode="6009512345678", label="Silver"),
-        variant(barcode=other_barcode, label="Black"),
+        variant(barcode="6009512345679", label="Black"),
     ]
-    with pytest.raises(HTTPException) as exc:
-        list_offer("p1", ListOfferIn(), db, "default-store")
-    assert exc.value.status_code == 409
-    assert "变体" in exc.value.detail
-    assert env["calls"]["create"] == []
+    result = list_offer("p1", ListOfferIn(), db, "default-store")
+
+    assert [c["barcode"] for c in env["calls"]["create"]] == ["6009512345678", "6009512345679"]
+    assert result["listed_count"] == 2 and result["failed_count"] == 0
+    assert [s["barcode"] for s in result["skipped"]] == ["6009512345677"]
+    assert result["unlistable"] == []
     db.refresh(row)
-    assert not row.sku
+    assert row.sku == "9902739445801 9902739445802", "多变体 SKU 按空格拼回产品主档"
+
+
+def test_variant_without_barcode_is_reported_not_blocking(db, env):
+    """缺 Barcode 的变体单独列进 unlistable，其它变体照上。"""
+    row = product(db)
+    env["state"]["variants"] = [
+        variant(barcode="6009512345678", label="Silver"),
+        {"barcode": None, "tsin": "104036599", "label": "No-GTIN", "has_offer": False},
+    ]
+    result = list_offer("p1", ListOfferIn(), db, "default-store")
+
+    assert [c["barcode"] for c in env["calls"]["create"]] == ["6009512345678"]
+    assert result["listed_count"] == 1
+    assert result["unlistable"][0]["variant_label"] == "No-GTIN"
+    db.refresh(row)
+    assert row.sku == "9902739445801"
+
+
+def test_duplicate_barcode_lists_only_once(db, env):
+    """同一 Barcode 出现两次时只建一个 offer，重复的那条进 unlistable 说清楚。"""
+    product(db)
+    env["state"]["variants"] = [variant(label="A"), variant(label="B")]
+    result = list_offer("p1", ListOfferIn(), db, "default-store")
+
+    assert [c["barcode"] for c in env["calls"]["create"]] == ["6009512345678"]
+    assert result["listed_count"] == 1
+    assert "重复" in result["unlistable"][0]["reason"]
 
 
 def test_multi_variant_dry_run_lists_every_plan(db, env):
@@ -196,19 +224,23 @@ def test_explicit_barcode_selects_only_the_confirmed_variant(db, env):
     assert result["barcode"] == env["calls"]["create"][0]["barcode"] == "6009512345679"
 
 
-def test_malformed_catalogue_does_not_become_a_single_variant(db, env, monkeypatch):
+def test_partial_catalogue_warns_and_still_lists_known_variants(db, env, monkeypatch):
+    """门户变体数取不全时只给警告：已经拿到 Barcode 的变体照上，不再整批 409。"""
     from services import takealot_portal_api as portal
 
     product(db)
     record = portal.extract("96357594", {"variants": [{"gtin": "6009512345678"}, None]})
+    assert record["catalogue_variant_count"] == 2 and len(record["catalogue_variants"]) == 1
     monkeypatch.setattr(portal, "fetch", lambda *args: record)
-    with pytest.raises(HTTPException) as exc:
-        list_offer("p1", ListOfferIn(), db, "default-store")
-    assert exc.value.status_code == 409
-    assert env["calls"]["create"] == []
+
+    result = list_offer("p1", ListOfferIn(), db, "default-store")
+    assert [c["barcode"] for c in env["calls"]["create"]] == ["6009512345678"]
+    assert result["listed_count"] == 1
+    assert result["warnings"], "资料不全要留下提示"
 
 
 def test_duplicate_barcode_cannot_identify_variant(db, env):
+    """显式传 Barcode 时仍要求唯一匹配：重复就拒绝，不猜运营想上哪个。"""
     product(db)
     env["state"]["variants"] = [variant(), variant(label="Silver")]
     with pytest.raises(HTTPException) as exc:

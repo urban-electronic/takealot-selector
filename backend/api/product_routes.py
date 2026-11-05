@@ -990,7 +990,9 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     售价取产品已有售价，RRP 默认 1.5 倍（RRP_MULTIPLIER）；不传 SKU 由平台分配数字串；
     不传 leadtime 就是不预售，库存等入仓后由发货带来。
 
-    多变体商品可以只读预览；实际创建时必须显式传入唯一匹配的 Barcode。
+    多变体商品不传 Barcode 时按目录逐个变体建 offer（已有报价的进 `skipped`）；
+    目录里缺 Barcode 的变体列在 `unlistable`，只提示、不阻塞其余变体；
+    显式传 Barcode 时只上那一个变体，且要求唯一匹配。
     已有报价的变体返回在 `skipped`，不重复提交。
     """
     from services import takealot_portal_api as portal
@@ -1017,14 +1019,22 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
         reason = (record.get('warnings') or ['目录资料读取失败'])[0]
         raise HTTPException(status_code=503, detail=f"目录资料读取失败：{reason}")
     catalogue_variants = record.get('catalogue_variants') or []
-    if record.get('catalogue_variant_count', len(catalogue_variants)) != len(catalogue_variants):
-        raise HTTPException(status_code=409, detail="目录变体资料不完整，请在卖家门户确认后上架")
+    warnings: List[str] = []
+    expected = record.get('catalogue_variant_count', len(catalogue_variants))
+    if expected != len(catalogue_variants):
+        # 门户报的变体数和实际取到的不一致，最坏结果是「少上几个」，不会上错变体
+        # （每个 offer 都按变体自己的 Barcode 建），所以只做提示，不挡住整批。
+        warnings.append(f"目录报 {expected} 个变体、实际取到 {len(catalogue_variants)} 个；"
+                        f"资料不全的变体本次不会上架，请到卖家门户核对")
     variants = [v for v in catalogue_variants if v.get('barcode')]
+    # 目录里没 Barcode 的变体建不了 offer，单独列出来告诉运营，而不是让整批失败。
+    unlistable = [{'variant_label': v.get('label'), 'tsin': v.get('tsin'),
+                   'reason': '目录里这个变体没有 Barcode，取不到能建 offer 的标识'}
+                  for v in catalogue_variants if not v.get('barcode')]
     if not variants:
         raise HTTPException(status_code=409, detail="该商品在目录里没有可用 Barcode，无法创建 offer")
 
-    # 显式 Barcode 必须唯一匹配。未指定时先整理预览与已有报价明细；
-    # 写入前仍按目录原始变体数量判断，不能靠过滤缺失或重复 Barcode 变成单变体。
+    # 显式 Barcode 必须唯一匹配；未指定时把目录里每个带 Barcode 的变体都排进本批。
     if data.barcode:
         matches = [v for v in variants if v['barcode'] == data.barcode]
         if not matches:
@@ -1037,6 +1047,8 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
         seen_barcodes = set()
         for item in variants:
             if item['barcode'] in seen_barcodes:
+                unlistable.append({'variant_label': item.get('label'), 'tsin': item.get('tsin'),
+                                   'reason': f"Barcode {item['barcode']} 与前面的变体重复，只用第一个建 offer"})
                 continue
             seen_barcodes.add(item['barcode'])
             requested.append(item)
@@ -1052,13 +1064,10 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     if not targets:
         # 全都有报价：不是错误，把跳过明细回给前端提示即可。
         return {'ok': True, 'dry_run': bool(data.dry_run), 'plid': plid, 'product_no': p.product_no,
-                'selling_price': 0, 'rrp': 0, 'sku': None, 'variants': [], 'skipped': skipped,
+                'selling_price': 0, 'rrp': 0, 'sku': None, 'variants': [], 'skipped': skipped, 'unlistable': unlistable, 'warnings': warnings,
                 'listed_count': 0, 'failed_count': 0,
                 'barcode': skipped[0]['barcode'] if len(skipped) == 1 else None,
                 'variant_label': skipped[0]['variant_label'] if len(skipped) == 1 else None}
-
-    if not data.dry_run and not data.barcode and len(catalogue_variants) != 1:
-        raise HTTPException(status_code=409, detail="商品有多个变体，请在卖家门户确认目标变体后上架")
 
     price = data.selling_price if data.selling_price else p.actual_sale_price_zar
     if not price or float(price) <= 0:
@@ -1071,6 +1080,7 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
                   'selling_price': price, 'rrp': rrp, 'sku': None, 'leadtime_days': None} for v in targets]
         return {'ok': True, 'dry_run': True, 'plan': plans[0], 'plans': plans, 'plid': plid,
                 'product_no': p.product_no, 'variants': variants, 'skipped': skipped,
+                'unlistable': unlistable, 'warnings': warnings,
                 'listed_count': len(plans), 'failed_count': 0}
 
     # 逐个变体建 offer。串行而不是并发：Seller API 对同一 PLID 的连续写入偶发打回，
@@ -1122,7 +1132,7 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
             'status': single['status'] if single else None,
             'offer_url': single['offer_url'] if single else None,
             'validation_errors': listed[0]['validation_errors'],
-            'variants': results, 'skipped': skipped,
+            'variants': results, 'skipped': skipped, 'unlistable': unlistable, 'warnings': warnings,
             'listed_count': len(listed), 'failed_count': len(failed)}
 
 

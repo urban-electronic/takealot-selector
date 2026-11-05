@@ -786,6 +786,7 @@ export default function ProductList() {
       const result = await api.listProductOffer(product.id, { rrp_multiplier: RRP_MULTIPLIER });
       const variants = result.variants ?? [];
       const skipped = result.skipped ?? [];
+      const unlistable = result.unlistable ?? [];
       const listed = variants.filter(v => v.ok);
       const failedVariants = variants.filter(v => !v.ok);
       const listedCount = result.listed_count ?? listed.length;
@@ -804,6 +805,9 @@ export default function ProductList() {
       if (listedCount > 1) facts.push(`${listedCount} 个变体`);
       else if (result.variant_label) facts.push(`变体 ${result.variant_label}`);
       if (skipped.length) facts.push(`跳过 ${skipped.length} 个已有报价变体`);
+      // 目录里连 Barcode 都没有的变体：整批照上，但得把上不了的那几个点名给运营。
+      if (unlistable.length) facts.push(`${unlistable.length} 个变体资料不全未上（${unlistable.map(v => v.variant_label || v.tsin || '无标签').join('、')}）`);
+      if ((result.warnings || []).length) facts.push(result.warnings!.join('；'));
       // 部分变体被平台拒：成功的已经写进去了，失败的逐个点名，别让运营回门户猜。
       if (failedVariants.length) {
         const detail = failedVariants

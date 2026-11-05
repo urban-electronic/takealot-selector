@@ -330,6 +330,13 @@ export interface ListOfferVariantResult {
   validation_errors?: string[];
 }
 
+/** 目录里上不了的变体（没有 Barcode，或 Barcode 与别的变体重合）。 */
+export interface ListOfferUnlistableVariant {
+  variant_label?: string | null;
+  tsin?: string | null;
+  reason: string;
+}
+
 /** 被跳过的变体（本店已有报价，不重复创建）。 */
 export interface ListOfferSkippedVariant {
   barcode: string;
@@ -356,6 +363,10 @@ export interface ListOfferResult {
   /** 多变体商品：逐变体明细，前端据此报「哪几个没上成」。 */
   variants?: ListOfferVariantResult[];
   skipped?: ListOfferSkippedVariant[];
+  /** 目录里缺 Barcode 等取不到标识的变体：只提示，不影响其余变体上架。 */
+  unlistable?: ListOfferUnlistableVariant[];
+  /** 目录资料不全之类的提醒（不阻断整批）。 */
+  warnings?: string[];
   listed_count?: number;
   failed_count?: number;
   /** dry_run 时每个变体的提交计划。 */
