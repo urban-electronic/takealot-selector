@@ -9,7 +9,7 @@ import { ProductImage } from '../utils/imageFallback';
 import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, staleNote, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { beijingClock, todayLocal } from '../utils/datetime';
-import { isSuspiciousSkuToken, skuVariants, variantLabels } from '../utils/variants';
+import { isSuspiciousSkuToken, skuVariants, variantLabels, variantTitles } from '../utils/variants';
 import { isAgencyStoreName } from '../utils/agencyStore';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { isEan13 } from '../utils/ean';
@@ -51,6 +51,7 @@ const allColumns: ColumnDef[] = [
   { key: 'market_prices', label: '参考价（R）', defaultWidth: 210 },
   { key: 'fee_category', label: 'Fee品类', defaultWidth: 140 },
   { key: 'competing_sellers_count', label: '竞品卖家数', defaultWidth: 90 },
+  { key: 'wishlist_count', label: 'Wishlist', defaultWidth: 92 },
   { key: 'profit_margin', label: '利润率', defaultWidth: 80 },
   { key: 'profit_zar', label: '利润', defaultWidth: 80 },
   // SKU 列要同时放下 13 位数字和「复制」按钮，140 会挤成两行。
@@ -149,6 +150,7 @@ export default function ProductList() {
   const [assistError, setAssistError] = useState('');
   /** 成功类提示单独一个状态：用 role="status" 播报，不会被读屏当成错误 */
   const [assistNotice, setAssistNotice] = useState('');
+  const [wishlistBusy, setWishlistBusy] = useState(false);
   const previewAssist = async () => {
     if (assistBusy) return;
     setAssistBusy(true); setAssistError(''); setAssistNotice('');
@@ -790,11 +792,21 @@ export default function ProductList() {
       const listed = variants.filter(v => v.ok);
       const failedVariants = variants.filter(v => !v.ok);
       const listedCount = result.listed_count ?? listed.length;
-      if (result.sku) {
-        // 平台回写的 SKU 只在本地还是空的时候补上，已有的自建 SKU 不被覆盖。
-        // 多变体时是一串用空格拼起来的 SKU，标签侧 split_skus 会按规格拆开。
-        setProducts(prev => prev.map(row => (row.id === product.id && !(row.sku || '').trim() ? { ...row, sku: result.sku as string } : row)));
-        notifyCatalogChanged(['sku']);
+      if (result.product_sku !== undefined || result.sku) {
+        // 后端已把本轮新 SKU 与原有 SKU 去重合并，并把规格名、各变体标题按同一
+        // 顺序落库。直接用回执整行更新，否则「补上第二批变体」后本地还显示旧
+        // SKU、分支名仍是「规格待识别」，标题也还是那一个共享标题。
+        setProducts(prev => prev.map(row => {
+          if (row.id !== product.id) return row;
+          const sku = result.product_sku ?? ((row.sku || '').trim() ? row.sku : (result.sku || ''));
+          return {
+            ...row,
+            sku,
+            ...(result.chinese_product_name !== undefined ? { chinese_product_name: result.chinese_product_name } : {}),
+            ...(result.variant_titles !== undefined ? { variant_titles: result.variant_titles } : {}),
+          };
+        }));
+        notifyCatalogChanged(['sku', 'chinese_product_name']);
       }
       // 变体全部早就有报价：不是失败，只是没有可提交的东西。
       if (!listedCount && skipped.length) {
@@ -825,6 +837,27 @@ export default function ProductList() {
     }
   };
 
+  /** 上架到后台后回传 My Offers 的心愿单数。
+   *  静默模式不把「同步成功」盖到上架回执上；失败仍要说明，但明确是 Wishlist
+   *  没接上而不是上架失败，免得运营看到红字以为要重新点上架。 */
+  const syncWishlistNow = async (silent = false) => {
+    if (wishlistBusy || dataSource !== 'remote') return;
+    setWishlistBusy(true);
+    try {
+      const result = await api.syncWishlist();
+      if (result.ok) {
+        fetchProducts();
+        if (!silent) setAssistNotice(`Wishlist 已回传：${result.matched} 个产品（字段 ${result.field ?? '—'}）`);
+      } else {
+        setAssistError(`Wishlist 回传未完成：${result.reason || '卖家接口没有返回心愿单字段'}`);
+      }
+    } catch (e) {
+      setAssistError(`Wishlist 回传失败：${e instanceof Error ? e.message : '未知错误'}`);
+    } finally {
+      setWishlistBusy(false);
+    }
+  };
+
   const handleListOffer = async (product: Product) => {
     if (listingIds.has(product.id)) return;
     setListingIds(prev => new Set(prev).add(product.id));
@@ -836,6 +869,7 @@ export default function ProductList() {
       return next;
     });
     setListResult(outcome);
+    if (outcome.ok) void syncWishlistNow(true);
   };
 
   const runListBatch = async (targets: Product[]) => {
@@ -857,6 +891,8 @@ export default function ProductList() {
       else failures.push(outcome.message);
     }
     setListBatchProgress('');
+    // 整批只回传一次，不跟 listOneOffer 逐个叠请求。
+    if (success > 0) void syncWishlistNow(true);
     setListResult({
       ok: failures.length === 0,
       message: `批量上架完成：成功 ${success} 个${failures.length ? `，失败 ${failures.length} 个 —— ${failures.join('；')}` : ''}。RRP 按售价 ×${RRP_MULTIPLIER} 提交。`,
@@ -1214,19 +1250,37 @@ export default function ProductList() {
         );
       case 'product_name':
         return (
-          <span style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
-            {p.takealot_url ? (
-              <a
-                href={p.takealot_url}
-                target="_blank" rel="noreferrer"
-                onClick={e => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) { e.preventDefault(); void openUrl(p.takealot_url!); } }}
-                title={p.product_name || ''}
-                style={{ textDecoration: 'none', color: 'var(--color-primary)', cursor: 'pointer' }}
+          <span className="product-title-cell">
+            <span style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
+              {p.takealot_url ? (
+                <a
+                  href={p.takealot_url}
+                  target="_blank" rel="noreferrer"
+                  onClick={e => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.button === 0) { e.preventDefault(); void openUrl(p.takealot_url!); } }}
+                  title={p.product_name || ''}
+                  style={{ textDecoration: 'none', color: 'var(--color-primary)', cursor: 'pointer' }}
+                >
+                  {p.product_name || '(无标题)'}
+                </a>
+              ) : (
+                <span title={p.product_name || ''}>{p.product_name || '(无标题)'}</span>
+              )}
+            </span>
+            {/* 一行 = 一个 PLID，标题本来就是所有变体共享的。把「有几个 SKU」标出来，
+                并给一个直接展开分支的入口，才不会让人以为多个 SKU 对应多个标题。 */}
+            {skuVariants(p.sku).length > 1 && (
+              <button
+                type="button"
+                className="variant-count-badge"
+                title={`该产品有 ${skuVariants(p.sku).length} 个 SKU 变体；点击展开/收起各分支的规格与标题`}
+                onClick={() => setExpandedVariantRows(prev => {
+                  const next = new Set(prev);
+                  if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                  return next;
+                })}
               >
-                {p.product_name || '(无标题)'}
-              </a>
-            ) : (
-              <span title={p.product_name || ''}>{p.product_name || '(无标题)'}</span>
+                {skuVariants(p.sku).length} 个变体
+              </button>
             )}
           </span>
         );
@@ -1352,6 +1406,11 @@ export default function ProductList() {
         );
       case 'competing_sellers_count':
         return p.competing_sellers_count != null ? p.competing_sellers_count : '-';
+      case 'wishlist_count':
+        // 0 是真实数量（没人加心愿单），只有 null 才是「还没同步过」。
+        return p.wishlist_count != null
+          ? <span title={p.wishlist_updated_at ? `My Offers 回传于 ${p.wishlist_updated_at}` : '来自卖家后台 My Offers'}>{p.wishlist_count}</span>
+          : <span title="尚未从 My Offers 回传；可在工具栏点「同步 Wishlist」">—</span>;
       case 'profit_margin':
         return (
           <span className={p.profit_margin != null && p.profit_margin >= 0.25 ? 'high-margin' : p.profit_margin !== null ? 'low-margin' : ''}>
@@ -1546,6 +1605,16 @@ export default function ProductList() {
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading} onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading} title="仅更新2026年10月1日起在程序登记的已有产品，不新增卖家商品" onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
+        {!archivedMode && !maintenanceMode && dataSource === 'remote' && (
+          <button
+            className="btn btn-outline"
+            disabled={wishlistBusy || loading}
+            title="从卖家后台 My Offers 回传每个 SKU 的心愿单数量；一键上架成功后也会自动回传一次"
+            onClick={() => void syncWishlistNow()}
+          >
+            {wishlistBusy ? '回传中…' : '同步 Wishlist'}
+          </button>
+        )}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && showMarketPrice && <button className="btn btn-outline" onClick={openMarketPanel} title="批量录入国内原价 / 到手价（照天猫、京东商品页抄）；新加坡官网价由后端每天自动重读">参考价</button>}
         {/* 新建产品的全局入口在顶栏（App.tsx header-create-button），页头这里不再重复放一个。
             废品库要「返回产品列表」是独立动作，保留。 */}
@@ -1936,6 +2005,7 @@ export default function ProductList() {
                 const linkBgColor = p.link_status && p.link_status !== '未购买' ? LINK_STATUS_MAP[p.link_status]?.color : undefined;
                 const branches = skuVariants(p.sku);
                 const labels = variantLabels(p);
+                const titles = variantTitles(p);
                 return (
                   <Fragment key={p.id}>
                     <tr onContextMenu={e => { e.preventDefault(); setContextProduct({ id: p.id, x: e.clientX, y: e.clientY }); }} className={branches.length > 1 ? 'product-parent-row' : ''} style={linkBgColor ? { background: linkBgColor } : undefined}>
@@ -1974,7 +2044,7 @@ export default function ProductList() {
                                 </span>
                                 <span className={`branch-role ${index === 0 ? 'primary' : ''}`}>{index === 0 ? '主' : variantKind(labels[index])}</span>
                                 <code>{sku}</code>
-                                <span className="branch-names"><strong>{labels[index]}</strong><small>{p.product_name || '英文品名待回抓'}</small></span>
+                                <span className="branch-names"><strong>{labels[index]}</strong><small title={titles[index] || p.product_name || ''}>{titles[index] || p.product_name || '英文品名待回抓'}</small></span>
                                 <span className="branch-spec">{variantSpec(labels[index], labels)}</span>
                                 <button type="button" className="btn btn-outline btn-sm branch-edit-btn" onClick={() => setVariantEditor({ productId: p.id, index, sku, label: labels[index], makePrimary: index === 0 })}>修改分支</button>
                               </div>

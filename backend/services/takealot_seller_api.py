@@ -22,6 +22,13 @@ _offer_dispatch_lock = threading.Lock()
 _offer_pool = ThreadPoolExecutor(max_workers=1)
 _active_offer_read = None
 
+# /v1/offers 用 `fields` 白名单指定返回列。平时只取这些，响应小、也稳定。
+# 新增指标（如后台 My Offers 的 Wishlist 数）必须先确认字段名再加进来：
+# 白名单里塞一个接口不认识的字段，可能让整批卖家资料读取 400。
+OFFER_FIELDS = ("title", "image_url", "sku", "tsin_id", "productline_id",
+                "selling_price", "status", "length_cm", "width_cm",
+                "height_cm", "weight_grams")
+
 
 def _offer_time_left(deadline):
     remaining = deadline - time.monotonic()
@@ -92,13 +99,28 @@ def _unavailable_reason(status):
     return f'卖家接口暂时不可用（{reason}），已暂停请求，请稍后再试'
 
 
-def _load_offers(key):
+def _offer_digest(key, extra_fields=()):
+    """常规读取沿用 `sha256(key)` 这个既有缓存键，不能改。
+
+    卖家资料读取的缓存/冷却/在途去重都按这个摘要索引，连测试都钉住了它；
+    随便换个摘要会让既有缓存全失效、并且让「密钥 401 冷却」等状态丢掉。
+    只有真带额外探测字段时，才另开一个 `sha256(key|fields)` 的独立分区。
+    """
+    extra = tuple(dict.fromkeys(str(f) for f in extra_fields if f))
+    raw = key if not extra else key + '|' + ','.join(extra)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _load_offers(key, extra_fields=()):
     """调用方最多等45秒；单个在途读取完成前，同一配置复用它，其他配置报忙。
 
     在途线程只读平台并更新真实缓存，不触碰调用方DB；超时不伪造完整/空列表。
+    `extra_fields` 是探测确认过存在的新指标字段（如 Wishlist），与主字段集合
+    分开缓存，避免同步一次冷门指标就把常规卖家资料缓存冲掉。
     """
     global _active_offer_read
-    digest = hashlib.sha256(key.encode()).hexdigest()
+    extra = tuple(dict.fromkeys(str(f) for f in extra_fields if f))
+    digest = _offer_digest(key, extra)
     with _offer_dispatch_lock:
         active = _active_offer_read
         if active is not None and not active[1].done():
@@ -107,7 +129,7 @@ def _load_offers(key):
             future = active[1]
         else:
             deadline = time.monotonic() + OFFERS_READ_WAIT_SECONDS
-            future = _offer_pool.submit(_load_offers_serialized, key, deadline)
+            future = _offer_pool.submit(_load_offers_serialized, key, deadline, extra)
             _active_offer_read = (digest, future)
     try:
         return future.result(timeout=OFFERS_READ_WAIT_SECONDS)
@@ -117,9 +139,11 @@ def _load_offers(key):
         raise ValueError('卖家资料读取已到时，尚有请求未退出，请稍后重试') from None
 
 
-def _load_offers_serialized(key, deadline):
+def _load_offers_serialized(key, deadline, extra_fields=()):
     """At most five pages per refresh; serialized and cached for 30 minutes."""
-    digest = hashlib.sha256(key.encode()).hexdigest()
+    extra = tuple(dict.fromkeys(str(f) for f in extra_fields if f))
+    digest = _offer_digest(key, extra)
+    fields = tuple(dict.fromkeys(OFFER_FIELDS + extra))
     with _offers_read_lock():
         state = _cache.setdefault(digest, {'rows': [], 'expires': 0, 'retry': 0})
         now = time.monotonic()
@@ -141,7 +165,7 @@ def _load_offers_serialized(key, deadline):
                     remaining = _offer_time_left(deadline)
                 params = [('limit', '1000')] if token is None else [('continuation_token', token)]
                 if token is None:
-                    params += [('fields', field) for field in ('title', 'image_url', 'sku', 'tsin_id', 'productline_id', 'selling_price', 'status', 'length_cm', 'width_cm', 'height_cm', 'weight_grams')]
+                    params += [('fields', field) for field in fields]
                 response = client.get('https://marketplace-api.takealot.com/v1/offers', params=params, headers={'X-API-Key': key}, timeout=min(20.0, remaining))
                 if response.status_code != 200:
                     cooldown = 1800 if response.status_code == 429 else 300
@@ -160,6 +184,63 @@ def _load_offers_serialized(key, deadline):
         state.update(rows=rows, expires=time.monotonic() + 1800, retry=0)
         state.pop('last_error', None)   # 成功一次就清掉，别让旧原因留在下次冷却里
         return rows
+
+
+def discover_wishlist_field(key):
+    """探测 My Offers 接口里「心愿单数量」的真实字段名。
+
+    后台 My Offers 页面上的 Wishlist 是一个运营想看、但 `/v1/offers` 日常
+    `fields` 白名单里没有的指标。不能猜一个字段名塞进白名单：接口不认识就
+    会让整个卖家资料读取 400。这里单独发一次 **不带 fields** 的单条请求，
+    只把响应 item 里含 `wish` 的键名列出来，数值型优先。
+
+    不走主缓存、不占 `_active_offer_read`：探测失败也不影响既有读取链路。
+    返回 `(字段名或 None, 全部键名)`，键名用于前端展示可行动的失败原因。
+    """
+    with httpx.Client(timeout=10, follow_redirects=False) as client:
+        response = client.get('https://marketplace-api.takealot.com/v1/offers',
+                              params=[('limit', '1')],
+                              headers={'X-API-Key': key}, timeout=10)
+    if response.status_code != 200:
+        raise ValueError(_unavailable_reason(response.status_code))
+    payload = response.json()
+    items = payload.get('items') if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise ValueError('卖家接口资料格式异常')
+    keys = sorted({str(k) for item in items if isinstance(item, dict) for k in item})
+
+    def numeric(k):
+        for item in items:
+            if isinstance(item, dict) and k in item:
+                value = item[k]
+                return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return False
+
+    candidates = sorted((k for k in keys if 'wish' in k.lower()),
+                        key=lambda k: (not numeric(k), len(k)))
+    return (candidates[0] if candidates else None), keys
+
+
+def wishlist_value(row, field=None):
+    """从一条 offer 取心愿单数。字段名已知就精确取，未知就模糊扫含 wish 的键。
+
+    数字字符串（后台有时给 "23"）也算；布尔、负数、非数值一律忽略，
+    免得把 `wishlist_enabled: true` 这种开关当成数量写进产品列表。
+    """
+    if not isinstance(row, dict):
+        return None
+    names = [field] if field else [k for k in row if 'wish' in str(k).lower()]
+    for name in names:
+        if not name or name not in row:
+            continue
+        value = row[name]
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+            return int(value)
+        if isinstance(value, str) and re.fullmatch(r'\d+', value.strip()):
+            return int(value.strip())
+    return None
 
 
 def seller_product(url, key):

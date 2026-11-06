@@ -113,6 +113,14 @@ class Product(Base):
     stock_remaining = Column(Integer, nullable=True)
     review_count = Column(Integer, nullable=True)
     rating_value = Column(Float, nullable=True)
+    # 卖家后台 My Offers 里的心愿单数量。这是会变的量，必须带时间戳，
+    # 不能只在上架那一刻存一次就当成永久事实；None = 从未成功同步过。
+    wishlist_count = Column(Integer, nullable=True)
+    wishlist_updated_at = Column(DateTime, nullable=True)
+    # 多变体上架时，目录给的每个变体自己的标题，按 products.sku 的顺序存成 JSON 数组。
+    # 产品主档的 product_name 是 PLID 级标题，所有变体共享；分支行要显示各自的
+    # 标题只能另存。纯展示字段，不参与装箱单/标签的中文名口径。
+    variant_titles = Column(Text, default="")
 
     # 多市场参考价（JSON 文本，空串表示未采集）：
     # {"CN":{"price":469,"cur":"CNY","src":"官网","at":"2026-10-21"},

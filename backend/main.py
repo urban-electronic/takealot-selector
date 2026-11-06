@@ -369,6 +369,10 @@ def _ensure_columns():
                 "archived_at": "DATETIME",
                 "market_prices": "TEXT DEFAULT ''",
                 "plid": "TEXT DEFAULT ''",
+                # My Offers 心愿单数 + 采集时间；多变体各自的目录标题（JSON 数组）。
+                "wishlist_count": "INTEGER",
+                "wishlist_updated_at": "DATETIME",
+                "variant_titles": "TEXT DEFAULT ''",
             }
             with engine.begin() as conn:
                 for name, sql_type in product_additions.items():

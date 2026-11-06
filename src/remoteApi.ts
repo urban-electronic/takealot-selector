@@ -320,6 +320,8 @@ export interface ListOfferVariantResult {
   barcode: string;
   tsin?: string | null;
   variant_label?: string | null;
+  /** 目录里该变体自己的标题，区别于 PLID 级共享标题 */
+  variant_title?: string | null;
   ok: boolean;
   reason?: string;
   status_code?: number | null;
@@ -371,7 +373,25 @@ export interface ListOfferResult {
   failed_count?: number;
   /** dry_run 时每个变体的提交计划。 */
   plans?: Array<Record<string, unknown>>;
+  /** 上架回写后的完整身份：直接更新列表行，不等下一次全量拉取。 */
+  product_sku?: string;
+  chinese_product_name?: string;
+  variant_titles?: string;
 }
+
+/** 卖家后台 My Offers 的心愿单数回传结果。 */
+export interface WishlistSyncResult {
+  ok: boolean;
+  matched: number;
+  total?: number;
+  field?: string | null;
+  probed_keys?: string[];
+  reason?: string;
+  updated_at?: string;
+}
+
+export const syncWishlist = (): Promise<WishlistSyncResult> =>
+  request<WishlistSyncResult>('/api/products/sync-wishlist', { method: 'POST' });
 
 export interface ListOfferOptions {
   barcode?: string;

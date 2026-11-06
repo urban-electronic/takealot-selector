@@ -49,6 +49,11 @@ export interface Product {
   stock_remaining?: number | null;
   review_count?: number | null;
   rating_value?: number | null;
+  /** 卖家后台 My Offers 的心愿单数量；null = 尚未成功同步过 */
+  wishlist_count?: number | null;
+  wishlist_updated_at?: string | null;
+  /** 多变体各自的目录标题，按 sku 顺序的 JSON 数组，见 utils/variants.variantTitles */
+  variant_titles?: string | null;
   /** 多市场参考价 JSON 文本，见 utils/marketPrice */
   market_prices?: string | null;
   // calculated

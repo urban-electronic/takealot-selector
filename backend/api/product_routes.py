@@ -96,6 +96,9 @@ class ProductCreate(BaseModel):
     stock_remaining: Optional[int] = None
     review_count: Optional[int] = None
     rating_value: Optional[float] = None
+    wishlist_count: Optional[int] = None
+    # 多变体各自的目录标题，按 sku 顺序的 JSON 数组；只读展示用，允许人工修正。
+    variant_titles: Optional[str] = ""
     # 多市场参考价（JSON 文本，见 models.Product.market_prices）
     market_prices: Optional[str] = ""
 
@@ -146,6 +149,8 @@ class ProductUpdate(BaseModel):
     stock_remaining: Optional[int] = None
     review_count: Optional[int] = None
     rating_value: Optional[float] = None
+    wishlist_count: Optional[int] = None
+    variant_titles: Optional[str] = None
     # 多市场参考价（JSON 文本）
     market_prices: Optional[str] = None
 
@@ -202,6 +207,9 @@ class ProductOut(BaseModel):
     stock_remaining: Optional[int] = None
     review_count: Optional[int] = None
     rating_value: Optional[float] = None
+    wishlist_count: Optional[int] = None
+    wishlist_updated_at: Optional[datetime] = None
+    variant_titles: Optional[str] = None
     # 多市场参考价（JSON 文本）
     market_prices: Optional[str] = None
     # Calculated
@@ -972,6 +980,147 @@ def _is_scraped_image(url: str) -> bool:
 RRP_MULTIPLIER = 1.5
 
 
+# 多变体规格名的降级占位值：见到它们就说明这一格其实没填。
+_VARIANT_PLACEHOLDERS = ('待识别', '待确认', '历史分支', '主商品')
+
+
+def _split_tokens(text):
+    return [s for s in re.split(r'[\s,，;；/]+', (text or '').strip()) if s]
+
+
+def _load_variant_titles(product):
+    try:
+        value = json.loads(getattr(product, 'variant_titles', '') or '')
+        if isinstance(value, list):
+            return [str(x) for x in value]
+    except (ValueError, TypeError):
+        pass
+    return []
+
+
+def _merge_variant_identity(product, results):
+    """把本轮新建成功的 offer 并回 SKU / 规格名 / 各变体标题。
+
+    产品主档一行 = 一个 PLID，`product_name` 本来就是所有变体共享的标题；
+    区分变体靠 `sku`（空格拼接）与 `chinese_product_name`（按位置一一对应）。
+    原来上架只写 `p.sku`，而且只在原本为空时写，于是：
+      - 补上第二批变体时新 SKU 根本不进来；
+      - 规格名数量对不上，前端全降级成「规格待识别」；
+      - 分支行每行都重复同一个商品标题。
+    这里做去重合并，并只在「空 / 占位 / 数量对不上」时补写规格名——
+    人工起好的中文名原样保留，绝不被目录里的英文 "Blue / L" 覆盖掉。
+    """
+    old_skus = _split_tokens(product.sku)
+    old_labels = _split_tokens(product.chinese_product_name)
+    old_titles = _load_variant_titles(product)
+    aligned = len(old_labels) == len(old_skus)
+    labels = list(old_labels) if aligned else [''] * len(old_skus)
+    titles = list(old_titles) if len(old_titles) == len(old_skus) else [''] * len(old_skus)
+    labels = ['' if any(p in x for p in _VARIANT_PLACEHOLDERS) else x for x in labels]
+    had_manual_name = bool((product.chinese_product_name or '').strip())
+
+    # 自建 SKU（含字母/连字符的人工编号）是产品身份，平台回执不许改动——
+    # 覆盖会让标签、装箱单、调价一起对不上，这是既有约定。只有原来存的就是
+    # 平台发的数字型 SKU 时，才允许追加新变体（补上第二批变体的场景）。
+    if old_skus and not all(re.fullmatch(r'\d{8,14}', s) for s in old_skus):
+        return (product.sku or ''), None, json.dumps(titles, ensure_ascii=False)
+
+    skus = list(old_skus)
+    index = {sku: i for i, sku in enumerate(skus)}
+    for row in results:
+        if not row.get('ok'):
+            continue
+        sku = str(row.get('sku') or '').strip()
+        if not sku:
+            continue
+        label = str(row.get('variant_label') or row.get('variant_title') or '').strip()
+        title = str(row.get('variant_title') or '').strip()
+        if sku in index:
+            i = index[sku]
+            if not labels[i] and label:
+                labels[i] = label
+            if not titles[i] and title:
+                titles[i] = title
+        else:
+            index[sku] = len(skus)
+            skus.append(sku)
+            labels.append(label)
+            titles.append(title)
+
+    sku_text = ' '.join(skus)
+    titles_text = json.dumps(titles, ensure_ascii=False)
+    need_name = (not had_manual_name or not aligned or len(old_skus) != len(skus)
+                 or any(not x for x in labels))
+    name_text = ' '.join(x or '规格待识别' for x in labels) if need_name else None
+    return sku_text, name_text, titles_text
+
+
+def _wishlist_plid(product):
+    match = re.search(r'PLID(\d+)', product.takealot_url or '', re.I)
+    return match.group(1) if match else None
+
+
+@router.post('/sync-wishlist')
+def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
+    """把卖家后台 My Offers 的心愿单数量回写到产品列表。
+
+    `/v1/offers` 的 `fields` 是白名单，平时只取 11 个业务字段。先探测心愿单
+    字段是否真的在这个接口里，再用它拉全量 offer，按 SKU / PLID 对齐本地产品。
+    探测不到就明确回报原因，不猜字段名、也不写 0（0 会被当成真实数量）。
+    """
+    from services.takealot_seller_api import (configured_key, discover_wishlist_field,
+                                              wishlist_value, _load_offers)
+    key = configured_key(db)
+    if not key:
+        raise HTTPException(400, '当前店铺尚未接入卖家 API，无法读取 My Offers')
+    try:
+        field, keys = discover_wishlist_field(key)
+    except Exception as exc:  # noqa: BLE001 —— 只归因，不把上游正文透出去
+        raise HTTPException(503, f'My Offers 字段探测失败：{_read_reason(exc)}')
+    if not field:
+        return {'ok': False, 'matched': 0, 'field': None, 'probed_keys': keys,
+                'reason': '卖家 API 的 offers 接口没有返回心愿单字段；后台 My Offers 页面的数字可能来自卖家门户内部接口。请把该页面截图或字段名发来即可接上。'}
+    try:
+        rows = _load_offers(key, extra_fields=(field,))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f'My Offers 读取失败：{_read_reason(exc)}')
+
+    by_sku, by_plid = {}, {}
+    for row in rows:
+        count = wishlist_value(row, field)
+        if count is None:
+            continue
+        sku = str(row.get('sku') or '').strip()
+        plid = str(row.get('productline_id') or '').strip()
+        if sku:
+            by_sku[sku] = max(count, by_sku.get(sku, 0))
+        if plid:
+            by_plid[plid] = max(count, by_plid.get(plid, 0))
+
+    now = datetime.utcnow()
+    products = db.query(Product).filter(
+        Product.store_id == store_id,
+        or_(Product.is_archived.is_(False), Product.is_archived.is_(None)),
+    ).all()
+    matched = 0
+    for p in products:
+        skus = _split_tokens(p.sku)
+        counts = [by_sku[s] for s in skus if s in by_sku]
+        if not counts:
+            plid = _wishlist_plid(p)
+            if plid and plid in by_plid:
+                counts = [by_plid[plid]]
+        if not counts:
+            continue
+        # 一个产品多个变体时取最大值：心愿单是商品级热度，不该把各行相加。
+        p.wishlist_count = max(counts)
+        p.wishlist_updated_at = now
+        matched += 1
+    db.commit()
+    return {'ok': True, 'matched': matched, 'total': len(products),
+            'field': field, 'updated_at': now.isoformat()}
+
+
 class ListOfferIn(BaseModel):
     """一键上架的入参。默认全自动：价格取产品已有售价，不传 SKU 交给平台生成。"""
     barcode: Optional[str] = None          # 多变体时指定要上哪个变体
@@ -1067,7 +1216,9 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
                 'selling_price': 0, 'rrp': 0, 'sku': None, 'variants': [], 'skipped': skipped, 'unlistable': unlistable, 'warnings': warnings,
                 'listed_count': 0, 'failed_count': 0,
                 'barcode': skipped[0]['barcode'] if len(skipped) == 1 else None,
-                'variant_label': skipped[0]['variant_label'] if len(skipped) == 1 else None}
+                'variant_label': skipped[0]['variant_label'] if len(skipped) == 1 else None,
+                'product_sku': p.sku or '', 'chinese_product_name': p.chinese_product_name or '',
+                'variant_titles': getattr(p, 'variant_titles', '') or ''}
 
     price = data.selling_price if data.selling_price else p.actual_sale_price_zar
     if not price or float(price) <= 0:
@@ -1097,6 +1248,8 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
         ok = bool(outcome.get('ok'))
         results.append({
             'barcode': target['barcode'], 'tsin': target.get('tsin'), 'variant_label': target.get('label'),
+            # 目录里每个变体自己的标题（区别于 PLID 级共享标题），用于分支行区分。
+            'variant_title': target.get('title'),
             'ok': ok, 'reason': '' if ok else str(outcome.get('reason') or '平台拒绝创建 offer'),
             'status_code': outcome.get('status'),
             'sku': str(offer.get('sku') or '').strip() or None,
@@ -1108,13 +1261,18 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
     listed = [r for r in results if r['ok']]
     failed = [r for r in results if not r['ok']]
 
-    # SKU 回写：平台按变体各发一串 SKU，多变体就用空格拼起来——标签/装箱单那边的
-    # split_skus 本来就把空格/逗号当多规格分隔符，口径不用另造一套。
-    new_skus = [r['sku'] for r in listed if r['sku']]
-    if new_skus and not (p.sku or '').strip():
-        p.sku = ' '.join(new_skus)
-        db.commit()
-    joined_sku = ' '.join(new_skus) if new_skus else None
+    # SKU 回写：平台按变体各发一串 SKU，多变体用空格拼起来（标签/装箱单的
+    # split_skus 本来就按空格/逗号拆，口径不用另造一套）。这里改成「合并」而不是
+    # 「只在为空时写」：补上第二批变体时，原来的 SKU 要保留、新 SKU 要追加。
+    # 同一批建好的 SKU、规格名、各变体标题按同一顺序落库，分支行才对得上号。
+    sku_text, name_text, titles_text = _merge_variant_identity(p, results)
+    joined_sku = ' '.join(r['sku'] for r in listed if r['sku']) or None
+    if sku_text != (p.sku or ''):
+        p.sku = sku_text
+    if name_text is not None:
+        p.chinese_product_name = name_text
+    p.variant_titles = titles_text
+    db.commit()
 
     if not listed:
         detail = f"平台拒绝创建 offer：{failed[0]['reason']}"
@@ -1133,7 +1291,10 @@ def list_offer(product_id: str, data: ListOfferIn, db: Session = Depends(get_db)
             'offer_url': single['offer_url'] if single else None,
             'validation_errors': listed[0]['validation_errors'],
             'variants': results, 'skipped': skipped, 'unlistable': unlistable, 'warnings': warnings,
-            'listed_count': len(listed), 'failed_count': len(failed)}
+            'listed_count': len(listed), 'failed_count': len(failed),
+            # 回写后的完整身份，前端直接更新本地行，不用等下一次全量拉取。
+            'product_sku': sku_text, 'chinese_product_name': p.chinese_product_name or '',
+            'variant_titles': titles_text}
 
 
 @router.post("/{product_id}/refresh-price", response_model=PriceRefreshOut)

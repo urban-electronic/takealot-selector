@@ -60,6 +60,9 @@ export const listProductOffer = (
   options: remoteApi.ListOfferOptions = {},
 ): Promise<remoteApi.ListOfferResult> => remoteApi.listProductOffer(id, options);
 
+/** 从卖家后台 My Offers 回传心愿单数量；同样走服务端密钥，本地数据源没有对应命令。 */
+export const syncWishlist = (): Promise<remoteApi.WishlistSyncResult> => remoteApi.syncWishlist();
+
 /**
  * 详情页推荐（同类商品 / 配套周边）。本地数据源没有服务端，就在前端按同一套口径算：
  * 拉一次全量商品 + 采购记录，交给 utils/productRecommend。

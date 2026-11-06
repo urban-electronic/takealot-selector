@@ -39,6 +39,25 @@ export function isPlaceholderLabel(label: string): boolean {
 }
 
 /**
+ * 每个 SKU 各自的目录标题（后端按 `products.sku` 顺序存成 JSON 数组）。
+ * 产品主档的 `product_name` 是 PLID 级共享标题，多个变体下每个分支重复它
+ * 就等于没有区分度；这个数组让分支行能显示「这一条 SKU 自己叫什么」。
+ * 老数据没这个字段、或数量和 SKU 对不上时一律返回空串，由调用方回退共享标题。
+ */
+export function variantTitles(product: Pick<Product, 'sku' | 'variant_titles'>): string[] {
+  const skus = skuVariants(product.sku);
+  try {
+    const value = JSON.parse(product.variant_titles || '[]');
+    if (Array.isArray(value) && value.length === skus.length) {
+      return value.map(item => (typeof item === 'string' ? item : ''));
+    }
+  } catch {
+    // 历史字段可能是空串或坏 JSON：当没有处理，不要打断整张表。
+  }
+  return skus.map(() => '');
+}
+
+/**
  * 单个 SKU token 的形态判定。
  *
  * 为什么需要：`products.sku` 没有格式约束，采集时会把变体名（「缠绕支架」这类中文）
