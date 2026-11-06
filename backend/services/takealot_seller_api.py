@@ -214,6 +214,10 @@ def discover_wishlist_field(key):
     def numeric(k):
         # Use the writeback parser, including numeric strings and later non-null
         # samples. Window metadata (dates, booleans, negatives) is not a count.
+        # Numeric timestamps/flags also parse as numbers, so reject metadata names.
+        if re.search(r'updated|modified|created|timestamp|enabled|disabled|label|status|flag'
+                     r'|(?:^|_)(?:date|time|start|end)(?:_|$)', k.lower()):
+            return False
         return any(wishlist_value(item, k) is not None for item in items)
 
     wish_keys = sorted((k for k in keys if 'wish' in k.lower()),

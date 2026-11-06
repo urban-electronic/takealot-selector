@@ -225,6 +225,8 @@ def test_discover_prefers_windowed_field_over_plain_count(monkeypatch):
     {'wishlist_recent_enabled': True},
     {'wishlist_count_30d': -1},
     {'wishlist_count_30d': None},
+    {'wishlist_last_updated': 1793970000},
+    {'wishlist_recent_enabled': 1},
 ])
 def test_discover_window_metadata_cannot_displace_a_valid_count(monkeypatch, metadata):
     row = {'sku': '111', 'wishlist_count': 23, **metadata}
@@ -244,7 +246,7 @@ def test_discover_uses_later_valid_sample_and_numeric_strings(monkeypatch):
 
 
 def test_discover_only_metadata_reports_no_count(monkeypatch):
-    row = {'wishlist_recent_enabled': True, 'wishlist_last_updated': 'today'}
+    row = {'wishlist_recent_enabled': 1, 'wishlist_last_updated': 1793970000}
     mock_client(monkeypatch, lambda request: httpx.Response(200, json={'items': [row]}))
     field, _keys, samples = seller.discover_wishlist_field(KEY)
     assert field is None
