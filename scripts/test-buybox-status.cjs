@@ -344,7 +344,8 @@ async function fleetScenario(rowsFixture, inspect) {
     check(tr.querySelector('.collection-status-cell').textContent.includes('已停采'), 'paused work is not labelled manual collection');
   });
   await scenario({status:'success'}, tr => {
-    check(tr.querySelector('.product-link').textContent==='中文名待核对', 'English never fills the Chinese display');
+    check(tr.querySelector('.product-link').textContent==='Test product', 'English platform title leads when the Chinese field is invalid');
+    check(!tr.querySelector('.product-cn'), 'invalid Chinese is not replaced with English in the Chinese line');
     check(tr.textContent.includes('中文字段为非中文，请修正'), 'invalid Chinese field is actionable');
     check(tr.querySelector('.product-link').title==='Test product', 'original English name is preserved on the link');
   }, {chinese_name:null,name_status:'invalid'});

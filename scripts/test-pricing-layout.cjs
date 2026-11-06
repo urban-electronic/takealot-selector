@@ -67,7 +67,8 @@ const row = (over) => ({
   chinese_name: '无线转接器', name_status: 'ok', url: 'https://example.invalid/p1',
   price: 269, stock: 11, suggested_min: 170, image: '', group: '未分类',
   monitor: { status: 'success', enabled: true, last_success_at: '2026-10-17T10:00:00Z', buybox_price: 269, price_ownership: { state: 'matched' } },
-  variant: { base: '无线转接器', count: 1, siblings: [] },
+  // variant_view returns an empty base for a single SKU; do not invent a Chinese platform base.
+  variant: { base: '', count: 1, siblings: [] },
   rule: { strategy: 'takealot_buybox', enabled: false, use_system_min: true, min_price: null, max_price: null, last_evaluated_at: null },
   ...over,
 });
@@ -77,7 +78,7 @@ rows.push(
   row({ image: 'https://takealot.example/cover/s.file' }),
   // 无图 → 占位方块，不是裂图
   row({ product_id: 'p2', offer_id: 'o2', sku: '9900000000002', name: 'Camping Hat', chinese_name: '露营帽', image: '', price: 1999 }),
-  // 没有中文名 → 标题回退到「中文名待核对」，英文名必须还在
+  // 没有中文名 → 平台英文标题仍置顶，不伪造中文行
   row({ product_id: 'p3', offer_id: 'o3', sku: '9900000000003', name: 'Dog Ball', chinese_name: '', name_status: 'missing', image: '' }),
   // 配额用满 → 详情里要说清「今天不会再动」，否则看到的是「运行中但价格不变」
   row({
@@ -114,13 +115,14 @@ const root = createRoot(host);
   check(!noImg.querySelector('img'), 'the placeholder is not an img element');
   check(noImg.textContent.trim() === '无图', 'the placeholder says 无图, short enough for 44px');
 
-  // 2) 中文名 / 英文名 / SKU 三行分开，英文名不挤在名字后面
-  check(first.querySelector('.product-link').textContent === '无线转接器', 'the link shows the Chinese name');
-  const en = first.querySelector('.product-en');
-  check(!!en, 'the English title gets its own line when it differs from the Chinese name');
-  check(en.textContent === 'Wireless Adapter', 'the English line holds the platform title');
-  check(en.getAttribute('title') === 'Wireless Adapter', 'the English line keeps the full title on hover');
-  check(rowOf('9900000000003').querySelector('.product-en').textContent === 'Dog Ball', 'a row without a Chinese name still shows its English title');
+  // 2) 平台英文标题置顶、中文核货名另起一行，SKU保留
+  check(first.querySelector('.product-link').textContent === 'Wireless Adapter', 'the link leads with the English platform title');
+  const cn = first.querySelector('.product-cn');
+  check(!!cn, 'the Chinese verification name gets its own line');
+  check(cn.textContent === '无线转接器', 'the Chinese line keeps its own field');
+  check(cn.getAttribute('title') === '无线转接器', 'the Chinese line keeps the full name on hover');
+  check(rowOf('9900000000003').querySelector('.product-link').textContent === 'Dog Ball', 'a row without a Chinese name still shows its English title');
+  check(!rowOf('9900000000003').querySelector('.product-cn'), 'missing Chinese never becomes an English duplicate');
 
   // 3) 价格与归属胶囊是两个独立节点：胶囊放不下时能整块换行，而不是压在价格上。
   const quote = first.querySelector('.quote-line');
