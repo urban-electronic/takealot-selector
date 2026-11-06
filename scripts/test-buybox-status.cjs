@@ -427,7 +427,8 @@ async function fleetScenario(rowsFixture, inspect) {
       check(!!retry && retry.textContent.includes('重试 1 个'), 'self-inflicted faults offer an immediate retry');
       await act(async () => retry.click());
       check(bulkCalls.length === 1 && !bulkCalls[0].keep_backoff, 'immediate retry clears the backoff');
-      check(bulkCalls[0].interval_minutes === 5, 'immediate retry does not silently widen the interval');
+      // 页面间隔档位的最小值就是云端最小间隔（30 分钟），重试沿用它、不擅自跳到 120。
+      check(bulkCalls[0].interval_minutes === 30, 'immediate retry keeps the page interval instead of widening to 120');
     } finally { act(() => fault.unmount()); }
   }
   {

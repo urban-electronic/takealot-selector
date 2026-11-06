@@ -132,7 +132,11 @@ def products(db:Session=Depends(get_db),store:str=Depends(get_store_id),
         key=PREFIX+store+':'+item['product_id']+':'+item['offer_id']
         row=db.query(SystemSettings).filter_by(key=key).first()
         original=row.value
-        config=json.loads(original);config.update(status='running',next_due=now+900,current_price=item['price'],stock=item['stock'])
+        # 领取时就把 next_due 推到「一次完整间隔」之后，与 /offers 回报写入的
+        # 排期用同一个下限（云端最小 30 分钟）。原先这里写死 now+900：900 秒是
+        # **租约长度**，不是排期长度，两者混用会让「被领取但没回报」的记录在
+        # 15 分钟后就又到期，间隔形同虚设。
+        config=json.loads(original);config.update(status='running',next_due=now+interval_seconds(config.get('interval_minutes')),current_price=item['price'],stock=item['stock'])
         claimed=json.dumps(config,ensure_ascii=False)
         if db.query(SystemSettings).filter_by(key=key,value=original).update({'value':claimed})!=1: continue
         token=str(uuid.uuid4())
@@ -168,7 +172,10 @@ def web_open(data:WebOpen,db:Session=Depends(get_db),store:str=Depends(get_store
         if old.get('status') in ('running','paused') or (old.get('next_due',0)>now and not (data.initial and old.get('status')=='error')): continue
         value={**old,'product_id':item['product_id'],'offer_id':item['offer_id'],'sku':item['sku'],
             'enabled':old.get('enabled',False),'request_once':True,'web_requested':True,'interval_minutes':normalize_interval_minutes(old.get('interval_minutes')),
-            'revision':old.get('revision',0)+1,'status':'queued','next_due':0}
+            # 与 page-open 同一口径：这条记录的到期门控在上面，能走到这里说明它
+            # 本来就到期了，next_due 写 now 即可；写 0 会把这个「没排期」的哨兵值
+            # 落库，界面按它算延迟就会得到一个天文数字。
+            'revision':old.get('revision',0)+1,'status':'queued','next_due':now}
         key=PREFIX+store+':'+item['product_id']+':'+item['offer_id']
         row=db.query(SystemSettings).filter_by(key=key).first()
         if row: row.value=json.dumps(value,ensure_ascii=False)
