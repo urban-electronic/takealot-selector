@@ -272,4 +272,5 @@ def test_collect_now_survives_a_null_interval(monkeypatch):
         value=json.loads(row.value);value['interval_minutes']=None;row.value=json.dumps(value);db.commit()
         routes.collect_now('two','two',db,DEFAULT_STORE_ID)
         saved=json.loads(db.query(SystemSettings).filter_by(key=key).first().value)
-        assert saved['interval_minutes']==5 and saved['request_once']
+        # null 归一后的默认值就是云端最小间隔（30 分钟），不再是老的 5 分钟
+        assert saved['interval_minutes']==monitor.MIN_INTERVAL_MINUTES and saved['request_once']

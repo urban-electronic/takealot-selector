@@ -20,6 +20,22 @@
 export type Tone = 'success' | 'info' | 'warning' | 'danger' | 'neutral';
 export type Freshness = 'fresh' | 'aging' | 'stale' | 'none' | 'invalid';
 
+/**
+ * 云端采集的最小间隔（分钟），与后端 `services/buybox_monitor.MIN_INTERVAL_MINUTES` 一致。
+ *
+ * 后端按这个下限排期，但库里历史行存的仍是用户当初选的 5 分钟。界面若照旧按 5 分钟
+ * 算新鲜度（2 倍=10 分钟算「变旧」、6 倍=30 分钟算「过期」），一条每 30 分钟才采一轮的
+ * 正常记录会被持续报成红字，用户会以为采集坏了。所以展示和判定都夹到生效下限。
+ */
+export const MIN_INTERVAL_MINUTES = 30;
+
+/** 生效间隔（分钟）：用户配置与最小间隔取较大者。 */
+export function effectiveIntervalMinutes(value: unknown): number {
+  const n = Number(value);
+  // 非数字/0/负数都按最小间隔处理：它们在下游会让「是否过期」恒为真。
+  return Number.isFinite(n) && n > 0 ? Math.max(MIN_INTERVAL_MINUTES, n) : MIN_INTERVAL_MINUTES;
+}
+
 export const COLLECTOR_NAMES: Record<string, string> = {
   cloud_browser: '后台采集器',
   local_collector: '本机采集器',
@@ -83,7 +99,7 @@ export function quoteFreshness(monitor: any, now: number): FreshnessView {
     return { fresh: 'invalid', ageText: '记录时间在未来', ageMs: null, tone: 'danger' };
   }
   const ageMs = Math.max(0, now - at);
-  const intervalMs = Math.max(1, Number(monitor?.interval_minutes) || 5) * 60_000;
+  const intervalMs = effectiveIntervalMinutes(monitor?.interval_minutes) * 60_000;
   if (ageMs <= intervalMs * 2) return { fresh: 'fresh', ageText: humanAge(ageMs), ageMs, tone: 'success' };
   if (ageMs <= intervalMs * 6) return { fresh: 'aging', ageText: humanAge(ageMs), ageMs, tone: 'warning' };
   return { fresh: 'stale', ageText: humanAge(ageMs), ageMs, tone: 'danger' };
@@ -283,7 +299,7 @@ export function describeCollection(monitor: any, ctx: CollectionContext): Collec
   const m = monitor || {};
   const now = ctx.now;
   const freshness = quoteFreshness(m, now);
-  const interval = Math.max(1, Number(m.interval_minutes) || 5);
+  const interval = effectiveIntervalMinutes(m.interval_minutes);
   const dueMs = Number(m.next_due) * 1000;
   const hasDue = Number.isFinite(dueMs) && dueMs > 0;
   const dueSoon = hasDue && dueMs > now;
@@ -665,8 +681,8 @@ export function describeFleet(rows: any[], ctx: CollectionContext): FleetView {
   // 120 时，状态条写「间隔已是 120 分钟（最慢档），等网站验证解除」——被挡住的那行
   // 其实还在 5 分钟。用户拿到一条不成立的结论，唯一有用的一件事（调长间隔）也不会
   // 出现在按钮上。取最小值：只要还有一行低于最慢档就还能调；都到档了才算「已是最慢档」。
-  const blockedIntervals = blockedRows.map(r => Math.max(1, Number(r?.monitor?.interval_minutes) || 5));
-  const interval = blockedIntervals.length ? Math.min(...blockedIntervals) : 5;
+  const blockedIntervals = blockedRows.map(r => effectiveIntervalMinutes(r?.monitor?.interval_minutes));
+  const interval = blockedIntervals.length ? Math.min(...blockedIntervals) : MIN_INTERVAL_MINUTES;
   // 「把间隔调到 120 分钟」只在**还能调**的时候说。间隔已经是 120 之后，状态条
   // 原来还在重复同一句，而按钮靠 suggestedInterval 才出现（此时是 null）——
   // 用户看到一条永远做不完的指令，点不到任何东西，只会以为按钮坏了。
