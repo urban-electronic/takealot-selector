@@ -1135,8 +1135,8 @@ export default function ProductList() {
     const p = buy.product;
     const qty = Number(buy.qty);
     const amount = Number(buy.amount);
-    if (!Number.isFinite(qty) || qty <= 0) { setBuyError('采购数量必须是大于 0 的整数'); return; }
-    if (!Number.isFinite(amount) || amount < 0) { setBuyError('采购总价请填写有效金额（没有花钱可以填 0）'); return; }
+    if (!Number.isSafeInteger(qty) || qty <= 0) { setBuyError('采购数量必须是大于 0 的整数'); return; }
+    if (!buy.amount.trim() || !Number.isFinite(amount) || amount < 0) { setBuyError('采购总价请填写有效金额（没有花钱可以填 0）'); return; }
     buyWriting.current = true;
     setBuySaving(true); setBuyError(''); setAssistError('');
     try {
@@ -1144,7 +1144,7 @@ export default function ProductList() {
         product_id: p.id,
         product_no: p.product_no ?? null,
         product_name: p.product_name || p.chinese_product_name || '',
-        quantity: Math.round(qty),
+        quantity: qty,
         total_amount: amount,
         status: buy.status,
         notes: buy.notes.trim(),
