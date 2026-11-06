@@ -26,7 +26,7 @@ export default function AutoPricing() {
   const [pageDraft, setPageDraft] = useState('');
   const [maintenance, setMaintenance] = useState(false);
   // 原名 interval 会遮蔽 window.setInterval，排查定时器时极易误读，改名与后端字段一致。
-  // 默认值与下限都取最少 MIN_INTERVAL_MINUTES：云端已按 30 分钟排期，这里默认 5 分钟
+  // 默认值直接取下限 MIN_INTERVAL_MINUTES（30）：云端已按 30 分钟排期，这里默认 5 分钟
   // 会让「刚打开页面时的文案」与「实际排期」两套口径。
   const [intervalMinutes, setIntervalMinutes] = useState(MIN_INTERVAL_MINUTES);
   // 次要动作默认收起：一屏只留「开启采集 / 启动调价」两个主操作。

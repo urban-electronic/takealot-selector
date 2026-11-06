@@ -187,6 +187,9 @@ def startup():
     _ensure_default_store()
     migrate_from_dump()
     _init_default_data()
+    # 必须在采集 worker 起来之前跑完：库里的 5 分钟会被界面当成「每 5 分钟一轮」
+    # 显示出去，也会让「本轮耗时 vs 设定间隔」的告警拿 5 分钟做基准。
+    _normalize_monitor_intervals()
     _backfill_offer_catalog()
     _repair_product_metadata()
     # 线程/进程用量定期落日志。2026-10-21 线程耗尽导致图片全线 500 时，
@@ -195,6 +198,27 @@ def startup():
     from services import runtime_health
     runtime_health.start_watchdog()
     print(f"[startup] 运行时基线 {runtime_health.format_snapshot()}", flush=True)
+
+
+def _normalize_monitor_intervals():
+    """把 `_pricing_monitor:*` 里 < 30 分钟的存量间隔抬到 30（幂等）。
+
+    代码里的下限只能约束「实际排期」，改不了库里写着的 5：界面的
+    `loop.interval_minutes` 取的是库里的众数，会一直显示「每 5 分钟一轮」。
+    这里只动 `interval_minutes` 一个字段，`next_due` 等排期/状态字段不碰，
+    否则启动瞬间所有 SKU 一起到期，又变成一次全量采集。
+    """
+    from services.monitor_interval_normalize import normalize_monitor_intervals
+    try:
+        stats = normalize_monitor_intervals()
+        print(f"[startup] 采集间隔归一 扫描 {stats['scanned']} 条，改写 {stats['changed']} 条，"
+              f"已是 30 分钟以上 {stats['already']} 条，未设置 {stats['unset']} 条，"
+              f"坏数据 {stats['invalid']} 条", flush=True)
+        for sample in stats['samples']:
+            print(f"[startup] 采集间隔归一 {sample['key']} {sample['from']} → {sample['to']} 分钟", flush=True)
+    except Exception as exc:
+        # 归一失败不能拦住服务启动：采集照旧按代码里的下限排期。
+        print(f"[startup] 采集间隔归一失败: {exc}", flush=True)
 
 
 def _backfill_offer_catalog():

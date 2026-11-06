@@ -570,7 +570,7 @@ const THROTTLED = new Set(['site_challenge', 'rate_limited', 'http_forbidden']);
 /**
  * 被挡住时建议把间隔拉到的档位（分钟）。
  *
- * 与调价页 `AutoPricing` 的间隔下拉（5/10/15/30/60/120）最慢一档一致——
+ * 与调价页 `AutoPricing` 的间隔下拉（30/60/120，下限 30）最慢一档一致——
  * 建议一个下拉里选不到的值，用户照着做都做不到。
  */
 const THROTTLE_INTERVAL_MINUTES = 120;
