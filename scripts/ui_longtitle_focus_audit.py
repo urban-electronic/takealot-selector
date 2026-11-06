@@ -132,6 +132,8 @@ DATA["/api/products/stats/dashboard"] = dict(total=2, qualified=0, not_recommend
 
 # 路由 → 期望标题子串（详情页 h2 是英文标题本身）
 ROUTES = [
+    ("/orders", "订单与销量明细", ["9902416416929"]),
+    ("/shipments", "货件看板", ["7000001"]),
     ("/products", "产品列表", ["TEST-001", "TEST-002"]),
     ("/auto-pricing", "Buybox与自动调价", ["TEST-001", "TEST-002"]),
     ("/inventory", "库存管理", ["TEST-001", "TEST-002"]),
