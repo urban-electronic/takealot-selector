@@ -497,10 +497,12 @@ export default function AutoPricing() {
         // 同一行出现三次 R 269——这不是信息，是噪音。
         const bb=m.buybox_price; const same=bb!=null&&r.price!=null&&Math.abs(bb-r.price)<0.01;
         const variantCount=r.variant?.count||1;
-        // 英文名是平台上真正卖的标题，放第一行加粗；中文只用于自己核货，换到第二行。
-        // 变体行仍取无定语形态（variant.base），否则同页几十行会重复同一串长标题。
-        const enTitle=(r.variant?.base||r.name||'').trim();
-        const cnTitle=(r.chinese_name||'').trim();
+        // 第一行放英文平台标题并加粗，中文换到第二行。
+        // 变体折叠行仍优先用无定语基名，但只在它本身是英文时——中文基名不能霸占第一行。
+        const HAN=/[\u4e00-\u9fa5]/;
+        const variantBase=(r.variant?.base||'').trim();
+        const enTitle=(variantBase&&!HAN.test(variantBase)?variantBase:(r.name||'').trim());
+        const cnTitle=(r.chinese_name||'').trim()||(HAN.test(variantBase)?variantBase:'');
         const title=enTitle||cnTitle||'标题待补充';
         const openVariant=openVariantOf===r.product_id;
         return <tr key={key(r)} className={openVariant?'is-expanded':''}><td><input type="checkbox" aria-label={`选择SKU ${r.sku}`} checked={selected.includes(key(r))} onChange={e=>setSelected(e.target.checked?[...selected,key(r)]:selected.filter(k=>k!==key(r)))} /></td>

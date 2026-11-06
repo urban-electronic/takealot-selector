@@ -77,7 +77,7 @@ rows.push(
   row({ image: 'https://takealot.example/cover/s.file' }),
   // 无图 → 占位方块，不是裂图
   row({ product_id: 'p2', offer_id: 'o2', sku: '9900000000002', name: 'Camping Hat', chinese_name: '露营帽', image: '', price: 1999 }),
-  // 没有中文名 → 标题回退到「中文名待核对」，英文名必须还在
+  // 没有中文名 → 只显示英文标题，中文行不出现（也不拿英文冒充中文）
   row({ product_id: 'p3', offer_id: 'o3', sku: '9900000000003', name: 'Dog Ball', chinese_name: '', name_status: 'missing', image: '' }),
   // 配额用满 → 详情里要说清「今天不会再动」，否则看到的是「运行中但价格不变」
   row({
@@ -114,13 +114,13 @@ const root = createRoot(host);
   check(!noImg.querySelector('img'), 'the placeholder is not an img element');
   check(noImg.textContent.trim() === '无图', 'the placeholder says 无图, short enough for 44px');
 
-  // 2) 中文名 / 英文名 / SKU 三行分开，英文名不挤在名字后面
-  check(first.querySelector('.product-link').textContent === '无线转接器', 'the link shows the Chinese name');
-  const en = first.querySelector('.product-en');
-  check(!!en, 'the English title gets its own line when it differs from the Chinese name');
-  check(en.textContent === 'Wireless Adapter', 'the English line holds the platform title');
-  check(en.getAttribute('title') === 'Wireless Adapter', 'the English line keeps the full title on hover');
-  check(rowOf('9900000000003').querySelector('.product-en').textContent === 'Dog Ball', 'a row without a Chinese name still shows its English title');
+  // 2) 英文标题在上（加粗），中文名在下，SKU 单独一行
+  check(first.querySelector('.product-link').textContent === 'Wireless Adapter', 'the first line carries the English platform title');
+  const cn = first.querySelector('.product-cn');
+  check(!!cn, 'the Chinese name gets its own line under the English title');
+  check(cn.textContent === '无线转接器', 'the second line holds the Chinese name');
+  check(cn.getAttribute('title') === '无线转接器', 'the Chinese line keeps the full name on hover');
+  check(rowOf('9900000000003').querySelector('.product-link').textContent === 'Dog Ball', 'a row without a Chinese name still shows its English title');
 
   // 3) 价格与归属胶囊是两个独立节点：胶囊放不下时能整块换行，而不是压在价格上。
   const quote = first.querySelector('.quote-line');
@@ -130,7 +130,15 @@ const root = createRoot(host);
   check(quote.children[1].classList.contains('status-pill'), 'the ownership label is its own pill');
   check(first.querySelector('.quote-sub').textContent.includes('Buybox'), 'the Buybox detail stays on a separate line');
 
-  // 4) 样式层：真正的修复写在 CSS 里，这里直接读源码钉住。
+  // 4) 持位状态筛选：一键就能只看「已核实持位」；分类/分段没有真实取值时不占工具栏
+  const statusSelect = host.querySelector('select[aria-label="持位状态筛选"]');
+  check(!!statusSelect, 'the toolbar offers an ownership-status filter');
+  check([...statusSelect.options].some(o => o.value === '已核实持位'), '已核实持位 is one click away in the filter');
+  check([...statusSelect.options][0].value === 'all', 'the filter defaults to every status');
+  check(!host.querySelector('select[aria-label="SKU分类筛选"]'), 'a category dropdown with only one bucket is not rendered');
+  check(!host.querySelector('select[aria-label="采集分段筛选"]'), 'a segment dropdown with no segments is not rendered');
+
+  // 5) 样式层：真正的修复写在 CSS 里，这里直接读源码钉住。
   const css = fs.readFileSync(path.resolve(__dirname, '../src/index.css'), 'utf8');
   const rule = (selector) => {
     const i = css.indexOf(selector);

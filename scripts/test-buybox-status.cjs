@@ -344,7 +344,8 @@ async function fleetScenario(rowsFixture, inspect) {
     check(tr.querySelector('.collection-status-cell').textContent.includes('已停采'), 'paused work is not labelled manual collection');
   });
   await scenario({status:'success'}, tr => {
-    check(tr.querySelector('.product-link').textContent==='中文名待核对', 'English never fills the Chinese display');
+    check(tr.querySelector('.product-link').textContent==='Test product', 'the English title stays on the first line even when the Chinese field is invalid');
+    check(!tr.querySelector('.product-cn'), 'no Chinese line is invented when the Chinese field is invalid');
     check(tr.textContent.includes('中文字段为非中文，请修正'), 'invalid Chinese field is actionable');
     check(tr.querySelector('.product-link').title==='Test product', 'original English name is preserved on the link');
   }, {chinese_name:null,name_status:'invalid'});
@@ -368,7 +369,7 @@ async function fleetScenario(rowsFixture, inspect) {
     { sku: 'b', label: '粉色·L', price: 269, stock: 2 },
     { sku: 'c', label: '红色·XL', price: 275, stock: 3 }] };
   await scenario({ ...known, status: 'success' }, tr => {
-    check(tr.querySelector('.product-link').textContent === '女士运动套装', 'collapsed row shows the base name without qualifiers');
+    check(tr.querySelector('.product-link').textContent === 'Test product', 'a Chinese variant base never takes the English first line');
     check(!tr.textContent.includes('粉色·L'), 'qualifiers stay hidden until the variant list is expanded');
     check(tr.querySelector('.variant-toggle').textContent.includes('3'), 'collapsed state shows only the variant count');
   }, { variant: variants });
