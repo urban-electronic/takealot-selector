@@ -137,7 +137,13 @@ def products(db:Session=Depends(get_db),store:str=Depends(get_store_id),
         if db.query(SystemSettings).filter_by(key=key,value=original).update({'value':claimed})!=1: continue
         token=str(uuid.uuid4())
         db.add(SystemSettings(key=CLAIM_PREFIX+token,value=json.dumps({'monitor_key':key,'sku':item['sku'],'claim':claimed,'claimed_at':now,'expires_at':now+900})))
-        items.append({'productId':token,'shopId':store,'sku':item['sku'],'name':item['name'],'url':item['url'],'myPrice':item['price'],'myStock':item['stock']})
+        task={'productId':token,'shopId':store,'sku':item['sku'],'name':item['name'],'url':item['url'],'myPrice':item['price'],'myStock':item['stock']}
+        # 本机/扩展采集器共用同一个解析器，显式变体维度也必须随任务下发，
+        # 否则用户在这条 SKU 上填的配置只在云端路径生效。没配时不加字段，
+        # 老采集器拿到的任务形状不变。
+        labels=monitor.get('variant_labels')
+        if isinstance(labels,list) and labels: task['variantLabels']=labels[:6]
+        items.append(task)
         if len(items)>=20: break
     db.commit()
     return {'items':items}

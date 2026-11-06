@@ -726,7 +726,19 @@ async def scrape_product(page, item: dict) -> dict:
         # 其中一个变体**组合**，每个维度都得切到目标值，页面才会给出报价。
         # 只切一个维度不够：2026-10-18 PLID91715202（名 '... - Nude - L'）页面停在
         # 'Select an option'，Buybox 卡文本只有 5 个字符，压根没有报价。
-        variant_labels = variant_labels_from_name(item.get("name"))
+        # per-SKU 显式变体维度优先。商品名里的型号码/副标题（"... - FDJH4 - Blue"）
+        # 会被 variant_labels_from_name 一起切成「变体」，页面上根本没有对应控件，
+        # 每轮必然 variant_unmatched。有显式配置就直接用它，不再从标题猜；
+        # 没有配置时完全沿用原来的解析路径，严格确认闸门一字不改。
+        override = item.get("variantLabels")
+        override = ([str(x).strip()[:40] for x in override if isinstance(x, str) and x.strip()][:6]
+                    if isinstance(override, (list, tuple)) else [])
+        if override:
+            variant_labels = override
+            result["variantLabelsSource"] = "override"
+        else:
+            variant_labels = variant_labels_from_name(item.get("name"))
+            result["variantLabelsSource"] = "name"
         # 前置门控：仅当页面**主商品区真实存在变体控件**时才尝试选择。名称含 " - "
         # 不等于存在变体（"... - professional package for motor, biking, skydiving"
         # 只是标题分隔符）；无控件时 PLID 唯一确定商品与报价，不存在默认/目标变体

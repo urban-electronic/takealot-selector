@@ -168,6 +168,9 @@ async def scrape(context, item, parser):
                 buybox_cards=await page.locator('[data-ref="buybox-offer"]').count())
         except Exception: pass
         if isinstance(quote.get('variantControls'),int): diagnostics['variant_controls']=quote['variantControls']
+        # 显式变体标签有没有真的被解析器采用，回报给后端诊断，方便在界面核对。
+        if quote.get('variantLabelsSource') in ('override','name'):
+            diagnostics['variant_labels_source']=quote['variantLabelsSource']
         quote['diagnostics']=diagnostics
         await page.close()
     return quote

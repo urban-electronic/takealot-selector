@@ -243,12 +243,28 @@ export const ERROR_COPY: Record<string, ErrorCopy> = {
 
 export function errorCopy(code?: string, raw?: string): ErrorCopy {
   const known = ERROR_COPY[code || ''];
-  if (known) return known;
-  return {
-    title: '本轮没拿到报价',
-    why: raw || '采集器没有给出具体原因，下面是原始信息。',
-    action: '先看原始信息；无法判断时点「立即采集」再试一次。',
-  };
+  if (!known) {
+    return {
+      title: '本轮没拿到报价',
+      why: raw || '采集器没有给出具体原因，下面是原始信息。',
+      action: '先看原始信息；无法判断时点「立即采集」再试一次。',
+    };
+  }
+  // variant_unmatched 的后端报文已经点名了没切上的那一段（「未能切到变体 FDJH4」）。
+  // 只印静态标题「确认不了是哪个变体」，就把唯一能行动的信息埋进了「详情 →
+  // 原始报错」：用户分不清是商品名里混了型号码，还是真的缺规格，只能反复点采集。
+  // 这里把点名的那段提到标题上，同时保留完整原文作说明。
+  const detail = (raw || '').trim();
+  if (code === 'variant_unmatched' && detail) {
+    const named = detail.match(/未能切到变体\s+(.+?)(?:，不使用默认变体报价)?\s*$/);
+    return {
+      ...known,
+      title: named ? `确认不了变体：${named[1].trim()}` : known.title,
+      why: detail,
+      action: '若点名的是型号码/副标题（如 FDJH4），到该行「详情」设置此 SKU 的变体标签；若是真实规格，人工打开页面确认该变体是否还在售。',
+    };
+  }
+  return known;
 }
 
 export interface CollectionView extends FreshnessView {

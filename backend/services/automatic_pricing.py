@@ -452,7 +452,14 @@ def plan(current, stock, rule, snapshot):
                      + f'（让利 {int(current - target)}，领先差额 R {lead}，底价 R {int(floor)}）'))
     return p
 
-async def collect(product, offer, seller_name=None):
+async def collect(product, offer, seller_name=None, variant_labels=None):
+    """variant_labels: 该 SKU 在商品页上的真实变体维度（如 ['Blue']）。
+
+    非空时解析器不再从商品名尾段猜变体。商品名里混型号码/副标题
+    （"... - FDJH4 - Blue"）是 variant_unmatched 的常见来源：型号码在页面上
+    根本没有对应控件，每轮都点不中。空值 = 沿用原来的名字解析，绝不因为
+    "没配置" 就跳过变体确认、放行默认变体报价。
+    """
     from services.quote_browser import quote_context
     from services.pricepilot_collector import scrape_product
     url = product.takealot_url or ''
@@ -468,13 +475,24 @@ async def collect(product, offer, seller_name=None):
             def on_response(response):
                 if response.request.resource_type=='document': responses.append(response.status)
             page.on('response', on_response)
-            snapshot=await scrape_product(page, {'url': url, 'productId': product.id, 'sku': offer['sku'],
+            item={'url': url, 'productId': product.id, 'sku': offer['sku'],
                 'name': offer.get('title') or product.product_name, 'myPrice': offer['selling_price'],
                 'myStock': offer.get('stock_at_takealot_total'), 'shopId': DEFAULT_STORE_ID,
                 # 本店在 Takealot 的卖家名：采集器用它把页面上的 "Sold by X" 判成
                 # 是不是本店，而不是靠价格猜。空串表示还不知道，退回价格推断。
-                'mySellerName': seller_name or ''})
+                'mySellerName': seller_name or ''}
+            # per-SKU 显式变体维度：非空时解析器直接采用，不再按 " - " 切商品名。
+            # 商品名混了型号码（"... - FDJH4 - Blue"）时，自动解析会把 FDJH4 也当成
+            # 变体维度，页面上根本没有对应控件，于是每轮确定性 variant_unmatched。
+            # 留空 = 清除覆盖、沿用自动解析；绝不因为「没配置」就跳过变体确认闸门。
+            labels = ([str(x).strip()[:40] for x in variant_labels if isinstance(x, str) and x.strip()][:6]
+                      if isinstance(variant_labels, (list, tuple)) else [])
+            if labels: item['variantLabels'] = labels
+            snapshot = await scrape_product(page, item)
             diagnostics={'diag_version':3,'http_status':responses[-1] if responses else None,'requested_url':safe_url(url),'final_url':safe_url(page.url)}
+            # 把「这轮用的是显式配置还是名字猜的」记进诊断：配置没生效时，这是
+            # 唯一能一眼分辨「用户没填」和「填了但没传到解析器」的证据。
+            if labels: diagnostics.update(variant_labels_source='override', variant_labels=labels)
             # 每一项诊断各自兜底。原来整段共用一个 try：只要 body.inner_text 超时一次，
             # 后面的元素计数就全丢——恰恰是页面最慢、最需要诊断的时候什么都没留下。
             async def _count(selector):

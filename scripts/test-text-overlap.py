@@ -98,11 +98,14 @@ SCAN = r"""
       label = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
     }
     if (!label) continue;
-    const r0 = el.getBoundingClientRect();
-    if (r0.width < 2 || r0.height < 2) continue;
-    const r = clip(el, { left: r0.left, top: r0.top, right: r0.right, bottom: r0.bottom });
-    if (!r) continue;
-    texts.push({ el, r, label: label.slice(0, 40) });
+    // Inline text can span several lines: its union box covers empty space
+    // between lines and falsely overlaps a later inline sibling.
+    for (const r0 of el.getClientRects()) {
+      if (r0.width < 2 || r0.height < 2) continue;
+      const r = clip(el, { left: r0.left, top: r0.top, right: r0.right, bottom: r0.bottom });
+      if (!r) continue;
+      texts.push({ el, r, label: label.slice(0, 40) });
+    }
   }
   const overlaps = [];
   for (let i = 0; i < texts.length; i++) {
@@ -243,6 +246,8 @@ def main():
                         page.locator('.loading').wait_for(state='hidden', timeout=5000)
                     except Exception:
                         pass
+                    # Measure the expanded editors, not Chromium's retained boxes inside closed details.
+                    page.locator('details').evaluate_all("nodes => nodes.forEach(node => { node.open = true; })")
                     res = page.evaluate(SCAN, None)
                     surfaces += 1
                     report.append(dict(res, width=width, path=path, scope='page'))

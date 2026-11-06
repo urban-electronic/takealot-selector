@@ -4,6 +4,7 @@ import math
 import time
 from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter,Depends,HTTPException
+from pydantic import BaseModel,Field
 from sqlalchemy.orm import Session
 from database import get_db
 from models import DEFAULT_STORE_ID,SystemSettings
@@ -62,6 +63,35 @@ def page_open(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
 @router.put('/{product_id}/{offer_id}')
 def configure(product_id:str,offer_id:str,data:MonitorConfig,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
     return monitor_configure(product_id,offer_id,data,db,store)
+
+
+class VariantLabels(BaseModel):
+    labels: list[str] = Field(default_factory=list,max_length=6)
+
+
+@router.put('/{product_id}/{offer_id}/variant-labels')
+def variant_labels(product_id:str,offer_id:str,data:VariantLabels,db:Session=Depends(get_db),store:str=Depends(get_store_id)):
+    """只改这一条 SKU 的变体维度，不碰 enabled / 排期 / 失败计数。
+
+    商品名里混了型号码时（如 "... - FDJH4 - Blue"），按名字猜变体会多出一个
+    页面上根本不存在的维度，每轮必然 variant_unmatched。这里让用户显式指定
+    真正的规格（["Blue"]），采集器就不再从标题猜。留空数组 = 清除覆盖，
+    退回自动解析——绝不会因为"没填"就放行默认变体的报价。
+    """
+    if store!=DEFAULT_STORE_ID or not configured_key(db):
+        raise HTTPException(400,'本店未绑定采集接口')
+    key=PREFIX+store+':'+product_id+':'+offer_id
+    row=db.query(SystemSettings).filter_by(key=key).first()
+    old=json.loads(row.value) if row else {}
+    labels=[str(x).strip()[:40] for x in data.labels if isinstance(x,str) and x.strip()][:6]
+    value={**old,'product_id':product_id,'offer_id':offer_id,'revision':old.get('revision',0)+1}
+    if labels: value['variant_labels']=labels
+    else: value.pop('variant_labels',None)
+    encoded=json.dumps(value,ensure_ascii=False)
+    if row: row.value=encoded
+    else: db.add(SystemSettings(key=key,value=encoded))
+    db.commit()
+    return {'variant_labels':labels}
 
 @router.post('/{product_id}/{offer_id}/collect-now')
 def once(product_id:str,offer_id:str,db:Session=Depends(get_db),store:str=Depends(get_store_id)):

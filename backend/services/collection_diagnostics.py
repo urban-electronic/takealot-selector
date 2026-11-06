@@ -39,6 +39,15 @@ def safe_diagnostics(raw):
     if isinstance(labels,list):
         kept=[item[:40] for item in labels if isinstance(item,str) and item]
         if kept: out['variant_unmatched']=kept[:6]
+    # 「这一轮用的是用户显式配的变体标签，还是按商品名猜的」。转发采集器路径会
+    # 经过这里清洗；漏掉它，配置到底有没有生效就只能靠猜。只收固定枚举值，
+    # 不把任意字符串写进库。
+    if raw.get('variant_labels_source') in ('override','name'):
+        out['variant_labels_source']=raw['variant_labels_source']
+    configured=raw.get('variant_labels')
+    if isinstance(configured,list):
+        kept=[item[:40] for item in configured if isinstance(item,str) and item]
+        if kept: out['variant_labels']=kept[:6]
     return out
 
 

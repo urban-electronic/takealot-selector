@@ -80,7 +80,11 @@ def preview(product_id: str, offer_id: str, db: Session = Depends(get_db), store
     try:
         with httpx.Client(timeout=25, follow_redirects=False) as client: own = official_offer(client, key, offer_id)
         product = db.get(Product, product_id)
-        snapshot = asyncio.run(collect(product, own))
+        # 「预检」也走同一套 per-SKU 变体配置，否则用户在预检里看到「确认不了变体」、
+        # 正式采集却好了（或反过来），两处结论不一致。没配时保持原来的两参数调用。
+        labels = (item.get('monitor') or {}).get('variant_labels')
+        job = collect(product, own, variant_labels=labels) if labels else collect(product, own)
+        snapshot = asyncio.run(job)
         return {'current_price': own['selling_price'], 'stock': own['stock_at_takealot_total'],
                 'collector_ready': not bool(snapshot.get('error')) and bool(snapshot.get('offers')),
                 'offer_count': len(snapshot.get('offers', [])), 'error': '公开页暂不可采集；保持原价，不会改价' if snapshot.get('error') or not snapshot.get('offers') else '',
