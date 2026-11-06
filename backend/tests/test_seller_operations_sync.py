@@ -60,3 +60,54 @@ def test_never_bought_with_cancelled_purchase_does_not_become_eligible():
         p = db.get(Product, 'never')
         db.add(ProcurementRecord(id='cancelled', store_id=DEFAULT_STORE_ID, product_id=p.id, quantity=5, status='cancelled')); db.commit()
         assert not eligible(db, DEFAULT_STORE_ID, p)
+
+def test_buyable_without_local_purchase_enters_and_remains_after_not_buyable():
+    with setup() as db:
+        offers = [{**OFFERS[1], 'status': 'buyable'}]
+        apply_snapshot(db, offers, [], NOW); db.commit()
+        assert 'never' in {r['id'] for r in overview(db, DEFAULT_STORE_ID)['rows']}
+        apply_snapshot(db, [{**offers[0], 'status': 'not_buyable', 'stock_at_takealot_total': 0}], [], NOW); db.commit()
+        row = next(r for r in overview(db, DEFAULT_STORE_ID)['rows'] if r['id'] == 'never')
+        assert row['profile']['offers'][0]['status'] == 'not_buyable'
+        assert row['profile']['stock'] == 0
+        assert row['profile']['ever_buyable_skus'] == ['b']
+        coverage = overview(db, DEFAULT_STORE_ID)['coverage']
+        assert coverage == dict(products=2, skus=2, buyable=0, formerly_buyable=1, unknown=1)
+        assert eligible(db, DEFAULT_STORE_ID, db.get(Product, 'never'))
+
+
+def test_never_buyable_or_ambiguous_offer_does_not_enroll():
+    with setup() as db:
+        apply_snapshot(db, [{**OFFERS[1], 'status': 'not_buyable'}], [], NOW); db.commit()
+        assert not eligible(db, DEFAULT_STORE_ID, db.get(Product, 'never'))
+        db.add(Product(id='duplicate', store_id=DEFAULT_STORE_ID, sku='b')); db.commit()
+        apply_snapshot(db, [{**OFFERS[1], 'status': 'buyable'}], [], NOW); db.commit()
+        assert not eligible(db, DEFAULT_STORE_ID, db.get(Product, 'never'))
+
+
+def test_old_buyable_snapshot_is_kept_and_shipping_save_preserves_history():
+    from api.operations_routes import Profile, save_profile
+    with setup() as db:
+        key = f'operations_profile:{DEFAULT_STORE_ID}:never'
+        old = {'data_source': 'seller_api', 'offers': [{'sku': 'b', 'status': 'buyable'}]}
+        db.add(SystemSettings(key=key, value=json.dumps(old))); db.commit()
+        assert eligible(db, DEFAULT_STORE_ID, db.get(Product, 'never'))
+        apply_snapshot(db, [{**OFFERS[1], 'status': 'not_buyable'}], [], NOW); db.commit()
+        day = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+        save_profile('never', Profile(stock=1, stock_date=day, observed_from=day), db, DEFAULT_STORE_ID)
+        assert json.loads(db.query(SystemSettings).filter_by(key=key).one().value)['ever_buyable_skus'] == ['b']
+        assert not eligible(db, 'other-store', db.get(Product, 'never'))
+
+
+def test_multi_sku_counts_deduplicate_and_never_guess_prior_buyability():
+    with setup() as db:
+        p = db.get(Product, 'never'); p.sku = 'b,c'
+        db.commit()
+        offers = [{**OFFERS[1], 'status': 'buyable'},
+                  {'sku': 'c', 'offer_id': 3, 'status': 'not_buyable', 'stock_at_takealot_total': 0}]
+        apply_snapshot(db, offers, [], NOW); db.commit()
+        summary = overview(db, DEFAULT_STORE_ID)['coverage']
+        assert summary == dict(products=2, skus=3, buyable=1, formerly_buyable=0, unknown=2)
+        # Changing local identity must not transfer SKU b's former buyability to SKU d.
+        p.sku = 'd'; db.commit()
+        assert not eligible(db, DEFAULT_STORE_ID, p)

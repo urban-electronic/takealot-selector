@@ -2451,7 +2451,8 @@ table tbody tr:hover { background: #f8fafc; }
 .row-subtitle, .operations-workspace .data-table small { display:block; font-size:var(--fs-caption); color:var(--text-subtle); margin-top:2px; line-height:1.4; }
 /* 英文标题：补货表原来只有中文名，核对规格时分不清是哪个变体。
  * 单行省略，宽度跟商品列一致——长标题不能把 240px 的列撑开或换行成三行。 */
-.operations-workspace .operations-product .product-en { display:block; max-width:100%; margin-top:1px; color:var(--text-muted);
+.operations-workspace .operations-product .product-en,
+.operations-workspace .operations-product .product-cn { display:block; max-width:100%; margin-top:1px; color:var(--text-muted);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mode-pill, .status-pill { display:inline-block; padding:3px 7px; border-radius:4px; background:#f1f5f9; color:var(--text-muted); font-size:11px; white-space:nowrap; }
 .mode-pill.sea { background:#eff6ff; color:#2563eb; }
