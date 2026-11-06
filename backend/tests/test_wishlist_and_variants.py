@@ -129,11 +129,17 @@ def test_failed_variant_does_not_create_a_ghost_sku():
     assert json.loads(titles_text) == ['Necklace - Blue']
 
 
-def test_list_offer_end_to_end_persists_identity(monkeypatch, db):
+@pytest.mark.parametrize('existing_sku,existing_name,expected_name', [
+    ('', '', 'Blue Red'),
+    ('9902739445801 9902739445802', '人工银项链', '人工银项链'),
+    ('9902739445801', '主商品银项链', '主商品银项链 Red'),
+])
+def test_list_offer_end_to_end_persists_identity(monkeypatch, db,
+                                                existing_sku, existing_name, expected_name):
     """从目录变体到落库：results 里的 title 要真的变成 variant_titles。"""
     from services import takealot_portal_api as portal
 
-    row = product(db)
+    row = product(db, sku=existing_sku, chinese_product_name=existing_name)
     variants = [
         {'barcode': '6009512345678', 'tsin': '104036518', 'label': 'Blue',
          'title': 'Necklace - Blue', 'has_offer': False},
@@ -156,11 +162,11 @@ def test_list_offer_end_to_end_persists_identity(monkeypatch, db):
 
     result = list_offer('p1', ListOfferIn(), db, 'default-store')
     assert result['product_sku'] == '9902739445801 9902739445802'
-    assert result['chinese_product_name'] == 'Blue Red'
+    assert result['chinese_product_name'] == expected_name
     assert json.loads(result['variant_titles']) == ['Necklace - Blue', 'Necklace - Red']
     db.refresh(row)
     assert row.sku == result['product_sku']
-    assert row.chinese_product_name == 'Blue Red'
+    assert row.chinese_product_name == expected_name
     assert json.loads(row.variant_titles) == ['Necklace - Blue', 'Necklace - Red']
 
 
