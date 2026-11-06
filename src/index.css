@@ -2627,6 +2627,11 @@ table tbody tr:hover { background: #f8fafc; }
  * 否则窄屏那条 display:none 会被它以更高优先级顶回去。 */
 .pricing-table .operations-product .product-en { display: block; margin-top: 2px; font-size: 11px; color: var(--text-subtle);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 英文名是平台标题（第一行、加粗），中文名只用于自己核货（第二行）。
+ * 中文这行不给窄屏的 display:none，缩到手机宽度也得看得见中文。 */
+.pricing-table .operations-product .product-link { font-weight: 600; }
+.pricing-table .operations-product .product-cn { display: block; margin-top: 2px; font-size: 12px; color: var(--text-subtle);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .own-price { display:block; margin-top:6px; font-size:14px; color:#253247; }
 .quote-price { display:block; font-size:16px; margin-bottom:6px; color:#253247; }
 .row-buttons { display:flex; gap:5px; margin-top:8px; align-items:center; flex-wrap:wrap; } .row-buttons .btn { white-space:nowrap; padding:5px 7px; }

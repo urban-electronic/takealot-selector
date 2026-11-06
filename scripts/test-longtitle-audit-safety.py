@@ -105,16 +105,16 @@ class AuditTests(unittest.TestCase):
     def test_valid_ring_and_default_screenshot_order(self):
         status, output, shots = self.run_audit()
         self.assertEqual(status, 0)
-        self.assertIn('"measured": 24', output)
+        self.assertIn('"measured": 30', output)
         defaults = [(name, tabs) for name, tabs in shots if not name.endswith('_focus.png')]
-        self.assertEqual(len(defaults), 24)
+        self.assertEqual(len(defaults), 30)
         self.assertTrue(all(tabs == 0 for _, tabs in defaults), 'default screenshots precede keyboard interaction')
 
     def test_all_navigation_errors_fail(self):
         status, output, _ = self.run_audit(navigation_error=True)
         self.assertEqual(status, 1)
         self.assertIn('"measured": 0', output)
-        self.assertIn('"errors": 24', output)
+        self.assertIn('"errors": 30', output)
 
     # ---- 焦点落在控件内部子部件上（日期框的日历按钮等）----
     # 宿主元素的 outline 读不到，但浏览器把圈画在图标自己身上（截图核对过）。
@@ -159,7 +159,7 @@ class AuditTests(unittest.TestCase):
         status, output, _ = self.run_audit(lambda tabs: {'tag': f'button{tabs}'})
         self.assertEqual(status, 1, '没走完一圈就停 = 覆盖不全，不能算通过')
         self.assertIn('焦点采样未走完一圈', output)
-        self.assertEqual(self.summary(output)['focus_truncated'], 24)
+        self.assertEqual(self.summary(output)['focus_truncated'], 30)
 
     def test_one_full_cycle_stops_and_is_not_double_counted(self):
         # 三个可聚焦元素 → 走一圈就停，采样数必须正好 3（旧实现会把同一批元素反复量）。

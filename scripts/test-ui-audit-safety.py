@@ -65,10 +65,10 @@ class Route:
     async def fulfill(self, **kwargs): self.action = 'fixture'
 
 class SafetyTests(unittest.TestCase):
-    # 下面三个数字是「覆盖面锁」：11 条路由 × 3 档宽度 = 33 个面。
+    # 下面三个数字是「覆盖面锁」：13 条路由 × 3 档宽度 = 39 个面。
     # 写死而不是从 ROUTES 推导，是为了让「悄悄少测一条路由」也变成失败——
     # 推导出来的数字会跟着一起变小，等于没有断言。
-    SURFACES = 33
+    SURFACES = 39
 
     def test_procurement_without_sku_can_reach_measurement(self):
         fn = audit['main']

@@ -39,6 +39,9 @@ export default function AutoPricing() {
   const refreshState = useRef<{ active: boolean; sequence: number; pending: Promise<void> | null }>({ active: false, sequence: 0, pending: null });
   const [segment, setSegment] = useState('all'); const [segmentName, setSegmentName] = useState('');
   const [selected, setSelected] = useState<string[]>([]); const [group, setGroup] = useState('all'); const [groupName, setGroupName] = useState('');
+  // 持位状态筛选：按行上那颗状态胶囊的文案筛，选「已核实持位」就是只看确认在本店持位的行，
+  // 不用再一页页翻状态。文案直接取自 describeOwnership，界面和筛选口径永远同一份。
+  const [holdFilter, setHoldFilter] = useState('all');
   const [copied, setCopied] = useState(false);
   // 展开哪一个商品页的变体列表。按 product_id 记，不按行记：
   // 同一商品页下的多条分支共用一个展开区，否则展开 24 个变体就是 24 个面板。
@@ -57,7 +60,7 @@ export default function AutoPricing() {
     node.open = true; setMaintenance(true);
     node.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-  useEffect(() => { setPage(1); }, [search, group, segment]);
+  useEffect(() => { setPage(1); }, [search, group, segment, holdFilter]);
   const key = (r: any) => `${r.product_id}:${r.offer_id}`;
   const refresh = useCallback((afterMutation = false): Promise<void> => {
     const state = refreshState.current;
@@ -226,7 +229,13 @@ export default function AutoPricing() {
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2500); }
     else setError('复制失败：环境不允许写剪贴板。请手动展开任一行的「为什么」查看诊断。');
   };
-  const visible = rows.filter(r => typeof r.stock === 'number' && r.stock > 0 && (group === 'all' || r.group === group) && (segment==='all' || (r.monitor?.segment||'未分段')===segment) && `${r.chinese_name || ''} ${r.name} ${r.sku}`.toLowerCase().includes(search.toLowerCase()));
+  const visible = rows.filter(r => typeof r.stock === 'number' && r.stock > 0 && (group === 'all' || r.group === group) && (segment==='all' || (r.monitor?.segment||'未分段')===segment) && (holdFilter === 'all' || describeOwnership(r.monitor).label === holdFilter) && `${r.chinese_name || ''} ${r.name} ${r.sku}`.toLowerCase().includes(search.toLowerCase()));
+  // 只把真实存在的分类/分段摆出来。一个都没命名时这两个下拉只会各自挂一个空壳选项，
+  // 占了工具栏却筛不出任何差别——此时干脆不渲染；命名过两个以上才出现。
+  const groupOptions = [...new Set(rows.map(r => r.group).filter(Boolean))] as string[];
+  const segmentOptions = [...new Set(rows.map(r => r.monitor?.segment).filter(Boolean))] as string[];
+  // 持位状态选项：把「已核实持位」钉在第一位，一键就能只看真正确认在本店持位的行。
+  const holdOptions = ['已核实持位', ...new Set(rows.map(r => describeOwnership(r.monitor).label).filter(l => l !== '已核实持位'))] as string[];
   const pages = Math.max(1, Math.ceil(visible.length / pageSize)); const activePage = Math.min(page, pages);
   const pageRows = visible.slice((activePage-1)*pageSize, activePage*pageSize);
   const input = (r: any, field: string, label: string) => <input type="number" min="1" step="1" aria-label={`${r.sku}${label}`} title={field === 'min_price' ? '最低价：留空=自动使用系统利润底价，填了就按手动底价' : '最高价：可留空，走智能上限'} placeholder={field === 'min_price' ? `自动 ${r.suggested_min ?? '待补'}` : '智能上限'} style={{ width: 86 }} value={drafts[key(r)]?.[field] ?? (field === 'min_price' && r.rule.use_system_min !== false ? r.suggested_min ?? '' : r.rule[field] ?? '')} onChange={e => setDrafts({ ...drafts, [key(r)]: { ...drafts[key(r)], [field]: e.target.value, ...(field === 'min_price' ? { use_system_min: e.target.value === '' } : {}) } })} />;
@@ -438,7 +447,26 @@ export default function AutoPricing() {
     {error&&<div role="alert" className="alert alert-error">{error}</div>}
 
     <div className="card operations-table-card">
-      <div className="pricing-toolbar"><input aria-label="搜索调价商品" placeholder="商品名称 / SKU" value={search} onChange={e=>setSearch(e.target.value)} /><select aria-label="SKU分类筛选" value={group} onChange={e=>{setGroup(e.target.value);setSelected([]);}}><option value="all">全部分类</option>{[...new Set(rows.map(r=>r.group))].map(g=><option key={g} value={g}>{g}</option>)}</select><select aria-label="采集分段筛选" value={segment} onChange={e=>{setSegment(e.target.value);setSelected([]);}}><option value="all">全部分段</option>{[...new Set(rows.map(r=>r.monitor?.segment||'未分段'))].map(sg=><option key={sg} value={sg}>{sg}</option>)}</select><span className="selection-count">已选 {selected.length} SKU</span></div>
+      <div className="pricing-toolbar">
+        <input aria-label="搜索调价商品" placeholder="商品名称 / SKU" value={search} onChange={e => setSearch(e.target.value)} />
+        <select aria-label="持位状态筛选" title="按每行状态胶囊的文案筛选；选「已核实持位」= 只看已按卖家名确认本店在持位的行" value={holdFilter} onChange={e => { setHoldFilter(e.target.value); setSelected([]); }}>
+          <option value="all">全部持位状态</option>
+          {holdOptions.map(l => <option key={l} value={l}>{l}</option>)}
+        </select>
+        {groupOptions.length > 1 && (
+          <select aria-label="SKU分类筛选" title="按调价分类筛选；分类用于成批启动/暂停调价" value={group} onChange={e => { setGroup(e.target.value); setSelected([]); }}>
+            <option value="all">全部分类</option>
+            {groupOptions.map(g => <option key={g} value={g}>{g}</option>)}
+          </select>
+        )}
+        {segmentOptions.length > 1 && (
+          <select aria-label="采集分段筛选" title="按采集分段筛选；分段用于把SKU分批采集，可各段单独设间隔" value={segment} onChange={e => { setSegment(e.target.value); setSelected([]); }}>
+            <option value="all">全部分段</option>
+            {segmentOptions.map(sg => <option key={sg} value={sg}>{sg}</option>)}
+          </select>
+        )}
+        <span className="selection-count">已选 {selected.length} SKU</span>
+      </div>
       {/* 一屏只留两个真正的动作。原来 8 个按钮平铺，最常用的和「停止全部调价」
           一样显眼，等于没有主次；现在次要动作收进「更多」，要用再展开。 */}
       <div className="pricing-actions">
@@ -469,13 +497,18 @@ export default function AutoPricing() {
         // 同一行出现三次 R 269——这不是信息，是噪音。
         const bb=m.buybox_price; const same=bb!=null&&r.price!=null&&Math.abs(bb-r.price)<0.01;
         const variantCount=r.variant?.count||1;
-        // 无定语形态：变体行只显示商品本体，定语（黑白/XLMS）收进展开区。
-        const title=r.variant?.base||r.chinese_name||'中文名待核对';
+        // 第一行放英文平台标题并加粗，中文换到第二行。
+        // 变体折叠行仍优先用无定语基名，但只在它本身是英文时——中文基名不能霸占第一行。
+        const HAN=/[\u4e00-\u9fa5]/;
+        const variantBase=(r.variant?.base||'').trim();
+        const enTitle=(variantBase&&!HAN.test(variantBase)?variantBase:(r.name||'').trim());
+        const cnTitle=(r.chinese_name||'').trim()||(HAN.test(variantBase)?variantBase:'');
+        const title=enTitle||cnTitle||'标题待补充';
         const openVariant=openVariantOf===r.product_id;
         return <tr key={key(r)} className={openVariant?'is-expanded':''}><td><input type="checkbox" aria-label={`选择SKU ${r.sku}`} checked={selected.includes(key(r))} onChange={e=>setSelected(e.target.checked?[...selected,key(r)]:selected.filter(k=>k!==key(r)))} /></td>
           <td className="operations-product"><div className="product-cell"><Thumb src={r.image ? getImageUrl(r.image, 160) : ''} /><div className="product-body"><a className="product-link" title={r.name} href={r.url} target="_blank" rel="noreferrer">{title}</a>{!r.variant?.base&&!r.chinese_name&&<small className="text-warning">{r.name_status==='invalid'?'中文字段为非中文，请修正':r.name_status==='ambiguous'?'SKU与中文名对应不明确':'中文名待补充'}</small>}
-            {/* 中文名对上号用，英文名才是平台上的标题：宽屏有富余就摆出来，窄屏藏掉。 */}
-            {r.name&&r.name!==title&&<small className="product-en" title={r.name}>{r.name}</small>}
+            {/* 英文在上、中文在下：中文只给自己核货，宽屏窄屏都要能看见。 */}
+            {cnTitle&&cnTitle!==title&&<small className="product-cn" title={cnTitle}>{cnTitle}</small>}
             <div className="product-meta"><span>{r.sku}</span><span>库存 {r.stock??'—'}</span>
               {variantCount>1&&<button type="button" className={`variant-toggle${openVariant?' is-open':''}`} aria-expanded={openVariant} onClick={()=>setOpenVariantOf(openVariant?'':r.product_id)}>变体 {variantCount}</button>}
             </div></div></div>
