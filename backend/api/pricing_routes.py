@@ -11,7 +11,7 @@ from models import Product, SystemSettings, DEFAULT_STORE_ID
 from api.store_routes import get_store_id
 from api.operations_routes import PROFILE_PREFIX
 from services.automatic_pricing import PREFIX
-from services.buybox_monitor import PREFIX as MONITOR_PREFIX, DEFAULT_INTERVAL_MINUTES
+from services.buybox_monitor import PREFIX as MONITOR_PREFIX
 from services.takealot_seller_api import configured_key
 from services.replenishment_economics import system_floor
 
@@ -274,9 +274,7 @@ def reconcile(product_id: str, offer_id: str, db: Session = Depends(get_db), sto
 
 class MonitorConfig(BaseModel):
     enabled: bool = False
-    # 默认值跟随云端最小间隔（30 分钟）。`ge=5` 不动：那是接口契约里的取值范围，
-    # 真正的排期下限由 effective_interval_minutes 兜，旧客户端传 5 也不会真的按 5 分钟采。
-    interval_minutes: int = Field(default=DEFAULT_INTERVAL_MINUTES, ge=5, le=1440)
+    interval_minutes: int = Field(default=5, ge=5, le=1440)
     segment: str = Field(default='', max_length=60)
 
 class MonitorBulk(MonitorConfig):

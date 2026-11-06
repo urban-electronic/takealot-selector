@@ -91,28 +91,11 @@ def test_null_interval_does_not_break_the_next_due(monkeypatch):
     而这一行因为 next_due 没被推进会被每轮重新选中、每轮再抛一次——一条脏记录
     足以让整批 SKU 永久停采，日志里只有一句通用的「worker unavailable」。
     """
-    # 缺值/脏值一律落到最小间隔（30 分钟），既不会抛异常，也不会退化成 5 分钟
-    assert monitor.interval_seconds(None) == 1800
+    assert monitor.interval_seconds(None) == 300
     assert monitor.interval_seconds(30) == 1800
-    assert monitor.interval_seconds(True) == 1800     # bool 不是间隔
-    assert monitor.interval_seconds(0) == 1800        # 0 会让记录每轮都到期
-    assert monitor.interval_seconds('5') == 1800      # 字符串不是整数
-
-
-def test_cloud_min_interval_is_a_floor_not_a_default(monkeypatch):
-    """最小间隔是**下限**：库里存的老 5 分钟必须被抬到 30 分钟。
-
-    降频止血的关键就在这一条。只改「缺值时的默认值」是不够的——线上记录的
-    interval_minutes 是有值的 5，默认值根本不会生效，等于什么都没改。
-    """
-    assert monitor.MIN_INTERVAL_MINUTES == 30
-    assert monitor.effective_interval_minutes(5) == 30        # 老记录被抬到下限
-    assert monitor.effective_interval_minutes(10) == 30
-    assert monitor.effective_interval_minutes(30) == 30
-    assert monitor.effective_interval_minutes(60) == 60       # 用户选慢档照旧尊重
-    assert monitor.effective_interval_minutes(None) == 30
-    # 两个入口必须同一口径，否则会出现「排期 30 分钟、展示 5 分钟」两套节奏
-    assert monitor.interval_seconds(5) == monitor.effective_interval_minutes(5) * 60
+    assert monitor.interval_seconds(True) == 300      # bool 不是间隔
+    assert monitor.interval_seconds(0) == 300         # 0 会让记录每轮都到期
+    assert monitor.interval_seconds('5') == 300       # 字符串不是整数
 
 
 def test_healthy_job_is_not_mistaken_for_a_stuck_one(monkeypatch):

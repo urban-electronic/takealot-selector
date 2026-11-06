@@ -105,19 +105,7 @@ def _reset_pool():
         _pool_dirty = False
 
 
-# 云端采集的最小间隔（分钟）。过渡期把云端 Playwright 采集降频到 30 分钟：
-# 高频采集交给本机 native-collector（它在线时云端整轮让位、不启 Chromium），
-# 云端只在本机离线 120 秒后按这个下限兜底。Railway 账单主要压在采集上，降频
-# 是为了在搬机完成前先把常驻消耗压下来。
-#
-# 这个值同时是**排期下限**，不只默认值：库里历史行写的 5 分钟、界面旧档位传上来的
-# 5/10/15 都按 30 分钟排期。否则会出现「配置写 5、实际按 30 跑」两套口径，
-# 界面上的新鲜度判定就会拿 5 分钟当基准，把正常的 30 分钟一轮全报成过期。
-MIN_INTERVAL_MINUTES = 30
-DEFAULT_INTERVAL_MINUTES = MIN_INTERVAL_MINUTES
-
-
-def normalize_interval_minutes(value, default_minutes=DEFAULT_INTERVAL_MINUTES):
+def normalize_interval_minutes(value, default_minutes=5):
     """把记录里的 interval_minutes 归一成合法的正整数（分钟）。
 
     `interval_minutes` 在库里有三个来源：用户配置（Pydantic 保证 int≥5）、
@@ -130,33 +118,21 @@ def normalize_interval_minutes(value, default_minutes=DEFAULT_INTERVAL_MINUTES):
          或库里，前者被 Pydantic 判 422（点「立即采集」直接报错），后者把
          null 一直传下去，让第 1 条永远有货。
 
-    默认值取 DEFAULT_INTERVAL_MINUTES（与 MIN_INTERVAL_MINUTES 同为 30），
-    与 repair_monitor、云/本机两条回报路径共用同一个口径。
-    注意这里**只填 null，不抬下限**：下限由 `effective_interval_minutes` 负责，
-    这样「库里存的是用户配置」和「实际按多快排期」仍是两个可分开解释的东西。
+    默认值 5 与 loop_status、repair_monitor、前端 `Number(x) || 5` 的既有口径一致，
+    没有引入新语义。
     """
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default_minutes
 
 
-def effective_interval_minutes(value, default_minutes=DEFAULT_INTERVAL_MINUTES):
-    """实际排期用的间隔（分钟）：用户配置与云端最小间隔取较大者。
-
-    所有算 `next_due` 的地方都必须走这里（或 `interval_seconds`），否则就会出现
-    「某条路径按 5 分钟排、另一条按 30 分钟排」的同一条记录两套节奏：本机回报
-    按 5 分钟推进，云端下一轮看到到期了又采一次，降频等于没做。
-    """
-    return max(MIN_INTERVAL_MINUTES, normalize_interval_minutes(value, default_minutes))
-
-
-def interval_seconds(value, default_minutes=DEFAULT_INTERVAL_MINUTES):
-    """采集间隔（秒），已应用云端最小间隔（30 分钟）下限。
+def interval_seconds(value, default_minutes=5):
+    """采集间隔（秒）。
 
     为什么这个归一不能省：`process()` 里算 `next_due` 的那段在 `finally` 里，
     抛出去就整轮采集一起中断（`run()` 只打印一句「worker unavailable」），
     而这一行因为 `next_due` 没被推进，每一轮都会被重新选中、每一轮再抛一次——
     一条脏记录足以让 28 个 SKU 永久停采，日志里却只有一句通用失败。
     """
-    return effective_interval_minutes(value, default_minutes) * 60
+    return normalize_interval_minutes(value, default_minutes) * 60
 
 # 这些是「这一轮压根没跑起来」或「页面还没渲染完」的信号，同轮重试有意义。
 # 网站验证（site_challenge）不在里面：验证不会因为隔 5 秒再开一次就解除，
@@ -549,7 +525,7 @@ def _record_stuck(session_factory, futures, owners):
                     last_attempt_at=datetime.now(timezone.utc).isoformat(),
                     last_attempt_source='cloud_browser',
                     failures=int(value.get('failures') or 0) + 1,
-                    next_due=now + interval_seconds(value.get('interval_minutes')))
+                    next_due=now + max(300, interval_seconds(value.get('interval_minutes'))))
                 value.pop('diagnostics', None)
                 row.value = json.dumps(value, ensure_ascii=False)
             state = db.query(SystemSettings).filter_by(key=WORKER_STATE).first()
@@ -629,10 +605,7 @@ def loop_status(db, store=DEFAULT_STORE_ID):
     # 把它当成真实时间参与 min()，算出来的延迟会是「已延迟 1792265800 秒」——
     # 界面上就是「已延迟 2987107 分钟」，比不显示更糟。
     dues=[m.get('next_due') for m in enabled if isinstance(m.get('next_due'),(int,float)) and m['next_due'] > 0]
-    # 界面拿这个数解释「延迟是排期排不下还是真停了」，所以必须是**生效**间隔
-    # （已套最小间隔下限），不是库里存的那个数：历史行存的 5 分钟会让界面把
-    # 正常的 30 分钟一轮算成「已延迟 25 分钟」。
-    intervals=[effective_interval_minutes(m.get('interval_minutes')) for m in enabled if isinstance(m.get('interval_minutes'),int)]
+    intervals=[m.get('interval_minutes') for m in enabled if isinstance(m.get('interval_minutes'),int)]
     # 行情新鲜度：纯云端单通道下没有第二路采集做交叉校验，「某个启用中的 SKU 很久
     # 没有成功行情」是用户唯一能看到的异常信号。阈值与前端 quoteFreshness 保持一致：
     # 超过 6 个自身采集间隔 = 过期；从没成功过（无 last_success_at）也要点名。

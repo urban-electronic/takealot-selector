@@ -38,23 +38,13 @@ def page_open(db:Session=Depends(get_db),store:str=Depends(get_store_id)):
         original=row.value if row else None
         old=json.loads(original) if original is not None else {}
         # Explicit pauses, in-flight work and website cooldowns survive reopen.
-        # 打开页面不再「全量插队」：next_due 是所有排期路径（云端 process、本机
-        # /offers 回报、领取、repair）统一推进的字段，它还没到期就说明这条 SKU
-        # 在最小间隔内已经采过一轮。原实现对每条有库存的 SKU 无条件排队并置
-        # next_due=0，等于每开一次页面就把全部 SKU 拉去采一遍，间隔配置被完全
-        # 绕过——这正是「前端 page-open 触发全量排队」。改成只补到期/从未采过的
-        # 那些，页面刷新才真的是「顺手补一下缺的行情」而不是一次全量采集。
-        due=old.get('next_due')
         if (old.get('status') in ('paused','running') or old.get('status')=='queued' and not old.get('web_requested')
             or now-old.get('page_open_requested_at',0)<60
-            or isinstance(due,(int,float)) and due>now):
+            or old.get('status')=='error' and old.get('next_due',0)>now):
             skipped+=1;continue
-        # next_due 写 now 而不是 0：0 是「没排期」的哨兵值，写它会掩盖这条记录的
-        # 真实到期时间，界面上也变成「已延迟 1792265800 秒」。能走到这里的记录
-        # 本来就是到期或从未采过的，now 与 0 在选取上完全等价，但语义准确。
         value={**old,'product_id':item['product_id'],'offer_id':item['offer_id'],'sku':item['sku'],
             'enabled':old.get('enabled',False),'request_once':True,'web_requested':False,
-            'revision':old.get('revision',0)+1,'status':'queued','next_due':now,
+            'revision':old.get('revision',0)+1,'status':'queued','next_due':0,
             'page_open_requested_at':now}
         encoded=json.dumps(value,ensure_ascii=False)
         if row:

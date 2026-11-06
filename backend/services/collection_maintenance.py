@@ -74,11 +74,7 @@ def repair_monitor(monitor, now=None):
     was_error = value.get('status') == 'error'
 
     interval = value.get('interval_minutes')
-    # 排期下限统一由 buybox_monitor.interval_seconds 决定（当前 30 分钟）。这里
-    # 若自己按 interval_minutes*60 算，一条 5 分钟的老记录被「修好」之后 next_due
-    # 会退回 5 分钟——repair 反而成了绕过最小间隔的捷径。
-    from services.buybox_monitor import interval_seconds as schedule_seconds
-    interval_seconds = schedule_seconds(interval)
+    interval_seconds = (interval if isinstance(interval, int) and interval > 0 else 5) * 60
 
     # ① 错误码重判：库里的结论可能是旧版本代码写的。
     #    只在原有结论不是「已定位根因」时重判，避免把真实异常改写成别的东西
