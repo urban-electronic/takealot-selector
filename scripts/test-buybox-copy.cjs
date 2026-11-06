@@ -50,10 +50,14 @@ check(humanUntil(20_000) === '不到 1 分钟内', 'sub-minute countdown is expl
 check(humanUntil(3 * MIN) === '约 3 分钟后', 'minute countdown is rounded up');
 check(humanUntil(2 * 60 * MIN) === '约 2 小时后', 'hour countdown is used beyond an hour');
 
-// ---- 新鲜度按各自间隔判定，而不是写死 5 分钟 ----------------------------------
-check(quoteFreshness({ last_success_at: ago(4 * MIN) }, NOW).fresh === 'fresh', '4 分钟 < 2×5 分钟 判为新鲜');
-check(quoteFreshness({ last_success_at: ago(12 * MIN) }, NOW).fresh === 'aging', '12 分钟落在 2~6 个间隔之间判为偏旧');
-check(quoteFreshness({ last_success_at: ago(40 * MIN) }, NOW).fresh === 'stale', '40 分钟超过 6 个间隔判为过期');
+// ---- 新鲜度按各自间隔判定，而不是写死分钟数 ------------------------------------
+// 缺 interval_minutes 时按云端最小间隔（30 分钟）算，所以阈值是 60 / 180 分钟：
+// 12 分钟前、40 分钟前的报价在 30 分钟一轮下本来就是新鲜的，判成「偏旧」会让
+// 每一条正常记录都挂上黄色警告。要测 aging/stale 必须越过 30 分钟的倍数。
+check(quoteFreshness({ last_success_at: ago(4 * MIN) }, NOW).fresh === 'fresh', '4 分钟 < 2×30 分钟 判为新鲜');
+check(quoteFreshness({ last_success_at: ago(40 * MIN) }, NOW).fresh === 'fresh', '40 分钟在 30 分钟一轮下仍是新鲜');
+check(quoteFreshness({ last_success_at: ago(90 * MIN) }, NOW).fresh === 'aging', '90 分钟落在 2~6 个间隔之间判为偏旧');
+check(quoteFreshness({ last_success_at: ago(200 * MIN) }, NOW).fresh === 'stale', '200 分钟超过 6 个间隔判为过期');
 check(
   quoteFreshness({ last_success_at: ago(20 * MIN), interval_minutes: 60 }, NOW).fresh === 'fresh',
   '同一个 20 分钟，在 60 分钟间隔下仍然是新鲜的',
@@ -131,7 +135,7 @@ check(freshAuto.label === '自动采集', 'auto collection says so');
 check(freshAuto.headline.includes('2 分钟前'), 'headline carries the data age');
 check(freshAuto.action === '', 'a healthy row asks nothing of the user');
 
-const agingManual = describeCollection({ status: 'success', last_success_at: ago(15 * MIN) }, ctx());
+const agingManual = describeCollection({ status: 'success', last_success_at: ago(90 * MIN) }, ctx());
 required(agingManual);
 check(agingManual.tone === 'warning', 'aging manual data is a warning');
 check(agingManual.action.includes('立即采集'), 'manual aging data tells the user to refresh');
