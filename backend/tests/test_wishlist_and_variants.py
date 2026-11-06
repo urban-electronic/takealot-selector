@@ -254,13 +254,15 @@ def test_sync_uses_discovered_field_as_extra_field(monkeypatch, db):
 
 
 def test_sync_without_field_returns_actionable_diagnostic(monkeypatch, db):
+    """心愿单字段没找到不算整次失败：变体标题回填照样能用，理由要如实给全。"""
     row = product(db, sku='111')
     calls = wire(monkeypatch, field=None, keys=['sku', 'selling_price'])
     result = sync_wishlist(db, 'default-store')
-    assert result['ok'] is False and result['matched'] == 0
+    assert result['ok'] is True and result['wishlist_ok'] is False
+    assert result['matched'] == 0
     assert 'My Offers' in result['reason']
     assert result['probed_keys'] == ['sku', 'selling_price']
-    assert calls == [], '探测不到字段时不能白拉一次全量 offers'
+    assert calls == [()], '仍要拉一次常规 offers 做变体标题回填，不是白拉'
     db.refresh(row)
     assert row.wishlist_count is None, '不许把「没拿到」写成 0'
 
@@ -304,3 +306,60 @@ def test_default_offer_cache_key_stays_unchanged():
     assert seller._offer_digest(KEY, ('wishlist_count',)) != legacy
     assert seller._offer_digest(KEY, ('wishlist_count',)) == \
         hashlib.sha256((KEY + '|wishlist_count').encode()).hexdigest()
+
+
+# ---- 历史产品变体标题回填（不用重新上架） -----------------------------------
+
+
+def test_backfill_writes_titles_in_sku_order(monkeypatch, db):
+    a = product(db, id='a', sku='111 222', product_name='Necklace')
+    b = product(db, id='b', sku='333', product_name='Ring')
+    wire(monkeypatch, rows=[
+        {'sku': '111', 'title': 'Necklace - Blue'},
+        {'sku': '222', 'title': 'Necklace - Red'},
+        {'sku': '333', 'title': 'Ring - L'},
+    ])
+    result = sync_wishlist(db, 'default-store')
+    db.refresh(a); db.refresh(b)
+    assert json.loads(a.variant_titles) == ['Necklace - Blue', 'Necklace - Red']
+    assert not (b.variant_titles or ''), '单 SKU 没有「分不清」的问题，不写字段'
+    assert result['variant_titles']['updated'] == 1
+
+
+def test_backfill_never_overwrites_existing_or_manual_titles(monkeypatch, db):
+    manual = json.dumps(['人工写的蓝', '人工写的红'], ensure_ascii=False)
+    a = product(db, id='a', sku='111 222', product_name='Necklace', variant_titles=manual)
+    wire(monkeypatch, rows=[
+        {'sku': '111', 'title': 'Necklace - Blue'},
+        {'sku': '222', 'title': 'Necklace - Red'},
+    ])
+    result = sync_wishlist(db, 'default-store')
+    db.refresh(a)
+    assert a.variant_titles == manual, '已补过或人工修正过的标题绝不覆盖'
+    assert result['variant_titles']['updated'] == 0
+
+
+def test_backfill_ignores_shared_title_and_keeps_sku_alignment(monkeypatch, db):
+    a = product(db, id='a', sku='111 222 333', product_name='Necklace')
+    wire(monkeypatch, rows=[
+        {'sku': '111', 'title': 'Necklace'},  # 和共享主标题一样，填了也分不清
+        {'sku': '222', 'title': 'Necklace - Red'},
+    ])
+    sync_wishlist(db, 'default-store')
+    db.refresh(a)
+    assert json.loads(a.variant_titles) == ['', 'Necklace - Red', ''], \
+        '缺的 SKU 留空占位，不能把第三个 SKU 的标题挤到第二个位置'
+
+
+def test_backfill_still_runs_when_wishlist_field_is_absent(monkeypatch, db):
+    """这是关键：用户点的虽然是「同步 Wishlist」，但旧数据补齐不能依赖该字段存在。"""
+    a = product(db, id='a', sku='111 222', product_name='Necklace')
+    wire(monkeypatch, field=None, rows=[
+        {'sku': '111', 'title': 'Necklace - Blue'},
+        {'sku': '222', 'title': 'Necklace - Red'},
+    ])
+    result = sync_wishlist(db, 'default-store')
+    assert result['wishlist_ok'] is False
+    db.refresh(a)
+    assert json.loads(a.variant_titles) == ['Necklace - Blue', 'Necklace - Red']
+    assert result['variant_titles']['updated'] == 1

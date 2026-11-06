@@ -1060,13 +1060,61 @@ def _wishlist_plid(product):
     return match.group(1) if match else None
 
 
+def _backfill_variant_titles(db, store_id, rows):
+    """按 SKU 把 My Offers 里每个 offer 自己的标题回填到历史多行产品。
+
+    老产品是在「一行 = 一个 PLID」模型下录的，多个 SKU 共享 product_name，
+    分支行只能重复主标题。让用户重新上架去换标题会在平台产生重复 offer，
+    绝对不能这么干。`/v1/offers` 每行就是一个 offer，自带 sku 与 title，
+    纯读一次就能补齐，不需要门户令牌、也不改动平台上的任何东西。
+
+    只补「还没有有效标题」的多 SKU 产品，且跳过与共享主标题完全相同的
+    title（填进去还是分不清，不如留空让前端用规格名兜底）。
+    """
+    titles_by_sku = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sku = str(row.get('sku') or '').strip()
+        title = str(row.get('title') or '').strip()
+        if sku and title:
+            titles_by_sku[sku] = title
+
+    products = db.query(Product).filter(
+        Product.store_id == store_id,
+        or_(Product.is_archived.is_(False), Product.is_archived.is_(None)),
+    ).all()
+    scanned = updated = 0
+    for p in products:
+        skus = _split_tokens(p.sku)
+        if len(skus) < 2:
+            continue  # 单 SKU 没有「分不清」的问题
+        scanned += 1
+        existing = _load_variant_titles(p)
+        if len(existing) == len(skus) and any(x.strip() for x in existing):
+            continue  # 已补过或人工修过，绝不覆盖
+        shared = (p.product_name or '').strip()
+        filled = []
+        for sku in skus:
+            title = titles_by_sku.get(sku, '')
+            filled.append('' if not title or (shared and title == shared) else title)
+        if not any(filled):
+            continue
+        p.variant_titles = json.dumps(filled, ensure_ascii=False)
+        updated += 1
+    db.commit()
+    return {'scanned': scanned, 'updated': updated,
+            'offers': len(titles_by_sku), 'total': len(products)}
+
+
 @router.post('/sync-wishlist')
 def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    """把卖家后台 My Offers 的心愿单数量回写到产品列表。
+    """把卖家后台 My Offers 的数据回写到产品列表：心愿单数 + 历史变体标题。
 
     `/v1/offers` 的 `fields` 是白名单，平时只取 11 个业务字段。先探测心愿单
-    字段是否真的在这个接口里，再用它拉全量 offer，按 SKU / PLID 对齐本地产品。
-    探测不到就明确回报原因，不猜字段名、也不写 0（0 会被当成真实数量）。
+    字段是否真的在这个接口里，再拉一次全量 offer：不管心愿单字段有没有，
+    这批 offer 的 sku / title 都足够给历史多行产品补齐变体标题；心愿单字段
+    存在时再顺手回写数量。探测不到就明确回报原因，不猜字段名、也不写 0。
     """
     from services.takealot_seller_api import (configured_key, discover_wishlist_field,
                                               wishlist_value, _load_offers)
@@ -1077,13 +1125,18 @@ def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_sto
         field, keys = discover_wishlist_field(key)
     except Exception as exc:  # noqa: BLE001 —— 只归因，不把上游正文透出去
         raise HTTPException(503, f'My Offers 字段探测失败：{_read_reason(exc)}')
-    if not field:
-        return {'ok': False, 'matched': 0, 'field': None, 'probed_keys': keys,
-                'reason': '卖家 API 的 offers 接口没有返回心愿单字段；后台 My Offers 页面的数字可能来自卖家门户内部接口。请把该页面截图或字段名发来即可接上。'}
     try:
-        rows = _load_offers(key, extra_fields=(field,))
+        rows = _load_offers(key, extra_fields=(field,) if field else ())
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f'My Offers 读取失败：{_read_reason(exc)}')
+
+    # 先做与心愿单字段无关的回填：即使接口没有 wishlist，这一步也不该白跑。
+    variant_stats = _backfill_variant_titles(db, store_id, rows)
+    if not field:
+        return {'ok': True, 'matched': 0, 'field': None, 'probed_keys': keys,
+                'wishlist_ok': False, 'variant_titles': variant_stats,
+                'total': variant_stats['total'],
+                'reason': '卖家 API 的 offers 接口没有返回心愿单字段；后台 My Offers 页面的数字可能来自卖家门户内部接口。请把该页面截图或字段名发来即可接上。变体标题已按 SKU 补齐。'}
 
     by_sku, by_plid = {}, {}
     for row in rows:
@@ -1118,7 +1171,8 @@ def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_sto
         matched += 1
     db.commit()
     return {'ok': True, 'matched': matched, 'total': len(products),
-            'field': field, 'updated_at': now.isoformat()}
+            'field': field, 'wishlist_ok': True, 'variant_titles': variant_stats,
+            'updated_at': now.isoformat()}
 
 
 class ListOfferIn(BaseModel):

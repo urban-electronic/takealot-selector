@@ -9,13 +9,25 @@ import { ProductImage } from '../utils/imageFallback';
 import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, staleNote, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
 import { beijingClock, todayLocal } from '../utils/datetime';
-import { isSuspiciousSkuToken, skuVariants, variantLabels, variantTitles } from '../utils/variants';
+import { isPlaceholderLabel, isSuspiciousSkuToken, skuVariants, variantLabels, variantTitles } from '../utils/variants';
 import { isAgencyStoreName } from '../utils/agencyStore';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
 import { isEan13 } from '../utils/ean';
 import { safeSetItem } from '../utils/storage';
 import { copyText } from '../utils/clipboard';
 import { notifyCatalogChanged } from '../utils/catalogEvents';
+
+/**
+ * 历史产品没有 variant_titles：分支行原本每行都重复 PLID 级共享标题，
+ * 多个 SKU 看起来一模一样。这里退而用「规格名 · 共享标题」给出区分度，
+ * 纯展示兜底，不改数据库；后台回填成功后 titles 会优先取真实变体标题。
+ */
+const branchFallbackTitle = (label: string, shared: string): string => {
+  const name = (shared || '').trim();
+  const spec = (label || '').trim();
+  if (spec && !isPlaceholderLabel(spec)) return name ? `${spec} · ${name}` : spec;
+  return name || '英文品名待回抓';
+};
 
 // 需要重新抓图的行：缺图，或者分支变体的图片仍是主变体那张（同组同图）。
 const imageRefetchPending = (rows: Product[]) => {
@@ -837,22 +849,31 @@ export default function ProductList() {
     }
   };
 
-  /** 上架到后台后回传 My Offers 的心愿单数。
-   *  静默模式不把「同步成功」盖到上架回执上；失败仍要说明，但明确是 Wishlist
-   *  没接上而不是上架失败，免得运营看到红字以为要重新点上架。 */
+  /** 回传 My Offers 数据：心愿单数 + 历史产品变体标题。
+   *  上架成功后会静默跑一次；静默模式不把「同步成功」盖到上架回执上，
+   *  但失败仍要说明，且措辞必须让人不会误以为是上架失败。 */
   const syncWishlistNow = async (silent = false) => {
-    if (wishlistBusy || dataSource !== 'remote') return;
+    if (wishlistBusy) return;
+    if (dataSource !== 'remote') {
+      // 上架后的静默同步不该因为数据源是本地就冒一条红字，让人误以为上架失败。
+      if (!silent) setAssistError('同步后台数据需要连接线上后端：请在设置里把数据源切到「线上」。');
+      return;
+    }
     setWishlistBusy(true);
     try {
       const result = await api.syncWishlist();
-      if (result.ok) {
-        fetchProducts();
-        if (!silent) setAssistNotice(`Wishlist 已回传：${result.matched} 个产品（字段 ${result.field ?? '—'}）`);
-      } else {
-        setAssistError(`Wishlist 回传未完成：${result.reason || '卖家接口没有返回心愿单字段'}`);
+      fetchProducts();
+      const filled = result.variant_titles?.updated ?? 0;
+      const wishlistText = result.wishlist_ok === false
+        ? 'Wishlist 字段未找到（接口未返回心愿单数）'
+        : `Wishlist 已回传 ${result.matched} 个产品（字段 ${result.field ?? '—'}）`;
+      if (!silent) {
+        setAssistNotice(`后台数据同步：${filled ? `已补齐 ${filled} 个历史产品的变体标题` : '变体标题无需补齐'}；${wishlistText}`);
+        if (result.wishlist_ok === false) setAssistError(result.reason || '卖家接口没有返回心愿单字段');
+        else setAssistError('');
       }
     } catch (e) {
-      setAssistError(`Wishlist 回传失败：${e instanceof Error ? e.message : '未知错误'}`);
+      setAssistError(`后台数据同步失败：${e instanceof Error ? e.message : '未知错误'}`);
     } finally {
       setWishlistBusy(false);
     }
@@ -1408,9 +1429,19 @@ export default function ProductList() {
         return p.competing_sellers_count != null ? p.competing_sellers_count : '-';
       case 'wishlist_count':
         // 0 是真实数量（没人加心愿单），只有 null 才是「还没同步过」。
+        // 空格里直接给一个可点入口：页头那一排按钮很容易被忽略，而这里就一定
+        // 在用户正在看的那一列上，点一次全表都补齐。
         return p.wishlist_count != null
           ? <span title={p.wishlist_updated_at ? `My Offers 回传于 ${p.wishlist_updated_at}` : '来自卖家后台 My Offers'}>{p.wishlist_count}</span>
-          : <span title="尚未从 My Offers 回传；可在工具栏点「同步 Wishlist」">—</span>;
+          : (
+            <button
+              type="button"
+              className="btn btn-outline btn-sm wishlist-cell-sync"
+              disabled={wishlistBusy || dataSource !== 'remote'}
+              title="点这里从 My Offers 回传心愿单数，并顺手补齐历史产品的变体标题"
+              onClick={() => void syncWishlistNow()}
+            >{wishlistBusy ? '回传中…' : '同步'}</button>
+          );
       case 'profit_margin':
         return (
           <span className={p.profit_margin != null && p.profit_margin >= 0.25 ? 'high-margin' : p.profit_margin !== null ? 'low-margin' : ''}>
@@ -1605,11 +1636,15 @@ export default function ProductList() {
         <h2>{archivedMode ? '废品库' : maintenanceMode ? '资料维护' : '产品列表'} ({products.length})</h2>
         {maintenanceMode && <div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline" disabled={assistBusy || loading} onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button><Link to="/products" className="btn btn-outline">返回产品列表</Link></div>}
         {!archivedMode && !maintenanceMode && dataSource === 'remote' && <button className="btn btn-outline seller-assist-shortcut" disabled={assistBusy || loading} title="仅更新2026年10月1日起在程序登记的已有产品，不新增卖家商品" onClick={previewAssist}>{assistBusy ? '读取中…' : '同步卖家后台'}</button>}
-        {!archivedMode && !maintenanceMode && dataSource === 'remote' && (
+        {/* 不再用 dataSource / maintenance 把按钮藏起来：本地数据源或资料维护页下
+            也要看得见（只是禁用并说明原因），否则用户根本不知道有这个功能。 */}
+        {!archivedMode && (
           <button
-            className="btn btn-outline"
-            disabled={wishlistBusy || loading}
-            title="从卖家后台 My Offers 回传每个 SKU 的心愿单数量；一键上架成功后也会自动回传一次"
+            className="btn btn-outline backend-sync-btn"
+            disabled={wishlistBusy || loading || dataSource !== 'remote'}
+            title={dataSource !== 'remote'
+              ? '需要连接线上后端：请在设置里把数据源切到「线上」'
+              : '从卖家后台 My Offers 回传心愿单数，并按 SKU 补齐历史产品的变体标题（不用重新上架）；一键上架成功后也会自动跑一次'}
             onClick={() => void syncWishlistNow()}
           >
             {wishlistBusy ? '回传中…' : '同步 Wishlist'}
@@ -2044,7 +2079,7 @@ export default function ProductList() {
                                 </span>
                                 <span className={`branch-role ${index === 0 ? 'primary' : ''}`}>{index === 0 ? '主' : variantKind(labels[index])}</span>
                                 <code>{sku}</code>
-                                <span className="branch-names"><strong>{labels[index]}</strong><small title={titles[index] || p.product_name || ''}>{titles[index] || p.product_name || '英文品名待回抓'}</small></span>
+                                <span className="branch-names"><strong>{labels[index]}</strong><small title={titles[index] || branchFallbackTitle(labels[index] || '', p.product_name || '')}>{titles[index] || branchFallbackTitle(labels[index] || '', p.product_name || '')}</small></span>
                                 <span className="branch-spec">{variantSpec(labels[index], labels)}</span>
                                 <button type="button" className="btn btn-outline btn-sm branch-edit-btn" onClick={() => setVariantEditor({ productId: p.id, index, sku, label: labels[index], makePrimary: index === 0 })}>修改分支</button>
                               </div>

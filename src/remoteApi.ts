@@ -379,12 +379,15 @@ export interface ListOfferResult {
   variant_titles?: string;
 }
 
-/** 卖家后台 My Offers 的心愿单数回传结果。 */
+/** 卖家后台 My Offers 的回传结果：心愿单数 + 历史变体标题回填统计。 */
 export interface WishlistSyncResult {
   ok: boolean;
   matched: number;
   total?: number;
   field?: string | null;
+  /** false = 接口没有心愿单字段，但变体标题回填仍已完成 */
+  wishlist_ok?: boolean;
+  variant_titles?: { scanned: number; updated: number; offers: number; total: number };
   probed_keys?: string[];
   reason?: string;
   updated_at?: string;
