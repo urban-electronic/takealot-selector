@@ -75,4 +75,13 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/deploy-pages@v4
+      # 上面的 environment.url 引用 steps.deployment.outputs.page_url，没有这个 id
+      # 环境链接会一直是空的；顺手补齐。
+      - id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          # 默认 600000ms（10 分钟）：Pages 部署排队稍长就会被 action 自己判定
+          # "Timeout reached, aborting!"，此时 build / backend 其实都已 success，
+          # 前端却永远停在上一版（2026-11-06 的 ecce4b3 就踩过一次）。
+          # 放宽到 20 分钟，让排队而不是代码决定部署成败。
+          timeout: '1200000'
