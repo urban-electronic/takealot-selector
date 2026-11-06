@@ -1018,6 +1018,12 @@ def _merge_variant_identity(product, results):
     titles = list(old_titles) if len(old_titles) == len(old_skus) else [''] * len(old_skus)
     labels = ['' if any(p in x for p in _VARIANT_PLACEHOLDERS) else x for x in labels]
     had_manual_name = bool((product.chinese_product_name or '').strip())
+    # A mismatched legacy name cannot safely be assigned to individual SKUs.
+    # Preserve meaningful text verbatim instead of replacing it with receipt labels.
+    protected_name = (not aligned and any(
+        not re.fullmatch(r'(?:规格)?(?:待识别|待确认)|历史分支(?:\d+)?|主商品', x)
+        for x in old_labels
+    ))
 
     # 自建 SKU（含字母/连字符的人工编号）是产品身份，平台回执不许改动——
     # 覆盖会让标签、装箱单、调价一起对不上，这是既有约定。只有原来存的就是
@@ -1051,7 +1057,7 @@ def _merge_variant_identity(product, results):
     titles_text = json.dumps(titles, ensure_ascii=False)
     need_name = (not had_manual_name or not aligned or len(old_skus) != len(skus)
                  or any(not x for x in labels))
-    name_text = ' '.join(x or '规格待识别' for x in labels) if need_name else None
+    name_text = ' '.join(x or '规格待识别' for x in labels) if need_name and not protected_name else None
     return sku_text, name_text, titles_text
 
 
