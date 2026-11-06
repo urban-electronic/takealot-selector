@@ -3,12 +3,12 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi, useDataSource } from '../DataSourceContext';
 import { openUrl } from '../api';
 import { getStoreStorageKey, readStoreStorage, getActiveStoreId, getStores, previewSellerSync, applySellerSync, getFxRates, getMarketPriceStatus, saveMarketPrices, syncMarketPrices, type MarketPriceStatus, type SellerSyncResult } from '../remoteApi';
-import type { Product } from '../types';
+import type { Product, ProcurementRecord } from '../types';
 import { formatPrice, formatPercent, SELECTION_STATUS_MAP, SHIPPING_METHODS, LINK_STATUS_OPTIONS, LINK_STATUS_MAP } from '../types';
 import { ProductImage } from '../utils/imageFallback';
 import { FALLBACK_FX, MARKET_META, MARKET_ORDER, buildMarketBatch, describeSkipped, formatMarketPrice, formatSyncTime, formatZar, formatZarPrice, fxCaption, marketInsights, parseMarketPrices, staleNote, toZar, visibleMarkets, type MarketCode } from '../utils/marketPrice';
 import { useFxRates } from '../utils/useFxRates';
-import { beijingClock } from '../utils/datetime';
+import { beijingClock, todayLocal } from '../utils/datetime';
 import { isSuspiciousSkuToken, skuVariants, variantLabels } from '../utils/variants';
 import { isAgencyStoreName } from '../utils/agencyStore';
 import { buildLabelBundle, saveLabelBundle } from '../utils/labelPdf';
@@ -59,7 +59,7 @@ const allColumns: ColumnDef[] = [
   { key: 'minimum_price_at_15_margin', label: '最低@15%', defaultWidth: 80 },
   { key: 'shipping_method', label: '运输方式', defaultWidth: 90 },
   { key: 'selection_status', label: '状态', defaultWidth: 90 },
-  { key: 'actions', label: '操作', defaultWidth: 150 },
+  { key: 'actions', label: '操作', defaultWidth: 220 },
 ];
 
 // 上架建议零售价口径：RRP = 售价 × 1.5，与后端 RRP_MULTIPLIER 保持同值。
@@ -1101,6 +1101,82 @@ export default function ProductList() {
   };
 
   // --- 单元格渲染 ---
+  // --- 采购登记弹窗 ---
+  // 与补货计划页同一套交互：行内一个「采购登记」按钮，点开弹窗填数量、总价、日期、
+  // 到货状态、备注。之前把数量/总价拆成两列做行内输入，表格被撑宽，还要靠回车提交，
+  // 漏填只标红不好发现；弹窗能把单价核算、历史采购一起摆出来。
+  // 另外登记后顺手把「未购买」的产品状态推到「已购买」——写了采购记录还显示未购买，
+  // 每次都得再手动改一遍状态列。
+  const [buy, setBuy] = useState<{ product: Product; qty: string; amount: string; date: string; status: 'in_transit' | 'received'; notes: string } | null>(null);
+  const [buyHistory, setBuyHistory] = useState<ProcurementRecord[]>([]);
+  const [buySaving, setBuySaving] = useState(false);
+  const [buyError, setBuyError] = useState('');
+  const buyWriting = useRef(false);
+
+  const openBuy = (p: Product) => {
+    setBuy({ product: p, qty: '', amount: '', date: todayLocal(), status: 'in_transit', notes: '' });
+    setBuyError(''); setBuyHistory([]);
+    // 历史采购读不到不影响登记，写成功后会刷新列表。
+    api.listProcurementRecords()
+      .then(all => setBuyHistory(all.filter(r => r.product_id === p.id).slice(0, 5)))
+      .catch(() => { /* ignore */ });
+  };
+  const closeBuy = () => { if (!buyWriting.current) setBuy(null); };
+  // 弹窗盖住表格后，用户第一反应是按 Esc，这里给个出口。
+  useEffect(() => {
+    if (!buy) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeBuy(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [buy]);
+
+  const submitBuy = async () => {
+    if (!buy || buyWriting.current) return;
+    const p = buy.product;
+    const qty = Number(buy.qty);
+    const amount = Number(buy.amount);
+    if (!Number.isFinite(qty) || qty <= 0) { setBuyError('采购数量必须是大于 0 的整数'); return; }
+    if (!Number.isFinite(amount) || amount < 0) { setBuyError('采购总价请填写有效金额（没有花钱可以填 0）'); return; }
+    buyWriting.current = true;
+    setBuySaving(true); setBuyError(''); setAssistError('');
+    try {
+      const rec = await api.createProcurementRecord({
+        product_id: p.id,
+        product_no: p.product_no ?? null,
+        product_name: p.product_name || p.chinese_product_name || '',
+        quantity: Math.round(qty),
+        total_amount: amount,
+        status: buy.status,
+        notes: buy.notes.trim(),
+        // 远程后端按服务端时间落库，本地模式用这个值
+        recorded_at: buy.date,
+      } as Partial<ProcurementRecord>);
+      // 有采购记录的产品自动变「已购买」；已上架/已发货是更靠后的进度，不回退。
+      let statusMoved = false;
+      if (!p.link_status || p.link_status === '未购买') {
+        try {
+          const updated = await api.updateProduct(p.id, { link_status: '已购买' });
+          setProducts(prev => prev.map(row => row.id === p.id ? { ...row, ...updated, link_status: updated?.link_status || '已购买' } : row));
+          statusMoved = true;
+          notifyCatalogChanged(['link_status']);
+        } catch {
+          // 状态同步失败不算登记失败：采购记录已写入，列表下次加载会再校正。
+        }
+      }
+      setBuy(null);
+      setAssistNotice(
+        `已登记采购：#${p.product_no ?? ''} ${p.chinese_product_name || p.product_name || ''} · ${rec.quantity} 件 · ¥${Number(rec.total_amount || 0).toFixed(2)}（${buy.status === 'received' ? '已入库' : '在途'}）${statusMoved ? '，链接状态已自动更新为「已购买」' : ''}。`,
+      );
+      // 重新拉一次列表：筛选/分页口径以后端为准，也能看到状态列的新值。
+      fetchProducts();
+    } catch (e) {
+      setBuyError(e instanceof Error ? e.message : '采购登记失败，请重试');
+    } finally {
+      buyWriting.current = false;
+      setBuySaving(false);
+    }
+  };
+
   const renderCell = (p: Product, colKey: string) => {
     const isRefreshing = refreshingIds.has(p.id);
     switch (colKey) {
@@ -1369,6 +1445,16 @@ export default function ProductList() {
         return (
           <>
             <Link to={`/products/${p.id}${taskMode ? '?edit=1&from=task' : ''}`} className={`btn btn-sm ${taskMode ? 'btn-primary' : 'btn-outline'}`}>{taskMode ? '修改资料' : '详情'}</Link>
+            {/* 采购登记：和补货计划页同一个入口习惯，点开弹窗填数量/总价/日期/状态。 */}
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              style={{ marginLeft: 4 }}
+              title={`登记 #${p.product_no ?? ''} 的采购：填数量与总价写一条采购记录，产品状态自动变「已购买」`}
+              onClick={e => { e.stopPropagation(); openBuy(p); }}
+            >
+              采购登记
+            </button>
             {/* 单条上架：点一下就用产品现有售价 + RRP 1.5 倍提交，不再中转详情页。 */}
             <button
               type="button"
@@ -2064,6 +2150,38 @@ export default function ProductList() {
         <button disabled={refreshingIds.has(contextProduct.id)} onClick={() => { const id = contextProduct.id; setContextProduct(null); handleRefreshPrice(id, 'official'); }}>读取官网售价</button>
         <button onClick={() => { const product = products.find(p => p.id === contextProduct.id); setContextProduct(null); if (product) handleDelete(product.id, product.product_name || ''); }}>移入废品库</button>
       </div>}
+      {/* --- 采购登记弹窗 ---
+          与补货计划页复用同一套弹窗样式和字段，避免两个入口问的东西不一样。 */}
+      {buy && (() => {
+        const p = buy.product;
+        const qty = Number(buy.qty);
+        const amount = Number(buy.amount);
+        const unit = Number.isFinite(qty) && qty > 0 && Number.isFinite(amount) ? amount / qty : null;
+        const setField = (patch: Partial<NonNullable<typeof buy>>) => setBuy(prev => prev ? { ...prev, ...patch } : prev);
+        return (
+          <div className="app-modal-backdrop" onClick={() => { if (!buySaving) closeBuy(); }}>
+            <div className="app-modal procurement-quick-modal" role="dialog" aria-modal="true" aria-label="采购登记" onClick={e => e.stopPropagation()}>
+              <h3 className="dialog-title">采购登记 · #{p.product_no ?? '—'} {p.chinese_product_name || p.product_name || ''}</h3>
+              <p className="procurement-quick-meta">
+                {p.sku || p.product_no || ''}
+                {p.link_status ? ` · 当前状态「${p.link_status}」` : ''}
+                {p.link_status && p.link_status !== '未购买' ? '（保存后不回退已有进度）' : '（保存后自动变「已购买」）'}
+              </p>
+              <div className="procurement-quick-grid">
+                <label>采购数量（件）<input type="number" min="1" step="1" inputMode="numeric" value={buy.qty} autoFocus disabled={buySaving} onChange={e => setField({ qty: e.target.value })} placeholder="实际采购件数" /></label>
+                <label>采购总价（¥）<input type="number" min="0" step="0.01" inputMode="decimal" value={buy.amount} disabled={buySaving} onChange={e => setField({ amount: e.target.value })} placeholder="这一批实际总花费" /></label>
+                <label>采购日期<input type="date" value={buy.date} disabled={buySaving} onChange={e => setField({ date: e.target.value })} /></label>
+                <label>到货状态<select value={buy.status} disabled={buySaving} onChange={e => setField({ status: e.target.value as 'in_transit' | 'received' })}><option value="in_transit">在途（已下单未到货）</option><option value="received">已到仓（已收到货）</option></select></label>
+              </div>
+              <label className="procurement-quick-note">备注（选填）<input type="text" value={buy.notes} disabled={buySaving} onChange={e => setField({ notes: e.target.value })} placeholder="供应商 / 单号 / 到货说明…" /></label>
+              <p className="procurement-quick-unit">单价自动核算：{unit === null ? '—' : `¥${unit.toFixed(2)} / 件`}</p>
+              {buyHistory.length > 0 && <div className="procurement-quick-history"><strong>该产品已有采购</strong>{buyHistory.map(h => <div key={h.id}><span>{String(h.recorded_at || '').slice(0, 10)}</span><span>{h.quantity} 件</span><span>¥{Number(h.total_amount || 0).toFixed(2)}</span><span className={`status-pill ${h.status === 'received' ? 'active' : ''}`}>{h.status === 'received' ? '已入库' : h.status === 'cancelled' ? '已取消' : '在途'}</span></div>)}</div>}
+              {buyError && <div className="alert alert-error">{buyError}</div>}
+              <div className="dialog-actions"><button className="btn" onClick={closeBuy} disabled={buySaving}>取消</button><button className="btn btn-primary" onClick={() => { void submitBuy(); }} disabled={buySaving}>{buySaving ? '保存中…' : '保存采购记录'}</button></div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
