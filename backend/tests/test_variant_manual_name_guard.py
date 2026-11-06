@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 
 
-def load_merge(reverse=False):
+def load_merge(reverse=False, reverse_substring=False):
     source = (Path(__file__).parents[1] / 'api/product_routes.py').read_text()
     tree = ast.parse(source)
     helpers = {'_split_tokens', '_load_variant_titles', '_merge_variant_identity'}
@@ -22,6 +22,10 @@ def load_merge(reverse=False):
             if isinstance(node, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id == 'name_text' for t in node.targets):
                 node.value.test = ast.Name(id='need_name', ctx=ast.Load())
+    if reverse_substring:
+        for node in ast.walk(nodes[-1]):
+            if isinstance(node, ast.FunctionDef) and node.name == 'is_placeholder':
+                node.body = ast.parse('return any(p in label for p in _VARIANT_PLACEHOLDERS)').body
     namespace = {'json': json, 're': re}
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                  '<actual-merge-helper>', 'exec'), namespace)
@@ -72,6 +76,17 @@ class ManualNameGuardTests(unittest.TestCase):
         self.assertEqual(sku, '9902416416912 9902416416929 9902416416936')
         self.assertEqual(name, '金色 银色 Blue')
         self.assertEqual(json.loads(titles), ['', '', 'Blue necklace'])
+
+    def test_placeholder_substring_is_not_a_placeholder_when_appending(self):
+        product = self.product('9902416416912', '主商品银项链')
+        receipt = [{'ok': True, 'sku': '9902416416929',
+                    'variant_label': 'Silver', 'variant_title': 'Silver necklace'}]
+        sku, name, titles = self.merge(product, receipt)
+        self.assertEqual(sku, '9902416416912 9902416416929')
+        self.assertEqual(name, '主商品银项链 Silver')
+        self.assertEqual(json.loads(titles), ['', 'Silver necklace'])
+        self.assertEqual(load_merge(reverse_substring=True)(product, receipt)[1],
+                         '规格待识别 Silver')
 
     def test_reverse_probe_restores_the_proven_name_loss(self):
         product = self.product('9902416416912 9902416416929', '人工银项链')

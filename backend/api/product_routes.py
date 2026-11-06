@@ -1016,12 +1016,15 @@ def _merge_variant_identity(product, results):
     aligned = len(old_labels) == len(old_skus)
     labels = list(old_labels) if aligned else [''] * len(old_skus)
     titles = list(old_titles) if len(old_titles) == len(old_skus) else [''] * len(old_skus)
-    labels = ['' if any(p in x for p in _VARIANT_PLACEHOLDERS) else x for x in labels]
+    def is_placeholder(label):
+        return bool(re.fullmatch(r'(?:规格)?(?:待识别|待确认)|历史分支(?:\d+)?|主商品', label))
+
+    labels = ['' if is_placeholder(x) else x for x in labels]
     had_manual_name = bool((product.chinese_product_name or '').strip())
     # A mismatched legacy name cannot safely be assigned to individual SKUs.
     # Preserve meaningful text verbatim instead of replacing it with receipt labels.
     protected_name = (not aligned and any(
-        not re.fullmatch(r'(?:规格)?(?:待识别|待确认)|历史分支(?:\d+)?|主商品', x)
+        not is_placeholder(x)
         for x in old_labels
     ))
 
