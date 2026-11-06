@@ -81,6 +81,9 @@ const RRP_MULTIPLIER = 1.5;
 
 const LS_VISIBLE_KEY = 'productListVisibleColumns';
 const LS_ORDER_KEY = 'productListColumnOrder';
+// 记录「上一次看到的完整列清单」。只用来算差集识别版本新加的列：
+// 新列自动显示一次，用户主动隐藏的老列永远不复活。见 hydrateVisibleColumns。
+const LS_KNOWN_COLUMNS_KEY = 'productListKnownColumns';
 const LS_SELECTED_SKUS_KEY = 'productListSelectedSkus';
 // 产品级勾选（按 product.id）与 SKU 级勾选是两件事：
 //   - 批量上架要的是「产品」（后端按 product_id 自己拿 PLID/TSIN 换 Barcode），
@@ -113,6 +116,47 @@ function validateVisibleColumns(saved: string[], canonical: string[]): string[] 
     cleaned.push(key);
   }
   return cleaned;
+}
+
+/** 版本升级前就存在的列。老用户没有 LS_KNOWN_COLUMNS_KEY 基线，只能靠这份
+ *  清单判断「哪些列是这次新加的」；否则差集会把用户藏起来的所有列一次全放回来。
+ *  有基线之后就不再读它，以后新增列自动由差集识别。 */
+const UPGRADE_NEW_COLUMNS = ['wishlist_count'];
+
+/** 列可见性初始化，兼顾两件互相冲突的事：
+ *  1. 新版加的列必须让老用户看得见（否则「同步 Wishlist」跑完也看不到数字）；
+ *  2. 用户主动隐藏的列不能被刷新复活（列设置形同虚设）。
+ *  做法是另存一份「已知列清单」，只把差集里的新列补进来；known 立刻更新成
+ *  当前完整清单，所以同一列只会自动显示一次，之后用户再隐藏就一直是隐藏。 */
+function hydrateVisibleColumns(canonical: string[]): string[] {
+  let saved: unknown = null;
+  try {
+    const raw = localStorage.getItem(LS_VISIBLE_KEY);
+    if (raw) saved = JSON.parse(raw);
+  } catch { /* 坏数据按首次访问处理 */ }
+
+  if (!Array.isArray(saved)) {
+    safeSetItem(LS_VISIBLE_KEY, JSON.stringify(canonical));
+    safeSetItem(LS_KNOWN_COLUMNS_KEY, JSON.stringify(canonical));
+    return canonical;
+  }
+
+  const visible = validateVisibleColumns(saved, canonical);
+  let known: unknown = null;
+  try {
+    const raw = localStorage.getItem(LS_KNOWN_COLUMNS_KEY);
+    if (raw) known = JSON.parse(raw);
+  } catch { /* ignore */ }
+  const baseline = Array.isArray(known)
+    ? known
+    : canonical.filter(key => !UPGRADE_NEW_COLUMNS.includes(key));
+  const baselineSet = new Set(baseline);
+  const visibleSet = new Set(visible);
+  const fresh = canonical.filter(key => !baselineSet.has(key) && !visibleSet.has(key));
+  const next = [...visible, ...fresh];
+  safeSetItem(LS_VISIBLE_KEY, JSON.stringify(next));
+  safeSetItem(LS_KNOWN_COLUMNS_KEY, JSON.stringify(canonical));
+  return next;
 }
 
 // 「精简视图」只留判断和下单真正要扫的列；它必须用户主动点，不能偷偷改老用户的
@@ -417,21 +461,11 @@ export default function ProductList() {
   const [colPanelOpen, setColPanelOpen] = useState(false);
   const colPanelRef = useRef<HTMLDivElement>(null);
 
-  // 列可见性 (localStorage) — 只过滤僵尸 key，**不补全**：补全会把用户隐藏的列
-  // 重新加回来，刷新一次设置就没了。列顺序那组才需要补全新增列。
-  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(() => {
-    const canonical = allColumns.map(c => c.key);
-    try {
-      const saved = localStorage.getItem(LS_VISIBLE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const validated = validateVisibleColumns(parsed, canonical);
-        safeSetItem(LS_VISIBLE_KEY, JSON.stringify(validated));
-        return new Set(validated);
-      }
-    } catch { /* ignore */ }
-    return new Set(canonical);
-  });
+  // 列可见性 (localStorage) — 用户隐藏的列不补全，但版本新加的列要自动显示一次，
+  // 否则老用户永远看不到 Wishlist 列，同步完还以为没生效。细节见 hydrateVisibleColumns。
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
+    () => new Set(hydrateVisibleColumns(allColumns.map(c => c.key)))
+  );
 
   // 列顺序 (localStorage) — 通用校验：过滤僵尸key、补全缺失key
   const [columnOrder, setColumnOrder] = useState<string[]>(() => {

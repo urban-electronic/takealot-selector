@@ -2,7 +2,9 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');
 const ts=require('typescript'),{JSDOM}=require('jsdom');
-const watchdog=setTimeout(()=>{console.error('FAIL product interaction suite did not complete within 10s');process.exit(1);},10000);
+// 用例里要多次卸载/重挂整张表来模拟刷新，挂得越多越慢；看门狗只是防死循环，
+// 给足余量，别让它跟正常用例赛跑（进程退出还会多花几秒收尾，不算在用例内）。
+const watchdog=setTimeout(()=>{console.error('FAIL product interaction suite did not complete within 20s');process.exit(1);},20000);
 const dom=new JSDOM('<header class="app-header"></header><div id="root"></div>',{url:'https://example.invalid/products'});
 for(const key of ['window','document','navigator','HTMLElement','Node','Event','localStorage'])Object.defineProperty(globalThis,key,{value:dom.window[key],configurable:true});
 globalThis.IS_REACT_ACT_ENVIRONMENT=true;
@@ -156,5 +158,26 @@ assert.equal(writes.length,0,'copying a SKU never writes to the backend');
  assert.equal(JSON.parse(localStorage.getItem('productListVisibleColumns')).length,8,'lean preset stores exactly 8 columns');
  assert.ok(![...document.querySelectorAll('thead th')].some(th=>th.textContent.trim()==='SKU'),'lean preset hides the SKU column');
  act(()=>root2.unmount());
- console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, read-only SKU with copy, real product links, modal focus/Tab/Escape/restore, duplicate-save protection and column visibility surviving remount (isolated fixtures).');
+ // 老版本升级：上面「精简视图」留下的 8 列正好等价于「老用户存过列设置」，
+ // 里面既没有 Wishlist（新列），也没有 Fee品类（用户主动藏的老列）。
+ // 删掉 known 基线模拟从未跑过新版；新列应自动露出一次，老列不能被复活。
+ localStorage.removeItem('productListKnownColumns');
+ const root3=createRoot(document.getElementById('root'));
+ await act(async()=>root3.render(React.createElement(MemoryRouter,{initialEntries:['/products']},React.createElement(page))));
+ const headers=()=>[...document.querySelectorAll('thead th')].map(th=>th.textContent.trim());
+ assert.ok(headers().some(h=>h.includes('Wishlist')),'newly added Wishlist column is revealed to an upgrading user');
+ assert.ok(!headers().some(h=>h.includes('Fee品类')),'columns the user hid are not resurrected by the upgrade');
+ assert.equal(JSON.parse(localStorage.getItem('productListVisibleColumns')).length,9,'upgrade adds exactly the one new column');
+ assert.ok(JSON.parse(localStorage.getItem('productListKnownColumns')).includes('wishlist_count'),'known-column baseline is recorded');
+ // 用户这次主动隐藏 Wishlist 后，再刷新也不许被自动补回来：自动显示只做一次。
+ act(()=>click(button('列设置')));
+ const wishItem=[...document.querySelectorAll('.col-settings-item')].find(l=>l.textContent.includes('Wishlist'));
+ assert.ok(wishItem,'column settings exposes Wishlist');
+ act(()=>click(wishItem.querySelector('input')));
+ act(()=>root3.unmount());
+ const root4=createRoot(document.getElementById('root'));
+ await act(async()=>root4.render(React.createElement(MemoryRouter,{initialEntries:['/products']},React.createElement(page))));
+ assert.ok(!headers().some(h=>h.includes('Wishlist')),'manually hidden new column stays hidden on later refreshes');
+ act(()=>root4.unmount());
+ console.log('Product interaction checks passed: pagination/scroll/selection, labelled native edit controls, read-only SKU with copy, real product links, modal focus/Tab/Escape/restore, duplicate-save protection, column visibility surviving remount and one-time reveal of newly added columns (isolated fixtures).');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{clearTimeout(watchdog);dom.window.close();});
