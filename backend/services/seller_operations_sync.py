@@ -1,6 +1,7 @@
 """Read-only official Seller API sync. Hourly server worker, no AI or browser needed."""
 import json
 import math
+import re
 import threading
 import time
 from collections import Counter, defaultdict
@@ -15,28 +16,40 @@ STATE_KEY = '_operations_sync_status'
 _stop = threading.Event()
 _thread = None
 
+def product_skus(product):
+    return set(re.split(r'[\s,，;；]+', (product.sku or '').strip())) - {''}
+
+
+def buyable_skus(profile):
+    # Old Seller snapshots already carry status, so no migration or guessed history.
+    if profile.get('data_source') != 'seller_api': return set()
+    return set(profile.get('ever_buyable_skus') or []) | {
+        str(o.get('sku') or '') for o in profile.get('offers', [])
+        if o.get('status') == 'buyable'
+    }
+
+
 def eligible(db, store, product):
-    if product.link_status in ('已购买', '已上架'):
-        return True
-    return db.query(ProcurementRecord).filter(ProcurementRecord.store_id == store,
-        ProcurementRecord.product_id == product.id, ProcurementRecord.status != 'cancelled',
-        ProcurementRecord.quantity > 0).first() is not None
+    return product.store_id == store and product.id in eligible_ids(db, store)
+
 
 def eligible_ids(db, store):
-    """一次算出全店可补货的商品 id（ELIGIBLE-N1）。
+    """Purchased/listed products plus identity-matched, observed buyable SKUs.
 
-    eligible() 是单商品判断，放进商品循环里就是 N 条查询：补货总览 318 条、
-    待办 317 条，两个都是补货页的首屏请求，商品数涨上去页面跟着变慢。
-    这里换成两条聚合查询，循环里只做集合判断。
-
-    结果允许包含已归档或其他店铺的商品 id——调用方遍历的本来就是本店未归档的
-    商品，多出来的 id 不会命中，也就不影响判断。
+    Keep formerly buyable SKUs after stock-out; not_buyable alone is not evidence
+    that an unpurchased draft has ever sold. Queries remain constant per store.
     """
-    ids = {pid for (pid,) in db.query(Product.id).filter(
-        Product.store_id == store, Product.link_status.in_(('已购买', '已上架'))).all()}
+    products = db.query(Product).filter(Product.store_id == store).all()
+    ids = {p.id for p in products if p.link_status in ('已购买', '已上架')}
     ids |= {pid for (pid,) in db.query(ProcurementRecord.product_id).filter(
         ProcurementRecord.store_id == store, ProcurementRecord.status != 'cancelled',
         ProcurementRecord.quantity > 0).distinct().all()}
+    prefix = f'operations_profile:{store}:'
+    saved = {r.key[len(prefix):]: json.loads(r.value) for r in
+             db.query(SystemSettings).filter(SystemSettings.key.startswith(prefix)).all()}
+    owners = Counter(sku for p in products if not p.is_archived for sku in product_skus(p))
+    ids |= {p.id for p in products if any(owners[sku] == 1 for sku in
+            product_skus(p) & buyable_skus(saved.get(p.id, {})))}
     return ids
 
 def status(db, store):
@@ -113,11 +126,15 @@ def apply_snapshot(db, offers, sales, now=None):
     updated = 0; unmatched = 0
     can_replenish = eligible_ids(db, DEFAULT_STORE_ID)
     for p in products:
-        if p.id not in can_replenish: continue
         skus = sku_sets[p.id]
         if not skus or any(owners[sku] != 1 or len(offer_map[sku]) != 1 for sku in skus):
             unmatched += 1; continue
         matches = [offer_map[sku][0] for sku in skus]
+        name = f'operations_profile:{DEFAULT_STORE_ID}:{p.id}'
+        row = db.query(SystemSettings).filter(SystemSettings.key == name).first()
+        prior = json.loads(row.value) if row else {}
+        observed_buyable = (buyable_skus(prior) & skus) | {str(o['sku']) for o in matches if o.get('status') == 'buyable'}
+        if p.id not in can_replenish and not observed_buyable: continue
         stock = 0
         for o in matches:
             value = o.get('stock_at_takealot_total')
@@ -126,15 +143,13 @@ def apply_snapshot(db, offers, sales, now=None):
             stock += int(value)
         counts = Counter()
         for sku in skus: counts.update(daily[sku])
-        name = f'operations_profile:{DEFAULT_STORE_ID}:{p.id}'
-        row = db.query(SystemSettings).filter(SystemSettings.key == name).first()
-        profile = json.loads(row.value) if row else dict(air_days=15, sea_days=45, safety_days=7,
+        profile = prior if row else dict(air_days=15, sea_days=45, safety_days=7,
             cycle_days=30, group='', related_groups=[], allocations=[])
         # Keep shipping configuration and procurement allocations, replace only official metrics.
         observed = start
         created = [sale_day(o['date_created']) for o in matches if o.get('date_created')]
         if len(created) == len(matches): observed = max(start, min(today, min(created)))
-        profile.update(current_price=min((o.get('selling_price') for o in matches if isinstance(o.get('selling_price'), (int, float)) and o['selling_price'] > 0), default=None),
+        profile.update(ever_buyable_skus=sorted(observed_buyable), current_price=min((o.get('selling_price') for o in matches if isinstance(o.get('selling_price'), (int, float)) and o['selling_price'] > 0), default=None),
             offers=[{'id': str(o['offer_id']), 'sku': str(o['sku']), 'title': o.get('title') or p.product_name, 'price': o.get('selling_price'), 'stock': o.get('stock_at_takealot_total'), 'status': o.get('status'), 'last_sale_epoch': latest_sale.get(str(o['sku']), 0)} for o in matches],
             stock=stock, stock_date=today.isoformat(), observed_from=observed.isoformat(),
             sales=[{'date': d, 'quantity': q} for d, q in sorted(counts.items()) if q > 0],
