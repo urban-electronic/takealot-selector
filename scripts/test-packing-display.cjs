@@ -11,7 +11,11 @@ if (!process.env.PACKING_REFRESH_REVERSE) {
   const { spawnSync } = require('node:child_process');
   const probe = spawnSync(process.execPath, [__filename], {
     env: { ...process.env, PACKING_REFRESH_REVERSE: '1' },
-    encoding: 'utf8', timeout: 10000,
+    // 子进程在反向模式下由下面的 10s 看门狗以 status=1 退出，耗时约 10.5s。
+    // 父进程超时必须明显大于它，否则两个 10s 超时会赛跑：负载稍高时父进程
+    // 先把子进程 SIGTERM 掉，probe.status 变成 null，门禁报一个与被测行为
+    // 无关的假失败。给足余量后仍由「必须命中刷新断言」这条严格校验把关。
+    encoding: 'utf8', timeout: 20000,
   });
   assert.equal(probe.status, 1, 'refresh reverse probe must fail');
   assert.match(probe.stdout + probe.stderr,
