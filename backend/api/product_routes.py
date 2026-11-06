@@ -1131,7 +1131,7 @@ def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_sto
     if not key:
         raise HTTPException(400, '当前店铺尚未接入卖家 API，无法读取 My Offers')
     try:
-        field, keys = discover_wishlist_field(key)
+        field, keys, samples = discover_wishlist_field(key)
     except Exception as exc:  # noqa: BLE001 —— 只归因，不把上游正文透出去
         raise HTTPException(503, f'My Offers 字段探测失败：{_read_reason(exc)}')
     try:
@@ -1143,7 +1143,8 @@ def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_sto
     variant_stats = _backfill_variant_titles(db, store_id, rows)
     if not field:
         return {'ok': True, 'matched': 0, 'field': None, 'probed_keys': keys,
-                'wishlist_ok': False, 'variant_titles': variant_stats,
+                'wishlist_samples': samples, 'wishlist_ok': False,
+                'variant_titles': variant_stats,
                 'total': variant_stats['total'],
                 'reason': '卖家 API 的 offers 接口没有返回心愿单字段；后台 My Offers 页面的数字可能来自卖家门户内部接口。请把该页面截图或字段名发来即可接上。变体标题已按 SKU 补齐。'}
 
@@ -1180,8 +1181,8 @@ def sync_wishlist(db: Session = Depends(get_db), store_id: str = Depends(get_sto
         matched += 1
     db.commit()
     return {'ok': True, 'matched': matched, 'total': len(products),
-            'field': field, 'wishlist_ok': True, 'variant_titles': variant_stats,
-            'updated_at': now.isoformat()}
+            'field': field, 'wishlist_samples': samples, 'wishlist_ok': True,
+            'variant_titles': variant_stats, 'updated_at': now.isoformat()}
 
 
 class ListOfferIn(BaseModel):

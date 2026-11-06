@@ -191,15 +191,17 @@ def discover_wishlist_field(key):
 
     后台 My Offers 页面上的 Wishlist 是一个运营想看、但 `/v1/offers` 日常
     `fields` 白名单里没有的指标。不能猜一个字段名塞进白名单：接口不认识就
-    会让整个卖家资料读取 400。这里单独发一次 **不带 fields** 的单条请求，
-    只把响应 item 里含 `wish` 的键名列出来，数值型优先。
+    会让整个卖家资料读取 400。这里单独发一次 **不带 fields** 的多条请求，
+    把所有含 `wish` 的键名和它的**样例值**都列出来，数值型优先选作主字段。
 
+    返回 `(字段名或 None, 全部键名, {wish字段: 样例值})`：样例值让前端能把
+    「接口到底给了哪些心愿单字段、各自大概是多少」展示出来，便于判断是不是抓错
+    了字段、以及有没有 30 天专属字段可用（例如 `wishlist_count_30d`）。
     不走主缓存、不占 `_active_offer_read`：探测失败也不影响既有读取链路。
-    返回 `(字段名或 None, 全部键名)`，键名用于前端展示可行动的失败原因。
     """
     with httpx.Client(timeout=10, follow_redirects=False) as client:
         response = client.get('https://marketplace-api.takealot.com/v1/offers',
-                              params=[('limit', '1')],
+                              params=[('limit', '5')],
                               headers={'X-API-Key': key}, timeout=10)
     if response.status_code != 200:
         raise ValueError(_unavailable_reason(response.status_code))
@@ -216,9 +218,23 @@ def discover_wishlist_field(key):
                 return isinstance(value, (int, float)) and not isinstance(value, bool)
         return False
 
-    candidates = sorted((k for k in keys if 'wish' in k.lower()),
-                        key=lambda k: (not numeric(k), len(k)))
-    return (candidates[0] if candidates else None), keys
+    wish_keys = sorted((k for k in keys if 'wish' in k.lower()),
+                      key=lambda k: (not numeric(k), len(k)))
+    # 每个 wish 字段取第一个出现的非 None 值作样例，肉眼即可判断语义。
+    samples = {}
+    for k in wish_keys:
+        for item in items:
+            if isinstance(item, dict) and k in item and item[k] is not None:
+                samples[k] = item[k]
+                break
+    chosen = wish_keys[0] if wish_keys else None
+    # 优先选名字里带时间窗口含义的字段（30d / recent / period 等），它更贴近
+    # 后台「Last 30 Days」口径；没有再退回数值优先的最短字段。
+    for k in wish_keys:
+        if any(t in k.lower() for t in ('30', 'recent', 'period', 'last', 'window')):
+            chosen = k
+            break
+    return chosen, keys, samples
 
 
 def wishlist_value(row, field=None):

@@ -388,6 +388,8 @@ export interface WishlistSyncResult {
   /** false = 接口没有心愿单字段，但变体标题回填仍已完成 */
   wishlist_ok?: boolean;
   variant_titles?: { scanned: number; updated: number; offers: number; total: number };
+  /** 探测到的各心愿单候选字段及其样例值，便于判断抓的是哪个字段、有无 30 天专属字段 */
+  wishlist_samples?: Record<string, unknown>;
   probed_keys?: string[];
   reason?: string;
   updated_at?: string;

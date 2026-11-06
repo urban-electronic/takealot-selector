@@ -191,9 +191,10 @@ def test_discover_prefers_numeric_wishlist_field(monkeypatch):
         }]})
 
     mock_client(monkeypatch, respond)
-    field, keys = seller.discover_wishlist_field(KEY)
+    field, keys, samples = seller.discover_wishlist_field(KEY)
     assert field == 'wishlist_count'
     assert 'wishlist_count' in keys
+    assert samples == {'wishlist_count': 23, 'wishlist_enabled': True, 'wishlist_label': 'hot'}
     assert len(seen) == 1
 
 
@@ -202,8 +203,21 @@ def test_discover_reports_none_when_interface_has_no_wishlist(monkeypatch):
         return httpx.Response(200, json={'items': [{'sku': '111', 'selling_price': 100}]})
 
     mock_client(monkeypatch, respond)
-    field, keys = seller.discover_wishlist_field(KEY)
-    assert field is None and keys == ['selling_price', 'sku']
+    field, keys, samples = seller.discover_wishlist_field(KEY)
+    assert field is None and keys == ['selling_price', 'sku'] and samples == {}
+
+
+def test_discover_prefers_windowed_field_over_plain_count(monkeypatch):
+    def respond(request):
+        return httpx.Response(200, json={'items': [{
+            'sku': '111', 'wishlist_count': 500, 'wishlist_count_30d': 23,
+        }]})
+
+    mock_client(monkeypatch, respond)
+    field, _keys, samples = seller.discover_wishlist_field(KEY)
+    # 名字带 30d 的窗口字段更贴近后台「Last 30 Days」口径，应优先于累计总数。
+    assert field == 'wishlist_count_30d'
+    assert samples == {'wishlist_count': 500, 'wishlist_count_30d': 23}
 
 
 def test_wishlist_value_accepts_numbers_and_digit_strings_only():
@@ -219,10 +233,11 @@ def test_wishlist_value_accepts_numbers_and_digit_strings_only():
 # ---- 心愿单回写链路 ----------------------------------------------------------
 
 
-def wire(monkeypatch, field='wishlist_count', rows=None, keys=None):
+def wire(monkeypatch, field='wishlist_count', rows=None, keys=None, samples=None):
     monkeypatch.setattr(seller, 'configured_key', lambda db: KEY)
     monkeypatch.setattr(seller, 'discover_wishlist_field',
-                        lambda key: (field, keys if keys is not None else ['sku', field or 'x']))
+                        lambda key: (field, keys if keys is not None else ['sku', field or 'x'],
+                                     samples if samples is not None else {}))
     calls = []
 
     def fake_load(key, extra_fields=()):

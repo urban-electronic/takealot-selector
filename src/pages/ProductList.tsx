@@ -898,9 +898,15 @@ export default function ProductList() {
       const result = await api.syncWishlist();
       fetchProducts();
       const filled = result.variant_titles?.updated ?? 0;
+      const sampleEntries = result.wishlist_samples
+        ? Object.entries(result.wishlist_samples).map(([k, v]) => `${k}=${v}`)
+        : [];
+      const sampleText = sampleEntries.length
+        ? `；接口心愿单候选字段：${sampleEntries.join('，')}`
+        : '';
       const wishlistText = result.wishlist_ok === false
         ? 'Wishlist 字段未找到（接口未返回心愿单数）'
-        : `Wishlist 已回传 ${result.matched} 个产品（字段 ${result.field ?? '—'}）`;
+        : `Wishlist 已回传 ${result.matched} 个产品（字段 ${result.field ?? '—'}）${sampleText}`;
       if (!silent) {
         setAssistNotice(`后台数据同步：${filled ? `已补齐 ${filled} 个历史产品的变体标题` : '变体标题无需补齐'}；${wishlistText}`);
         if (result.wishlist_ok === false) setAssistError(result.reason || '卖家接口没有返回心愿单字段');
