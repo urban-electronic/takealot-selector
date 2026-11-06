@@ -212,11 +212,9 @@ def discover_wishlist_field(key):
     keys = sorted({str(k) for item in items if isinstance(item, dict) for k in item})
 
     def numeric(k):
-        for item in items:
-            if isinstance(item, dict) and k in item:
-                value = item[k]
-                return isinstance(value, (int, float)) and not isinstance(value, bool)
-        return False
+        # Use the writeback parser, including numeric strings and later non-null
+        # samples. Window metadata (dates, booleans, negatives) is not a count.
+        return any(wishlist_value(item, k) is not None for item in items)
 
     wish_keys = sorted((k for k in keys if 'wish' in k.lower()),
                       key=lambda k: (not numeric(k), len(k)))
@@ -227,10 +225,11 @@ def discover_wishlist_field(key):
             if isinstance(item, dict) and k in item and item[k] is not None:
                 samples[k] = item[k]
                 break
-    chosen = wish_keys[0] if wish_keys else None
+    count_keys = [k for k in wish_keys if numeric(k)]
+    chosen = count_keys[0] if count_keys else None
     # 优先选名字里带时间窗口含义的字段（30d / recent / period 等），它更贴近
     # 后台「Last 30 Days」口径；没有再退回数值优先的最短字段。
-    for k in wish_keys:
+    for k in count_keys:
         if any(t in k.lower() for t in ('30', 'recent', 'period', 'last', 'window')):
             chosen = k
             break

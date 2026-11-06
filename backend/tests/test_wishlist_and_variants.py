@@ -220,6 +220,57 @@ def test_discover_prefers_windowed_field_over_plain_count(monkeypatch):
     assert samples == {'wishlist_count': 500, 'wishlist_count_30d': 23}
 
 
+@pytest.mark.parametrize('metadata', [
+    {'wishlist_last_updated': '2026-11-06T12:00:00Z'},
+    {'wishlist_recent_enabled': True},
+    {'wishlist_count_30d': -1},
+    {'wishlist_count_30d': None},
+])
+def test_discover_window_metadata_cannot_displace_a_valid_count(monkeypatch, metadata):
+    row = {'sku': '111', 'wishlist_count': 23, **metadata}
+    mock_client(monkeypatch, lambda request: httpx.Response(200, json={'items': [row]}))
+    field, _keys, samples = seller.discover_wishlist_field(KEY)
+    assert field == 'wishlist_count'
+    assert samples['wishlist_count'] == 23
+
+
+def test_discover_uses_later_valid_sample_and_numeric_strings(monkeypatch):
+    rows = [{'wishlist_count': 500, 'wishlist_count_30d': None},
+            {'wishlist_count': 500, 'wishlist_count_30d': '0'}]
+    mock_client(monkeypatch, lambda request: httpx.Response(200, json={'items': rows}))
+    field, _keys, samples = seller.discover_wishlist_field(KEY)
+    assert field == 'wishlist_count_30d'
+    assert samples['wishlist_count_30d'] == '0'
+
+
+def test_discover_only_metadata_reports_no_count(monkeypatch):
+    row = {'wishlist_recent_enabled': True, 'wishlist_last_updated': 'today'}
+    mock_client(monkeypatch, lambda request: httpx.Response(200, json={'items': [row]}))
+    field, _keys, samples = seller.discover_wishlist_field(KEY)
+    assert field is None
+    assert samples == row, 'diagnostic candidates remain available without selecting one'
+
+
+def test_sync_keeps_numeric_count_when_window_metadata_present(monkeypatch, db):
+    row = product(db, sku='111', wishlist_count=9)
+    offers = [{'sku': '111', 'wishlist_count': 23,
+               'wishlist_last_updated': '2026-11-06T12:00:00Z'}]
+    mock_client(monkeypatch, lambda request: httpx.Response(200, json={'items': offers}))
+    monkeypatch.setattr(seller, 'configured_key', lambda db: KEY)
+    requested = []
+
+    def fake_load(key, extra_fields=()):
+        requested.append(extra_fields)
+        return offers
+
+    monkeypatch.setattr(seller, '_load_offers', fake_load)
+    result = sync_wishlist(db, 'default-store')
+    db.refresh(row)
+    assert result['matched'] == 1 and result['field'] == 'wishlist_count'
+    assert row.wishlist_count == 23
+    assert requested == [('wishlist_count',)]
+
+
 def test_wishlist_value_accepts_numbers_and_digit_strings_only():
     assert seller.wishlist_value({'wishlist_count': 23}, 'wishlist_count') == 23
     assert seller.wishlist_value({'wishlist_count': '42'}, 'wishlist_count') == 42
