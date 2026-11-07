@@ -1246,3 +1246,20 @@ export const setSelectionAgentConfig = (base: string, payload: SelectionAgentCon
     method: 'POST',
     body: JSON.stringify({ backend: getBaseUrl(), ...payload }),
   });
+
+export interface SellerLedgerRow {
+  order_item_id?: string; order_id?: string; order_date?: string; business_date?: string;
+  sku?: string; quantity?: number; sale_status?: string; selling_price?: number | null;
+  total_fees?: number | null; shipment_id?: string; reference?: string;
+  shipped?: boolean; cancelled?: boolean; due_date?: string; destination_region?: string;
+  date_unloaded?: string | null;
+  items?: Array<{ shipment_item_id: string; offer_id: string; quantity_sending: number; quantity_received: number; quantity_damaged: number }>;
+}
+export interface SellerLedgerPage {
+  items: SellerLedgerRow[]; total: number; page: number; page_size: number;
+  snapshot: null | { source: string; seller_id: string; synced_at: string; period_from: string; period_to: string; complete: boolean; version: number };
+}
+export const getSellerLedger = (kind: 'sales' | 'shipments', page: number, pageSize: number, search: string) =>
+  request<SellerLedgerPage>(`/api/seller-ledger/${kind}?${new URLSearchParams({ page: String(page), page_size: String(pageSize), search })}`);
+export const syncSellerLedger = (kind: 'sales' | 'shipments', start: string, end: string) =>
+  request<{ ok: boolean; count: number }>(`/api/seller-ledger/${kind}/sync`, { method: 'POST', body: JSON.stringify(kind === 'sales' ? { start: start || null, end: end || null } : {}) });

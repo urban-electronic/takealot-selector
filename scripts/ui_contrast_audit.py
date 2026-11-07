@@ -53,6 +53,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "ui_audit_out")
 
 ROUTES = [
+    "/orders", "/shipments",
     "/", "/products", "/inventory", "/auto-pricing", "/replenishment", "/packing",
     "/procurement", "/stores", "/settings", "/create", "/products/fixture-product",
 ]

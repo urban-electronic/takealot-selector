@@ -17,6 +17,7 @@ const Packing = lazy(() => import('./pages/Packing'));
 const Inventory = lazy(() => import('./pages/Inventory'));
 const Stores = lazy(() => import('./pages/Stores'));
 const Replenishment = lazy(() => import('./pages/Replenishment'));
+const SellerLedger = lazy(() => import('./pages/SellerLedger'));
 const AutoPricing = lazy(() => import('./pages/AutoPricing'));
 
 const primaryNavItems = [
@@ -30,6 +31,8 @@ const primaryNavItems = [
 ];
 
 const secondaryNavItems = [
+  { path: '/orders', label: '订单与销量', hint: '核对平台订单行与销量来源', group: '运营与发运' },
+  { path: '/shipments', label: '货件看板', hint: '查看平台货件实收及破损证据', group: '运营与发运' },
   { path: '/products?maintenance=1', label: '资料维护', hint: '核对缺字段与补充商品资料', group: '资料与记录' },
   { path: '/products?archived=1', label: '废品库', hint: '查看与恢复已移除产品', group: '资料与记录' },
   { path: '/procurement', label: '采购记录', hint: '查询和补录历史采购', group: '资料与记录' },
@@ -161,7 +164,7 @@ export default function App() {
               管理工具
             </button>
             {managementOpen && <div className="management-menu-panel" role="menu">
-              {['资料与记录', '系统管理'].map(group => <div className="management-menu-group" key={group}>
+              {['运营与发运', '资料与记录', '系统管理'].map(group => <div className="management-menu-group" key={group}>
                 <strong>{group}</strong>
                 {secondaryNavItems.filter(item => item.group === group).map(item => (
                   <NavLink key={item.path} to={item.path} role="menuitem" onClick={() => setManagementOpen(false)}>
@@ -184,6 +187,8 @@ export default function App() {
         {activeStore==='default-store'&&openCollection&&<div className="operations-note is-dismissible" role="status">{openCollection} <NavLink to="/auto-pricing">查看采集</NavLink><button type="button" className="note-dismiss" aria-label="关闭这条提示" onClick={()=>setOpenCollection('')}>×</button></div>}
         <Suspense fallback={<div className="page-loading"><span></span>正在加载页面...</div>}>
         <Routes>
+            <Route path="/orders" element={<SellerLedger key="sales" kind="sales" />} />
+            <Route path="/shipments" element={<SellerLedger key="shipments" kind="shipments" />} />
           <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<ProductList />} />
           <Route path="/selection" element={<Selection />} />

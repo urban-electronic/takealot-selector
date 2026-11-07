@@ -22,7 +22,7 @@ from api import pricing_routes, buybox_routes, collector_routes, cloud_browser_r
 from api import diag_routes
 from api import market_price_routes
 from api import external_offer_routes
-from api import selection_routes
+from api import selection_routes, seller_ledger_routes
 
 app = FastAPI(title="Takealot 选品与利润测算系统", version="1.0.0")
 
@@ -144,6 +144,7 @@ app.include_router(diag_routes.router)
 app.include_router(market_price_routes.router)
 app.include_router(external_offer_routes.router)
 app.include_router(selection_routes.router)
+app.include_router(seller_ledger_routes.router)
 
 
 # 默认费率表

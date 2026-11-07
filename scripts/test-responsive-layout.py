@@ -253,7 +253,13 @@ DATA.update({
                                         expired=False, days_left=30.0),
 })
 
-PAGES = [('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
+LEDGER_SNAPSHOT = dict(source='https://marketplace-api.takealot.com/v1', seller_id='123', synced_at='2026-11-06T12:00:00Z', period_from='2026-11-01', period_to='2026-11-02', complete=True, version=1)
+DATA.update({
+    '/api/seller-ledger/sales': dict(items=[dict(order_item_id='9000001', order_id='8000001', business_date='2026-11-01', sku='9902416416929', quantity=2, sale_status='Preparing for Customer', selling_price=199, total_fees=None)], total=1, page=1, page_size=20, snapshot=LEDGER_SNAPSHOT),
+    '/api/seller-ledger/shipments': dict(items=[dict(shipment_id='7000001', reference='Fixture shipment reference with a deliberately long description', shipped=True, cancelled=False, destination_region='JHB', due_date='2026-11-10', date_unloaded=None, items=[dict(shipment_item_id='6000001', offer_id='5000001', quantity_sending=5, quantity_received=3, quantity_damaged=1)])], total=1, page=1, page_size=20, snapshot=LEDGER_SNAPSHOT),
+})
+
+PAGES = [('/orders', '订单与销量明细'), ('/shipments', '货件看板'), ('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
 
 # 主导航必须一字不差地渲染这几项。原来这里写的是 links.count()!=6：能挡住「某项
 # 消失」，但挡住的方式太粗——真正漏了哪一项它不说，而且每次合法地加一项导航都会
@@ -313,6 +319,9 @@ def main():
                 try: page.get_by_role('heading',name=title,exact=False).first.wait_for(timeout=8000)
                 except Exception: failures.append(f'{width} {path}: missing heading');continue
                 page.locator('.loading').wait_for(state='hidden')
+                if path in ('/orders', '/shipments'):
+                    page.locator('tbody tr').first.wait_for(timeout=8000)
+                    if not page.get_by_text('卖家 123', exact=False).count(): failures.append(f'{width} {path}: source identity missing')
                 details=page.evaluate('''() => ({width:document.documentElement.clientWidth, scroll:document.documentElement.scrollWidth,
                     header:document.querySelector('.app-header').getBoundingClientRect().right,
                     offenders:[...document.querySelectorAll('body *')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0 && r.right>innerWidth+2 && !e.closest('table') && !e.closest('.primary-nav')}).slice(0,5).map(e=>e.className||e.tagName)})''')
@@ -558,6 +567,9 @@ def main():
                 try: page.get_by_role('heading',name='多用途收纳包',exact=False).first.wait_for(timeout=8000)
                 except Exception: failures.append(f'{width} {path}: missing heading (degraded)');continue
                 page.locator('.loading').wait_for(state='hidden')
+                if path in ('/orders', '/shipments'):
+                    page.locator('tbody tr').first.wait_for(timeout=8000)
+                    if not page.get_by_text('卖家 123', exact=False).count(): failures.append(f'{width} {path}: source identity missing')
                 alert=page.get_by_role('alert')
                 if alert.count()!=1: failures.append(f'{width}: fee category failure shows no alert');continue
                 if not alert.is_visible(): failures.append(f'{width}: fee category alert hidden')
@@ -578,6 +590,9 @@ def main():
                 try: page.get_by_role('heading',name='多用途收纳包',exact=False).first.wait_for(timeout=8000)
                 except Exception: failures.append(f'{width} {path}: missing heading (degraded edit)');continue
                 page.locator('.loading').wait_for(state='hidden')
+                if path in ('/orders', '/shipments'):
+                    page.locator('tbody tr').first.wait_for(timeout=8000)
+                    if not page.get_by_text('卖家 123', exact=False).count(): failures.append(f'{width} {path}: source identity missing')
                 select=page.locator('select').filter(has=page.locator('option',has_text='请选择')).first
                 if select.count()!=1: failures.append(f'{width}: fee category select missing in edit mode');continue
                 if select.input_value()!=PRODUCT['fee_category']:
@@ -602,6 +617,9 @@ def main():
                 try: page.get_by_role('heading',name='装箱单工作台',exact=True).first.wait_for(timeout=8000)
                 except Exception: failures.append(f'{width} {path}: missing heading (packing read failing)');continue
                 page.locator('.loading').wait_for(state='hidden')
+                if path in ('/orders', '/shipments'):
+                    page.locator('tbody tr').first.wait_for(timeout=8000)
+                    if not page.get_by_text('卖家 123', exact=False).count(): failures.append(f'{width} {path}: source identity missing')
                 alert=page.get_by_role('alert')
                 if alert.count()!=1: failures.append(f'{width}: packing read failure shows {alert.count()} alerts');continue
                 if not alert.is_visible(): failures.append(f'{width}: packing read failure alert hidden')
