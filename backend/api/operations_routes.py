@@ -13,7 +13,7 @@ from api.store_routes import get_store_id
 from services.operations_planner import plan
 from services.replenishment_economics import logistics, profitable_plan
 from services.shipment_planning import with_shipments
-from services.seller_operations_sync import eligible, eligible_ids, status as sync_status
+from services.seller_operations_sync import eligible, eligible_ids, product_skus, buyable_skus, status as sync_status
 
 router = APIRouter(prefix='/api/operations', tags=['operations'])
 
@@ -139,15 +139,28 @@ def alerts(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
 @router.get('/overview')
 def overview(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
     saved = profiles(db, store); rows = []; can_replenish = eligible_ids(db, store)
+    sku_states = {}
     for p in db.query(Product).filter(Product.store_id == store, Product.is_archived == False).all():
         if p.id not in can_replenish: continue
         profile = saved.get(p.id)
+        offers = {str(o.get('sku') or ''): o for o in (profile or {}).get('offers', [])}
+        for sku in product_skus(p):
+            state = 'unknown'
+            if (profile or {}).get('data_source') == 'seller_api':
+                status = offers.get(sku, {}).get('status')
+                if status == 'buyable': state = 'buyable'
+                elif status == 'not_buyable' and sku in buyable_skus(profile): state = 'formerly_buyable'
+            # A duplicate local SKU is counted once, with conflicting evidence unknown.
+            if sku not in sku_states: sku_states[sku] = state
+            elif sku_states[sku] != state: sku_states[sku] = 'unknown'
         rows.append(dict(id=p.id, product_no=p.product_no, name=p.chinese_product_name or p.product_name,
-            # 英文标题单独给一份：列表主名是中文，核对规格/对账时仍然要看平台原文。
+            # Separate platform title from the local Chinese name.
             english_name=p.product_name or '',
             sku=p.sku, profile=profile, plan=runtime_plan(db, store, p, profile, purchases_for(db, store, p.id)) if profile else None))
     rows.sort(key=lambda r: (r['plan'] is None, -(r['plan'] or {}).get('sea_quantity', 0), -(r['plan'] or {}).get('pre_sea_shortage', 0)))
-    return {'rows': rows, 'sync': sync_status(db, store)}
+    return {'rows': rows, 'sync': sync_status(db, store),
+            'coverage': {'products': len(rows), 'skus': len(sku_states),
+                         **{state: list(sku_states.values()).count(state) for state in ('buyable', 'formerly_buyable', 'unknown')}}}
 
 @router.get('/sync-status')
 def get_sync_status(db: Session = Depends(get_db), store: str = Depends(get_store_id)):
@@ -182,7 +195,7 @@ def save_profile(product_id: str, data: Profile, db: Session = Depends(get_db), 
     if row:
         old = json.loads(row.value)
         if old.get('data_source') == 'seller_api':
-            for field in ('stock', 'stock_date', 'sales', 'observed_from', 'data_source', 'synced_at', 'offer_ids', 'platform_on_way', 'current_price', 'offers'):
+            for field in ('stock', 'stock_date', 'sales', 'observed_from', 'data_source', 'synced_at', 'offer_ids', 'platform_on_way', 'current_price', 'offers', 'ever_buyable_skus'):
                 if field in old: profile[field] = old[field]
     value = json.dumps(profile, ensure_ascii=False)
     if row: row.value = value

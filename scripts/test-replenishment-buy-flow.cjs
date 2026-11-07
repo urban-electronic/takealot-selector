@@ -40,6 +40,7 @@ const rows = [
     plan: { level: 'watch', stock: 90, pending: { air: 0, sea: 0 }, velocity: 1, cover_days: 90,
             sea_quantity: 0, air_quantity: 0, pre_sea_shortage: 0, allow_emergency_air: false,
             economics: { available: false }, schedule: [] } },
+  { id: 'p-zero', product_no: 789, name: '零销品', english_name: 'Zero Sales Item', sku: 'ZERO', plan: { velocity: 0, level: 'no_data', schedule: [] } },
 ];
 
 const history = [
@@ -111,6 +112,9 @@ const actionsIn = row => [...row.querySelectorAll('.operations-actions button')]
   await act(async () => root.render(React.createElement(Page)));
   await act(async () => { await new Promise(r => setTimeout(r, 50)); });
 
+  check(bodyRows().length === 3, 'zero-sales SKU remains visible by default');
+  check(bodyRows()[0].querySelector('.product-link').textContent === 'Foldable Bucket', 'English platform title is first');
+  check(bodyRows()[0].querySelector('.product-cn').textContent === '折叠水桶', 'Chinese name is on its own second line');
   // --- 1. 序号列：和「产品列表」的 # 同源 ---
   const headers = [...host.querySelectorAll('.data-table thead th')].map(th => th.textContent.trim());
   check(headers[0] === '#', '首列必须是 # 序号列');

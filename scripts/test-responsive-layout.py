@@ -342,7 +342,7 @@ def main():
                     # 真的渲染出来；长标题要「单行 + 省略号」，不能换行成三行、也不能
                     # 溢出到右边的列（scrollWidth 会因为省略号仍然大于 clientWidth，
                     # 所以判据看的是溢出裁切和右边界，不是 scrollWidth）。
-                    en=page.locator('.operations-product .product-en').first
+                    en=page.locator('.operations-product .product-link').first
                     if not en.count(): failures.append(f'{width}: replenishment product cell has no English title')
                     else:
                         box=en.evaluate("""e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect(),

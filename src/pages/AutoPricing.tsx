@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 const CloudBrowser = lazy(() => import('../operations/CloudBrowser'));
 import { getAutomaticPricing, configureAutomaticPricing, pauseAutomaticPricing, reconcileAutomaticPricing, bulkAutomaticPricing, pauseAllAutomaticPricing, configureBuyboxMonitor, collectBuyboxNow, bulkBuyboxMonitor, setBuyboxVariantLabels, getImageUrl } from '../remoteApi';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
-import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote, retryGroups } from '../utils/buyboxStatus';
+import { describeCollection, describeOwnership, describeFleet, errorCopy, collectorName, hasUsableQuote, retryGroups, MIN_INTERVAL_MINUTES } from '../utils/buyboxStatus';
 
 /**
  * 44px 商品缩略图。加载失败就留一个方块占位：
@@ -26,7 +26,9 @@ export default function AutoPricing() {
   const [pageDraft, setPageDraft] = useState('');
   const [maintenance, setMaintenance] = useState(false);
   // 原名 interval 会遮蔽 window.setInterval，排查定时器时极易误读，改名与后端字段一致。
-  const [intervalMinutes, setIntervalMinutes] = useState(5);
+  // 默认值直接取下限 MIN_INTERVAL_MINUTES（30）：云端已按 30 分钟排期，这里默认 5 分钟
+  // 会让「刚打开页面时的文案」与「实际排期」两套口径。
+  const [intervalMinutes, setIntervalMinutes] = useState(MIN_INTERVAL_MINUTES);
   // 次要动作默认收起：一屏只留「开启采集 / 启动调价」两个主操作。
   const [moreOpen, setMoreOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -476,7 +478,7 @@ export default function AutoPricing() {
         <button className="btn btn-outline btn-sm actions-more-toggle" aria-expanded={moreOpen} onClick={()=>setMoreOpen(v=>!v)}>{moreOpen?'收起':'更多'}</button>
         {moreOpen&&<div className="actions-more-panel">
           <div className="actions-group"><span>采集</span>
-            <select aria-label="自动采集间隔" value={intervalMinutes} onChange={e=>setIntervalMinutes(Number(e.target.value))}>{[5,10,15,30,60,120].map(n=><option key={n} value={n}>{n}分钟</option>)}</select>
+            <select aria-label="自动采集间隔" value={intervalMinutes} onChange={e=>setIntervalMinutes(Number(e.target.value))}>{[MIN_INTERVAL_MINUTES,60,120].map(n=><option key={n} value={n}>{n}分钟</option>)}</select>
             <input placeholder="本段名称（可选）" value={segmentName} onChange={e=>setSegmentName(e.target.value)}/>
             <button className="btn btn-outline btn-sm" disabled={!!busy||!pageRows.length||!configured} onClick={()=>monitorBulk(true,true)}>开启本页 {pageRows.length} 个</button>
             <button className="btn btn-outline btn-sm" disabled={!!busy||!selected.length||!configured} onClick={()=>monitorBulk(false)}>停采</button>
