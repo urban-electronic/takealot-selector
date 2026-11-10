@@ -68,8 +68,18 @@ def test_lean_args_do_not_disable_images_globally():
 
 
 def test_blocked_resource_types_cover_heavy_assets():
+    """字体与音视频默认拦；图片默认放行（2026-11-10：拦图会让变体色块塌成 0 尺寸，
+    变体款直接 variant_unmatched，成功率不允许下降）。"""
     from services import quote_browser
-    assert {'image', 'media', 'font'} == set(quote_browser.BLOCKED_RESOURCE_TYPES)
+    assert {'media', 'font'} == set(quote_browser.BLOCKED_RESOURCE_TYPES)
+    assert 'image' not in quote_browser.BLOCKED_RESOURCE_TYPES
+
+
+def test_block_images_flag_is_opt_in(qb, monkeypatch):
+    """图片拦截只能显式开启，默认关闭。"""
+    monkeypatch.delenv('BUYBOX_BLOCK_IMAGES', raising=False)
+    assert qb().BLOCK_IMAGES is False
+    assert qb(BUYBOX_BLOCK_IMAGES='1').BLOCK_IMAGES is True
 
 
 def test_idle_close_seconds_default_and_override(qb, monkeypatch):
@@ -137,23 +147,37 @@ def test_route_drop_heavy_aborts_only_heavy_assets():
         async def continue_(self):
             self.calls.append('continue')
 
-    for resource_type in ('image', 'media', 'font'):
+    for resource_type in ('media', 'font'):
         route = _Route(resource_type)
         asyncio.run(_route_drop_heavy(route))
         assert route.calls == ['abort'], resource_type
-    for resource_type in ('document', 'script', 'xhr', 'stylesheet'):
+    for resource_type in ('image', 'document', 'script', 'xhr', 'stylesheet'):
         route = _Route(resource_type)
         asyncio.run(_route_drop_heavy(route))
         assert route.calls == ['continue'], resource_type
 
 
-def test_idle_guard_only_touches_collector_profile():
-    """看门狗必须打的是采集 profile，不能误杀 cloud_browser 那份。"""
+def test_idle_guard_only_touches_collector_profile(monkeypatch, tmp_path):
+    """空闲回收实际调用的目标必须是采集 profile，不触碰交互浏览器。"""
+    import threading
+    from types import SimpleNamespace
     from services import quote_browser
-    source = inspect.getsource(quote_browser._idle_guard_loop)
-    assert '_collector_profile()' in source
-    assert '_kill_profile' in source
-    assert 'CLOUD_BROWSER_PROFILE' not in source
+
+    collector = str(tmp_path / 'collector')
+    monkeypatch.setenv('BUYBOX_BROWSER_PROFILE', collector)
+    monkeypatch.setenv('CLOUD_BROWSER_PROFILE', str(tmp_path / 'interactive'))
+    monkeypatch.setattr(quote_browser, '_lock', threading.Lock())
+    monkeypatch.setattr(quote_browser, '_last_release_at', 0)
+    monkeypatch.setattr(quote_browser, 'time', SimpleNamespace(monotonic=lambda: 1000))
+    monkeypatch.setattr(quote_browser, 'IDLE_CLOSE_SECONDS', 300)
+    killed = []
+    def kill(profile):
+        killed.append(profile)
+        return 1
+    monkeypatch.setattr(quote_browser, '_kill_profile', kill)
+
+    assert quote_browser._reap_idle_browser() == 1
+    assert killed == [collector]
 
 
 def test_collector_profile_honours_env(monkeypatch, tmp_path):
