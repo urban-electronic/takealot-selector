@@ -259,13 +259,21 @@ DATA.update({
     '/api/seller-ledger/shipments': dict(items=[dict(shipment_id='7000001', reference='Fixture shipment reference with a deliberately long description', shipped=True, cancelled=False, destination_region='JHB', due_date='2026-11-10', date_unloaded=None, items=[dict(shipment_item_id='6000001', offer_id='5000001', quantity_sending=5, quantity_received=3, quantity_damaged=1)])], total=1, page=1, page_size=20, snapshot=LEDGER_SNAPSHOT),
 })
 
-PAGES = [('/orders', '订单与销量明细'), ('/shipments', '货件看板'), ('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
+DATA['/api/listing/drafts'] = dict(items=[dict(
+    id='fixture-listing', internal_code='JB-005', revision=1, state='draft',
+    source_file='fixture.xlsx', source_row=5, reviewed_at=None, updated_at='2026-11-10T10:00:00Z',
+    payload=dict(supplier_code='FIXTURE-005', raw_name='测试电水壶',
+                 english_name='Electric Kettle with a long English product name for layout checks',
+                 major_colour='Black', other_colours=['Red']),
+    issues=[dict(field='description', message='请补充英文描述')])], total=1, page=1, page_size=20)
+
+PAGES = [('/orders', '订单与销量明细'), ('/shipments', '货件看板'), ('/', '运营工作台'),('/products','产品列表'),('/selection','选品池'),('/listing','上架工作台'),('/inventory','库存管理'),('/auto-pricing','Buybox与自动调价'),('/replenishment','补货计划'),('/packing','装箱单'),('/create','新建产品'),('/procurement','采购记录'),('/stores','店铺管理'),('/settings','系统设置'),('/products/fixture-product','多用途收纳包')]
 
 # 主导航必须一字不差地渲染这几项。原来这里写的是 links.count()!=6：能挡住「某项
 # 消失」，但挡住的方式太粗——真正漏了哪一项它不说，而且每次合法地加一项导航都会
 # 撞上它（2026-10-29 加「选品池」就挂在这里）。改成比对标签本身：漏项、改名、
 # 多出未登记的项，三种情况都能点名到具体那一项。
-EXPECTED_NAV = ('主页','产品列表','选品池','库存','Buybox与调价','补货计划','装箱单')
+EXPECTED_NAV = ('主页','产品列表','选品池','上架工作台','库存','Buybox与调价','补货计划','装箱单')
 
 def main():
     cli=argparse.ArgumentParser();cli.add_argument('--observe',action='store_true');cli.add_argument('--screenshots');args=cli.parse_args()
