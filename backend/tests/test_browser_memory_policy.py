@@ -68,8 +68,18 @@ def test_lean_args_do_not_disable_images_globally():
 
 
 def test_blocked_resource_types_cover_heavy_assets():
+    """字体与音视频默认拦；图片默认放行（2026-11-10：拦图会让变体色块塌成 0 尺寸，
+    变体款直接 variant_unmatched，成功率不允许下降）。"""
     from services import quote_browser
-    assert {'image', 'media', 'font'} == set(quote_browser.BLOCKED_RESOURCE_TYPES)
+    assert {'media', 'font'} == set(quote_browser.BLOCKED_RESOURCE_TYPES)
+    assert 'image' not in quote_browser.BLOCKED_RESOURCE_TYPES
+
+
+def test_block_images_flag_is_opt_in(qb, monkeypatch):
+    """图片拦截只能显式开启，默认关闭。"""
+    monkeypatch.delenv('BUYBOX_BLOCK_IMAGES', raising=False)
+    assert qb().BLOCK_IMAGES is False
+    assert qb(BUYBOX_BLOCK_IMAGES='1').BLOCK_IMAGES is True
 
 
 def test_idle_close_seconds_default_and_override(qb, monkeypatch):
@@ -137,11 +147,11 @@ def test_route_drop_heavy_aborts_only_heavy_assets():
         async def continue_(self):
             self.calls.append('continue')
 
-    for resource_type in ('image', 'media', 'font'):
+    for resource_type in ('media', 'font'):
         route = _Route(resource_type)
         asyncio.run(_route_drop_heavy(route))
         assert route.calls == ['abort'], resource_type
-    for resource_type in ('document', 'script', 'xhr', 'stylesheet'):
+    for resource_type in ('image', 'document', 'script', 'xhr', 'stylesheet'):
         route = _Route(resource_type)
         asyncio.run(_route_drop_heavy(route))
         assert route.calls == ['continue'], resource_type

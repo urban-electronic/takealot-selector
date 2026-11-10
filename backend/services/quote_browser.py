@@ -38,9 +38,20 @@ LEAN_BROWSER_ARGS = (
     '--renderer-process-limit=2',
 )
 
-# 采集时可以直接丢弃的资源类型。图片/字体/音视频对价格解析零贡献。
+# 采集时可以直接丢弃的资源类型：字体与音视频对价格解析零贡献。
 # 默认拦截（BUYBOX_BLOCK_MEDIA=0 可关掉），用于压内存与出网流量。
-BLOCKED_RESOURCE_TYPES = frozenset({'image', 'media', 'font'})
+#
+# 为什么图片**不在**默认拦截名单里（2026-11-10 实测）：
+# 上线首版把 image 一起拦掉后，40 个 SKU 里 9 个变体款转成 variant_unmatched
+# （"未能切到变体 Blue / Silver / Gold"）——Takealot 的变体色块是图片型控件，
+# 图片请求被 abort 后色块盒子塌成 0 尺寸，Playwright 的可见性点击直接失败，
+# 采集就只能保守放弃默认变体报价。关掉图片拦截后同样 9 个 SKU 立刻回到 8 成功，
+# 即根因是图片而非并发/生命周期。既然「成功率不得下降」优先于内存，
+# 图片默认放行，只有在明确验证过变体不受影响的场景才用 BUYBOX_BLOCK_IMAGES=1 打开。
+BLOCKED_RESOURCE_TYPES = frozenset({'media', 'font'})
+
+# 图片单独用一个显式开关（默认关），方便后续在无变体商品上做 A/B。
+BLOCK_IMAGES = (os.environ.get('BUYBOX_BLOCK_IMAGES', '0') or '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
 # 空闲回收：锁空闲且没有采集任务在飞时，若该 profile 还有 Chromium 进程活着，
 # 超过这个秒数就强杀。context.close() 在 CLEANUP_TIMEOUT 内关不掉时会留活口，
@@ -275,9 +286,10 @@ def _ensure_idle_guard():
 
 
 async def _route_drop_heavy(route):
-    """拦掉对解析零贡献的资源：图片/字体/音视频。其余请求原样放行。"""
+    """拦掉对解析零贡献的资源：字体/音视频（图片另由 BLOCK_IMAGES 控制）。"""
     try:
-        if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        rtype = route.request.resource_type
+        if rtype in BLOCKED_RESOURCE_TYPES or (BLOCK_IMAGES and rtype == 'image'):
             await route.abort()
         else:
             await route.continue_()
@@ -341,9 +353,9 @@ async def quote_context(wait=True, wait_seconds=None, block_media=False):
     """拿采集浏览器。wait_seconds 给交互式调用用：宁可 25 秒后说「忙」，
     也不要让用户在新建产品页上干等 90 秒——采集循环每 5 分钟就占一次锁。
 
-    block_media=True 时丢弃图片/字体/音视频请求：买盒采集只读 DOM，这些请求
-    对价格零贡献，却在渲染进程里各占一份解码缓冲。交互式看页面（cloud_browser
-    截图给用户设提货点）必须保持 False，否则用户看到的是一堆破图。
+    block_media=True 时丢弃字体/音视频请求（图片默认放行，见 BLOCKED_RESOURCE_TYPES
+    的注释：拦图会让变体色块塌成 0 尺寸导致 variant_unmatched）。交互式看页面
+    （cloud_browser 截图给用户设提货点）必须保持 False，否则用户看到的是一堆破图。
     """
     held = False
     limit = LOCK_WAIT_SECONDS if wait_seconds is None else wait_seconds

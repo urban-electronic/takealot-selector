@@ -69,6 +69,24 @@ Railway 账单周期第 7 天已用 $5.14（Hobby 额度 $5）。30 分钟降频
 指纹，可能触发 Takealot 反爬。因此做成环境变量开关：先按原形态上线观察，需要时改
 环境变量试跑，成功率掉了就改回来，不必回滚代码。
 
+### 6. 上线首轮的事故与修正：图片拦截会打死变体款（2026-11-10 15:26–15:50）
+
+首版把 `image` 也放进 `BLOCKED_RESOURCE_TYPES`，部署后第一轮 40 个 SKU 出现
+**9 条 `variant_unmatched`**（"未能切到变体 Blue / Silver / Gold …"），而改动前
+同一批是 40/40 全成功。隔离过程：
+
+1. 对失败 SKU 手动 `collect-now`，可稳定复现，确认不是偶发；
+2. 把 `BUYBOX_BLOCK_MEDIA=0` 打到 Railway（其余优化全部保留）后重跑同样 9 个 SKU，
+   **8 个立刻恢复成功**，只剩 1 个 `Black Frame Gray Lenses` 仍失败（该款是页面文案
+   与变体名不一致的既有问题，与本次改动无关）。
+
+结论：Takealot 的变体色块是图片型控件，图片请求被 abort 后盒子塌成 0 尺寸，
+Playwright 的可见性点击直接失败，采集按既有保守策略放弃默认变体报价。于是：
+
+- `BLOCKED_RESOURCE_TYPES` 收敛为 `{'media', 'font'}`；
+- 图片拦截改为显式开关 `BUYBOX_BLOCK_IMAGES=1`（默认关），留给后续在无变体商品上做 A/B；
+- 成功率优先于内存：这一条是硬约束，宁可少省一点内存。
+
 ## 没动的东西
 
 - `MIN_INTERVAL_MINUTES=30` 与 `effective_interval_minutes()`（30 分钟下限）；
@@ -80,11 +98,12 @@ Railway 账单周期第 7 天已用 $5.14（Hobby 额度 $5）。30 分钟降频
 git revert <本次提交>            # 或只用环境变量回退单项
 # 单独回退并发：Railway 变量 BUYBOX_COLLECT_WORKERS=2
 # 单独关掉资源拦截：BUYBOX_BLOCK_MEDIA=0
+# 打开图片拦截（仅限已验证无变体的场景）：BUYBOX_BLOCK_IMAGES=1
 # 单独关掉空闲回收：BUYBOX_BROWSER_IDLE_SECONDS=86400
 ```
 
 ## 验证
 
-- 后端 pytest 1401 passed（含新增 `backend/tests/test_browser_memory_policy.py` 14 条）；
+- 后端 pytest 1402 passed（含新增 `backend/tests/test_browser_memory_policy.py` 15 条）；
 - 前端 `node scripts/selfcheck.cjs --quick` 49 步通过；
 - 线上内存与单轮耗时见提交后 20–30 分钟的观察记录。
