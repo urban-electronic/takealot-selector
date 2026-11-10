@@ -2,6 +2,7 @@
 import asyncio
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -14,6 +15,12 @@ from models import Product, SystemSettings, DEFAULT_STORE_ID
 from services.takealot_seller_api import configured_key, seller_api_reason
 
 PREFIX = '_pricing_rule:'
+
+# 采集时丢掉图片/字体/音视频请求（BUYBOX_BLOCK_MEDIA=0 可关闭）。
+# 买盒采集只读 DOM 文本与 data-ref 锚点，这些资源对价格零贡献，却按「每渲染
+# 进程一份」占着解码缓冲；线上内存占账单 54%，这一项是纯粹的白付。
+BLOCK_MEDIA = (os.environ.get('BUYBOX_BLOCK_MEDIA', '1') or '1').strip().lower() \
+    not in ('0', 'false', 'no', 'off')
 _stop = threading.Event()
 _thread = None
 
@@ -466,7 +473,7 @@ async def collect(product, offer, seller_name=None, variant_labels=None):
     parsed = urlparse(url)
     if parsed.scheme != 'https' or parsed.hostname not in ('www.takealot.com', 'takealot.com') or not re.search(r'PLID\d+', parsed.path, re.I):
         return {'error': 'invalid_url', 'offers': []}
-    async with quote_context() as context:
+    async with quote_context(block_media=BLOCK_MEDIA) as context:
         page = None
         try:
             page = await context.new_page()

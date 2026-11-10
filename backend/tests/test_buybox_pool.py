@@ -35,7 +35,7 @@ def test_pool_is_reused_across_rounds_and_hard_caps_threads():
     try:
         pool = monitor._get_pool()
         assert monitor._get_pool() is pool
-        assert pool._max_workers == 2
+        assert pool._max_workers == monitor.COLLECT_WORKERS
         assert monitor._pool_resets == 0
     finally:
         pool.shutdown(wait=False)

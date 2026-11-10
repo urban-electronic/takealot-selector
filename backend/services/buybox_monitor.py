@@ -2,6 +2,7 @@
 import asyncio
 import json
 import math
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -66,6 +67,14 @@ _pool_lock = threading.Lock()
 _pool_dirty = False
 _pool_resets = 0
 
+# 采集并发数：2026-11-10 从 2 收到 1。
+# 收到 1 的唯一理由是内存：quote_browser 里那把全局 _lock 本来就让两个 worker
+# 严格串行，第二个 worker 从来没带来过吞吐收益（实测一轮 40 条约 17.8 分钟，
+# 就是单线程逐个跑出来的），却让「一个卡死任务」和「下一个正常任务」在池里并存，
+# 卡死时那个渲染进程还活着、吃满一份 Chromium 的内存。并发 1 之后，任一时刻
+# 最多只有一份浏览器基线。要回退用 BUYBOX_COLLECT_WORKERS=2。
+COLLECT_WORKERS = max(1, int(os.environ.get('BUYBOX_COLLECT_WORKERS', '1') or 1))
+
 
 def _get_pool():
     """取常驻采集池；上一轮放弃过卡死任务时先重建（旧池 wait=False，绝不阻塞循环）。"""
@@ -78,7 +87,7 @@ def _get_pool():
                 except Exception:
                     pass
                 _pool_resets += 1
-            _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='buybox-read')
+            _pool = ThreadPoolExecutor(max_workers=COLLECT_WORKERS, thread_name_prefix='buybox-read')
             _pool_dirty = False
         return _pool
 

@@ -124,7 +124,7 @@ def run_collect(monkeypatch, variant_labels=None):
     captured = {}
 
     @asynccontextmanager
-    async def fake_quote_context():
+    async def fake_quote_context(**kwargs):
         yield _Context()
 
     async def fake_scrape(page, item):

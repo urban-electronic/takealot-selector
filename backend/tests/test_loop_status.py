@@ -89,7 +89,7 @@ def test_long_batch_keeps_heartbeat_without_inventing_cycles(monkeypatch, jobs):
 
     class Pool:
         def __init__(self, **kwargs):
-            assert kwargs['max_workers'] == 2
+            assert kwargs['max_workers'] == monitor.COLLECT_WORKERS
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def submit(self, fn, key):
