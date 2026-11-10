@@ -58,9 +58,11 @@ ALIASES = {
     'usage': ('适用场景', 'usage'),
     'notes': ('核对提示', '补充备注', '供应商备注', 'notes'),
     'brand': ('品牌', 'brand'),
+    'brand_mode': ('品牌类型', 'brand mode'),
     'category_path': ('后台分类', 'category path'),
     'category_id': ('后台分类id', 'category id'),
     'sales_unit': ('销售单位', 'sales unit'),
+    'country_of_origin': ('产地', 'country of origin'),
 }
 COLOURS = {'黑': 'Black', '黑色': 'Black', '白': 'White', '白色': 'White', '红': 'Red', '红色': 'Red',
            '蓝': 'Blue', '蓝色': 'Blue', '绿': 'Green', '绿色': 'Green', '黄': 'Yellow', '黄色': 'Yellow',
@@ -217,10 +219,12 @@ def parse_table(data, filename):
                 mapping = {}
                 for ci, val in enumerate(row):
                     label = normal(val)
-                    for field, aliases in ALIASES.items():
-                        if label and any(label.startswith(normal(a)) for a in aliases):
-                            mapping.setdefault(field, ci)
-                            break
+                    matches = [(len(normal(alias)), field) for field, aliases in ALIASES.items()
+                               for alias in aliases if label and label.startswith(normal(alias))]
+                    if matches:
+                        # Specific headers (后台分类ID / 品牌类型) beat their prefixes.
+                        _, field = max(matches)
+                        mapping.setdefault(field, ci)
                 if 'internal_code' in mapping and 'raw_name' in mapping:
                     candidates.append((len(mapping), sheet, rn, mapping))
         if not candidates:
@@ -274,7 +278,9 @@ def merge_import(existing, incoming):
     result = dict(existing)
     conflicts = list(existing.get('import_conflicts', []))
     for field, value in incoming.items():
-        if field in ('import_conflicts', 'sales_unit', 'country_of_origin') or value in (None, '', []):
+        if field == 'import_conflicts' or value in (None, '', []):
+            continue
+        if field in ('sales_unit', 'country_of_origin') and value == blank_payload()[field]:
             continue
         old = result.get(field)
         if field in ('raw_name', 'supplier_code') and old not in (None, '') and old != value:

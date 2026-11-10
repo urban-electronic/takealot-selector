@@ -77,6 +77,16 @@ def test_single_colour_sets_major_but_multicolour_does_not():
         assert parse_table(raw, 'f.xlsx')[0]['payload']['major_colour'] == expected
 
 
+def test_specific_headers_do_not_collide_with_prefixes_and_explicit_units_are_reviewed():
+    raw = table([['X', 'Kettle', 'CATEGORY-123', 'Home / Kettles', 'generic', '', '1 pair', 'South Africa']],
+                ['内部编号', '产品名称', '后台分类ID', '后台分类', '品牌类型', '品牌', '销售单位', '产地'])
+    p = parse_table(raw, 'f.xlsx')[0]['payload']
+    assert p['category_id'] == 'CATEGORY-123' and p['category_path'] == 'Home / Kettles'
+    assert p['brand_mode'] == 'generic' and not p['brand']
+    changed = merge_import(blank_payload(), p)
+    assert {c['field'] for c in changed['import_conflicts']} == {'sales_unit', 'country_of_origin'}
+
+
 def test_supplier_write_only_workbook_without_dimension_metadata():
     wb = Workbook(write_only=True)
     ws = wb.create_sheet('回填')
