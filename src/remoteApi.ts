@@ -59,6 +59,54 @@ export const setActiveStoreId = (storeId: string): void => {
   try { localStorage.setItem('active_store_id', storeId); } catch { /* ignore */ }
 };
 
+export interface ListingPayload {
+  raw_name: string; supplier_code: string; english_name: string; title: string; subtitle: string;
+  description: string; whats_in_box: string; brand: string; brand_mode: string;
+  category_id: string; category_path: string; major_colour: string; other_colours: string[];
+  colour_candidates: string[]; image_urls: string[]; material: string; features: string; usage: string;
+  notes: string; sales_unit: string; country_of_origin: string;
+  packaged_length_cm: number | null; packaged_width_cm: number | null;
+  packaged_height_cm: number | null; packaged_weight_kg: number | null;
+  import_conflicts: {field: string; current: unknown; incoming: unknown}[];
+}
+export interface ListingDraft {
+  id: string; internal_code: string; source_file: string; source_row: number;
+  revision: number; state: 'draft' | 'reviewed'; reviewed_at: string | null; updated_at: string;
+  payload: ListingPayload; issues: {field: string; message: string}[];
+}
+export interface ListingPage {items: ListingDraft[]; total: number; page: number; page_size: number}
+
+// Pin every operation to the store that owned the editor/import when it started.
+export const getListingDrafts = (store: string, page: number, search: string, state: string) =>
+  request<ListingPage>(`/api/listing/drafts?page=${page}&search=${encodeURIComponent(search)}&state=${state}`,
+    {headers: {'X-Store-ID': store}});
+export const saveListingDraft = (store: string, id: string, revision: number, fields: Record<string, unknown>) =>
+  request<ListingDraft>(`/api/listing/drafts/${encodeURIComponent(id)}`,
+    {method: 'PATCH', headers: {'X-Store-ID': store}, body: JSON.stringify({revision, fields})});
+export const reviewListingDraft = (store: string, id: string, revision: number) =>
+  request<ListingDraft>(`/api/listing/drafts/${encodeURIComponent(id)}/review`,
+    {method: 'POST', headers: {'X-Store-ID': store}, body: JSON.stringify({revision})});
+export const importListingTable = async (store: string, file: File) => {
+  if (file.size > 10 * 1024 * 1024) throw new Error('单个回填表不能超过10MB');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return request<{created: number; updated: number; unchanged: number; conflicts: number; count: number}>(
+    '/api/listing/import', {method: 'POST', headers: {'X-Store-ID': store},
+      body: JSON.stringify({filename: file.name, data_base64: btoa(binary)})});
+};
+export const exportListingReview = async (store: string, rows: Record<string, number>) => {
+  const response = await fetch(`${getBaseUrl()}/api/listing/review-export`, {
+    method: 'POST', headers: {'Content-Type': 'application/json', 'X-API-Key': getApiKey(), 'X-Store-ID': store},
+    body: JSON.stringify({rows}), signal: AbortSignal.timeout(90000),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(typeof body.detail === 'string' ? body.detail : `导出失败：HTTP ${response.status}`);
+  }
+  return response.blob();
+};
+
 /** Store-scoped browser state prevents drafts and selections leaking across shops. */
 export const getStoreStorageKey = (baseKey: string): string => `${baseKey}:${getActiveStoreId()}`;
 

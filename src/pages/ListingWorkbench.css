@@ -1,0 +1,19 @@
+.listing-workbench { min-width: 0; }
+.listing-workbench .listing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; }
+.listing-workbench .card.listing-toolbar { padding: 16px; }
+.listing-workbench label { display: flex; flex-direction: column; gap: 6px; font-weight: 500; min-width: 0; }
+.listing-workbench input, .listing-workbench select, .listing-workbench textarea { max-width: 100%; min-width: 0; }
+.listing-workbench .listing-table { width: 100%; }
+.listing-workbench .listing-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.listing-workbench .listing-table small { display: block; margin-top: 4px; color: var(--text-secondary, #526174); }
+.listing-workbench .listing-name { max-width: 420px; min-width: 160px; }
+.listing-workbench .listing-pagination { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.listing-workbench .listing-empty { padding: 24px; }
+.listing-workbench .listing-editor { padding: 20px; margin-top: 20px; scroll-margin-top: 20px; }
+.listing-workbench .listing-editor h3 { margin: 0; overflow-wrap: anywhere; }
+.listing-workbench .listing-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.listing-workbench .listing-long-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.listing-workbench textarea { resize: vertical; width: 100%; }
+.listing-workbench .listing-issue { background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; padding: 4px; text-decoration: underline; }
+@media (max-width: 900px) { .listing-workbench .listing-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .listing-workbench .listing-fields, .listing-workbench .listing-long-fields { grid-template-columns: minmax(0, 1fr); } }

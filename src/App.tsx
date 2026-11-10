@@ -18,12 +18,14 @@ const Inventory = lazy(() => import('./pages/Inventory'));
 const Stores = lazy(() => import('./pages/Stores'));
 const Replenishment = lazy(() => import('./pages/Replenishment'));
 const SellerLedger = lazy(() => import('./pages/SellerLedger'));
+const ListingWorkbench = lazy(() => import('./pages/ListingWorkbench'));
 const AutoPricing = lazy(() => import('./pages/AutoPricing'));
 
 const primaryNavItems = [
   { path: '/', label: '主页' },
   { path: '/products', label: '产品列表' },
   { path: '/selection', label: '选品池' },
+  { path: '/listing', label: '上架工作台' },
   { path: '/inventory', label: '库存' },
   { path: '/auto-pricing', label: 'Buybox与调价' },
   { path: '/replenishment', label: '补货计划' },
@@ -192,6 +194,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/products" element={<ProductList />} />
           <Route path="/selection" element={<Selection />} />
+          <Route path="/listing" element={<ListingWorkbench />} />
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/buybox" element={<Navigate to="/auto-pricing" replace />} />
           <Route path="/auto-pricing" element={<AutoPricing />} />
