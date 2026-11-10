@@ -257,6 +257,18 @@ def _collector_profile():
     return os.environ.get('BUYBOX_BROWSER_PROFILE', os.path.join(DB_DIR, 'buybox_browser_profile'))
 
 
+def _reap_idle_browser():
+    """Own the browser lock throughout the idle decision and process cleanup."""
+    if not _lock.acquire(blocking=False):
+        return 0
+    try:
+        if time.monotonic() - _last_release_at < IDLE_CLOSE_SECONDS:
+            return 0
+        return _kill_profile(_collector_profile())
+    finally:
+        _lock.release()
+
+
 def _idle_guard_loop():
     """空闲看门狗：没有采集在飞、且锁空闲超过 IDLE_CLOSE_SECONDS，就清掉残留浏览器。
 
@@ -265,11 +277,7 @@ def _idle_guard_loop():
     while True:
         time.sleep(30)
         try:
-            if _lock.locked():
-                continue
-            if time.monotonic() - _last_release_at < IDLE_CLOSE_SECONDS:
-                continue
-            killed = _kill_profile(_collector_profile())
+            killed = _reap_idle_browser()
             if killed:
                 print(f'[quote_browser] 空闲超过 {IDLE_CLOSE_SECONDS} 秒，回收残留浏览器进程 {killed} 个', flush=True)
         except Exception as exc:  # noqa: BLE001 看门狗绝不能自己把进程搞崩
@@ -422,10 +430,10 @@ async def quote_context(wait=True, wait_seconds=None, block_media=False):
         # 上下文已退出：这个 profile 不再属于「正在飞行的采集」。清掉它，否则看门狗
         # 下一次放弃卡死任务时，可能杀到后续正常采集刚启动的同一个 profile 浏览器。
         _set_current_browser_profile(None)
-        if held:
-            _lock.release()
         global _last_release_at
         _last_release_at = time.monotonic()
+        if held:
+            _lock.release()
 
 
 async def _launch(profile, display, args, headless=None):

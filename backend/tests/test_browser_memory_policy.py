@@ -157,13 +157,27 @@ def test_route_drop_heavy_aborts_only_heavy_assets():
         assert route.calls == ['continue'], resource_type
 
 
-def test_idle_guard_only_touches_collector_profile():
-    """看门狗必须打的是采集 profile，不能误杀 cloud_browser 那份。"""
+def test_idle_guard_only_touches_collector_profile(monkeypatch, tmp_path):
+    """空闲回收实际调用的目标必须是采集 profile，不触碰交互浏览器。"""
+    import threading
+    from types import SimpleNamespace
     from services import quote_browser
-    source = inspect.getsource(quote_browser._idle_guard_loop)
-    assert '_collector_profile()' in source
-    assert '_kill_profile' in source
-    assert 'CLOUD_BROWSER_PROFILE' not in source
+
+    collector = str(tmp_path / 'collector')
+    monkeypatch.setenv('BUYBOX_BROWSER_PROFILE', collector)
+    monkeypatch.setenv('CLOUD_BROWSER_PROFILE', str(tmp_path / 'interactive'))
+    monkeypatch.setattr(quote_browser, '_lock', threading.Lock())
+    monkeypatch.setattr(quote_browser, '_last_release_at', 0)
+    monkeypatch.setattr(quote_browser, 'time', SimpleNamespace(monotonic=lambda: 1000))
+    monkeypatch.setattr(quote_browser, 'IDLE_CLOSE_SECONDS', 300)
+    killed = []
+    def kill(profile):
+        killed.append(profile)
+        return 1
+    monkeypatch.setattr(quote_browser, '_kill_profile', kill)
+
+    assert quote_browser._reap_idle_browser() == 1
+    assert killed == [collector]
 
 
 def test_collector_profile_honours_env(monkeypatch, tmp_path):
