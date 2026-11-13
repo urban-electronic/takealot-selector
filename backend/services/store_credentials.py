@@ -53,8 +53,9 @@ def _read(db, base_key: str, store_id):
     """新键优先；默认店铺回落旧键。旧键只读，绝不改写。"""
     sid = _resolve(store_id)
     row = db.query(SystemSettings).filter(SystemSettings.key == f"{base_key}:{sid}").first()
-    if row and row.value:
-        return row.value
+    if row is not None:
+        # An explicit empty scoped value revokes legacy fallback.
+        return row.value or ""
     if sid == DEFAULT_STORE_ID:
         row = db.query(SystemSettings).filter(SystemSettings.key == base_key).first()
         if row and row.value:
@@ -97,12 +98,7 @@ def save_seller_api_key(db, store_id, key: str) -> None:
 
 
 def clear_seller_api_key(db, store_id) -> None:
-    sid = _resolve(store_id)
-    row = db.query(SystemSettings).filter(
-        SystemSettings.key == f"{SELLER_KEY}:{sid}").first()
-    if row:
-        db.delete(row)
-        db.commit()
+    _write(db, SELLER_KEY, store_id, "")
 
 
 # ---------------------------------------------------------------- 门户令牌
@@ -119,23 +115,11 @@ def portal_token(db, store_id=None) -> str:
 
 
 def save_portal_token(db, store_id, token: str) -> None:
-    """空串表示清除（沿用原 save_token 语义：删行，不写空串）。"""
+    """Empty scoped values revoke credentials without reviving legacy keys."""
     from services.takealot_portal_api import _cipher
-    sid = _resolve(store_id)
-    key = f"{PORTAL_KEY}:{sid}"
     value = (token or "").strip()
-    row = db.query(SystemSettings).filter(SystemSettings.key == key).first()
-    if not value:
-        if row:
-            db.delete(row)
-            db.commit()
-        return
-    encrypted = _cipher().encrypt(value.encode()).decode()
-    if row:
-        row.value = encrypted
-    else:
-        db.add(SystemSettings(key=key, value=encrypted))
-    db.commit()
+    encrypted = _cipher().encrypt(value.encode()).decode() if value else ""
+    _write(db, PORTAL_KEY, store_id, encrypted)
 
 
 # ---------------------------------------------------------------- 状态汇总

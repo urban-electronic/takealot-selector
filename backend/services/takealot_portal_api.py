@@ -118,7 +118,7 @@ def configured_token(db, store_id=None) -> str:
 
 
 def save_token(db, token: str, store_id=None) -> None:
-    """写入门户令牌。空串表示清除。
+    """写入门户令牌。空串写入撤销标记，阻止默认店回落旧令牌。
 
     加密复用卖家 API 那一套 `_cipher()`，但**不能**复用它的 `encrypt_key()`：
     那个函数要求 128 位十六进制（那是 marketplace API Key 的格式），而门户令牌

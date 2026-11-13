@@ -320,10 +320,19 @@ def test_late_response_for_store_a_still_reports_store_a(tmp_path, monkeypatch):
     _store_with_keys(factory)
     app = FastAPI()
 
+    started = asyncio.Event()
+    release = asyncio.Event()
+    completed = []
+
     @app.middleware('http')
     async def store_scope(request, call_next):
         creds.set_current_store(request.headers.get('X-Store-ID') or '')
-        return await call_next(request)
+        if creds.current_store() == STORE_A:
+            started.set()
+            await release.wait()
+        response = await call_next(request)
+        completed.append(creds.current_store())
+        return response
 
     @app.get('/probe')
     def probe():
@@ -333,12 +342,46 @@ def test_late_response_for_store_a_still_reports_store_a(tmp_path, monkeypatch):
     async def scenario():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
-            slow = client.get('/probe', headers={'X-Store-ID': STORE_A})
-            # A 还没回来就切到 B 再发一次
+            slow = asyncio.create_task(client.get('/probe', headers={'X-Store-ID': STORE_A}))
+            await asyncio.wait_for(started.wait(), timeout=2)
             fast = await client.get('/probe', headers={'X-Store-ID': STORE_B})
-            return await slow, fast
+            assert not slow.done()
+            release.set()
+            result = await asyncio.wait_for(slow, timeout=2)
+            assert completed == [STORE_B, STORE_A]
+            return result, fast
 
     slow_resp, fast_resp = asyncio.run(scenario())
     assert fast_resp.json() == {'store': STORE_B, 'key': KEY_B}
     # A 的响应仍然是 A 的，没有因为「当前店铺已经是 B」而被改写
     assert slow_resp.json() == {'store': STORE_A, 'key': KEY_A}
+
+@pytest.mark.parametrize('kind', ['seller', 'portal'])
+@pytest.mark.parametrize('replace_first', [False, True])
+def test_default_clear_revokes_legacy_fallback(env, kind, replace_first):
+    _, factory = env
+    from services.takealot_portal_api import _cipher
+    base = creds.SELLER_KEY if kind == 'seller' else creds.PORTAL_KEY
+    legacy = KEY_A if kind == 'seller' else TOKEN_A
+    with factory() as db:
+        encrypted = seller.encrypt_key(legacy) if kind == 'seller' else _cipher().encrypt(legacy.encode()).decode()
+        db.add(SystemSettings(key=base, value=encrypted)); db.commit()
+        if replace_first:
+            if kind == 'seller': creds.save_seller_api_key(db, STORE_A, KEY_B)
+            else: creds.save_portal_token(db, STORE_A, TOKEN_B)
+        if kind == 'seller': creds.clear_seller_api_key(db, STORE_A)
+        else: creds.save_portal_token(db, STORE_A, '')
+        read = creds.seller_api_key if kind == 'seller' else creds.portal_token
+        assert read(db, STORE_A) == ''
+        assert db.query(SystemSettings).filter(SystemSettings.key == base).first().value == encrypted
+        # Repeated clears stay revoked; explicit reconfiguration restores only this store.
+        if kind == 'seller':
+            creds.clear_seller_api_key(db, STORE_A)
+            assert read(db, STORE_A) == ''
+            creds.save_seller_api_key(db, STORE_A, KEY_B)
+            assert read(db, STORE_A) == KEY_B
+        else:
+            creds.save_portal_token(db, STORE_A, '')
+            assert read(db, STORE_A) == ''
+            creds.save_portal_token(db, STORE_A, TOKEN_B)
+            assert read(db, STORE_A) == TOKEN_B

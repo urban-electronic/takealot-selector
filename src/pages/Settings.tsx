@@ -36,7 +36,7 @@ export default function Settings() {
   const [sellerKeyBusy, setSellerKeyBusy] = useState(false);
   const [sellerKeyMsg, setSellerKeyMsg] = useState('');
   // 密钥本身看不出归属：把自营店铺的钥匙存到代运营 CK 名下，服务端照样收下，
-  // 界面上还显示「已配置」，但 CK 的数据一条也读不到。所以这里把当前店铺名
+  // 界面上还显示「已配置」，且可能读到错误店铺的数据。所以这里把当前店铺名
   // 显式摆出来，保存前再确认一次。
   const [activeStoreId, setActiveStoreIdState] = useState(() => getActiveStoreId());
   const [activeStoreLabel, setActiveStoreLabel] = useState('');
@@ -44,6 +44,12 @@ export default function Settings() {
   // —— 不报错、不闪烁，只是显示错的结论。所以按发起先后丢弃过期响应。
   const statusGate = useRef(createLatestGate()).current;
   const saveGate = useRef(createLatestGate()).current;
+  const identityGate = useRef(createLatestGate()).current;
+  const identitySaveGate = useRef(createLatestGate()).current;
+  const identitySaving = useRef(false);
+  const [identityStore, setIdentityStore] = useState<string | null>(null);
+  const identityReady = dataSource === 'remote' && identityStore === activeStoreId;
+
 
   // Fee mapping rule form
   const [rulePattern, setRulePattern] = useState('');
@@ -87,9 +93,25 @@ export default function Settings() {
 
   // 跟着左上角的店铺切换器走。切店时组件不卸载，不监听就一直是旧店铺的状态。
   useEffect(() => {
-    const onSwitch = () => setActiveStoreIdState(getActiveStoreId());
+    const onSwitch = () => {
+      statusGate.begin(); saveGate.begin(); identityGate.begin(); identitySaveGate.begin();
+      identitySaving.current = false;
+      setIdentity({ name: '', source: '', candidates: [] });
+      setIdentityDraft(''); setIdentityMsg(''); setIdentityStore(null); setIdentityBusy(false);
+      setSellerKeyDraft(''); setSellerKeyMsg(''); setSellerKeyBusy(false);
+      setActiveStoreLabel(getActiveStoreId());
+      setActiveStoreIdState(getActiveStoreId());
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'active_store_id' || event.key === null) onSwitch();
+    };
     window.addEventListener(ACTIVE_STORE_CHANGED, onSwitch);
-    return () => window.removeEventListener(ACTIVE_STORE_CHANGED, onSwitch);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(ACTIVE_STORE_CHANGED, onSwitch);
+      window.removeEventListener('storage', onStorage);
+      statusGate.begin(); saveGate.begin(); identityGate.begin(); identitySaveGate.begin();
+    };
   }, []);
 
   // 店铺 id → 店铺名，只为给人看。取不到就用 id 兜底，不显示空。
@@ -126,6 +148,7 @@ export default function Settings() {
   // 已配置的店铺走 PUT（替换），未配置走 POST（首次）。
   // 分开是后端定的：POST 配过就 409，不允许覆盖，避免误操作把好钥匙冲掉。
   const handleSaveSellerKey = async () => {
+    if (activeStoreId !== getActiveStoreId()) return;
     const value = sellerKeyDraft.trim();
     if (!value) return;
     // 本地先拦一道：Takealot 卖家密钥固定 128 位十六进制。
@@ -139,10 +162,10 @@ export default function Settings() {
     const label = activeStoreLabel || activeStoreId;
     const ok = window.confirm(
       `即将把密钥保存到店铺「${label}」。\n\n` +
-      `密钥看不出归属：存错店铺不会报任何错，只会读不到那家店的数据。\n` +
+      `密钥看不出归属：存错店铺不会报任何错，可能读取错误店铺的数据。\n` +
       `请先确认左上角当前切换的就是「${label}」。\n\n继续保存？`
     );
-    if (!ok) return;
+    if (!ok || activeStoreId !== getActiveStoreId()) return;
     const token = saveGate.begin();
     setSellerKeyBusy(true); setSellerKeyMsg('');
     try {
@@ -157,39 +180,55 @@ export default function Settings() {
       if (!saveGate.isLatest(token)) return;
       setSellerKeyMsg(`保存失败：${(e as Error).message}`);
     } finally {
-      setSellerKeyBusy(false);
+      if (saveGate.isLatest(token)) setSellerKeyBusy(false);
     }
   };
 
   const loadIdentity = async () => {
+    const store = getActiveStoreId();
+    const token = identityGate.begin();
     try {
       const value = await getSellerIdentity();
+      if (!identityGate.isLatest(token) || store !== getActiveStoreId()) return;
       setIdentity(value);
       setIdentityDraft(value.name || '');
+      setIdentityStore(store);
     } catch {
-      // 身份读不到不影响其它设置；调价那边会显示「待核实卖家名」。
+      if (!identityGate.isLatest(token) || store !== getActiveStoreId()) return;
+      setIdentityStore(null);
+      setIdentityMsg('卖家身份读取失败，请重新读取后再保存。');
     }
   };
 
   useEffect(() => {
+    identityGate.begin(); identitySaveGate.begin();
+    identitySaving.current = false;
+    setIdentity({ name: '', source: '', candidates: [] });
+    setIdentityDraft(''); setIdentityMsg(''); setIdentityStore(null); setIdentityBusy(false);
     if (dataSource === 'remote') void loadIdentity();
+    return () => { identityGate.begin(); identitySaveGate.begin(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataSource, activeStoreId]);
 
-  // 确认本店身份应该是一步操作。候选已经在库里了，让人照着抄一遍名字
-  // 是把「严谨」变成了「麻烦」——麻烦的结果就是不填，调价就一直停着。
   const saveIdentity = async (name: string) => {
+    const store = getActiveStoreId();
+    if (!identityReady || identityStore !== store || identitySaving.current) return;
+    identitySaving.current = true;
+    const token = identitySaveGate.begin();
+    identityGate.begin(); // Reads begun before this mutation may not overwrite it.
+    const current = () => identitySaveGate.isLatest(token) && store === getActiveStoreId();
     setIdentityBusy(true); setIdentityMsg('');
     try {
       const value = await setSellerIdentity(name);
+      if (!current()) return;
       setIdentity((prev) => ({ ...prev, name: value.name, source: value.source }));
       setIdentityDraft(value.name);
       setIdentityMsg(value.name ? `已确认「${value.name}」，按此核实持位。` : '已清除，持位身份待确认。');
       void loadIdentity();
     } catch (e) {
-      setIdentityMsg(`保存失败：${(e as Error).message}`);
+      if (current()) setIdentityMsg(`保存失败：${(e as Error).message}`);
     } finally {
-      setIdentityBusy(false);
+      if (current()) { identitySaving.current = false; setIdentityBusy(false); }
     }
   };
   const handleSaveIdentity = () => saveIdentity(identityDraft.trim());
@@ -366,6 +405,7 @@ export default function Settings() {
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="填写后端 API Key（未设置鉴权可留空）"
               style={{ flex: 1, maxWidth: 400 }}
+              aria-label="后端 API Key"
               type="password"
             />
           </div>
@@ -401,6 +441,7 @@ export default function Settings() {
               onChange={(e) => setSellerKeyDraft(e.target.value)}
               placeholder="粘贴该店铺的 128 位卖家 API 密钥"
               style={{ flex: 1, maxWidth: 400 }}
+              aria-label="当前店铺卖家 API 密钥"
               type="password"
               autoComplete="off"
             />
@@ -416,7 +457,7 @@ export default function Settings() {
           <p>
             密钥只在服务端加密保存，界面上不会回显。已配置的店铺可用同一个入口替换。
             <br />
-            注意：密钥本身不携带店铺信息，存错店铺时系统<b>不会报错</b>，只会读不到那家店的数据 —— 保存前请核对上面这个店铺名。
+            注意：密钥本身不携带店铺信息，存错店铺时系统<b>不会报错</b>，可能读取错误店铺的数据 —— 保存前请核对上面这个店铺名。
           </p>
         </section>
       )}
@@ -441,7 +482,7 @@ export default function Settings() {
                   key={c.name}
                   type="button"
                   className="btn btn-outline btn-sm"
-                  disabled={identityBusy || dataSource !== 'remote' || identity.name === c.name}
+                  disabled={identityBusy || !identityReady || identity.name === c.name}
                   title={`把「${c.name}」确认为本店卖家名`}
                   onClick={() => saveIdentity(c.name)}
                 >
@@ -450,17 +491,19 @@ export default function Settings() {
               ))}
             </div>
           )}
+          <button className="btn btn-outline btn-sm" disabled={identityBusy || dataSource !== 'remote'} onClick={loadIdentity}>重新读取卖家名</button>
           {identityMsg && <p role="status" style={{ fontSize: 12, color: 'var(--text-body)' }}>{identityMsg}</p>}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <input
             aria-label="本店卖家名"
+            disabled={identityBusy || !identityReady}
             value={identityDraft}
             onChange={(e) => setIdentityDraft(e.target.value)}
             placeholder={identity.name || '例如 Urban Electronics'}
             style={{ flex: 1, minWidth: 200, maxWidth: 320 }}
           />
-          <button className="btn btn-primary btn-sm" disabled={identityBusy || dataSource !== 'remote'} onClick={handleSaveIdentity}>
+          <button className="btn btn-primary btn-sm" disabled={identityBusy || !identityReady} onClick={handleSaveIdentity}>
             {identityBusy ? '保存中…' : '保存'}
           </button>
         </div>
