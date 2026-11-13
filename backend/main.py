@@ -84,6 +84,19 @@ def _cors_headers(request: Request) -> dict:
 
 @app.middleware("http")
 async def api_key_check(request: Request, call_next):
+    # 多店铺作用域（STORE-CRED-01）：把 X-Store-ID 写进 ContextVar，
+    # 下游的 configured_key / configured_token 就能按店取凭据。
+    #
+    # 必须在这个 async 中间件里设，**不能**放进同步依赖 get_store_id：
+    # 同步依赖跑在线程池，run_in_threadpool 复制 context，在里面设的值
+    # 只影响那份副本，返回后就丢了，路由拿不到。
+    # 常驻后台线程没有请求 context，读到默认值 DEFAULT_STORE_ID —— 符合预期。
+    try:
+        from services.store_credentials import set_current_store
+        set_current_store(request.headers.get("X-Store-ID") or "")
+    except Exception:
+        # 凭据层异常不能影响鉴权主流程
+        pass
     # CORS 预检（OPTIONS）不带 X-API-Key，必须放行交给 CORSMiddleware 处理，
     # 否则浏览器跨域请求 preflight 401 导致 "Failed to fetch"
     if request.method == "OPTIONS":
