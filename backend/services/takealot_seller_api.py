@@ -62,15 +62,15 @@ def encrypt_key(key):
     return _cipher().encrypt(key.encode()).decode()
 
 
-def configured_key(db):
-    from models import SystemSettings
-    row = db.query(SystemSettings).filter(SystemSettings.key == SECRET_SETTING).first()
-    if not row:
-        return ''
-    try:
-        return _cipher().decrypt(row.value.encode()).decode()
-    except (InvalidToken, ValueError):
-        return ''
+def configured_key(db, store_id=None):
+    """当前店铺的卖家 API 密钥（解密后）。没配过返回空串。
+
+    多店铺（STORE-CRED-01）：store_id 为空时按请求作用域解析
+    （见 services/store_credentials.py）。默认店铺回落旧的全局键，
+    存量部署零回归，旧键不删不改写。
+    """
+    from services import store_credentials
+    return store_credentials.seller_api_key(db, store_id)
 
 
 def seller_api_reason(status):

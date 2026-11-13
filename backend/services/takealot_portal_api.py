@@ -107,41 +107,28 @@ def _cipher():
     return seller_cipher()
 
 
-def configured_token(db) -> str:
-    """读取已保存的门户令牌；没配过返回空串。"""
-    from models import SystemSettings
+def configured_token(db, store_id=None) -> str:
+    """读取当前店铺已保存的门户令牌；没配过返回空串。
 
-    row = db.query(SystemSettings).filter(SystemSettings.key == SETTING_KEY).first()
-    if not row or not row.value:
-        return ""
-    try:
-        return _cipher().decrypt(row.value.encode()).decode()
-    except Exception:
-        return ""
+    多店铺（STORE-CRED-01）：store_id 为空时按请求作用域解析
+    （见 services/store_credentials.py）。默认店铺回落旧的全局键。
+    """
+    from services import store_credentials
+    return store_credentials.portal_token(db, store_id)
 
 
-def save_token(db, token: str) -> None:
+def save_token(db, token: str, store_id=None) -> None:
     """写入门户令牌。空串表示清除。
 
     加密复用卖家 API 那一套 `_cipher()`，但**不能**复用它的 `encrypt_key()`：
     那个函数要求 128 位十六进制（那是 marketplace API Key 的格式），而门户令牌
     是 JWT，直接塞进去会被它挡下来。
-    """
-    from models import SystemSettings
 
-    value = (token or "").strip()
-    row = db.query(SystemSettings).filter(SystemSettings.key == SETTING_KEY).first()
-    if not value:
-        if row:
-            db.delete(row)
-            db.commit()
-        return
-    encrypted = _cipher().encrypt(value.encode()).decode()
-    if row:
-        row.value = encrypted
-    else:
-        db.add(SystemSettings(key=SETTING_KEY, value=encrypted))
-    db.commit()
+    多店铺（STORE-CRED-01）：按 store_id 或请求作用域落到 `<键>:<store_id>`，
+    两个店铺的令牌互不覆盖。
+    """
+    from services import store_credentials
+    store_credentials.save_portal_token(db, store_id, token)
 
 
 def _jwt_payload(token: str) -> Dict[str, Any]:
@@ -160,9 +147,9 @@ def token_expiry(token: str) -> Optional[int]:
     return int(exp) if isinstance(exp, (int, float)) else None
 
 
-def token_state(db) -> Dict[str, Any]:
+def token_state(db, store_id=None) -> Dict[str, Any]:
     """给前端看的令牌状态。不返回令牌本身。"""
-    token = configured_token(db)
+    token = configured_token(db, store_id)
     if not token:
         return {"configured": False, "expires_at": None, "expired": False, "days_left": None}
     expires_at = token_expiry(token)

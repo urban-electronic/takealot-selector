@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi, useDataSource, isTauri } from '../DataSourceContext';
 import type { FeeCategory, FeeMappingRule } from '../types';
-import { getSellerApiStatus, getSellerIdentity, setSellerIdentity } from '../remoteApi';
+import { getSellerApiStatus, getSellerIdentity, setSellerIdentity, setupSellerApi, replaceSellerApi, getStores, getActiveStoreId, ACTIVE_STORE_CHANGED } from '../remoteApi';
 import { buildExportPayload } from '../utils/exportPayload';
+import { createLatestGate } from '../utils/latestGate';
 
 export default function Settings() {
   const api = useApi();
@@ -30,6 +31,19 @@ export default function Settings() {
   const [identityDraft, setIdentityDraft] = useState('');
   const [identityBusy, setIdentityBusy] = useState(false);
   const [identityMsg, setIdentityMsg] = useState('');
+  // 卖家 API 密钥按店铺保存：切到哪个店铺，这里写进的就是哪个店铺。
+  const [sellerKeyDraft, setSellerKeyDraft] = useState('');
+  const [sellerKeyBusy, setSellerKeyBusy] = useState(false);
+  const [sellerKeyMsg, setSellerKeyMsg] = useState('');
+  // 密钥本身看不出归属：把自营店铺的钥匙存到代运营 CK 名下，服务端照样收下，
+  // 界面上还显示「已配置」，但 CK 的数据一条也读不到。所以这里把当前店铺名
+  // 显式摆出来，保存前再确认一次。
+  const [activeStoreId, setActiveStoreIdState] = useState(() => getActiveStoreId());
+  const [activeStoreLabel, setActiveStoreLabel] = useState('');
+  // 切店铺时上一家店的请求可能还在飞。晚到的旧响应会把新店铺的状态刷成旧店铺的
+  // —— 不报错、不闪烁，只是显示错的结论。所以按发起先后丢弃过期响应。
+  const statusGate = useRef(createLatestGate()).current;
+  const saveGate = useRef(createLatestGate()).current;
 
   // Fee mapping rule form
   const [rulePattern, setRulePattern] = useState('');
@@ -59,22 +73,93 @@ export default function Settings() {
   }, []);
 
   const refreshSellerApiStatus = async () => {
+    const token = statusGate.begin();
     setSellerApiStatus('checking');
     try {
       const status = await getSellerApiStatus();
+      if (!statusGate.isLatest(token)) return; // 切店前发出的，丢弃
       setSellerApiStatus(status.configured ? 'configured' : 'missing');
     } catch {
+      if (!statusGate.isLatest(token)) return;
       setSellerApiStatus('unavailable');
     }
   };
+
+  // 跟着左上角的店铺切换器走。切店时组件不卸载，不监听就一直是旧店铺的状态。
+  useEffect(() => {
+    const onSwitch = () => setActiveStoreIdState(getActiveStoreId());
+    window.addEventListener(ACTIVE_STORE_CHANGED, onSwitch);
+    return () => window.removeEventListener(ACTIVE_STORE_CHANGED, onSwitch);
+  }, []);
+
+  // 店铺 id → 店铺名，只为给人看。取不到就用 id 兜底，不显示空。
+  useEffect(() => {
+    let alive = true;
+    if (dataSource !== 'remote') {
+      setActiveStoreLabel('');
+      return () => { alive = false; };
+    }
+    getStores()
+      .then((stores) => {
+        if (!alive) return;
+        const hit = stores.find((s) => s.id === activeStoreId);
+        setActiveStoreLabel(hit?.name || activeStoreId);
+      })
+      .catch(() => { if (alive) setActiveStoreLabel(activeStoreId); });
+    return () => { alive = false; };
+  }, [dataSource, activeStoreId]);
 
   useEffect(() => {
     if (dataSource !== 'remote') {
       setSellerApiStatus('local');
       return;
     }
+    // 换店铺时清掉上一次的输入和提示，否则会把 A 店的密钥显示在 B 店下面
+    setSellerKeyDraft('');
+    setSellerKeyMsg('');
+    // 让换店前发起的保存作废：它写的是上一家店，结果不该落到这张卡片上
+    saveGate.begin();
     void refreshSellerApiStatus();
-  }, [dataSource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataSource, activeStoreId]);
+
+  // 已配置的店铺走 PUT（替换），未配置走 POST（首次）。
+  // 分开是后端定的：POST 配过就 409，不允许覆盖，避免误操作把好钥匙冲掉。
+  const handleSaveSellerKey = async () => {
+    const value = sellerKeyDraft.trim();
+    if (!value) return;
+    // 本地先拦一道：Takealot 卖家密钥固定 128 位十六进制。
+    // 位数不对就说明粘错了东西（门户令牌、SKU、半截复制），不必等服务端 400。
+    if (!/^[a-fA-F0-9]{128}$/.test(value)) {
+      setSellerKeyMsg(
+        `格式不对：卖家 API 密钥是 128 位十六进制，当前 ${value.length} 位。请确认复制的是「卖家 API 密钥」，不是门户令牌或别的串。`
+      );
+      return;
+    }
+    const label = activeStoreLabel || activeStoreId;
+    const ok = window.confirm(
+      `即将把密钥保存到店铺「${label}」。\n\n` +
+      `密钥看不出归属：存错店铺不会报任何错，只会读不到那家店的数据。\n` +
+      `请先确认左上角当前切换的就是「${label}」。\n\n继续保存？`
+    );
+    if (!ok) return;
+    const token = saveGate.begin();
+    setSellerKeyBusy(true); setSellerKeyMsg('');
+    try {
+      if (sellerApiStatus === 'configured') await replaceSellerApi(value);
+      else await setupSellerApi(value);
+      // 保存期间切了店铺：这次写入落在上一家店，别把提示打到新店铺的卡片上
+      if (!saveGate.isLatest(token)) return;
+      setSellerKeyDraft('');
+      setSellerKeyMsg(`已保存到「${label}」。`);
+      await refreshSellerApiStatus();
+    } catch (e) {
+      if (!saveGate.isLatest(token)) return;
+      setSellerKeyMsg(`保存失败：${(e as Error).message}`);
+    } finally {
+      setSellerKeyBusy(false);
+    }
+  };
 
   const loadIdentity = async () => {
     try {
@@ -88,7 +173,8 @@ export default function Settings() {
 
   useEffect(() => {
     if (dataSource === 'remote') void loadIdentity();
-  }, [dataSource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataSource, activeStoreId]);
 
   // 确认本店身份应该是一步操作。候选已经在库里了，让人照着抄一遍名字
   // 是把「严谨」变成了「麻烦」——麻烦的结果就是不填，调价就一直停着。
@@ -290,7 +376,7 @@ export default function Settings() {
       <section className="card integration-status-card" aria-live="polite">
         <div className="integration-status-copy">
           <div className="card-title">Takealot 本店资料 API</div>
-          <p>用于读取默认主店的商品资料和报价，帮助核对、补齐选品信息；密钥已配置不代表接口实时可用。</p>
+          <p>用于读取<strong>当前店铺</strong>的商品资料和报价，帮助核对、补齐选品信息；密钥已配置不代表接口实时可用。</p>
         </div>
         <span className={`integration-status-badge ${sellerApiStatus}`}>
           <i aria-hidden="true" />
@@ -298,6 +384,42 @@ export default function Settings() {
         </span>
         <button className="btn btn-outline btn-sm" disabled={dataSource !== 'remote' || sellerApiStatus === 'checking'} onClick={refreshSellerApiStatus}>重新检查</button>
       </section>
+
+      {dataSource === 'remote' && (
+        <section className="card">
+          <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            当前店铺的卖家 API 密钥
+            <span className="integration-status-badge" title={`store_id: ${activeStoreId}`}>
+              <i aria-hidden="true" />
+              将保存到：{activeStoreLabel || activeStoreId}
+            </span>
+          </div>
+          <p>密钥跟着左上角切换的店铺走：切到哪个店铺，写进去的就是哪个店铺，互不影响。</p>
+          <div className="settings-connection-row">
+            <input
+              value={sellerKeyDraft}
+              onChange={(e) => setSellerKeyDraft(e.target.value)}
+              placeholder="粘贴该店铺的 128 位卖家 API 密钥"
+              style={{ flex: 1, maxWidth: 400 }}
+              type="password"
+              autoComplete="off"
+            />
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveSellerKey}
+              disabled={sellerKeyBusy || !sellerKeyDraft.trim()}
+            >
+              {sellerKeyBusy ? '保存中...' : sellerApiStatus === 'configured' ? '替换密钥' : '保存密钥'}
+            </button>
+          </div>
+          {sellerKeyMsg && <p>{sellerKeyMsg}</p>}
+          <p>
+            密钥只在服务端加密保存，界面上不会回显。已配置的店铺可用同一个入口替换。
+            <br />
+            注意：密钥本身不携带店铺信息，存错店铺时系统<b>不会报错</b>，只会读不到那家店的数据 —— 保存前请核对上面这个店铺名。
+          </p>
+        </section>
+      )}
 
       <section className="card integration-status-card" aria-live="polite">
         <div className="integration-status-copy">

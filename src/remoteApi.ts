@@ -55,8 +55,15 @@ export const getActiveStoreId = (): string => {
   catch { return 'default-store'; }
 };
 
+/** 店铺切换事件名。localStorage 的 storage 事件不会在同一标签页里触发，
+ *  所以自己派发一个，让设置页这类「内容跟店铺强相关」的页面能当场反应。 */
+export const ACTIVE_STORE_CHANGED = 'active-store-changed';
+
 export const setActiveStoreId = (storeId: string): void => {
   try { localStorage.setItem('active_store_id', storeId); } catch { /* ignore */ }
+  try {
+    window.dispatchEvent(new CustomEvent<string>(ACTIVE_STORE_CHANGED, { detail: storeId }));
+  } catch { /* ignore */ }
 };
 
 export interface ListingPayload {
@@ -179,6 +186,19 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
 export interface SellerApiStatus { configured: boolean; mode: 'product_read_only' }
 export const getSellerApiStatus = (): Promise<SellerApiStatus> =>
   request<SellerApiStatus>('/api/integrations/takealot-seller/status');
+
+// 卖家 API 密钥按店铺保存：请求带 X-Store-ID，写进的就是当前店铺。
+// POST 是首次配置（已配置会 409），PUT 是替换——填错了必须能改。
+export const setupSellerApi = (apiKey: string): Promise<{ configured: boolean }> =>
+  request<{ configured: boolean }>('/api/integrations/takealot-seller', {
+    method: 'POST',
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+export const replaceSellerApi = (apiKey: string): Promise<{ configured: boolean }> =>
+  request<{ configured: boolean }>('/api/integrations/takealot-seller', {
+    method: 'PUT',
+    body: JSON.stringify({ api_key: apiKey }),
+  });
 
 // 本店在 Takealot 的卖家名：调价判断「Buybox 是不是自己在持位」的唯一依据。
 // 只比价格会把对手同价持位误判成本店持位，方向一反就是赔钱。
