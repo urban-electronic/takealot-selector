@@ -247,12 +247,12 @@ def call_route(db, offers, path='/api/products/seller-sync/preview', token=None,
     product_routes._seller_offers = _fake_offers(offers)
     request = SimpleNamespace(url=SimpleNamespace(path=path))
     # 保留回退核实后范围规则的隔离验证；默认生产写入口另有暂停断言。
-    with patch('services.seller_catalog_sync.SELLER_SYNC_WRITE_PAUSED', False):
+    with patch.object(product_routes, '_seller_offers', _fake_offers(offers)), patch('services.seller_catalog_sync.SELLER_SYNC_WRITE_PAUSED', False):
         return asyncio.run(seller_sync(SellerSyncRequest(token=token, plids=plids), request, db=db, store_id=STORE))
 
 
 def _fake_offers(offers):
-    async def loader(db):
+    async def loader(db, store_id):
         return offers
     return loader
 
@@ -448,7 +448,7 @@ def test_internal_create_price_still_invalidates_legacy_plan(db):
 
 
 def test_seller_sync_write_pause_blocks_before_seller_read(db, monkeypatch):
-    async def forbidden(db): pytest.fail('paused write must not read seller data')
+    async def forbidden(db, store_id): pytest.fail('paused write must not read seller data')
     monkeypatch.setattr(product_routes, '_seller_offers', forbidden)
     request = SimpleNamespace(url=SimpleNamespace(path='/api/products/seller-sync/apply'))
     with pytest.raises(HTTPException) as error:
@@ -467,3 +467,17 @@ def test_october_scope_skips_missing_local_creation_time(db):
     plan = build_plan(db, STORE, [offer('7','777','unsafe')], existing_since=datetime(2026,9,30,16))
     assert not plan['updates'] and not plan['creates']
     assert plan['skipped'][0]['plid'] == '777'
+
+
+def test_seller_offers_use_explicit_store_credentials(db, monkeypatch):
+    from services import takealot_seller_api
+
+    keys = {"palace": "test-palace", "default-store": "test-default"}
+    monkeypatch.setattr(takealot_seller_api, "configured_key", lambda db, store_id: keys.get(store_id))
+    monkeypatch.setattr(takealot_seller_api, "_load_offers", lambda key: [{"sku": key}])
+
+    assert asyncio.run(product_routes._seller_offers(db, "palace")) == [{"sku": "test-palace"}]
+    assert asyncio.run(product_routes._seller_offers(db, "default-store")) == [{"sku": "test-default"}]
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(product_routes._seller_offers(db, "unconfigured"))
+    assert error.value.status_code == 400
