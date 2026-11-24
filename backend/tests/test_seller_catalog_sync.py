@@ -480,3 +480,37 @@ def test_seller_offers_use_explicit_store_credentials(db, monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(product_routes._seller_offers(db, "unconfigured"))
     assert error.value.status_code == 400
+
+
+def test_create_only_applies_named_missing_products_during_update_pause(db, monkeypatch):
+    other = "palace"
+    db.add(Store(id=other, name="Palace", status="active"))
+    add(db, plid="701", sku="existing")
+    db.add(Product(id="other-702", store_id=other, plid="702", sku="new"))
+    db.commit()
+    monkeypatch.setattr(product_routes, "_seller_offers", _fake_offers([
+        offer("11", "701", "changed"), offer("12", "702", "new"), offer("13", "703", "out-of-scope")
+    ]))
+
+    def run(path, token=None, store_id=STORE, plids=("701", "702")):
+        request = SimpleNamespace(url=SimpleNamespace(path=path))
+        return asyncio.run(seller_sync(SellerSyncRequest(
+            token=token, plids=list(plids), create_only=True
+        ), request, db=db, store_id=store_id))
+
+    with pytest.raises(HTTPException) as missing_scope:
+        run("/preview", plids=())
+    assert missing_scope.value.status_code == 422
+    plan = run("/preview")
+    assert [item["plid"] for item in plan["creates"]] == ["702"]
+    assert plan["updates"] == []
+    with pytest.raises(HTTPException) as wrong_store:
+        run("/apply", plan["token"], store_id=other)
+    assert wrong_store.value.status_code == 409
+    assert run("/apply", plan["token"])["applied"]["created"] == 1
+    assert db.query(Product).filter_by(store_id=STORE, plid="701").one().sku == "existing"
+    assert db.query(Product).filter_by(store_id=other).count() == 1
+    assert db.query(Product).filter_by(store_id=STORE, plid="703").count() == 0
+    with pytest.raises(HTTPException) as replay:
+        run("/apply", plan["token"])
+    assert replay.value.status_code == 409
