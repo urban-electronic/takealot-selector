@@ -66,7 +66,7 @@ def offers(monkeypatch):
         # 卖家后台有、本地没有
         offer('111111111', '111111111', 'W-LACE-20', title='未导入的假发'),
     ]
-    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db: 'k' * 128)
+    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db, store_id: 'k' * 128)
     monkeypatch.setattr(takealot_seller_api, '_load_offers', lambda key: rows)
     return rows
 
@@ -152,7 +152,7 @@ def test_archived_local_products_are_ignored(db, offers):
 # --- 读不到的时候要能归因 -------------------------------------------------
 
 def test_missing_key_says_not_configured(db, monkeypatch):
-    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db: '')
+    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db, store_id: '')
     with pytest.raises(HTTPException) as caught:
         call(db)
     assert caught.value.status_code == 400
@@ -161,7 +161,7 @@ def test_missing_key_says_not_configured(db, monkeypatch):
 
 def test_load_failure_keeps_the_actionable_reason(db, monkeypatch):
     """401 要指向「检查密钥」，不能退化成一句「暂时无法读取」。"""
-    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db: 'k' * 128)
+    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db, store_id: 'k' * 128)
 
     def boom(key):
         raise ValueError('卖家接口暂时不可用（HTTP 401，卖家接口密钥无效或无权限），已暂停请求，请先检查卖家 API 密钥')
@@ -173,7 +173,8 @@ def test_load_failure_keeps_the_actionable_reason(db, monkeypatch):
     assert '检查卖家 API 密钥' in caught.value.detail
 
 
-def test_other_store_is_refused(db, offers):
+def test_other_store_without_its_own_key_is_refused(db, offers, monkeypatch):
+    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db, store_id: 'fixture' if store_id == STORE else '')
     with pytest.raises(HTTPException) as caught:
         call(db, store_id='other-store')
     assert caught.value.status_code == 400
@@ -208,7 +209,7 @@ def test_coverage_is_read_only(db, offers):
 
 def test_coverage_timeout_returns_actionable_error_without_retry(db, monkeypatch):
     import api.product_routes as routes
-    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db: 'fixture')
+    monkeypatch.setattr(takealot_seller_api, 'configured_key', lambda db, store_id: 'fixture')
     calls=[]
     async def timeout(awaitable, timeout):
         calls.append(timeout)
