@@ -656,6 +656,7 @@ async def seller_coverage(
 
 class SellerSyncRequest(BaseModel):
     token: Optional[str] = None
+    create_only: bool = False
     # 只同步指定 PLID。整库同步会把卖家后台 480+ 个商品一次性灌进选品库，
     # 而用户常常只关心其中几条（例如刚改过 SKU 的那几个），所以留一个收窄口径。
     plids: Optional[List[str]] = None
@@ -676,7 +677,7 @@ async def _seller_offers(db: Session, store_id: str) -> List[Dict[str, Any]]:
 @router.post('/seller-sync/preview')
 @router.post('/seller-sync/apply')
 async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
-    """卖家同步仅提供限定范围的只读预览；上一批回退核实前暂停写入。
+    """卖家同步支持指定 PLID 的仅新增模式。常规更新仍暂停写入。
 
     这是用户明确要的那个动作——「你接入卖家后台这样去找，而且是在产品里面修改，
     在产品列表中显示」。所以这里只改主档数据，不改展示方式：同步完，商品就是
@@ -686,9 +687,13 @@ async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = D
     计划，预览与写入之间只要本地商品或卖家资料变了，apply 就会被拒。
     """
     from services.seller_catalog_sync import SellerSyncConflict, apply_plan, build_plan, SYNC_EXISTING_SINCE, SELLER_SYNC_WRITE_PAUSED
-    if request.url.path.endswith('/apply') and SELLER_SYNC_WRITE_PAUSED:
+    if data.create_only and (not data.plids or len(data.plids) > 200
+                             or any(not p.isascii() or not p.isdecimal() for p in data.plids)):
+        raise HTTPException(422, '仅新增同步必须明确指定有效的 PLID')
+    if request.url.path.endswith('/apply') and SELLER_SYNC_WRITE_PAUSED and not data.create_only:
         raise HTTPException(409, '卖家同步写入已暂停：需先核对并回退上一批同步，请勿重复确认')
-    plan = build_plan(db, store_id, await _seller_offers(db, store_id), plids=data.plids, existing_since=SYNC_EXISTING_SINCE)
+    plan = build_plan(db, store_id, await _seller_offers(db, store_id), plids=data.plids, existing_since=None if data.create_only else SYNC_EXISTING_SINCE,
+                      create_only=data.create_only)
     applied = None
     if request.url.path.endswith('/apply'):
         if not data.token or data.token != plan['token']:
