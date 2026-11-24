@@ -34,7 +34,7 @@ def test_ambiguous_dimensions_are_not_filled():
 
 def test_apply_stale_preview_store_scope_and_cost_preservation(monkeypatch):
     import services.takealot_seller_api as service
-    monkeypatch.setattr(service, 'configured_key', lambda db: 'test')
+    monkeypatch.setattr(service, 'configured_key', lambda db, store_id: 'test')
     monkeypatch.setattr(service, '_load_offers', lambda key: [offer()])
     engine = create_engine('sqlite://'); Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as db:
@@ -67,7 +67,7 @@ def test_unreadable_offers_report_the_cause(monkeypatch):
     def boom(key):
         raise ValueError('卖家接口暂时不可用（HTTP 429，上游限流，稍后自动重试），已暂停请求，请稍后再试')
 
-    monkeypatch.setattr(service, 'configured_key', lambda db: 'test')
+    monkeypatch.setattr(service, 'configured_key', lambda db, store_id: 'test')
     monkeypatch.setattr(service, '_load_offers', boom)
     engine = create_engine('sqlite://'); Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as db:
