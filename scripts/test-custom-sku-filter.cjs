@@ -56,7 +56,7 @@ const checks = [
   [backend, /@router\.post\('\/seller-sync\/apply'\)/, '后端要有同步写入接口'],
   [backend, /data\.token != plan\['token'\]/, 'apply 要校验 token，预览之后本地变了必须重来'],
   [syncService, /def build_plan\(db, store_id: str, offers: List\[Dict\[str, Any\]\],/, '计划要由卖家资料和本地主档现算'],
-  [backend, /build_plan\(db, store_id, await _seller_offers\(db, store_id\), plids=data\.plids, existing_since=SYNC_EXISTING_SINCE\)/, '「只同步点名的 PLID」要真的传进计划，否则收窄会静默变成整库写入'],
+  [backend, /build_plan\(db, store_id, await _seller_offers\(db, store_id\), plids=data\.plids, existing_since=None if data\.create_only else SYNC_EXISTING_SINCE,\s*create_only=data\.create_only\)/, '「只同步点名的 PLID」要真的传进计划，否则收窄会静默变成整库写入'],
   [syncService, /if _ambiguous\(plid, rows, indexes\):/, '命中多条本地记录时不能动'],
   [syncService, /if not payload\['product_name'\]:/, '没标题的卖家行不新建'],
   // 抓取走公开商品页，SKU 是卖家后台私有字段，公开页不返回。创建页必须把这件事
