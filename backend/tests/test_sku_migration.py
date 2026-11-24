@@ -204,7 +204,7 @@ def test_apply_route_renames_sku_and_migrates_downstream(monkeypatch):
     import services.takealot_seller_api as service
     from api.product_routes import AssistRequest, seller_assist
 
-    monkeypatch.setattr(service, 'configured_key', lambda db: 'test')
+    monkeypatch.setattr(service, 'configured_key', lambda db, store_id: 'test')
     monkeypatch.setattr(service, '_load_offers', lambda key: [offer('NEW-SKU')])
     request = lambda path: SimpleNamespace(url=SimpleNamespace(path=path))
 
@@ -232,7 +232,7 @@ def test_apply_route_refuses_rename_when_new_sku_belongs_to_another_product(monk
     import services.takealot_seller_api as service
     from api.product_routes import AssistRequest, seller_assist
 
-    monkeypatch.setattr(service, 'configured_key', lambda db: 'test')
+    monkeypatch.setattr(service, 'configured_key', lambda db, store_id: 'test')
     monkeypatch.setattr(service, '_load_offers', lambda key: [offer('NEW-SKU')])
     request = lambda path: SimpleNamespace(url=SimpleNamespace(path=path))
 
@@ -251,7 +251,7 @@ def test_apply_conflicting_packing_identity_rolls_back_every_change(monkeypatch)
     from fastapi import HTTPException
     import services.takealot_seller_api as service
     from api.product_routes import AssistRequest, seller_assist
-    monkeypatch.setattr(service, 'configured_key', lambda db: 'fixture')
+    monkeypatch.setattr(service, 'configured_key', lambda db, store_id: 'fixture')
     monkeypatch.setattr(service, '_load_offers', lambda key: [offer('NEW-SKU')])
     request=lambda path:SimpleNamespace(url=SimpleNamespace(path=path))
     with fresh_db() as db:

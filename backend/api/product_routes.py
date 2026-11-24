@@ -316,9 +316,7 @@ class AssistRequest(BaseModel):
 @router.post('/seller-assist/apply')
 def seller_assist(data: AssistRequest, request: Request, db: Session = Depends(get_db), store_id: str = Depends(get_store_id)):
     from services.takealot_seller_api import configured_key, _load_offers, offer_plan
-    if store_id != 'default-store':
-        raise HTTPException(400, '当前店铺尚未接入卖家资料')
-    key = configured_key(db)
+    key = configured_key(db, store_id)
     if not key:
         raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
     try:
@@ -521,9 +519,7 @@ async def seller_coverage(
     只读：不写任何数据，也不回传密钥本身。
     """
     from services.takealot_seller_api import configured_key, _load_offers
-    if store_id != 'default-store':
-        raise HTTPException(400, '当前店铺尚未接入卖家资料')
-    key = configured_key(db)
+    key = configured_key(db, store_id)
     if not key:
         raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
     try:
@@ -665,10 +661,10 @@ class SellerSyncRequest(BaseModel):
     plids: Optional[List[str]] = None
 
 
-async def _seller_offers(db: Session) -> List[Dict[str, Any]]:
+async def _seller_offers(db: Session, store_id: str) -> List[Dict[str, Any]]:
     """读一次卖家资料。45 秒预算小于前端 90 秒，超时是「没读完」而不是「没商品」。"""
     from services.takealot_seller_api import configured_key, _load_offers
-    key = configured_key(db)
+    key = configured_key(db, store_id)
     if not key:
         raise HTTPException(400, '卖家资料尚未接入，请联系管理员')
     try:
@@ -690,11 +686,9 @@ async def seller_sync(data: SellerSyncRequest, request: Request, db: Session = D
     计划，预览与写入之间只要本地商品或卖家资料变了，apply 就会被拒。
     """
     from services.seller_catalog_sync import SellerSyncConflict, apply_plan, build_plan, SYNC_EXISTING_SINCE, SELLER_SYNC_WRITE_PAUSED
-    if store_id != 'default-store':
-        raise HTTPException(400, '当前店铺尚未接入卖家资料')
     if request.url.path.endswith('/apply') and SELLER_SYNC_WRITE_PAUSED:
         raise HTTPException(409, '卖家同步写入已暂停：需先核对并回退上一批同步，请勿重复确认')
-    plan = build_plan(db, store_id, await _seller_offers(db), plids=data.plids, existing_since=SYNC_EXISTING_SINCE)
+    plan = build_plan(db, store_id, await _seller_offers(db, store_id), plids=data.plids, existing_since=SYNC_EXISTING_SINCE)
     applied = None
     if request.url.path.endswith('/apply'):
         if not data.token or data.token != plan['token']:
