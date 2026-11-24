@@ -244,7 +244,6 @@ from api.product_routes import SellerSyncRequest, seller_sync
 
 
 def call_route(db, offers, path='/api/products/seller-sync/preview', token=None, plids=None):
-    product_routes._seller_offers = _fake_offers(offers)
     request = SimpleNamespace(url=SimpleNamespace(path=path))
     # 保留回退核实后范围规则的隔离验证；默认生产写入口另有暂停断言。
     with patch.object(product_routes, '_seller_offers', _fake_offers(offers)), patch('services.seller_catalog_sync.SELLER_SYNC_WRITE_PAUSED', False):
