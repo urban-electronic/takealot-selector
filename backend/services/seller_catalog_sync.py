@@ -185,7 +185,8 @@ def _create_payload(plid: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
-               plids: Optional[List[str]] = None, existing_since: Optional[datetime] = None) -> Dict[str, Any]:
+               plids: Optional[List[str]] = None, existing_since: Optional[datetime] = None,
+               *, create_only: bool = False) -> Dict[str, Any]:
     """算出「要更正什么、要新增什么、哪些跳过」，不写库。
 
     `plids` 用来收窄范围。整库同步会一次新增一百多个商品，而用户常常只关心其中
@@ -193,6 +194,16 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
     算——界面上写「将新增 4 个」就必须真的只写这 4 个，不能拿整库数字吓人。
     """
     wanted = {str(plid).strip() for plid in (plids or []) if str(plid).strip()}
+    seller_identities = {}
+    if create_only:
+        for row in offers:
+            plid = str(row.get('productline_id') or '').strip()
+            if not plid:
+                continue
+            for field in ('sku', 'tsin_id'):
+                value = str(row.get(field) or '').strip()
+                if value:
+                    seller_identities.setdefault((field, value), set()).add(plid)
     if wanted:
         # 没有 PLID 的孤儿行本来也不参与同步，收窄时一并排除，不要混进跳过数。
         offers = [row for row in offers
@@ -201,7 +212,7 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
     products = db.query(Product).filter(Product.store_id == store_id).all()
     active = [product for product in products if not product.is_archived]
     archived = [product for product in products if product.is_archived]
-    indexes = _index(active)
+    indexes = _index(products if create_only else active)
     archived_plids = {plid_from_url(p.takealot_url) or (getattr(p, 'plid', '') or '').strip()
                       for p in archived} - {''}
 
@@ -217,6 +228,10 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
 
     for plid, rows in groups.items():
         skus = sorted({str(row.get('sku') or '').strip() for row in rows} - {''})
+        if create_only and any(len(seller_identities.get((field, str(row.get(field) or '').strip()), ())) > 1
+                               for row in rows for field in ('sku', 'tsin_id')):
+            skipped.append({'plid': plid, 'skus': skus, 'reason': '卖家资料中多个 PLID 共用同一 SKU 或 TSIN'})
+            continue
         if _ambiguous(plid, rows, indexes):
             skipped.append({'plid': plid, 'skus': skus,
                             'reason': '本地有多条记录命中同一个 PLID/TSIN/SKU，身份不明，未自动处理'})
@@ -238,6 +253,9 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
                                 'reason': '卖家资料里这条没有标题，先不新建，等资料补齐再同步'})
                 continue
             creates.append(payload)
+            continue
+        if create_only:
+            skipped.append({'plid': plid, 'skus': skus, 'reason': '本店已有同一身份的商品，仅新增模式不修改'})
             continue
         if existing_since is not None and (product.created_at is None or product.created_at < existing_since):
             skipped.append({'plid':plid,'skus':skus,'reason':'程序登记时间早于2026年10月1日或时间缺失，未同步'})
@@ -288,6 +306,8 @@ def build_plan(db, store_id: str, offers: List[Dict[str, Any]],
                             if change['field'] == 'sku' and change.get('current')),
     }
     plan = {
+        'store_id': store_id,
+        'create_only': create_only,
         'stats': stats,
         'updates': updates,
         'creates': creates,
@@ -307,6 +327,8 @@ def _token(plan: Dict[str, Any]) -> str:
     又改了一轮，计划看着一样，却会拿着过期的旧值去迁下游。
     """
     signature = repr((
+        plan['store_id'],
+        plan['create_only'],
         plan['stats'],
         # 范围也进签名：只同步 A 的预览不能拿去执行「整库」或「A+B」，否则用户以为
         # 只动了那几条，实际多写了一百多条。
@@ -347,6 +369,8 @@ def apply_plan(db, store_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     from api.product_routes import _apply_calculated_fields
     from services.sku_migration import SkuMigrationConflict, migrate_sku
 
+    if plan['store_id'] != store_id or (plan['create_only'] and (not plan['scope'] or plan['updates'])):
+        raise SellerSyncConflict('同步计划与当前店铺或仅新增范围不符')
     cutoff = datetime.fromisoformat(plan['existing_since']) if plan.get('existing_since') else None
     if cutoff is not None and plan['creates']:
         raise SellerSyncConflict('当前范围禁止新增，请重新预览')
@@ -388,6 +412,12 @@ def apply_plan(db, store_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     # 新建放在最后：上面任何一步冲突都会先抛出去，整批回滚，不会留下半批新商品。
     max_no = db.query(Product.product_no).filter(Product.store_id == store_id).order_by(Product.product_no.desc()).first()
     next_no = (max_no[0] + 1) if max_no and max_no[0] else 1
+    if plan['create_only']:
+        by_plid, by_tsin, by_sku = _index(db.query(Product).filter(Product.store_id == store_id).all())
+        for item in plan['creates']:
+            if (item['plid'] in by_plid or any(tsin in by_tsin for tsin in _tokens(item['tsin']))
+                    or any(sku in by_sku for sku in _tokens(item['sku']))):
+                raise SellerSyncConflict('本店已有相同 PLID、TSIN 或 SKU，请重新预览')
     for item in plan['creates']:
         # 幂等：同一批里重复、或上一次已经建过（token 过期重试）都不再建第二条。
         exists = db.query(Product).filter(Product.store_id == store_id, Product.plid == item['plid']).first()
